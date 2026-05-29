@@ -1,0 +1,1530 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Linux 内核设备模型 — 深度解析</title>
+<style>
+  /* ===== Reset & Base ===== */
+  *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+  :root {
+    --bg: #0f1117;
+    --bg2: #161b27;
+    --bg3: #1e2535;
+    --border: #2a3347;
+    --accent: #4f9cf9;
+    --accent2: #7ec8e3;
+    --accent3: #a78bfa;
+    --green: #34d399;
+    --yellow: #fbbf24;
+    --red: #f87171;
+    --text: #e2e8f0;
+    --text2: #94a3b8;
+    --text3: #64748b;
+    --code-bg: #0d1117;
+    --nav-w: 280px;
+    --header-h: 56px;
+    --progress-h: 3px;
+  }
+  html { scroll-behavior: smooth; font-size: 16px; }
+  body {
+    background: var(--bg);
+    color: var(--text);
+    font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', 'PingFang SC', 'Hiragino Sans GB', sans-serif;
+    line-height: 1.7;
+    overflow-x: hidden;
+  }
+
+  /* ===== Progress Bar ===== */
+  #progress-bar {
+    position: fixed; top: 0; left: 0; height: var(--progress-h);
+    background: linear-gradient(90deg, var(--accent), var(--accent3));
+    width: 0%; z-index: 9999; transition: width .1s;
+  }
+
+  /* ===== Header ===== */
+  header {
+    position: fixed; top: var(--progress-h); left: 0; right: 0;
+    height: var(--header-h); background: rgba(15,17,23,.95);
+    backdrop-filter: blur(12px);
+    border-bottom: 1px solid var(--border);
+    display: flex; align-items: center; justify-content: space-between;
+    padding: 0 1.25rem; z-index: 1000;
+  }
+  .header-left { display: flex; align-items: center; gap: .75rem; }
+  .logo {
+    width: 32px; height: 32px; background: linear-gradient(135deg,var(--accent),var(--accent3));
+    border-radius: 8px; display: flex; align-items: center; justify-content: center;
+    font-weight: 800; font-size: .85rem; color: #fff; flex-shrink: 0;
+  }
+  .header-title { font-size: 1rem; font-weight: 600; color: var(--text); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .header-right { display: flex; align-items: center; gap: .75rem; }
+  .kbd-hint { font-size: .72rem; color: var(--text3); display: flex; gap: .4rem; align-items: center; }
+  .kbd { background: var(--bg3); border: 1px solid var(--border); border-radius: 4px; padding: 1px 5px; font-family: monospace; font-size: .7rem; color: var(--text2); }
+  #hamburger {
+    display: none; background: none; border: 1px solid var(--border);
+    border-radius: 6px; padding: .35rem .5rem; cursor: pointer; color: var(--text2);
+    flex-direction: column; gap: 4px;
+  }
+  #hamburger span { display: block; width: 18px; height: 2px; background: currentColor; border-radius: 2px; transition: .3s; }
+
+  /* ===== Layout ===== */
+  .layout {
+    display: flex;
+    margin-top: calc(var(--header-h) + var(--progress-h));
+    min-height: calc(100vh - var(--header-h) - var(--progress-h));
+  }
+
+  /* ===== Sidebar ===== */
+  #sidebar {
+    position: fixed; top: calc(var(--header-h) + var(--progress-h));
+    left: 0; width: var(--nav-w); height: calc(100vh - var(--header-h) - var(--progress-h));
+    background: var(--bg2); border-right: 1px solid var(--border);
+    overflow-y: auto; z-index: 900; transition: transform .3s ease;
+    scrollbar-width: thin; scrollbar-color: var(--border) transparent;
+  }
+  #sidebar::-webkit-scrollbar { width: 4px; }
+  #sidebar::-webkit-scrollbar-thumb { background: var(--border); border-radius: 2px; }
+  .nav-section { padding: 1rem .75rem .25rem; }
+  .nav-section-label {
+    font-size: .68rem; font-weight: 700; text-transform: uppercase;
+    letter-spacing: .08em; color: var(--text3); padding: 0 .5rem .5rem;
+  }
+  .nav-item {
+    display: block; padding: .45rem .75rem; border-radius: 6px; cursor: pointer;
+    font-size: .82rem; color: var(--text2); transition: all .2s;
+    text-decoration: none; line-height: 1.4;
+    border-left: 2px solid transparent;
+  }
+  .nav-item:hover { background: var(--bg3); color: var(--text); }
+  .nav-item.active { background: rgba(79,156,249,.12); color: var(--accent); border-left-color: var(--accent); font-weight: 500; }
+  .nav-item.sub { padding-left: 1.25rem; font-size: .78rem; }
+
+  /* ===== Main Content ===== */
+  main {
+    margin-left: var(--nav-w); flex: 1; min-width: 0;
+    padding: 2rem 2rem 4rem;
+    max-width: calc(100vw - var(--nav-w));
+  }
+  .content-inner { max-width: 820px; margin: 0 auto; }
+
+  /* ===== Sections ===== */
+  .section { margin-bottom: 4rem; scroll-margin-top: calc(var(--header-h) + 1.5rem); }
+
+  /* ===== Typography ===== */
+  h1 { font-size: 2rem; font-weight: 800; line-height: 1.3; margin-bottom: 1rem; background: linear-gradient(135deg,var(--accent),var(--accent2)); -webkit-background-clip:text; -webkit-text-fill-color:transparent; background-clip:text; }
+  h2 { font-size: 1.45rem; font-weight: 700; color: var(--text); margin: 2rem 0 1rem; padding-bottom: .5rem; border-bottom: 1px solid var(--border); }
+  h3 { font-size: 1.1rem; font-weight: 600; color: var(--accent2); margin: 1.5rem 0 .75rem; }
+  h4 { font-size: .95rem; font-weight: 600; color: var(--accent3); margin: 1.25rem 0 .5rem; }
+  p { margin-bottom: 1rem; color: var(--text); }
+  ul, ol { margin: .75rem 0 1rem 1.5rem; }
+  li { margin-bottom: .4rem; color: var(--text); }
+  strong { color: var(--accent2); font-weight: 600; }
+  em { color: var(--yellow); font-style: normal; }
+  a { color: var(--accent); text-decoration: none; }
+  a:hover { text-decoration: underline; }
+
+  /* ===== Code ===== */
+  pre {
+    background: var(--code-bg); border: 1px solid var(--border); border-radius: 8px;
+    padding: 1.25rem; overflow-x: auto; font-size: .78rem; line-height: 1.6;
+    margin: 1rem 0; position: relative;
+    scrollbar-width: thin; scrollbar-color: var(--border) transparent;
+  }
+  pre::-webkit-scrollbar { height: 4px; }
+  pre::-webkit-scrollbar-thumb { background: var(--border); }
+  code { font-family: 'JetBrains Mono','Fira Code','Consolas',monospace; }
+  p code, li code {
+    background: var(--code-bg); border: 1px solid var(--border); border-radius: 4px;
+    padding: .1em .4em; font-size: .82em; color: var(--green);
+  }
+  .kw { color: #c792ea; }
+  .ty { color: #82aaff; }
+  .cm { color: #546e7a; font-style: italic; }
+  .str { color: #c3e88d; }
+  .nm { color: #f78c6c; }
+  .fn { color: #82aaff; }
+  .pp { color: #89ddff; }
+
+  /* ===== Info Boxes ===== */
+  .box {
+    border-radius: 8px; padding: 1rem 1.25rem; margin: 1.25rem 0;
+    border-left: 3px solid; font-size: .9rem; line-height: 1.65;
+  }
+  .box-info { background: rgba(79,156,249,.08); border-color: var(--accent); }
+  .box-warning { background: rgba(251,191,36,.07); border-color: var(--yellow); }
+  .box-tip { background: rgba(52,211,153,.07); border-color: var(--green); }
+  .box-note { background: rgba(167,139,250,.08); border-color: var(--accent3); }
+  .box-title { font-weight: 700; margin-bottom: .4rem; font-size: .82rem; text-transform: uppercase; letter-spacing: .05em; }
+  .box-info .box-title { color: var(--accent); }
+  .box-warning .box-title { color: var(--yellow); }
+  .box-tip .box-title { color: var(--green); }
+  .box-note .box-title { color: var(--accent3); }
+
+  /* ===== Source Reference ===== */
+  .src-ref {
+    display: inline-flex; align-items: center; gap: .35rem; font-size: .72rem;
+    background: var(--bg3); border: 1px solid var(--border); border-radius: 4px;
+    padding: .15rem .5rem; color: var(--text3); margin: .2rem 0;
+  }
+  .src-ref a { color: var(--text3); }
+  .src-ref a:hover { color: var(--accent); }
+  .src-ref::before { content: "📄"; font-size: .7rem; }
+
+  /* ===== Tables ===== */
+  .table-wrap { overflow-x: auto; margin: 1rem 0; border-radius: 8px; border: 1px solid var(--border); }
+  table { width: 100%; border-collapse: collapse; font-size: .84rem; }
+  th { background: var(--bg3); color: var(--accent2); font-weight: 600; padding: .7rem 1rem; text-align: left; border-bottom: 1px solid var(--border); white-space: nowrap; }
+  td { padding: .65rem 1rem; border-bottom: 1px solid rgba(42,51,71,.5); vertical-align: top; }
+  tr:last-child td { border-bottom: none; }
+  tr:hover td { background: rgba(255,255,255,.02); }
+
+  /* ===== SVG Diagrams ===== */
+  .diagram-wrap {
+    background: var(--bg2); border: 1px solid var(--border); border-radius: 10px;
+    padding: 1.25rem; margin: 1.5rem 0; overflow-x: auto; text-align: center;
+  }
+  .diagram-caption {
+    text-align: center; font-size: .78rem; color: var(--text3); margin-top: .75rem;
+    font-style: italic;
+  }
+
+  /* ===== Hero ===== */
+  .hero {
+    background: linear-gradient(135deg, rgba(79,156,249,.1) 0%, rgba(167,139,250,.08) 100%);
+    border: 1px solid var(--border); border-radius: 12px;
+    padding: 2rem; margin-bottom: 2rem;
+  }
+  .hero-meta { display: flex; flex-wrap: wrap; gap: .75rem; margin-top: 1rem; }
+  .badge {
+    font-size: .72rem; font-weight: 600; padding: .25rem .75rem; border-radius: 20px;
+    border: 1px solid;
+  }
+  .badge-blue { color: var(--accent); border-color: var(--accent); background: rgba(79,156,249,.1); }
+  .badge-purple { color: var(--accent3); border-color: var(--accent3); background: rgba(167,139,250,.1); }
+  .badge-green { color: var(--green); border-color: var(--green); background: rgba(52,211,153,.1); }
+
+  /* ===== Overlay ===== */
+  #overlay { display: none; position: fixed; inset: 0; background: rgba(0,0,0,.5); z-index: 850; }
+
+  /* ===== Responsive ===== */
+  @media (max-width: 768px) {
+    :root { --nav-w: 260px; }
+    #hamburger { display: flex; }
+    .kbd-hint { display: none; }
+    #sidebar { transform: translateX(-100%); }
+    #sidebar.open { transform: translateX(0); }
+    #overlay.show { display: block; }
+    main { margin-left: 0; padding: 1.25rem 1rem 3rem; max-width: 100vw; }
+    h1 { font-size: 1.5rem; }
+    h2 { font-size: 1.2rem; }
+    .header-title { font-size: .88rem; }
+    pre { font-size: .72rem; }
+  }
+  @media (max-width: 480px) {
+    main { padding: 1rem .75rem 3rem; }
+    .hero { padding: 1.25rem; }
+    h1 { font-size: 1.3rem; }
+  }
+</style>
+</head>
+<body>
+
+<div id="progress-bar"></div>
+
+<header>
+  <div class="header-left">
+    <div class="logo">LK</div>
+    <span class="header-title">Linux 内核设备模型</span>
+  </div>
+  <div class="header-right">
+    <div class="kbd-hint">
+      <span class="kbd">←</span><span class="kbd">→</span> 章节导航
+    </div>
+    <button id="hamburger" aria-label="菜单" onclick="toggleSidebar()">
+      <span></span><span></span><span></span>
+    </button>
+  </div>
+</header>
+
+<div id="overlay" onclick="toggleSidebar()"></div>
+
+<div class="layout">
+  <nav id="sidebar">
+    <div class="nav-section">
+      <div class="nav-section-label">概述</div>
+      <a class="nav-item" data-section="overview" onclick="navTo('overview')">引言与背景</a>
+    </div>
+    <div class="nav-section">
+      <div class="nav-section-label">历史演化</div>
+      <a class="nav-item" data-section="history" onclick="navTo('history')">设计背景</a>
+      <a class="nav-item sub" data-section="before-26" onclick="navTo('before-26')">2.6 之前的问题</a>
+      <a class="nav-item sub" data-section="evolution" onclick="navTo('evolution')">演化过程</a>
+    </div>
+    <div class="nav-section">
+      <div class="nav-section-label">核心组件</div>
+      <a class="nav-item" data-section="kobject" onclick="navTo('kobject')">kobject — 基础对象</a>
+      <a class="nav-item sub" data-section="ktype" onclick="navTo('ktype')">ktype 类型描述</a>
+      <a class="nav-item sub" data-section="kset" onclick="navTo('kset')">kset 容器</a>
+      <a class="nav-item sub" data-section="kref" onclick="navTo('kref')">引用计数</a>
+    </div>
+    <div class="nav-section">
+      <div class="nav-section-label">设备模型</div>
+      <a class="nav-item" data-section="bus" onclick="navTo('bus')">总线 (Bus)</a>
+      <a class="nav-item" data-section="device" onclick="navTo('device')">设备 (Device)</a>
+      <a class="nav-item" data-section="driver" onclick="navTo('driver')">驱动 (Driver)</a>
+      <a class="nav-item" data-section="class" onclick="navTo('class')">设备类 (Class)</a>
+    </div>
+    <div class="nav-section">
+      <div class="nav-section-label">子系统</div>
+      <a class="nav-item" data-section="sysfs" onclick="navTo('sysfs')">sysfs 文件系统</a>
+      <a class="nav-item" data-section="hotplug" onclick="navTo('hotplug')">热插拔 (Hotplug)</a>
+      <a class="nav-item" data-section="pm" onclick="navTo('pm')">电源管理</a>
+    </div>
+    <div class="nav-section">
+      <div class="nav-section-label">深度分析</div>
+      <a class="nav-item" data-section="binding" onclick="navTo('binding')">绑定机制 (Binding)</a>
+      <a class="nav-item" data-section="first-principles" onclick="navTo('first-principles')">第一性原理分析</a>
+    </div>
+    <div class="nav-section">
+      <div class="nav-section-label">参考</div>
+      <a class="nav-item" data-section="refs" onclick="navTo('refs')">原文链接与参考</a>
+    </div>
+  </nav>
+
+  <main>
+    <div class="content-inner">
+
+      <!-- ===== SECTION: Overview ===== -->
+      <section class="section" id="overview">
+        <div class="hero">
+          <h1>Linux 内核设备模型</h1>
+          <p>深入解析 Linux 内核统一设备模型的设计背景、演化历程、实现原理与核心抽象，基于官方内核文档与权威来源编写。</p>
+          <div class="hero-meta">
+            <span class="badge badge-blue">内核文档 kernel.org</span>
+            <span class="badge badge-purple">LWN.net 权威解析</span>
+            <span class="badge badge-green">Linux 6.x 内核</span>
+          </div>
+        </div>
+
+        <h2>什么是 Linux 设备模型</h2>
+        <p>Linux 内核驱动模型（Linux Kernel Driver Model）是对内核中以前各种分散驱动模型的<strong>统一整合</strong>。它旨在通过将一组数据和操作整合到全局可访问的数据结构中，来增强各种总线和设备的桥接驱动。</p>
+
+        <div class="box box-info">
+          <div class="box-title">官方定义</div>
+          "The Linux Kernel Driver Model is a unification of all the disparate driver models that were previously used in the kernel. It is intended to augment the bus-specific drivers for bridges and devices by consolidating a set of data and operations into globally accessible data structures."
+          <br><br>— Patrick Mochel，内核文档，2002年8月26日
+        </div>
+
+        <div class="src-ref"><a href="https://www.kernel.org/doc/html/latest/driver-api/driver-model/overview.html" target="_blank">kernel.org — The Linux Device Model</a></div>
+
+        <h3>模型的核心目标</h3>
+        <ul>
+          <li>为描述总线及其下设备提供<strong>统一的通用数据模型</strong></li>
+          <li>支持无缝的<strong>设备即插即用（Plug and Play）</strong></li>
+          <li>提供通用的<strong>电源管理</strong>能力</li>
+          <li>实现完整的<strong>热插拔（Hot Plug）</strong>机制</li>
+          <li>向用户空间输出完整的<strong>设备层级视图</strong>（通过 sysfs）</li>
+        </ul>
+
+        <div class="diagram-wrap">
+          <svg width="680" height="320" viewBox="0 0 680 320" xmlns="http://www.w3.org/2000/svg" style="max-width:100%;height:auto;">
+            <defs>
+              <linearGradient id="g1" x1="0%" y1="0%" x2="100%" y2="100%">
+                <stop offset="0%" style="stop-color:#4f9cf9;stop-opacity:1"/>
+                <stop offset="100%" style="stop-color:#a78bfa;stop-opacity:1"/>
+              </linearGradient>
+              <marker id="arrow" markerWidth="8" markerHeight="6" refX="6" refY="3" orient="auto">
+                <polygon points="0 0, 8 3, 0 6" fill="#4f9cf9" opacity="0.7"/>
+              </marker>
+            </defs>
+            <!-- Background boxes -->
+            <rect x="10" y="10" width="660" height="300" rx="10" fill="#161b27" stroke="#2a3347" stroke-width="1"/>
+            <!-- kobject layer -->
+            <rect x="220" y="30" width="240" height="44" rx="8" fill="url(#g1)" opacity="0.2" stroke="#4f9cf9" stroke-width="1.5"/>
+            <text x="340" y="56" text-anchor="middle" fill="#4f9cf9" font-size="13" font-weight="700" font-family="monospace">kobject / kset / ktype</text>
+            <text x="340" y="68" text-anchor="middle" fill="#7ec8e3" font-size="10">基础对象层</text>
+            <!-- Bus -->
+            <rect x="30" y="120" width="150" height="44" rx="8" fill="#1e2535" stroke="#34d399" stroke-width="1.5"/>
+            <text x="105" y="144" text-anchor="middle" fill="#34d399" font-size="13" font-weight="700" font-family="monospace">bus_type</text>
+            <text x="105" y="157" text-anchor="middle" fill="#94a3b8" font-size="10">总线</text>
+            <!-- Device -->
+            <rect x="265" y="120" width="150" height="44" rx="8" fill="#1e2535" stroke="#fbbf24" stroke-width="1.5"/>
+            <text x="340" y="144" text-anchor="middle" fill="#fbbf24" font-size="13" font-weight="700" font-family="monospace">struct device</text>
+            <text x="340" y="157" text-anchor="middle" fill="#94a3b8" font-size="10">设备</text>
+            <!-- Driver -->
+            <rect x="500" y="120" width="150" height="44" rx="8" fill="#1e2535" stroke="#a78bfa" stroke-width="1.5"/>
+            <text x="575" y="144" text-anchor="middle" fill="#a78bfa" font-size="13" font-weight="700" font-family="monospace">device_driver</text>
+            <text x="575" y="157" text-anchor="middle" fill="#94a3b8" font-size="10">驱动</text>
+            <!-- Class -->
+            <rect x="265" y="220" width="150" height="44" rx="8" fill="#1e2535" stroke="#f87171" stroke-width="1.5"/>
+            <text x="340" y="244" text-anchor="middle" fill="#f87171" font-size="13" font-weight="700" font-family="monospace">struct class</text>
+            <text x="340" y="257" text-anchor="middle" fill="#94a3b8" font-size="10">设备类</text>
+            <!-- sysfs -->
+            <rect x="30" y="220" width="150" height="44" rx="8" fill="#1e2535" stroke="#7ec8e3" stroke-width="1.5"/>
+            <text x="105" y="244" text-anchor="middle" fill="#7ec8e3" font-size="13" font-weight="700" font-family="monospace">sysfs</text>
+            <text x="105" y="257" text-anchor="middle" fill="#94a3b8" font-size="10">虚拟文件系统</text>
+            <!-- hotplug -->
+            <rect x="500" y="220" width="150" height="44" rx="8" fill="#1e2535" stroke="#fb923c" stroke-width="1.5"/>
+            <text x="575" y="244" text-anchor="middle" fill="#fb923c" font-size="13" font-weight="700" font-family="monospace">uevent</text>
+            <text x="575" y="257" text-anchor="middle" fill="#94a3b8" font-size="10">热插拔事件</text>
+            <!-- Arrows: kobject -> everything -->
+            <line x1="280" y1="74" x2="105" y2="120" stroke="#4f9cf9" stroke-width="1.5" stroke-dasharray="5,3" marker-end="url(#arrow)" opacity="0.6"/>
+            <line x1="340" y1="74" x2="340" y2="120" stroke="#4f9cf9" stroke-width="1.5" stroke-dasharray="5,3" marker-end="url(#arrow)" opacity="0.6"/>
+            <line x1="400" y1="74" x2="575" y2="120" stroke="#4f9cf9" stroke-width="1.5" stroke-dasharray="5,3" marker-end="url(#arrow)" opacity="0.6"/>
+            <!-- Arrows: bus <-> device <-> driver -->
+            <line x1="180" y1="142" x2="265" y2="142" stroke="#2a3347" stroke-width="1.5" marker-end="url(#arrow)"/>
+            <line x1="415" y1="142" x2="500" y2="142" stroke="#2a3347" stroke-width="1.5" marker-end="url(#arrow)"/>
+            <!-- Device -> class -->
+            <line x1="340" y1="164" x2="340" y2="220" stroke="#2a3347" stroke-width="1.5" marker-end="url(#arrow)"/>
+            <!-- Bus -> sysfs -->
+            <line x1="105" y1="164" x2="105" y2="220" stroke="#2a3347" stroke-width="1.5" marker-end="url(#arrow)"/>
+            <!-- Driver -> hotplug -->
+            <line x1="575" y1="164" x2="575" y2="220" stroke="#2a3347" stroke-width="1.5" marker-end="url(#arrow)"/>
+          </svg>
+          <div class="diagram-caption">图1：Linux 设备模型层次结构概览</div>
+        </div>
+      </section>
+
+      <!-- ===== SECTION: History ===== -->
+      <section class="section" id="history">
+        <h2>设计背景与驱动力</h2>
+        <p>要理解 Linux 设备模型为何以今天的方式设计，必须回顾 2.4 内核时代的困境。</p>
+
+        <h3>Linux 2.4 时代的三大痛点</h3>
+        <p>根据 Wikipedia sysfs 条目及内核文档记载，在 2.5 开发周期引入设备模型之前，2.4 内核存在如下根本性缺陷：</p>
+
+        <div class="table-wrap">
+          <table>
+            <thead>
+              <tr><th>问题</th><th>描述</th><th>影响</th></tr>
+            </thead>
+            <tbody>
+              <tr>
+                <td><strong>没有统一的驱动-设备关系表示</strong></td>
+                <td>每个总线子系统各自维护独立的数据结构和设备列表，没有跨总线的统一模型</td>
+                <td>代码重复，设备管理混乱</td>
+              </tr>
+              <tr>
+                <td><strong>没有通用热插拔机制</strong></td>
+                <td>USB、PCI 等不同总线各自实现独立的热插拔逻辑，无法统一</td>
+                <td>热插拔支持参差不齐，难以维护</td>
+              </tr>
+              <tr>
+                <td><strong>procfs 被非进程信息污染</strong></td>
+                <td>/proc 中充斥着大量设备、驱动、总线等非进程信息</td>
+                <td>接口混乱，信息难以结构化访问</td>
+              </tr>
+            </tbody>
+          </table>
+        </div>
+        <div class="src-ref"><a href="https://en.wikipedia.org/wiki/Sysfs" target="_blank">Wikipedia — sysfs：历史背景</a></div>
+
+        <div class="box box-warning">
+          <div class="box-title">核心矛盾</div>
+          传统驱动模型为它们控制的设备实现了某种树状结构（有时只是列表），但<strong>不同总线类型之间没有任何统一性</strong>。随着现代计算机对设备即插即用、热插拔、精细电源管理的需求不断增长，这种碎片化的架构已无法胜任。
+        </div>
+      </section>
+
+      <!-- ===== SECTION: Before 2.6 ===== -->
+      <section class="section" id="before-26">
+        <h2>2.6 之前的问题详解</h2>
+        <h3>各自为政的子系统</h3>
+        <p>在 Linux 2.4 中，PCI 子系统有 <code>pci_dev</code> 列表，USB 子系统有 <code>usb_device</code> 树，SCSI 有 <code>Scsi_Host</code> 链表……每个子系统都是孤岛，电源管理信号无法跨越边界传递。</p>
+
+        <h3>电源管理困境</h3>
+        <p>当系统需要执行 suspend/resume 操作时，内核必须依次通知每个设备，但因缺乏统一的设备树，无法保证<strong>按正确的依赖顺序</strong>关闭/唤醒设备（必须先关闭子设备，再关闭父设备）。</p>
+
+        <h3>driverfs 的诞生（2.5.45 前身）</h3>
+        <p>Patrick Mochel 在 2.5 开发周期开始设计统一的设备抽象。他首先创建了 <code>driverfs</code>（后来更名为 <code>sysfs</code>），用于向用户空间导出设备树。</p>
+
+        <div class="box box-note">
+          <div class="box-title">历史记录</div>
+          当 Patrick Mochel 在 2.5.45 内核中加入 <code>kobject</code> 类型时，他的描述是："This is not meant to be fancy; just something simple for which we can control the refcount and other common functionality using common code."（这不是要搞得很花哨；只是一个简单的东西，我们可以用公共代码控制其引用计数和其他公共功能。）
+          <br><br>— LWN.net，《The debut of kref》，2004年
+        </div>
+        <div class="src-ref"><a href="https://lwn.net/Articles/75920/" target="_blank">LWN.net — The debut of kref（kobject 起源）</a></div>
+      </section>
+
+      <!-- ===== SECTION: Evolution ===== -->
+      <section class="section" id="evolution">
+        <h2>演化过程</h2>
+
+        <div class="diagram-wrap">
+          <svg width="660" height="260" viewBox="0 0 660 260" xmlns="http://www.w3.org/2000/svg" style="max-width:100%;height:auto;">
+            <rect x="10" y="10" width="640" height="240" rx="10" fill="#161b27" stroke="#2a3347"/>
+            <!-- Timeline line -->
+            <line x1="50" y1="130" x2="620" y2="130" stroke="#2a3347" stroke-width="2"/>
+            <!-- Nodes -->
+            <!-- 2.4 -->
+            <circle cx="80" cy="130" r="10" fill="#f87171" stroke="#f87171" stroke-width="2"/>
+            <text x="80" y="110" text-anchor="middle" fill="#f87171" font-size="11" font-weight="700">2.4</text>
+            <text x="80" y="155" text-anchor="middle" fill="#94a3b8" font-size="9">分散模型</text>
+            <text x="80" y="167" text-anchor="middle" fill="#64748b" font-size="8">各自为政</text>
+            <!-- 2.5.45 -->
+            <circle cx="200" cy="130" r="10" fill="#fbbf24" stroke="#fbbf24" stroke-width="2"/>
+            <text x="200" y="110" text-anchor="middle" fill="#fbbf24" font-size="11" font-weight="700">2.5.45</text>
+            <text x="200" y="155" text-anchor="middle" fill="#94a3b8" font-size="9">kobject 诞生</text>
+            <text x="200" y="167" text-anchor="middle" fill="#64748b" font-size="8">Patrick Mochel</text>
+            <!-- 2.6.0 -->
+            <circle cx="320" cy="130" r="12" fill="#4f9cf9" stroke="#4f9cf9" stroke-width="2"/>
+            <text x="320" y="108" text-anchor="middle" fill="#4f9cf9" font-size="11" font-weight="700">2.6.0</text>
+            <text x="320" y="153" text-anchor="middle" fill="#94a3b8" font-size="9">driverfs→sysfs</text>
+            <text x="320" y="165" text-anchor="middle" fill="#64748b" font-size="8">统一设备模型</text>
+            <!-- 2.6.11 -->
+            <circle cx="440" cy="130" r="10" fill="#34d399" stroke="#34d399" stroke-width="2"/>
+            <text x="440" y="110" text-anchor="middle" fill="#34d399" font-size="11" font-weight="700">2.6.11</text>
+            <text x="440" y="155" text-anchor="middle" fill="#94a3b8" font-size="9">udev 成熟</text>
+            <text x="440" y="167" text-anchor="middle" fill="#64748b" font-size="8">hotplug 完善</text>
+            <!-- 6.x -->
+            <circle cx="580" cy="130" r="10" fill="#a78bfa" stroke="#a78bfa" stroke-width="2"/>
+            <text x="580" y="110" text-anchor="middle" fill="#a78bfa" font-size="11" font-weight="700">6.x</text>
+            <text x="580" y="155" text-anchor="middle" fill="#94a3b8" font-size="9">kernfs/现代化</text>
+            <text x="580" y="167" text-anchor="middle" fill="#64748b" font-size="8">持续演进</text>
+            <!-- Arrow -->
+            <polygon points="618,127 630,130 618,133" fill="#4f9cf9" opacity="0.7"/>
+            <!-- Title -->
+            <text x="340" y="35" text-anchor="middle" fill="#e2e8f0" font-size="12" font-weight="600">Linux 设备模型演化时间线</text>
+          </svg>
+          <div class="diagram-caption">图2：从分散模型到统一设备模型的演化历程</div>
+        </div>
+
+        <h3>关键里程碑</h3>
+
+        <div class="table-wrap">
+          <table>
+            <thead>
+              <tr><th>时间 / 版本</th><th>事件</th><th>意义</th></tr>
+            </thead>
+            <tbody>
+              <tr>
+                <td><strong>2001–2002</strong></td>
+                <td>Patrick Mochel 在 2.5 开发周期开始设计统一设备模型</td>
+                <td>问题意识形成，初步设计</td>
+              </tr>
+              <tr>
+                <td><strong>2.5.45 (2002)</strong></td>
+                <td><code>kobject</code> 首次加入内核</td>
+                <td>所有设备抽象的基础奠定</td>
+              </tr>
+              <tr>
+                <td><strong>2.5.x 系列</strong></td>
+                <td><code>driverfs</code> 虚拟文件系统出现，后更名为 <code>sysfs</code></td>
+                <td>设备树向用户空间的标准化接口</td>
+              </tr>
+              <tr>
+                <td><strong>2.6.0 (2003)</strong></td>
+                <td>统一设备模型正式随 2.6 发布；bus/device/driver 三元体成熟</td>
+                <td>历史性的架构整合</td>
+              </tr>
+              <tr>
+                <td><strong>2.6.11+</strong></td>
+                <td>udev 替代 devfs，基于 uevent 自动管理 /dev</td>
+                <td>热插拔生态完整</td>
+              </tr>
+              <tr>
+                <td><strong>3.x / 4.x</strong></td>
+                <td>引入 <code>kernfs</code>，重构 sysfs 后端</td>
+                <td>性能与正确性提升</td>
+              </tr>
+              <tr>
+                <td><strong>6.x (当前)</strong></td>
+                <td>设备链接（device links）、firmware node 等现代特性</td>
+                <td>依赖管理更精细</td>
+              </tr>
+            </tbody>
+          </table>
+        </div>
+      </section>
+
+      <!-- ===== SECTION: kobject ===== -->
+      <section class="section" id="kobject">
+        <h2>kobject — 设备模型的基石</h2>
+        <p>理解驱动模型以及构建于其上的 kobject 抽象的难点在于没有明显的切入点。要处理 kobject，需要理解几种相互引用的不同类型。</p>
+
+        <div class="box box-info">
+          <div class="box-title">官方定义（Greg Kroah-Hartman）</div>
+          "A kobject is an object of type <code>struct kobject</code>. Kobjects have a name and a reference count. A kobject also has a parent pointer (allowing objects to be arranged into hierarchies), a specific type, and, usually, a representation in the sysfs virtual filesystem."
+        </div>
+        <div class="src-ref"><a href="https://www.kernel.org/doc/html/latest/core-api/kobject.html" target="_blank">kernel.org — Everything you never wanted to know about kobjects, ksets, and ktypes</a></div>
+
+        <h3>kobject 的核心能力</h3>
+        <ul>
+          <li><strong>引用计数：</strong>作为嵌入结构的引用计数器，确保对象在所有引用释放前不被销毁</li>
+          <li><strong>层级结构：</strong>parent 指针构建对象树，映射到 sysfs 目录结构</li>
+          <li><strong>sysfs 表示：</strong>每个 kobject 在 sysfs 中有对应目录</li>
+          <li><strong>uevent 生成：</strong>kobject 的添加/删除触发热插拔事件</li>
+        </ul>
+
+        <h3>struct kobject 定义</h3>
+<pre><code><span class="kw">struct</span> <span class="ty">kobject</span> {
+    <span class="kw">const</span> <span class="ty">char</span>              *name;       <span class="cm">/* sysfs 目录名 */</span>
+    <span class="kw">struct</span> <span class="ty">list_head</span>        entry;       <span class="cm">/* kset 中的链表节点 */</span>
+    <span class="kw">struct</span> <span class="ty">kobject</span>          *parent;     <span class="cm">/* 父 kobject，构建层级 */</span>
+    <span class="kw">struct</span> <span class="ty">kset</span>             *kset;       <span class="cm">/* 所属的 kset 容器 */</span>
+    <span class="kw">struct</span> <span class="ty">kobj_type</span>        *ktype;      <span class="cm">/* 类型描述与回调 */</span>
+    <span class="kw">struct</span> <span class="ty">kernfs_node</span>      *sd;         <span class="cm">/* sysfs 目录项 */</span>
+    <span class="kw">struct</span> <span class="ty">kref</span>             kref;        <span class="cm">/* 引用计数（原子操作） */</span>
+    <span class="kw">unsigned int</span> state_initialized:1;   <span class="cm">/* 已初始化 */</span>
+    <span class="kw">unsigned int</span> state_in_sysfs:1;      <span class="cm">/* 已注册到 sysfs */</span>
+    <span class="kw">unsigned int</span> state_add_uevent_sent:1;<span class="cm">/* ADD uevent 已发出 */</span>
+    <span class="kw">unsigned int</span> state_remove_uevent_sent:1;
+    <span class="kw">unsigned int</span> uevent_suppress:1;     <span class="cm">/* 抑制 uevent */</span>
+};</code></pre>
+
+        <h3>嵌入模式：面向对象的 C 实现</h3>
+        <p>内核代码极少单独创建一个独立的 kobject。相反，kobject 被嵌入到更大的特定领域结构中。可以将 kobject 看作顶层抽象基类，其他结构从中"派生"。C 语言不支持直接表达继承，因此使用结构嵌入技术：</p>
+
+<pre><code><span class="cm">/* UIO 驱动中的嵌入示例 */</span>
+<span class="kw">struct</span> <span class="ty">uio_map</span> {
+    <span class="kw">struct</span> <span class="ty">kobject</span> kobj;   <span class="cm">/* 嵌入的 kobject — 必须是唯一一个！ */</span>
+    <span class="kw">struct</span> <span class="ty">uio_mem</span> *mem;
+};
+
+<span class="cm">/* 从 kobject 指针反向获取包含结构（类似 C++ 的 upcast） */</span>
+<span class="kw">struct</span> <span class="ty">uio_map</span> *map = <span class="fn">container_of</span>(kp, <span class="kw">struct</span> <span class="ty">uio_map</span>, kobj);
+
+<span class="cm">/* 通常定义便捷宏 */</span>
+<span class="pp">#define</span> to_map(map) <span class="fn">container_of</span>(map, <span class="kw">struct</span> <span class="ty">uio_map</span>, kobj)</code></pre>
+
+        <div class="box box-warning">
+          <div class="box-title">重要规则</div>
+          任何结构都<strong>绝不能</strong>嵌入超过一个 kobject。否则对象的引用计数必然出错，代码将充满 bug。
+          <br>— 官方内核文档，Greg Kroah-Hartman
+        </div>
+
+        <h3>kobject 生命周期 API</h3>
+<pre><code><span class="cm">/* 初始化 kobject（必须指定 ktype） */</span>
+<span class="kw">void</span> <span class="fn">kobject_init</span>(<span class="kw">struct</span> <span class="ty">kobject</span> *kobj, <span class="kw">const</span> <span class="kw">struct</span> <span class="ty">kobj_type</span> *ktype);
+
+<span class="cm">/* 注册到 sysfs（指定父节点和名称） */</span>
+<span class="kw">int</span> <span class="fn">kobject_add</span>(<span class="kw">struct</span> <span class="ty">kobject</span> *kobj, <span class="kw">struct</span> <span class="ty">kobject</span> *parent,
+                <span class="kw">const</span> <span class="ty">char</span> *fmt, ...);
+
+<span class="cm">/* 初始化并注册的便捷函数 */</span>
+<span class="kw">int</span> <span class="fn">kobject_init_and_add</span>(<span class="kw">struct</span> <span class="ty">kobject</span> *kobj, <span class="kw">const</span> <span class="kw">struct</span> <span class="ty">kobj_type</span> *ktype,
+                         <span class="kw">struct</span> <span class="ty">kobject</span> *parent, <span class="kw">const</span> <span class="ty">char</span> *fmt, ...);
+
+<span class="cm">/* 引用计数操作 */</span>
+<span class="kw">struct</span> <span class="ty">kobject</span> *<span class="fn">kobject_get</span>(<span class="kw">struct</span> <span class="ty">kobject</span> *kobj);  <span class="cm">/* 增加引用 */</span>
+<span class="kw">void</span> <span class="fn">kobject_put</span>(<span class="kw">struct</span> <span class="ty">kobject</span> *kobj);             <span class="cm">/* 减少引用，可能触发 release */</span>
+
+<span class="cm">/* 发送 uevent 事件 */</span>
+<span class="kw">int</span> <span class="fn">kobject_uevent</span>(<span class="kw">struct</span> <span class="ty">kobject</span> *kobj, <span class="kw">enum</span> <span class="ty">kobject_action</span> action);</code></pre>
+      </section>
+
+      <!-- ===== SECTION: ktype ===== -->
+      <section class="section" id="ktype">
+        <h2>ktype — 类型描述符</h2>
+        <p>ktype 是嵌入 kobject 的对象的类型。每个嵌入 kobject 的结构都需要一个对应的 ktype，它控制 kobject 创建和销毁时的行为。</p>
+
+<pre><code><span class="kw">struct</span> <span class="ty">kobj_type</span> {
+    <span class="kw">void</span> (*release)(<span class="kw">struct</span> <span class="ty">kobject</span> *kobj);       <span class="cm">/* 引用归零时的清理回调 */</span>
+    <span class="kw">const</span> <span class="kw">struct</span> <span class="ty">sysfs_ops</span> *sysfs_ops;           <span class="cm">/* sysfs 属性读写操作 */</span>
+    <span class="kw">const</span> <span class="kw">struct</span> <span class="ty">attribute_group</span> **default_groups; <span class="cm">/* 默认属性组 */</span>
+    <span class="kw">const</span> <span class="kw">struct</span> <span class="ty">kobj_ns_type_operations</span> *(*child_ns_type)(...);
+    <span class="kw">const</span> <span class="kw">void</span> *(*namespace)(<span class="kw">struct</span> <span class="ty">kobject</span> *kobj);
+    <span class="kw">void</span> (*get_ownership)(<span class="kw">struct</span> <span class="ty">kobject</span> *kobj, <span class="ty">kuid_t</span> *uid, <span class="ty">kgid_t</span> *gid);
+};</code></pre>
+
+        <h3>release 方法的重要性</h3>
+        <p>每个 kobject 都<strong>必须</strong>有一个 <code>release()</code> 方法，且 kobject 必须在该方法被调用之前保持一致状态。这个通知机制解决了一个关键问题：创建 kobject 的代码通常不知道最后一个引用何时被释放。</p>
+
+<pre><code><span class="cm">/* release 方法的标准实现模式 */</span>
+<span class="kw">static void</span> <span class="fn">my_object_release</span>(<span class="kw">struct</span> <span class="ty">kobject</span> *kobj)
+{
+    <span class="cm">/* container_of 从 kobject 指针回溯到包含结构 */</span>
+    <span class="kw">struct</span> <span class="ty">my_object</span> *mine = <span class="fn">container_of</span>(kobj, <span class="kw">struct</span> <span class="ty">my_object</span>, kobj);
+
+    <span class="cm">/* 执行额外清理工作，然后释放内存 */</span>
+    <span class="fn">kfree</span>(mine);
+}
+
+<span class="kw">static struct</span> <span class="ty">kobj_type</span> my_ktype = {
+    .release   = my_object_release,
+    .sysfs_ops = &my_sysfs_ops,
+    .default_groups = my_groups,
+};</code></pre>
+      </section>
+
+      <!-- ===== SECTION: kset ===== -->
+      <section class="section" id="kset">
+        <h2>kset — kobject 容器</h2>
+        <p>kset 是一组想要彼此关联的 kobject 的集合。它们不必是相同的 ktype，但要谨慎混用。</p>
+
+        <h3>kset 的三大功能</h3>
+        <ul>
+          <li><strong>对象容器：</strong>内核用 kset 追踪"所有块设备"或"所有 PCI 设备驱动"等集合</li>
+          <li><strong>sysfs 目录：</strong>kset 在 sysfs 中是一个子目录，其关联的 kobject 在其中展示；sysfs 的顶级目录层次结构就是通过这种方式构建的</li>
+          <li><strong>uevent 控制：</strong>kset 可以支持 kobject 的"热插拔"，并影响 uevent 事件向用户空间的报告方式</li>
+        </ul>
+        <div class="src-ref"><a href="https://www.kernel.org/doc/html/latest/core-api/kobject.html" target="_blank">kernel.org — kobject/kset/ktype 官方文档</a></div>
+
+<pre><code><span class="cm">/* 创建并注册 kset */</span>
+<span class="kw">struct</span> <span class="ty">kset</span> *<span class="fn">kset_create_and_add</span>(<span class="kw">const</span> <span class="ty">char</span> *name,
+                                 <span class="kw">const</span> <span class="kw">struct</span> <span class="ty">kset_uevent_ops</span> *uevent_ops,
+                                 <span class="kw">struct</span> <span class="ty">kobject</span> *parent_kobj);
+
+<span class="cm">/* 销毁 kset */</span>
+<span class="kw">void</span> <span class="fn">kset_unregister</span>(<span class="kw">struct</span> <span class="ty">kset</span> *k);
+
+<span class="cm">/* uevent 操作回调 */</span>
+<span class="kw">struct</span> <span class="ty">kset_uevent_ops</span> {
+    <span class="cm">/* filter: 返回 0 则阻止该 kobject 的 uevent 发出 */</span>
+    <span class="kw">int</span> (* <span class="kw">const</span> filter)(<span class="kw">struct</span> <span class="ty">kobject</span> *kobj);
+    <span class="cm">/* name: 覆盖发送给用户空间的 kset 名称 */</span>
+    <span class="kw">const</span> <span class="ty">char</span> *(* <span class="kw">const</span> name)(<span class="kw">struct</span> <span class="ty">kobject</span> *kobj);
+    <span class="cm">/* uevent: 在发送 uevent 前添加自定义环境变量 */</span>
+    <span class="kw">int</span> (* <span class="kw">const</span> uevent)(<span class="kw">struct</span> <span class="ty">kobject</span> *kobj, <span class="kw">struct</span> <span class="ty">kobj_uevent_env</span> *env);
+};</code></pre>
+
+        <div class="diagram-wrap">
+          <svg width="580" height="240" viewBox="0 0 580 240" xmlns="http://www.w3.org/2000/svg" style="max-width:100%;height:auto;">
+            <rect x="10" y="10" width="560" height="220" rx="10" fill="#161b27" stroke="#2a3347"/>
+            <!-- kset box -->
+            <rect x="30" y="30" width="520" height="180" rx="8" fill="rgba(79,156,249,0.05)" stroke="#4f9cf9" stroke-width="1.5" stroke-dasharray="6,3"/>
+            <text x="290" y="52" text-anchor="middle" fill="#4f9cf9" font-size="12" font-weight="700">kset (e.g. "devices")</text>
+            <!-- kset embedded kobject -->
+            <rect x="230" y="60" width="120" height="36" rx="6" fill="#1e2535" stroke="#4f9cf9" stroke-width="1"/>
+            <text x="290" y="78" text-anchor="middle" fill="#7ec8e3" font-size="10" font-weight="600">kset.kobj</text>
+            <text x="290" y="91" text-anchor="middle" fill="#64748b" font-size="9">embedded kobject</text>
+            <!-- child kobjects -->
+            <rect x="60" y="140" width="100" height="40" rx="6" fill="#1e2535" stroke="#34d399" stroke-width="1"/>
+            <text x="110" y="158" text-anchor="middle" fill="#34d399" font-size="10" font-weight="600">kobject A</text>
+            <text x="110" y="172" text-anchor="middle" fill="#64748b" font-size="9">kset = &amp;kset</text>
+            <rect x="230" y="140" width="100" height="40" rx="6" fill="#1e2535" stroke="#34d399" stroke-width="1"/>
+            <text x="280" y="158" text-anchor="middle" fill="#34d399" font-size="10" font-weight="600">kobject B</text>
+            <text x="280" y="172" text-anchor="middle" fill="#64748b" font-size="9">kset = &amp;kset</text>
+            <rect x="400" y="140" width="100" height="40" rx="6" fill="#1e2535" stroke="#34d399" stroke-width="1"/>
+            <text x="450" y="158" text-anchor="middle" fill="#34d399" font-size="10" font-weight="600">kobject C</text>
+            <text x="450" y="172" text-anchor="middle" fill="#64748b" font-size="9">kset = &amp;kset</text>
+            <!-- lines from kset.kobj to children -->
+            <line x1="250" y1="96" x2="130" y2="140" stroke="#4f9cf9" stroke-width="1" stroke-dasharray="4,2" opacity="0.5"/>
+            <line x1="290" y1="96" x2="280" y2="140" stroke="#4f9cf9" stroke-width="1" stroke-dasharray="4,2" opacity="0.5"/>
+            <line x1="330" y1="96" x2="430" y2="140" stroke="#4f9cf9" stroke-width="1" stroke-dasharray="4,2" opacity="0.5"/>
+            <!-- list link -->
+            <line x1="160" y1="160" x2="230" y2="160" stroke="#2a3347" stroke-width="1.5"/>
+            <line x1="330" y1="160" x2="400" y2="160" stroke="#2a3347" stroke-width="1.5"/>
+            <text x="195" y="156" text-anchor="middle" fill="#64748b" font-size="9">list</text>
+            <text x="365" y="156" text-anchor="middle" fill="#64748b" font-size="9">list</text>
+          </svg>
+          <div class="diagram-caption">图3：kset 作为 kobject 容器的结构示意</div>
+        </div>
+      </section>
+
+      <!-- ===== SECTION: kref ===== -->
+      <section class="section" id="kref">
+        <h2>引用计数机制</h2>
+        <p>kobject 的关键功能之一是作为其嵌入对象的引用计数器。只要对象存在引用，该对象（及其支撑代码）就必须继续存在。</p>
+
+<pre><code><span class="cm">/* kref：纯粹的引用计数，无需完整的 kobject */</span>
+<span class="kw">struct</span> <span class="ty">kref</span> {
+    <span class="ty">refcount_t</span> refcount;
+};
+
+<span class="cm">/* kobject_init() 将引用计数设为 1 */</span>
+<span class="cm">/* 增加引用：防止对象被过早释放 */</span>
+<span class="kw">struct</span> <span class="ty">kobject</span> *<span class="fn">kobject_get</span>(<span class="kw">struct</span> <span class="ty">kobject</span> *kobj);
+
+<span class="cm">/* 减少引用：当计数降到 0 时，调用 ktype->release() */</span>
+<span class="kw">void</span> <span class="fn">kobject_put</span>(<span class="kw">struct</span> <span class="ty">kobject</span> *kobj);
+
+<span class="cm">/* 警告：注册后绝不能直接 kfree()，只能通过 kobject_put() */</span></code></pre>
+
+        <div class="box box-tip">
+          <div class="box-title">设计原则</div>
+          引用计数不在创建 kobject 的代码直接控制之下——sysfs 的其他部分可以持有任何已注册 kobject 的引用。因此，当最后一个引用消失时，必须通过 <code>release()</code> 回调<strong>异步通知</strong>对象的创建者。
+        </div>
+      </section>
+
+      <!-- ===== SECTION: Bus ===== -->
+      <section class="section" id="bus">
+        <h2>总线 (Bus) — 连接的枢纽</h2>
+        <p>总线是处理器与输入/输出设备之间的通信通道。为确保模型的通用性，所有设备都通过某种总线连接到处理器——即便是没有物理对应硬件的虚拟总线。</p>
+
+        <div class="src-ref"><a href="https://www.kernel.org/doc/html/latest/driver-api/driver-model/bus.html" target="_blank">kernel.org — Bus Types 官方文档</a></div>
+
+        <h3>struct bus_type</h3>
+<pre><code><span class="kw">struct</span> <span class="ty">bus_type</span> {
+    <span class="kw">const</span> <span class="ty">char</span>      *name;          <span class="cm">/* 总线名称，如 "pci", "usb" */</span>
+    <span class="kw">const</span> <span class="ty">char</span>      *dev_name;
+    <span class="kw">struct</span> <span class="ty">device</span>   *dev_root;
+
+    <span class="cm">/* 属性组 */</span>
+    <span class="kw">const</span> <span class="kw">struct</span> <span class="ty">attribute_group</span> **bus_groups;
+    <span class="kw">const</span> <span class="kw">struct</span> <span class="ty">attribute_group</span> **dev_groups;
+    <span class="kw">const</span> <span class="kw">struct</span> <span class="ty">attribute_group</span> **drv_groups;
+
+    <span class="cm">/* match：新设备或新驱动加入总线时调用，进行匹配 */</span>
+    <span class="kw">int</span> (*match)(<span class="kw">struct</span> <span class="ty">device</span> *dev, <span class="kw">struct</span> <span class="ty">device_driver</span> *drv);
+    <span class="cm">/* uevent：热插拔事件发生前调用，添加环境变量 */</span>
+    <span class="kw">int</span> (*uevent)(<span class="kw">struct</span> <span class="ty">device</span> *dev, <span class="kw">struct</span> <span class="ty">kobj_uevent_env</span> *env);
+    <span class="kw">int</span> (*probe)(<span class="kw">struct</span> <span class="ty">device</span> *dev);
+    <span class="kw">int</span> (*remove)(<span class="kw">struct</span> <span class="ty">device</span> *dev);
+    <span class="kw">void</span> (*shutdown)(<span class="kw">struct</span> <span class="ty">device</span> *dev);
+
+    <span class="kw">int</span> (*suspend)(<span class="kw">struct</span> <span class="ty">device</span> *dev, <span class="ty">pm_message_t</span> state);
+    <span class="kw">int</span> (*resume)(<span class="kw">struct</span> <span class="ty">device</span> *dev);
+
+    <span class="kw">const</span> <span class="kw">struct</span> <span class="ty">dev_pm_ops</span> *pm;
+    <span class="kw">struct</span> <span class="ty">subsys_private</span> *p;  <span class="cm">/* 管理设备/驱动列表的私有数据 */</span>
+};</code></pre>
+
+        <h3>sysfs 中的总线布局</h3>
+<pre><code><span class="cm"># /sys/bus/pci/ 的结构</span>
+/sys/bus/pci/
+├── devices               <span class="cm"># 符号链接→物理层级中的设备目录</span>
+│   ├── 00:00.0 -> ../../../devices/pci0000:00/0000:00:00.0
+│   ├── 00:01.0 -> ../../../devices/pci0000:00/0000:00:01.0
+│   └── 00:02.0 -> ../../../devices/pci0000:00/0000:00:02.0
+└── drivers               <span class="cm"># 注册到此总线的驱动</span>
+    ├── Intel ICH
+    ├── agpgart
+    └── e100</code></pre>
+
+        <h3>总线注册示例</h3>
+<pre><code><span class="cm">/* 定义并注册自定义总线 */</span>
+<span class="kw">static int</span> <span class="fn">my_match</span>(<span class="kw">struct</span> <span class="ty">device</span> *dev, <span class="kw">struct</span> <span class="ty">device_driver</span> *driver)
+{
+    <span class="cm">/* 最简单的匹配：比较设备名与驱动名 */</span>
+    <span class="kw">return</span> !<span class="fn">strncmp</span>(<span class="fn">dev_name</span>(dev), driver->name, <span class="fn">strlen</span>(driver->name));
+}
+
+<span class="kw">static int</span> <span class="fn">my_uevent</span>(<span class="kw">struct</span> <span class="ty">device</span> *dev, <span class="kw">struct</span> <span class="ty">kobj_uevent_env</span> *env)
+{
+    <span class="fn">add_uevent_var</span>(env, <span class="str">"DEV_NAME=%s"</span>, <span class="fn">dev_name</span>(dev));
+    <span class="kw">return</span> 0;
+}
+
+<span class="kw">struct</span> <span class="ty">bus_type</span> my_bus_type = {
+    .name   = <span class="str">"mybus"</span>,
+    .match  = my_match,
+    .uevent = my_uevent,
+};
+
+<span class="kw">static int</span> __init <span class="fn">my_bus_init</span>(<span class="kw">void</span>)
+{
+    <span class="kw">return</span> <span class="fn">bus_register</span>(&my_bus_type);
+}</code></pre>
+      </section>
+
+      <!-- ===== SECTION: Device ===== -->
+      <section class="section" id="device">
+        <h2>设备 (Device)</h2>
+        <p>系统中的任何设备都有一个关联的 <code>struct device</code> 结构。设备通过不同的内核方法被发现（热插拔、驱动初始化、系统启动）并注册到系统中。每个内核中存在的设备在 <code>/sys/devices</code> 下都有一个条目。</p>
+
+        <div class="src-ref"><a href="https://www.kernel.org/doc/html/latest/driver-api/driver-model/device.html" target="_blank">kernel.org — The Basic Device Structure</a></div>
+
+        <h3>struct device</h3>
+<pre><code><span class="kw">struct</span> <span class="ty">device</span> {
+    <span class="kw">struct</span> <span class="ty">device</span>        *parent;    <span class="cm">/* 父设备（通常是控制器） */</span>
+    <span class="kw">struct</span> <span class="ty">device_private</span> *p;        <span class="cm">/* 内部私有数据 */</span>
+    <span class="kw">struct</span> <span class="ty">kobject</span>        kobj;      <span class="cm">/* 嵌入的 kobject */</span>
+
+    <span class="kw">const</span> <span class="ty">char</span>           *init_name; <span class="cm">/* 设备初始名称 */</span>
+    <span class="kw">const</span> <span class="kw">struct</span> <span class="ty">device_type</span> *type;
+
+    <span class="kw">struct</span> <span class="ty">bus_type</span>      *bus;       <span class="cm">/* 所属总线类型 */</span>
+    <span class="kw">struct</span> <span class="ty">device_driver</span> *driver;   <span class="cm">/* 已绑定的驱动（NULL=未绑定） */</span>
+
+    <span class="kw">void</span>                 *platform_data;
+    <span class="kw">struct</span> <span class="ty">dev_pm_info</span>   power;     <span class="cm">/* 电源管理信息 */</span>
+    <span class="kw">struct</span> <span class="ty">dev_pm_domain</span> *pm_domain;
+
+    <span class="kw">struct</span> <span class="ty">device_node</span>  *of_node;   <span class="cm">/* 设备树节点 */</span>
+    <span class="kw">struct</span> <span class="ty">acpi_dev_node</span> acpi_node; <span class="cm">/* ACPI 节点 */</span>
+
+    <span class="ty">dev_t</span>                 devt;      <span class="cm">/* 主/次设备号（字符/块设备） */</span>
+    <span class="kw">struct</span> <span class="ty">class</span>         *class;    <span class="cm">/* 功能分类（input、net 等） */</span>
+
+    <span class="kw">const</span> <span class="kw">struct</span> <span class="ty">attribute_group</span> **groups;
+    <span class="kw">void</span> (*release)(<span class="kw">struct</span> <span class="ty">device</span> *dev); <span class="cm">/* 引用归零时的释放回调 */</span>
+};</code></pre>
+
+        <h3>设备属性</h3>
+<pre><code><span class="cm">/* 定义设备属性宏 */</span>
+<span class="pp">#define</span> <span class="fn">DEVICE_ATTR</span>(name, mode, show, store)
+
+<span class="cm">/* 简化宏 */</span>
+<span class="kw">static</span> <span class="fn">DEVICE_ATTR_RO</span>(type);         <span class="cm">/* 只读属性 */</span>
+<span class="kw">static</span> <span class="fn">DEVICE_ATTR_RW</span>(power);        <span class="cm">/* 读写属性 */</span>
+
+<span class="cm">/* 注册前必须设置属性组，以确保 uevent 发出前属性已存在 */</span>
+dev->groups = dev_groups;
+<span class="fn">device_register</span>(dev);</code></pre>
+
+        <h3>总线特定设备结构（嵌入模式）</h3>
+<pre><code><span class="cm">/* PCI 设备：struct device 被嵌入到 struct pci_dev */</span>
+<span class="kw">struct</span> <span class="ty">pci_dev</span> {
+    <span class="cm">/* PCI 特定字段 ... */</span>
+    <span class="kw">unsigned short</span>  vendor;
+    <span class="kw">unsigned short</span>  device;
+    <span class="cm">/* ... */</span>
+    <span class="kw">struct</span> <span class="ty">device</span>   dev;   <span class="cm">/* 通用设备接口（不一定在开头！） */</span>
+    <span class="cm">/* ... */</span>
+};</code></pre>
+
+        <div class="box box-tip">
+          <div class="box-title">设计意图</div>
+          <code>struct device dev</code> 故意不放在 <code>pci_dev</code> 结构的开头。这是为了让开发者在总线驱动和通用驱动之间切换时认真思考，防止无意义且错误的强制类型转换。
+        </div>
+      </section>
+
+      <!-- ===== SECTION: Driver ===== -->
+      <section class="section" id="driver">
+        <h2>驱动 (Driver)</h2>
+        <p>设备驱动是静态分配的结构。尽管一个驱动可能支持系统中的多个设备，<code>struct device_driver</code> 代表的是整个驱动（而不是某个特定的设备实例）。</p>
+
+        <div class="src-ref"><a href="https://www.kernel.org/doc/html/latest/driver-api/driver-model/driver.html" target="_blank">kernel.org — Device Drivers 官方文档</a></div>
+
+<pre><code><span class="kw">struct</span> <span class="ty">device_driver</span> {
+    <span class="kw">const</span> <span class="ty">char</span>          *name;      <span class="cm">/* 驱动名称（sysfs 中显示） */</span>
+    <span class="kw">struct</span> <span class="ty">bus_type</span>    *bus;       <span class="cm">/* 所属总线 */</span>
+
+    <span class="kw">struct</span> <span class="ty">module</span>      *owner;
+    <span class="kw">const</span> <span class="ty">char</span>         *mod_name;
+
+    <span class="cm">/* 核心回调函数 */</span>
+    <span class="kw">int</span>  (*probe)   (<span class="kw">struct</span> <span class="ty">device</span> *dev);   <span class="cm">/* 绑定设备 */</span>
+    <span class="kw">void</span> (*sync_state)(<span class="kw">struct</span> <span class="ty">device</span> *dev); <span class="cm">/* 所有消费者探测完毕后调用 */</span>
+    <span class="kw">int</span>  (*remove)  (<span class="kw">struct</span> <span class="ty">device</span> *dev);   <span class="cm">/* 解绑设备 */</span>
+    <span class="kw">void</span> (*shutdown)(<span class="kw">struct</span> <span class="ty">device</span> *dev);   <span class="cm">/* 系统关机 */</span>
+    <span class="kw">int</span>  (*suspend) (<span class="kw">struct</span> <span class="ty">device</span> *dev, <span class="ty">pm_message_t</span> state); <span class="cm">/* 休眠 */</span>
+    <span class="kw">int</span>  (*resume)  (<span class="kw">struct</span> <span class="ty">device</span> *dev);   <span class="cm">/* 唤醒 */</span>
+
+    <span class="kw">const</span> <span class="kw">struct</span> <span class="ty">attribute_group</span> **groups;
+    <span class="kw">const</span> <span class="kw">struct</span> <span class="ty">dev_pm_ops</span> *pm;
+    <span class="kw">struct</span> <span class="ty">driver_private</span> *p;
+};</code></pre>
+
+        <h3>probe() 的语义</h3>
+        <p>probe() 在任务上下文中调用，持有总线的读写信号量，驱动部分绑定到设备。驱动通常使用 <code>container_of()</code> 将 dev 转换为总线特定类型。</p>
+
+        <div class="box box-note">
+          <div class="box-title">-EPROBE_DEFER</div>
+          如果驱动依赖尚未可用的资源（例如，由尚未初始化的驱动提供的资源），<code>probe()</code> 可以返回 <code>-EPROBE_DEFER</code>。驱动核心会将设备放入延迟探测列表，稍后重新尝试。<strong>但如果 probe() 已经创建了子设备，则不得返回 -EPROBE_DEFER</strong>，否则会导致无限循环。
+        </div>
+
+        <h3>总线特定驱动（嵌入模式）</h3>
+<pre><code><span class="cm">/* PCI 驱动：struct device_driver 嵌入 struct pci_driver */</span>
+<span class="kw">struct</span> <span class="ty">pci_driver</span> {
+    <span class="kw">const</span> <span class="kw">struct</span> <span class="ty">pci_device_id</span> *id_table; <span class="cm">/* 支持的设备 ID 表 */</span>
+    <span class="kw">struct</span> <span class="ty">device_driver</span> driver;           <span class="cm">/* 嵌入的通用驱动结构 */</span>
+};
+
+<span class="cm">/* eepro100 驱动声明示例 */</span>
+<span class="kw">static struct</span> <span class="ty">pci_driver</span> eepro100_driver = {
+    .id_table = eepro100_pci_tbl,
+    .driver   = {
+        .name    = <span class="str">"eepro100"</span>,
+        .bus     = &pci_bus_type,
+        .probe   = eepro100_probe,
+        .remove  = eepro100_remove,
+        .suspend = eepro100_suspend,
+        .resume  = eepro100_resume,
+    },
+};</code></pre>
+      </section>
+
+      <!-- ===== SECTION: Class ===== -->
+      <section class="section" id="class">
+        <h2>设备类 (Class)</h2>
+        <p>设备类是 Linux 设备模型的高层视图，它<strong>抽象了实现细节</strong>。例如，有 SCSI 驱动和 ATA 驱动，但都属于磁盘类。类根据<em>功能</em>对设备进行分组，而不是根据它们的连接方式或工作方式。</p>
+
+        <h3>类的两大核心作用</h3>
+        <ul>
+          <li><strong>功能抽象：</strong>屏蔽不同总线/硬件的差异，为用户空间呈现统一接口（如 /dev/sda 对应一个 block device）</li>
+          <li><strong>自动创建 /dev 节点：</strong>配合 udev，当类设备注册时，自动在 /dev 创建对应的设备文件</li>
+        </ul>
+
+<pre><code><span class="cm">/* 注册一个类 */</span>
+<span class="kw">struct</span> <span class="ty">class</span> my_class = {
+    .name  = <span class="str">"myclass"</span>,
+    .owner = THIS_MODULE,
+};
+<span class="fn">class_register</span>(&my_class);
+
+<span class="cm">/* 在类下创建设备（自动在 /dev 创建节点）*/</span>
+<span class="kw">struct</span> <span class="ty">device</span> *my_classdev;
+my_classdev = <span class="fn">device_create</span>(&my_class, NULL, cdev.dev, &dev, <span class="str">"myclass0"</span>);
+<span class="cm">/* → 生成 /dev/myclass0 */</span>
+
+<span class="cm">/* 销毁类设备 */</span>
+<span class="fn">device_destroy</span>(&my_class, cdev.dev);</code></pre>
+
+        <h3>sysfs 中的类布局</h3>
+<pre><code>/sys/class/
+├── block/          <span class="cm"># 块设备类</span>
+│   ├── sda -> ../../devices/.../sda
+│   └── sdb -> ...
+├── net/            <span class="cm"># 网络接口类</span>
+│   ├── eth0 -> ...
+│   └── lo -> ...
+├── input/          <span class="cm"># 输入设备类</span>
+│   ├── event0 -> ...
+│   └── mouse0 -> ...
+└── tty/            <span class="cm"># TTY 设备类</span></code></pre>
+      </section>
+
+      <!-- ===== SECTION: sysfs ===== -->
+      <section class="section" id="sysfs">
+        <h2>sysfs — 内核模型的用户空间镜像</h2>
+        <p>sysfs 是一个由 Linux 内核提供的伪文件系统，通过虚拟文件向用户空间导出内核设备模型中的各种内核子系统、硬件设备和相关设备驱动的信息。它通常挂载在 <code>/sys</code> 目录下。</p>
+
+        <div class="src-ref"><a href="https://www.kernel.org/doc/html/latest/driver-api/driver-model/overview.html" target="_blank">kernel.org — User Interface（sysfs）</a></div>
+
+<pre><code><span class="cm"># 通常通过 /etc/fstab 自动挂载</span>
+none  /sys  sysfs  defaults  0 0
+
+<span class="cm"># 手动挂载</span>
+# mount -t sysfs sysfs /sys</code></pre>
+
+        <h3>sysfs 顶级目录结构</h3>
+        <div class="table-wrap">
+          <table>
+            <thead>
+              <tr><th>目录</th><th>内容</th></tr>
+            </thead>
+            <tbody>
+              <tr><td><code>/sys/block</code></td><td>系统中所有可用的块设备（磁盘、分区）</td></tr>
+              <tr><td><code>/sys/bus</code></td><td>物理设备所连接的总线类型（pci, ide, usb...）</td></tr>
+              <tr><td><code>/sys/class</code></td><td>驱动类别（net, sound, usb...）</td></tr>
+              <tr><td><code>/sys/devices</code></td><td>连接到系统的设备的层级结构（<strong>物理视图</strong>）</td></tr>
+              <tr><td><code>/sys/firmware</code></td><td>系统固件信息（ACPI）</td></tr>
+              <tr><td><code>/sys/fs</code></td><td>已挂载文件系统的信息</td></tr>
+              <tr><td><code>/sys/kernel</code></td><td>内核状态信息</td></tr>
+              <tr><td><code>/sys/module</code></td><td>当前加载的模块列表</td></tr>
+              <tr><td><code>/sys/power</code></td><td>电源管理子系统相关信息</td></tr>
+              <tr><td><code>/sys/dev</code></td><td>按主次设备号索引的设备（block/char）</td></tr>
+            </tbody>
+          </table>
+        </div>
+
+        <h3>kobject 与 sysfs 的对应关系</h3>
+        <p>当设备被插入设备树时，会为其创建一个目录。这个目录可以在发现的每一层填充内容——全局层、总线层或设备层。</p>
+
+        <div class="box box-info">
+          <div class="box-title">重要区别</div>
+          内核设备模型和 sysfs 文件系统是两个不同的概念。<strong>内核设备模型不依赖 sysfs 就可以工作，但反之不成立</strong>——sysfs 依赖设备模型。两者之间的相似性容易造成混淆，但它们服务于不同目的：前者是内核内部的数据结构，后者是向用户空间导出这些结构的接口。
+        </div>
+
+        <h3>标准 sysfs 属性</h3>
+        <ul>
+          <li><code>dev</code>：主/次设备号标识符，可用于自动创建 /dev 条目</li>
+          <li><code>device</code>：指向包含设备目录的符号链接</li>
+          <li><code>driver</code>：指向驱动目录的符号链接（位于 /sys/bus/*/drivers）</li>
+        </ul>
+      </section>
+
+      <!-- ===== SECTION: Hotplug ===== -->
+      <section class="section" id="hotplug">
+        <h2>热插拔 (Hotplug) 机制</h2>
+        <p>热插拔描述了在系统运行期间添加或移除设备而无需重启的机制。热插拔事件是内核在系统配置发生变化时向用户空间发出的通知。</p>
+
+        <h3>事件流程</h3>
+
+        <div class="diagram-wrap">
+          <svg width="620" height="300" viewBox="0 0 620 300" xmlns="http://www.w3.org/2000/svg" style="max-width:100%;height:auto;">
+            <rect x="10" y="10" width="600" height="280" rx="10" fill="#161b27" stroke="#2a3347"/>
+            <!-- Boxes -->
+            <rect x="30" y="40" width="130" height="44" rx="8" fill="#1e2535" stroke="#4f9cf9" stroke-width="1.5"/>
+            <text x="95" y="60" text-anchor="middle" fill="#4f9cf9" font-size="11" font-weight="700">硬件事件</text>
+            <text x="95" y="76" text-anchor="middle" fill="#94a3b8" font-size="10">设备插入/移除</text>
+
+            <rect x="230" y="40" width="130" height="44" rx="8" fill="#1e2535" stroke="#34d399" stroke-width="1.5"/>
+            <text x="295" y="60" text-anchor="middle" fill="#34d399" font-size="11" font-weight="700">总线驱动</text>
+            <text x="295" y="76" text-anchor="middle" fill="#94a3b8" font-size="10">device_register()</text>
+
+            <rect x="440" y="40" width="130" height="44" rx="8" fill="#1e2535" stroke="#fbbf24" stroke-width="1.5"/>
+            <text x="505" y="60" text-anchor="middle" fill="#fbbf24" font-size="11" font-weight="700">kobject 核心</text>
+            <text x="505" y="76" text-anchor="middle" fill="#94a3b8" font-size="10">kobject_add()</text>
+
+            <rect x="440" y="140" width="130" height="44" rx="8" fill="#1e2535" stroke="#a78bfa" stroke-width="1.5"/>
+            <text x="505" y="160" text-anchor="middle" fill="#a78bfa" font-size="11" font-weight="700">uevent 发送</text>
+            <text x="505" y="176" text-anchor="middle" fill="#94a3b8" font-size="10">netlink / socket</text>
+
+            <rect x="230" y="140" width="130" height="44" rx="8" fill="#1e2535" stroke="#f87171" stroke-width="1.5"/>
+            <text x="295" y="160" text-anchor="middle" fill="#f87171" font-size="11" font-weight="700">udev</text>
+            <text x="295" y="176" text-anchor="middle" fill="#94a3b8" font-size="10">用户空间守护进程</text>
+
+            <rect x="30" y="140" width="130" height="44" rx="8" fill="#1e2535" stroke="#7ec8e3" stroke-width="1.5"/>
+            <text x="95" y="160" text-anchor="middle" fill="#7ec8e3" font-size="11" font-weight="700">动作执行</text>
+            <text x="95" y="176" text-anchor="middle" fill="#94a3b8" font-size="10">加载驱动/创建节点</text>
+
+            <!-- driver matching -->
+            <rect x="230" y="230" width="130" height="44" rx="8" fill="#1e2535" stroke="#34d399" stroke-width="1.5"/>
+            <text x="295" y="250" text-anchor="middle" fill="#34d399" font-size="11" font-weight="700">匹配驱动</text>
+            <text x="295" y="266" text-anchor="middle" fill="#94a3b8" font-size="10">match() → probe()</text>
+
+            <!-- Arrows -->
+            <defs>
+              <marker id="ar2" markerWidth="8" markerHeight="6" refX="6" refY="3" orient="auto">
+                <polygon points="0 0, 8 3, 0 6" fill="#4f9cf9" opacity="0.8"/>
+              </marker>
+            </defs>
+            <line x1="160" y1="62" x2="230" y2="62" stroke="#4f9cf9" stroke-width="1.5" marker-end="url(#ar2)"/>
+            <line x1="360" y1="62" x2="440" y2="62" stroke="#4f9cf9" stroke-width="1.5" marker-end="url(#ar2)"/>
+            <line x1="505" y1="84" x2="505" y2="140" stroke="#4f9cf9" stroke-width="1.5" marker-end="url(#ar2)"/>
+            <line x1="440" y1="162" x2="360" y2="162" stroke="#4f9cf9" stroke-width="1.5" marker-end="url(#ar2)"/>
+            <line x1="230" y1="162" x2="160" y2="162" stroke="#4f9cf9" stroke-width="1.5" marker-end="url(#ar2)"/>
+            <line x1="295" y1="184" x2="295" y2="230" stroke="#4f9cf9" stroke-width="1.5" stroke-dasharray="4,2" marker-end="url(#ar2)"/>
+
+            <text x="310" y="30" text-anchor="middle" fill="#e2e8f0" font-size="11" font-weight="600">热插拔事件处理流程</text>
+          </svg>
+          <div class="diagram-caption">图4：热插拔事件从硬件到用户空间的完整流程</div>
+        </div>
+
+        <h3>uevent 生成机制</h3>
+        <p>从 kobject 核心角度看，生成 kobject 的创建和删除事件会触发热插拔通知。由于 kobject 是设备模型所有结构（bus_type、device、device_driver、class）的基础，任何这些结构的创建或移除都会产生 uevent。</p>
+
+<pre><code><span class="cm">/* kobject_uevent_env 的主要流程（kobject_uevent 内部）：</span>
+<span class="cm"> * 1. 找到顶级 kset，调用 kset->uevent_ops->filter()</span>
+<span class="cm"> * 2. 设置环境变量，调用 uevent_ops->uevent()</span>
+<span class="cm"> * 3. 根据 CONFIG_NET：通过 netlink 发送到用户空间</span>
+<span class="cm"> *    或调用 call_usermodehelper() 启动用户进程 */</span>
+
+<span class="cm">/* 用户空间 udev 规则示例：自动加载驱动 */</span>
+<span class="cm">/* /etc/udev/rules.d/myrules.rules */</span>
+SUBSYSTEM==<span class="str">"pnp"</span>, ATTRS{id}==<span class="str">"PNP0400"</span>, RUN+=<span class="str">"/sbin/insmod /root/mydriver.ko"</span></code></pre>
+      </section>
+
+      <!-- ===== SECTION: Power Management ===== -->
+      <section class="section" id="pm">
+        <h2>电源管理</h2>
+        <p>统一设备模型的一个关键价值是为系统级电源管理提供了结构化基础。在 2.4 时代，没有统一的设备树，电源管理无法按正确的依赖顺序操作设备。</p>
+
+        <h3>有序关机的保证</h3>
+        <p>驱动模型维护一个设备有序链表用于电源管理。此链表的顺序由已注册设备的父子关系决定，从而<strong>保证设备在其物理父设备之前关闭，反之亦然</strong>。</p>
+
+        <div class="src-ref"><a href="https://docs.kernel.org/driver-api/driver-model/porting.html" target="_blank">kernel.org — Porting Drivers to the New Driver Model</a></div>
+
+        <h3>驱动回调的电源管理接口</h3>
+<pre><code><span class="cm">/* device_driver 中的电源管理回调 */</span>
+<span class="kw">int</span>  (*suspend) (<span class="kw">struct</span> <span class="ty">device</span> *dev, <span class="ty">pm_message_t</span> state); <span class="cm">/* 进入低功耗 */</span>
+<span class="kw">int</span>  (*resume)  (<span class="kw">struct</span> <span class="ty">device</span> *dev);                    <span class="cm">/* 从低功耗唤醒 */</span>
+<span class="kw">void</span> (*sync_state)(<span class="kw">struct</span> <span class="ty">device</span> *dev);  <span class="cm">/* 所有消费者探测完毕 */</span>
+
+<span class="cm">/* 更精细的电源管理通过 dev_pm_ops */</span>
+<span class="kw">const</span> <span class="kw">struct</span> <span class="ty">dev_pm_ops</span> *pm;</code></pre>
+
+        <h3>sync_state 的设计意图</h3>
+        <p><code>sync_state()</code> 是一个典型用例：内核从 bootloader 接管设备管理。如果 bootloader 将某设备保持开启并处于特定硬件配置，设备驱动可能需要保持该配置，直到所有该设备的消费者都完成探测后，才将硬件状态同步为所有消费者请求的软件状态的聚合。</p>
+      </section>
+
+      <!-- ===== SECTION: Binding ===== -->
+      <section class="section" id="binding">
+        <h2>绑定机制 (Binding)</h2>
+        <p>将设备与其对应驱动连接称为绑定（Binding）。总线在设备驱动程序员的背后做了大量工作来绑定设备和驱动。</p>
+
+        <h3>触发绑定的两类事件</h3>
+        <ul>
+          <li><strong>设备注册时：</strong>通过 <code>device_register()</code> 将设备注册到总线时，内核尝试将该设备与该总线上的每个已注册驱动进行绑定</li>
+          <li><strong>驱动注册时：</strong>通过 <code>driver_register()</code> 将驱动注册到总线时，内核尝试将该驱动与该总线上的每个未绑定设备进行绑定</li>
+        </ul>
+
+        <div class="diagram-wrap">
+          <svg width="600" height="280" viewBox="0 0 600 280" xmlns="http://www.w3.org/2000/svg" style="max-width:100%;height:auto;">
+            <rect x="10" y="10" width="580" height="260" rx="10" fill="#161b27" stroke="#2a3347"/>
+            <text x="300" y="35" text-anchor="middle" fill="#e2e8f0" font-size="12" font-weight="600">设备-驱动绑定流程</text>
+
+            <!-- Device side -->
+            <rect x="30" y="55" width="120" height="36" rx="6" fill="#1e2535" stroke="#fbbf24" stroke-width="1.5"/>
+            <text x="90" y="78" text-anchor="middle" fill="#fbbf24" font-size="11" font-weight="700">新设备</text>
+
+            <!-- Driver side -->
+            <rect x="450" y="55" width="120" height="36" rx="6" fill="#1e2535" stroke="#a78bfa" stroke-width="1.5"/>
+            <text x="510" y="78" text-anchor="middle" fill="#a78bfa" font-size="11" font-weight="700">新驱动</text>
+
+            <!-- Bus match -->
+            <rect x="210" y="55" width="180" height="36" rx="6" fill="rgba(52,211,153,0.1)" stroke="#34d399" stroke-width="1.5"/>
+            <text x="300" y="73" text-anchor="middle" fill="#34d399" font-size="11" font-weight="700">bus.match(dev, drv)</text>
+            <text x="300" y="85" text-anchor="middle" fill="#94a3b8" font-size="9">比较设备 ID 与驱动 ID</text>
+
+            <!-- probe -->
+            <rect x="210" y="140" width="180" height="36" rx="6" fill="rgba(79,156,249,0.1)" stroke="#4f9cf9" stroke-width="1.5"/>
+            <text x="300" y="158" text-anchor="middle" fill="#4f9cf9" font-size="11" font-weight="700">driver.probe(dev)</text>
+            <text x="300" y="170" text-anchor="middle" fill="#94a3b8" font-size="9">初始化设备/分配资源</text>
+
+            <!-- Bound -->
+            <rect x="210" y="220" width="180" height="36" rx="6" fill="rgba(52,211,153,0.15)" stroke="#34d399" stroke-width="2"/>
+            <text x="300" y="242" text-anchor="middle" fill="#34d399" font-size="12" font-weight="700">✓ 绑定成功</text>
+
+            <!-- Arrows -->
+            <defs>
+              <marker id="ar3" markerWidth="8" markerHeight="6" refX="6" refY="3" orient="auto">
+                <polygon points="0 0, 8 3, 0 6" fill="#4f9cf9" opacity="0.8"/>
+              </marker>
+            </defs>
+            <line x1="150" y1="73" x2="210" y2="73" stroke="#fbbf24" stroke-width="1.5" marker-end="url(#ar3)"/>
+            <line x1="450" y1="73" x2="390" y2="73" stroke="#a78bfa" stroke-width="1.5" marker-end="url(#ar3)"/>
+            <line x1="300" y1="91" x2="300" y2="140" stroke="#4f9cf9" stroke-width="1.5" marker-end="url(#ar3)"/>
+            <line x1="300" y1="176" x2="300" y2="220" stroke="#4f9cf9" stroke-width="1.5" marker-end="url(#ar3)"/>
+
+            <!-- fail path -->
+            <line x1="390" y1="73" x2="450" y2="100" stroke="#f87171" stroke-width="1" stroke-dasharray="4,2"/>
+            <text x="430" y="115" fill="#f87171" font-size="9" text-anchor="middle">match 失败</text>
+            <text x="430" y="127" fill="#64748b" font-size="9" text-anchor="middle">继续下一个</text>
+          </svg>
+          <div class="diagram-caption">图5：设备与驱动绑定的完整流程</div>
+        </div>
+
+        <h3>绑定的内部实现</h3>
+<pre><code><span class="cm">/* 当驱动注册时，遍历总线上所有无驱动的设备 */</span>
+<span class="kw">int</span> <span class="fn">bus_for_each_dev</span>(<span class="kw">struct</span> <span class="ty">bus_type</span> * bus, <span class="kw">struct</span> <span class="ty">device</span> * start,
+                     <span class="kw">void</span> * data,
+                     <span class="kw">int</span> (*fn)(<span class="kw">struct</span> <span class="ty">device</span> *, <span class="kw">void</span> *));
+
+<span class="cm">/* 当设备注册时，遍历总线上所有驱动 */</span>
+<span class="kw">int</span> <span class="fn">bus_for_each_drv</span>(<span class="kw">struct</span> <span class="ty">bus_type</span> * bus, <span class="kw">struct</span> <span class="ty">device_driver</span> * start,
+                     <span class="kw">void</span> * data, <span class="kw">int</span> (*fn)(<span class="kw">struct</span> <span class="ty">device_driver</span> *, <span class="kw">void</span> *));
+
+<span class="cm">/* 所有列表访问都通过持有总线锁（读锁）来同步 */</span>
+<span class="cm">/* 在每个节点访问前递增引用计数，之后递减 */</span></code></pre>
+      </section>
+
+      <!-- ===== SECTION: First Principles ===== -->
+      <section class="section" id="first-principles">
+        <h2>第一性原理分析</h2>
+        <p>从第一性原理出发，Linux 设备模型解决的本质问题是：<strong>如何在一个不断变化的异构硬件世界中，以统一、可组合、可扩展的方式管理设备的生命周期？</strong></p>
+
+        <h3>1. 为什么需要统一模型？</h3>
+        <div class="box box-info">
+          <div class="box-title">第一原理：复杂性的必然性</div>
+          现代计算机系统连接着数十种不同类型的设备，通过 PCI、USB、I²C、SPI、ACPI 等多种总线协议。每种设备的发现方式、资源需求、电源特性各不相同。<strong>没有统一抽象，每个子系统都必须重复实现相同的基础设施</strong>（注册、引用计数、生命周期管理、用户空间接口），这违背了"不重复自己"（DRY）原则，且维护代价极高。
+        </div>
+
+        <h3>2. kobject：最小化的公共基础设施</h3>
+        <p>kobject 的设计体现了<strong>最小必要原则</strong>：它只提供所有设备模型实体都需要的最小公共功能集：</p>
+        <ul>
+          <li><strong>引用计数（kref）</strong>：解决"谁最后一个离开就关灯"的问题——保证对象在所有使用者释放后才被销毁</li>
+          <li><strong>父子关系（parent 指针）</strong>：解决"依赖顺序"问题——镜像真实世界的设备拓扑</li>
+          <li><strong>sysfs 节点（sd 指针）</strong>：解决"可见性"问题——内核状态的标准化用户空间接口</li>
+          <li><strong>uevent 通知</strong>：解决"响应变化"问题——连接内核事件与用户空间策略</li>
+        </ul>
+
+        <h3>3. 嵌入模式：C 语言的面向对象</h3>
+        <p>由于 C 没有继承机制，Linux 采用<strong>结构嵌入 + container_of 宏</strong>实现了类似继承的效果：</p>
+        <ul>
+          <li><code>struct kobject</code> 等价于抽象基类</li>
+          <li><code>struct device</code> 等价于从 kobject 派生的中间类</li>
+          <li><code>struct pci_dev</code> 等价于从 device 派生的具体类</li>
+          <li><code>container_of()</code> 等价于 C++ 中的 <code>static_cast</code></li>
+        </ul>
+
+        <div class="diagram-wrap">
+          <svg width="560" height="220" viewBox="0 0 560 220" xmlns="http://www.w3.org/2000/svg" style="max-width:100%;height:auto;">
+            <rect x="10" y="10" width="540" height="200" rx="10" fill="#161b27" stroke="#2a3347"/>
+            <text x="280" y="35" text-anchor="middle" fill="#e2e8f0" font-size="12" font-weight="600">C 语言"继承"层级（通过结构嵌入实现）</text>
+            <!-- kobject -->
+            <rect x="190" y="50" width="180" height="36" rx="6" fill="rgba(79,156,249,0.2)" stroke="#4f9cf9" stroke-width="2"/>
+            <text x="280" y="73" text-anchor="middle" fill="#4f9cf9" font-size="12" font-weight="700">struct kobject</text>
+            <!-- device -->
+            <rect x="130" y="120" width="140" height="36" rx="6" fill="rgba(251,191,36,0.15)" stroke="#fbbf24" stroke-width="1.5"/>
+            <text x="200" y="143" text-anchor="middle" fill="#fbbf24" font-size="11" font-weight="700">struct device</text>
+            <!-- pci_dev -->
+            <rect x="300" y="120" width="140" height="36" rx="6" fill="rgba(52,211,153,0.15)" stroke="#34d399" stroke-width="1.5"/>
+            <text x="370" y="138" text-anchor="middle" fill="#34d399" font-size="10" font-weight="700">struct pci_dev</text>
+            <text x="370" y="152" text-anchor="middle" fill="#64748b" font-size="9">embeds struct device</text>
+            <!-- usb_device -->
+            <rect x="30" y="120" width="90" height="36" rx="6" fill="rgba(167,139,250,0.15)" stroke="#a78bfa" stroke-width="1.5"/>
+            <text x="75" y="138" text-anchor="middle" fill="#a78bfa" font-size="9" font-weight="700">struct</text>
+            <text x="75" y="150" text-anchor="middle" fill="#a78bfa" font-size="9" font-weight="700">device_driver</text>
+            <!-- arrows -->
+            <defs>
+              <marker id="ar4" markerWidth="6" markerHeight="5" refX="5" refY="2.5" orient="auto">
+                <polygon points="0 0, 6 2.5, 0 5" fill="#94a3b8" opacity="0.6"/>
+              </marker>
+            </defs>
+            <line x1="200" y1="86" x2="200" y2="120" stroke="#94a3b8" stroke-width="1.5" marker-end="url(#ar4)" opacity="0.6"/>
+            <line x1="280" y1="86" x2="370" y2="120" stroke="#94a3b8" stroke-width="1.5" marker-end="url(#ar4)" opacity="0.6"/>
+            <line x1="220" y1="86" x2="75" y2="120" stroke="#94a3b8" stroke-width="1.5" marker-end="url(#ar4)" opacity="0.6"/>
+            <!-- labels -->
+            <text x="165" y="108" fill="#64748b" font-size="8">embeds kobj</text>
+            <text x="295" y="100" fill="#64748b" font-size="8">embeds kobj</text>
+            <text x="100" y="100" fill="#64748b" font-size="8">embeds kobj</text>
+            <!-- container_of note -->
+            <text x="280" y="185" text-anchor="middle" fill="#64748b" font-size="9" font-style="italic">container_of() 实现从 kobject* 到包含结构的向上转型</text>
+          </svg>
+          <div class="diagram-caption">图6：通过结构嵌入实现的 C 语言"继承"层级</div>
+        </div>
+
+        <h3>4. 三元分离：Bus / Device / Driver</h3>
+        <p>设备模型的核心架构决策是将硬件世界分解为三个正交关注点：</p>
+        <div class="table-wrap">
+          <table>
+            <thead>
+              <tr><th>抽象</th><th>职责</th><th>回答的问题</th></tr>
+            </thead>
+            <tbody>
+              <tr>
+                <td><strong>Bus</strong></td>
+                <td>枚举设备、提供匹配逻辑</td>
+                <td>设备如何被发现？设备和驱动如何配对？</td>
+              </tr>
+              <tr>
+                <td><strong>Device</strong></td>
+                <td>表示硬件实例，持有设备状态</td>
+                <td>这是什么硬件？它在哪里？它的资源是什么？</td>
+              </tr>
+              <tr>
+                <td><strong>Driver</strong></td>
+                <td>提供操作设备的软件逻辑</td>
+                <td>如何初始化这个设备？如何响应 I/O 请求？</td>
+              </tr>
+            </tbody>
+          </table>
+        </div>
+
+        <h3>5. 开放/封闭原则的体现</h3>
+        <p>设备模型是对开放/封闭原则（Open/Closed Principle）的完美诠释：</p>
+        <ul>
+          <li><strong>对扩展开放：</strong>添加新的总线类型（如 Thunderbolt、NVMe）只需实现 bus_type 接口，无需修改核心代码</li>
+          <li><strong>对修改封闭：</strong>kobject/kset 核心基础设施保持稳定，所有设备子系统共享相同的生命周期管理代码</li>
+        </ul>
+
+        <h3>6. 为什么 sysfs 是正确的接口</h3>
+        <p>sysfs 的设计遵循了<strong>单一职责原则</strong>和<strong>最小特权原则</strong>：</p>
+        <ul>
+          <li>每个文件对应一个属性，而不是多个属性聚合（不同于 /proc 中混乱的格式）</li>
+          <li>树状目录结构直接镜像设备拓扑，关系一目了然</li>
+          <li>读写接口统一（show/store 回调），用户空间工具可以通用处理</li>
+        </ul>
+
+        <h3>7. 总结：设计的本质权衡</h3>
+        <div class="box box-note">
+          <div class="box-title">第一性原理总结</div>
+          Linux 设备模型的核心本质是一个<strong>分层的、基于组合的设备抽象框架</strong>，它通过以下关键决策解决了复杂性管理问题：
+          <br><br>
+          <strong>①</strong> 用 <code>kobject</code> 提供最小化公共基础（引用计数 + 层级 + sysfs），而不是为每个子系统重新发明轮子<br>
+          <strong>②</strong> 用结构嵌入模拟面向对象继承，在不引入虚拟机开销的前提下实现多态<br>
+          <strong>③</strong> 将总线、设备、驱动三个关注点正交分离，通过 match/probe 回调动态组合<br>
+          <strong>④</strong> 用 sysfs 将内核内部状态标准化暴露给用户空间，打破内核/用户空间之间的信息屏障<br>
+          <strong>⑤</strong> 用 uevent 机制将内核事件异步传达给用户空间策略层（udev），实现策略与机制的分离
+        </div>
+      </section>
+
+      <!-- ===== SECTION: References ===== -->
+      <section class="section" id="refs">
+        <h2>原文链接与参考资料</h2>
+        <p>本文档严格基于以下官方权威来源编写，未添加超出原文范围的推测内容。</p>
+
+        <h3>官方内核文档（kernel.org）</h3>
+        <div class="table-wrap">
+          <table>
+            <thead>
+              <tr><th>文档</th><th>链接</th><th>作者</th></tr>
+            </thead>
+            <tbody>
+              <tr>
+                <td>The Linux Device Model（概述）</td>
+                <td><a href="https://www.kernel.org/doc/html/latest/driver-api/driver-model/overview.html" target="_blank">kernel.org/doc/…/overview.html</a></td>
+                <td>Patrick Mochel（2002）</td>
+              </tr>
+              <tr>
+                <td>kobject, kset, ktype 详解</td>
+                <td><a href="https://www.kernel.org/doc/html/latest/core-api/kobject.html" target="_blank">kernel.org/doc/…/kobject.html</a></td>
+                <td>Greg Kroah-Hartman（2007）</td>
+              </tr>
+              <tr>
+                <td>Bus Types（总线类型）</td>
+                <td><a href="https://www.kernel.org/doc/html/latest/driver-api/driver-model/bus.html" target="_blank">kernel.org/doc/…/bus.html</a></td>
+                <td>内核维护团队</td>
+              </tr>
+              <tr>
+                <td>The Basic Device Structure</td>
+                <td><a href="https://www.kernel.org/doc/html/latest/driver-api/driver-model/device.html" target="_blank">kernel.org/doc/…/device.html</a></td>
+                <td>内核维护团队</td>
+              </tr>
+              <tr>
+                <td>Device Drivers（驱动）</td>
+                <td><a href="https://www.kernel.org/doc/html/latest/driver-api/driver-model/driver.html" target="_blank">kernel.org/doc/…/driver.html</a></td>
+                <td>内核维护团队</td>
+              </tr>
+              <tr>
+                <td>Porting Drivers to the New Driver Model</td>
+                <td><a href="https://docs.kernel.org/driver-api/driver-model/porting.html" target="_blank">kernel.org/doc/…/porting.html</a></td>
+                <td>内核维护团队</td>
+              </tr>
+            </tbody>
+          </table>
+        </div>
+
+        <h3>LWN.net 权威分析</h3>
+        <div class="table-wrap">
+          <table>
+            <thead>
+              <tr><th>文章</th><th>链接</th><th>年份</th></tr>
+            </thead>
+            <tbody>
+              <tr>
+                <td>The debut of kref（kobject 起源与设计）</td>
+                <td><a href="https://lwn.net/Articles/75920/" target="_blank">lwn.net/Articles/75920/</a></td>
+                <td>2004</td>
+              </tr>
+              <tr>
+                <td>New kobject/kset/ktype documentation</td>
+                <td><a href="https://lwn.net/Articles/260139/" target="_blank">lwn.net/Articles/260139/</a></td>
+                <td>2007</td>
+              </tr>
+              <tr>
+                <td>kobjects and hotplug events</td>
+                <td><a href="https://lwn.net/Articles/52621/" target="_blank">lwn.net/Articles/52621/</a></td>
+                <td>2003</td>
+              </tr>
+            </tbody>
+          </table>
+        </div>
+
+        <h3>其他权威来源</h3>
+        <div class="table-wrap">
+          <table>
+            <thead>
+              <tr><th>来源</th><th>链接</th></tr>
+            </thead>
+            <tbody>
+              <tr>
+                <td>Linux Device Model — Linux Kernel Labs（官方教程）</td>
+                <td><a href="https://linux-kernel-labs.github.io/refs/heads/master/labs/device_model.html" target="_blank">linux-kernel-labs.github.io/…/device_model.html</a></td>
+              </tr>
+              <tr>
+                <td>sysfs — Wikipedia（历史背景）</td>
+                <td><a href="https://en.wikipedia.org/wiki/Sysfs" target="_blank">en.wikipedia.org/wiki/Sysfs</a></td>
+              </tr>
+              <tr>
+                <td>Linux Device Drivers, 3rd Edition — Chapter 14</td>
+                <td><a href="https://www.oreilly.com/library/view/linux-device-drivers/0596005903/ch14.html" target="_blank">O'Reilly — LDD3 Ch14</a></td>
+              </tr>
+              <tr>
+                <td>The Driver Model Core, Part I — Linux Journal</td>
+                <td><a href="https://www.linuxjournal.com/article/6717" target="_blank">linuxjournal.com/article/6717</a></td>
+              </tr>
+              <tr>
+                <td>Anatomy of the Linux device driver model</td>
+                <td><a href="https://terenceli.github.io/%E6%8A%80%E6%9C%AF/2018/06/10/linux-device-driver-model" target="_blank">terenceli.github.io/…/linux-device-driver-model</a></td>
+              </tr>
+            </tbody>
+          </table>
+        </div>
+
+        <div class="box box-tip">
+          <div class="box-title">示例代码</div>
+          内核源码中的参考实现可在以下路径找到：<br>
+          <code>samples/kobject/kobject-example.c</code>（kobject 基础用法）<br>
+          <code>samples/kobject/kset-example.c</code>（kset 用法）<br>
+          编译时需启用 <code>CONFIG_SAMPLE_KOBJECT</code>
+        </div>
+      </section>
+
+    </div><!-- .content-inner -->
+  </main>
+</div><!-- .layout -->
+
+<script>
+// ===== Section list for keyboard navigation =====
+const SECTIONS = [
+  'overview','history','before-26','evolution',
+  'kobject','ktype','kset','kref',
+  'bus','device','driver','class',
+  'sysfs','hotplug','pm',
+  'binding','first-principles','refs'
+];
+let currentIdx = 0;
+
+// ===== Progress bar =====
+function updateProgress() {
+  const scrollTop = window.scrollY;
+  const docH = document.documentElement.scrollHeight - window.innerHeight;
+  const pct = docH > 0 ? (scrollTop / docH) * 100 : 0;
+  document.getElementById('progress-bar').style.width = pct + '%';
+}
+window.addEventListener('scroll', updateProgress, { passive: true });
+
+// ===== Active nav highlight =====
+const navItems = document.querySelectorAll('.nav-item[data-section]');
+const sectionEls = SECTIONS.map(id => document.getElementById(id)).filter(Boolean);
+
+function getActiveSection() {
+  const scrollY = window.scrollY + 80;
+  let active = SECTIONS[0];
+  for (const el of sectionEls) {
+    if (el && el.offsetTop <= scrollY) active = el.id;
+  }
+  return active;
+}
+
+function highlightNav(id) {
+  navItems.forEach(item => {
+    item.classList.toggle('active', item.dataset.section === id);
+  });
+  const activeNavItem = document.querySelector(`.nav-item[data-section="${id}"]`);
+  if (activeNavItem) {
+    activeNavItem.scrollIntoView({ block: 'nearest', behavior: 'smooth' });
+  }
+}
+
+let ticking = false;
+window.addEventListener('scroll', () => {
+  if (!ticking) {
+    requestAnimationFrame(() => {
+      const id = getActiveSection();
+      highlightNav(id);
+      currentIdx = SECTIONS.indexOf(id);
+      ticking = false;
+    });
+    ticking = true;
+  }
+}, { passive: true });
+
+// ===== Nav click =====
+function navTo(id) {
+  const el = document.getElementById(id);
+  if (el) {
+    el.scrollIntoView({ behavior: 'smooth', block: 'start' });
+    currentIdx = SECTIONS.indexOf(id);
+    highlightNav(id);
+  }
+  // Close sidebar on mobile
+  if (window.innerWidth <= 768) closeSidebar();
+}
+
+// ===== Keyboard navigation =====
+document.addEventListener('keydown', (e) => {
+  if (e.target.tagName === 'INPUT' || e.target.tagName === 'TEXTAREA') return;
+  if (e.key === 'ArrowRight' || e.key === 'ArrowDown') {
+    e.preventDefault();
+    const next = Math.min(currentIdx + 1, SECTIONS.length - 1);
+    navTo(SECTIONS[next]);
+  } else if (e.key === 'ArrowLeft' || e.key === 'ArrowUp') {
+    e.preventDefault();
+    const prev = Math.max(currentIdx - 1, 0);
+    navTo(SECTIONS[prev]);
+  }
+});
+
+// ===== Sidebar toggle =====
+function toggleSidebar() {
+  const sidebar = document.getElementById('sidebar');
+  const overlay = document.getElementById('overlay');
+  const isOpen = sidebar.classList.contains('open');
+  if (isOpen) closeSidebar();
+  else openSidebar();
+}
+function openSidebar() {
+  document.getElementById('sidebar').classList.add('open');
+  document.getElementById('overlay').classList.add('show');
+  document.body.style.overflow = 'hidden';
+}
+function closeSidebar() {
+  document.getElementById('sidebar').classList.remove('open');
+  document.getElementById('overlay').classList.remove('show');
+  document.body.style.overflow = '';
+}
+
+// ===== Init =====
+window.addEventListener('load', () => {
+  updateProgress();
+  highlightNav(getActiveSection());
+});
+</script>
+</body>
+</html>

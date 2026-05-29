@@ -1,0 +1,2386 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>GNU Make 内部处理流程详解</title>
+<style>
+  :root {
+    --primary: #2563eb;
+    --primary-dark: #1d4ed8;
+    --accent: #f59e0b;
+    --bg: #f8fafc;
+    --sidebar-bg: #1e293b;
+    --sidebar-text: #cbd5e1;
+    --sidebar-active: #3b82f6;
+    --sidebar-hover: #334155;
+    --content-bg: #ffffff;
+    --text: #1e293b;
+    --text-light: #64748b;
+    --border: #e2e8f0;
+    --code-bg: #0f172a;
+    --code-text: #e2e8f0;
+    --success: #10b981;
+    --warning: #f59e0b;
+    --danger: #ef4444;
+    --info: #3b82f6;
+    --sidebar-width: 280px;
+  }
+
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+
+  html { scroll-behavior: smooth; }
+
+  body {
+    font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', 'PingFang SC', 'Microsoft YaHei', sans-serif;
+    background: var(--bg);
+    color: var(--text);
+    line-height: 1.7;
+    overflow-x: hidden;
+  }
+
+  /* Progress bar */
+  #progress-bar {
+    position: fixed;
+    top: 0;
+    left: 0;
+    height: 3px;
+    background: linear-gradient(90deg, var(--primary), var(--accent));
+    z-index: 9999;
+    transition: width 0.1s ease;
+    width: 0%;
+  }
+
+  /* Sidebar */
+  #sidebar {
+    position: fixed;
+    left: 0;
+    top: 0;
+    bottom: 0;
+    width: var(--sidebar-width);
+    background: var(--sidebar-bg);
+    overflow-y: auto;
+    z-index: 100;
+    transition: transform 0.3s ease;
+    padding-bottom: 2rem;
+  }
+
+  #sidebar::-webkit-scrollbar { width: 4px; }
+  #sidebar::-webkit-scrollbar-track { background: transparent; }
+  #sidebar::-webkit-scrollbar-thumb { background: #475569; border-radius: 2px; }
+
+  .sidebar-header {
+    padding: 1.25rem 1rem;
+    border-bottom: 1px solid #334155;
+    position: sticky;
+    top: 0;
+    background: var(--sidebar-bg);
+    z-index: 1;
+  }
+
+  .sidebar-header h2 {
+    color: #f1f5f9;
+    font-size: 0.9rem;
+    font-weight: 700;
+    letter-spacing: 0.05em;
+    text-transform: uppercase;
+    display: flex;
+    align-items: center;
+    gap: 0.5rem;
+  }
+
+  .sidebar-header h2 svg { flex-shrink: 0; }
+
+  .nav-group {
+    margin: 0.5rem 0;
+  }
+
+  .nav-group-label {
+    padding: 0.6rem 1rem 0.3rem;
+    font-size: 0.7rem;
+    font-weight: 700;
+    text-transform: uppercase;
+    letter-spacing: 0.08em;
+    color: #64748b;
+  }
+
+  .nav-item {
+    display: block;
+    padding: 0.45rem 1rem 0.45rem 1.25rem;
+    color: var(--sidebar-text);
+    text-decoration: none;
+    font-size: 0.85rem;
+    border-left: 3px solid transparent;
+    transition: all 0.2s;
+    cursor: pointer;
+    line-height: 1.4;
+  }
+
+  .nav-item:hover {
+    background: var(--sidebar-hover);
+    color: #f1f5f9;
+    border-left-color: #475569;
+  }
+
+  .nav-item.active {
+    background: rgba(59, 130, 246, 0.15);
+    color: #93c5fd;
+    border-left-color: var(--sidebar-active);
+    font-weight: 600;
+  }
+
+  /* Hamburger */
+  #hamburger {
+    display: none;
+    position: fixed;
+    top: 0.75rem;
+    left: 0.75rem;
+    z-index: 200;
+    background: var(--sidebar-bg);
+    border: none;
+    border-radius: 0.5rem;
+    padding: 0.5rem;
+    cursor: pointer;
+    color: #f1f5f9;
+  }
+
+  #overlay {
+    display: none;
+    position: fixed;
+    inset: 0;
+    background: rgba(0,0,0,0.5);
+    z-index: 99;
+  }
+
+  /* Main content */
+  #main {
+    margin-left: var(--sidebar-width);
+    min-height: 100vh;
+  }
+
+  .content-wrapper {
+    max-width: 900px;
+    margin: 0 auto;
+    padding: 2.5rem 2rem 4rem;
+  }
+
+  /* Sections */
+  .section {
+    display: none;
+    animation: fadeIn 0.3s ease;
+  }
+  .section.active { display: block; }
+
+  @keyframes fadeIn {
+    from { opacity: 0; transform: translateY(8px); }
+    to { opacity: 1; transform: translateY(0); }
+  }
+
+  /* Chapter navigation */
+  .chapter-nav {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    margin-top: 3rem;
+    padding-top: 1.5rem;
+    border-top: 1px solid var(--border);
+    gap: 1rem;
+  }
+
+  .chapter-nav-btn {
+    display: flex;
+    align-items: center;
+    gap: 0.5rem;
+    padding: 0.6rem 1rem;
+    background: var(--primary);
+    color: white;
+    border: none;
+    border-radius: 0.5rem;
+    cursor: pointer;
+    font-size: 0.85rem;
+    font-weight: 600;
+    text-decoration: none;
+    transition: background 0.2s;
+  }
+  .chapter-nav-btn:hover { background: var(--primary-dark); }
+  .chapter-nav-btn:disabled, .chapter-nav-btn.hidden { opacity: 0; pointer-events: none; }
+
+  /* Typography */
+  h1 {
+    font-size: 1.9rem;
+    font-weight: 800;
+    color: var(--text);
+    margin-bottom: 0.5rem;
+    line-height: 1.3;
+  }
+
+  .section-subtitle {
+    color: var(--text-light);
+    font-size: 1rem;
+    margin-bottom: 1.5rem;
+  }
+
+  h2 {
+    font-size: 1.35rem;
+    font-weight: 700;
+    color: var(--text);
+    margin: 2rem 0 0.75rem;
+    padding-bottom: 0.4rem;
+    border-bottom: 2px solid var(--border);
+    display: flex;
+    align-items: center;
+    gap: 0.5rem;
+  }
+
+  h3 {
+    font-size: 1.05rem;
+    font-weight: 700;
+    color: var(--text);
+    margin: 1.5rem 0 0.5rem;
+  }
+
+  p {
+    margin-bottom: 0.9rem;
+    color: var(--text);
+  }
+
+  ul, ol {
+    margin: 0.5rem 0 0.9rem 1.5rem;
+  }
+  li { margin-bottom: 0.3rem; }
+
+  /* Code */
+  code {
+    font-family: 'JetBrains Mono', 'Fira Code', 'Cascadia Code', monospace;
+    font-size: 0.88em;
+    background: #f1f5f9;
+    color: #dc2626;
+    padding: 0.15em 0.4em;
+    border-radius: 0.25rem;
+    border: 1px solid #e2e8f0;
+  }
+
+  pre {
+    background: var(--code-bg);
+    color: var(--code-text);
+    border-radius: 0.75rem;
+    padding: 1.25rem 1.5rem;
+    overflow-x: auto;
+    margin: 1rem 0;
+    font-family: 'JetBrains Mono', 'Fira Code', monospace;
+    font-size: 0.875rem;
+    line-height: 1.6;
+    border: 1px solid #1e3a5f;
+    position: relative;
+  }
+
+  pre code {
+    background: none;
+    color: var(--code-text);
+    padding: 0;
+    border: none;
+    font-size: inherit;
+  }
+
+  .pre-label {
+    position: absolute;
+    top: 0.5rem;
+    right: 0.75rem;
+    font-size: 0.7rem;
+    color: #64748b;
+    text-transform: uppercase;
+    letter-spacing: 0.05em;
+  }
+
+  /* Highlight keywords in code */
+  .kw { color: #7dd3fc; }
+  .str { color: #86efac; }
+  .cm { color: #6b7280; font-style: italic; }
+  .va { color: #fbbf24; }
+  .op { color: #f472b6; }
+  .num { color: #a78bfa; }
+
+  /* Callout boxes */
+  .callout {
+    padding: 1rem 1.25rem;
+    border-radius: 0.5rem;
+    margin: 1rem 0;
+    border-left: 4px solid;
+    font-size: 0.92rem;
+  }
+  .callout-info { background: #eff6ff; border-color: var(--info); }
+  .callout-info strong { color: var(--info); }
+  .callout-warn { background: #fffbeb; border-color: var(--warning); }
+  .callout-warn strong { color: #92400e; }
+  .callout-success { background: #f0fdf4; border-color: var(--success); }
+  .callout-success strong { color: #065f46; }
+  .callout-danger { background: #fef2f2; border-color: var(--danger); }
+  .callout-danger strong { color: #991b1b; }
+
+  /* Source link */
+  .source-link {
+    display: inline-flex;
+    align-items: center;
+    gap: 0.35rem;
+    font-size: 0.78rem;
+    color: var(--primary);
+    text-decoration: none;
+    border: 1px solid #bfdbfe;
+    background: #eff6ff;
+    padding: 0.2rem 0.6rem;
+    border-radius: 1rem;
+    margin-bottom: 0.75rem;
+    transition: background 0.2s;
+  }
+  .source-link:hover { background: #dbeafe; }
+
+  /* Step boxes */
+  .step-box {
+    background: var(--content-bg);
+    border: 1px solid var(--border);
+    border-radius: 0.75rem;
+    margin: 1.25rem 0;
+    overflow: hidden;
+    box-shadow: 0 1px 3px rgba(0,0,0,0.06);
+  }
+
+  .step-header {
+    display: flex;
+    align-items: center;
+    gap: 0.75rem;
+    padding: 0.85rem 1.25rem;
+    background: linear-gradient(135deg, #f8fafc, #f1f5f9);
+    border-bottom: 1px solid var(--border);
+  }
+
+  .step-num {
+    width: 2rem;
+    height: 2rem;
+    border-radius: 50%;
+    background: var(--primary);
+    color: white;
+    font-weight: 800;
+    font-size: 0.85rem;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    flex-shrink: 0;
+  }
+
+  .step-title { font-weight: 700; font-size: 1rem; }
+  .step-badge {
+    margin-left: auto;
+    font-size: 0.7rem;
+    padding: 0.2rem 0.6rem;
+    border-radius: 1rem;
+    font-weight: 600;
+  }
+  .badge-phase1 { background: #dbeafe; color: #1e40af; }
+  .badge-phase2 { background: #dcfce7; color: #14532d; }
+  .badge-init { background: #fef3c7; color: #78350f; }
+
+  .step-body { padding: 1rem 1.25rem; }
+
+  /* Command cards */
+  .cmd-grid {
+    display: grid;
+    grid-template-columns: repeat(auto-fill, minmax(260px, 1fr));
+    gap: 0.75rem;
+    margin: 1rem 0;
+  }
+
+  .cmd-card {
+    background: #f8fafc;
+    border: 1px solid var(--border);
+    border-radius: 0.5rem;
+    padding: 0.85rem 1rem;
+  }
+
+  .cmd-card code {
+    display: block;
+    background: var(--code-bg);
+    color: #7dd3fc;
+    padding: 0.4rem 0.75rem;
+    border-radius: 0.35rem;
+    margin-bottom: 0.5rem;
+    font-size: 0.8rem;
+    border: none;
+  }
+
+  .cmd-card p {
+    font-size: 0.82rem;
+    color: var(--text-light);
+    margin: 0;
+  }
+
+  /* Table */
+  .table-wrap { overflow-x: auto; margin: 1rem 0; }
+  table {
+    width: 100%;
+    border-collapse: collapse;
+    font-size: 0.88rem;
+  }
+  th {
+    background: #1e293b;
+    color: #e2e8f0;
+    padding: 0.65rem 0.9rem;
+    text-align: left;
+    font-weight: 600;
+    font-size: 0.82rem;
+  }
+  td {
+    padding: 0.6rem 0.9rem;
+    border-bottom: 1px solid var(--border);
+    vertical-align: top;
+  }
+  tr:last-child td { border-bottom: none; }
+  tr:nth-child(even) td { background: #f8fafc; }
+
+  /* Hero banner */
+  .hero {
+    background: linear-gradient(135deg, #1e293b 0%, #0f172a 100%);
+    color: white;
+    border-radius: 1rem;
+    padding: 2rem;
+    margin-bottom: 2rem;
+    position: relative;
+    overflow: hidden;
+  }
+  .hero::before {
+    content: '';
+    position: absolute;
+    inset: 0;
+    background: url("data:image/svg+xml,%3Csvg width='60' height='60' viewBox='0 0 60 60' xmlns='http://www.w3.org/2000/svg'%3E%3Cg fill='none' fill-rule='evenodd'%3E%3Cg fill='%23ffffff' fill-opacity='0.03'%3E%3Cpath d='M36 34v-4h-2v4h-4v2h4v4h2v-4h4v-2h-4zm0-30V0h-2v4h-4v2h4v4h2V6h4V4h-4zM6 34v-4H4v4H0v2h4v4h2v-4h4v-2H6zM6 4V0H4v4H0v2h4v4h2V6h4V4H6z'/%3E%3C/g%3E%3C/g%3E%3C/svg%3E");
+  }
+  .hero h1 { color: white; font-size: 1.6rem; }
+  .hero p { color: #94a3b8; }
+  .hero-tags { display: flex; flex-wrap: wrap; gap: 0.5rem; margin-top: 1rem; }
+  .hero-tag {
+    background: rgba(255,255,255,0.1);
+    border: 1px solid rgba(255,255,255,0.15);
+    color: #e2e8f0;
+    padding: 0.2rem 0.7rem;
+    border-radius: 1rem;
+    font-size: 0.75rem;
+  }
+
+  /* SVG diagrams */
+  .diagram-wrap {
+    background: #f8fafc;
+    border: 1px solid var(--border);
+    border-radius: 0.75rem;
+    padding: 1.25rem;
+    margin: 1.25rem 0;
+    overflow-x: auto;
+  }
+  .diagram-wrap svg { max-width: 100%; display: block; margin: 0 auto; }
+  .diagram-caption {
+    text-align: center;
+    font-size: 0.8rem;
+    color: var(--text-light);
+    margin-top: 0.75rem;
+  }
+
+  /* Variable expansion table */
+  .expand-table .imm { background: #dcfce7; color: #065f46; font-weight: 600; font-size: 0.78rem; padding: 0.15rem 0.4rem; border-radius: 0.25rem; }
+  .expand-table .def { background: #fef3c7; color: #78350f; font-weight: 600; font-size: 0.78rem; padding: 0.15rem 0.4rem; border-radius: 0.25rem; }
+
+  /* Debug options table */
+  .debug-tag {
+    display: inline-block;
+    font-family: monospace;
+    font-size: 0.8rem;
+    font-weight: 700;
+    padding: 0.1rem 0.5rem;
+    border-radius: 0.25rem;
+    background: #1e293b;
+    color: #7dd3fc;
+  }
+
+  /* Responsive */
+  @media (max-width: 768px) {
+    #hamburger { display: flex; align-items: center; }
+    #sidebar { transform: translateX(-100%); }
+    #sidebar.open { transform: translateX(0); }
+    #overlay.open { display: block; }
+    #main { margin-left: 0; }
+    .content-wrapper { padding: 1rem 1rem 3rem; }
+    h1 { font-size: 1.4rem; }
+    h2 { font-size: 1.15rem; }
+    .cmd-grid { grid-template-columns: 1fr; }
+    .hero { padding: 1.25rem; }
+    .chapter-nav { flex-direction: column; }
+    .chapter-nav-btn { width: 100%; justify-content: center; }
+  }
+
+  @media (max-width: 480px) {
+    pre { padding: 0.85rem 1rem; font-size: 0.78rem; }
+    .step-header { padding: 0.7rem 1rem; }
+    .step-body { padding: 0.75rem 1rem; }
+  }
+</style>
+</head>
+<body>
+
+<div id="progress-bar"></div>
+
+<!-- Hamburger -->
+<button id="hamburger" aria-label="打开菜单" onclick="toggleSidebar()">
+  <svg width="20" height="20" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24">
+    <path stroke-linecap="round" stroke-linejoin="round" d="M4 6h16M4 12h16M4 18h16"/>
+  </svg>
+</button>
+
+<div id="overlay" onclick="toggleSidebar()"></div>
+
+<!-- Sidebar -->
+<nav id="sidebar">
+  <div class="sidebar-header">
+    <h2>
+      <svg width="16" height="16" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><path d="M9 3H5a2 2 0 00-2 2v4m6-6h10a2 2 0 012 2v4M9 3v18m0 0h10a2 2 0 002-2V9M9 21H5a2 2 0 01-2-2V9m0 0h18"/></svg>
+      GNU Make 内部流程
+    </h2>
+  </div>
+
+  <div class="nav-group">
+    <div class="nav-group-label">概述</div>
+    <a class="nav-item" onclick="showSection('overview')">总览与两阶段模型</a>
+  </div>
+
+  <div class="nav-group">
+    <div class="nav-group-label">第一阶段：读取解析</div>
+    <a class="nav-item" onclick="showSection('step1')">步骤1：启动与初始化</a>
+    <a class="nav-item" onclick="showSection('step2')">步骤2：查找 Makefile 文件</a>
+    <a class="nav-item" onclick="showSection('step3')">步骤3：逐行解析 Makefile</a>
+    <a class="nav-item" onclick="showSection('step4')">步骤4：变量内化与展开</a>
+    <a class="nav-item" onclick="showSection('step5')">步骤5：规则内化与依赖图</a>
+    <a class="nav-item" onclick="showSection('step6')">步骤6：重建 Makefile 自身</a>
+  </div>
+
+  <div class="nav-group">
+    <div class="nav-group-label">第二阶段：更新执行</div>
+    <a class="nav-item" onclick="showSection('step7')">步骤7：确定目标 (Goal)</a>
+    <a class="nav-item" onclick="showSection('step8')">步骤8：隐式规则搜索</a>
+    <a class="nav-item" onclick="showSection('step9')">步骤9：时间戳比较</a>
+    <a class="nav-item" onclick="showSection('step10')">步骤10：执行 Recipe</a>
+  </div>
+
+  <div class="nav-group">
+    <div class="nav-group-label">调试与观测</div>
+    <a class="nav-item" onclick="showSection('debug')">调试选项全览</a>
+    <a class="nav-item" onclick="showSection('observe')">每步结果如何查看</a>
+  </div>
+
+  <div class="nav-group">
+    <div class="nav-group-label">参考</div>
+    <a class="nav-item" onclick="showSection('flowchart')">完整流程图</a>
+    <a class="nav-item" onclick="showSection('refs')">官方文档索引</a>
+  </div>
+</nav>
+
+<!-- Main content -->
+<main id="main">
+<div class="content-wrapper">
+
+<!-- ===================== OVERVIEW ===================== -->
+<section id="sec-overview" class="section active">
+  <div class="hero">
+    <div style="position:relative;z-index:1">
+      <div style="font-size:0.75rem;color:#64748b;margin-bottom:0.4rem;">GNU Make Manual · Edition 0.77 · Version 4.4.1</div>
+      <h1>GNU Make 内部处理流程详解</h1>
+      <p>当你执行 <code style="background:rgba(255,255,255,0.1);border:none;color:#7dd3fc">make</code> 命令后，背后究竟发生了什么？本文档基于 GNU Make 官方手册，深入解析其两阶段工作机制及每步可观测方法。</p>
+      <div class="hero-tags">
+        <span class="hero-tag">两阶段处理</span>
+        <span class="hero-tag">依赖图构建</span>
+        <span class="hero-tag">变量展开</span>
+        <span class="hero-tag">隐式规则</span>
+        <span class="hero-tag">时间戳比较</span>
+        <span class="hero-tag">Recipe 执行</span>
+      </div>
+    </div>
+  </div>
+
+  <a class="source-link" href="https://www.gnu.org/software/make/manual/make.html" target="_blank">
+    <svg width="12" height="12" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><path d="M10 6H6a2 2 0 00-2 2v10a2 2 0 002 2h10a2 2 0 002-2v-4M14 4h6m0 0v6m0-6L10 14"/></svg>
+    官方原文：GNU Make Manual — gnu.org
+  </a>
+
+  <h2>
+    <svg width="18" height="18" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><circle cx="12" cy="12" r="10"/><path d="M12 8v4l3 3"/></svg>
+    GNU Make 的两阶段工作模型
+  </h2>
+
+  <p>GNU Make 官方手册（§3.7 How <code>make</code> Reads a Makefile）明确指出：</p>
+
+  <div class="callout callout-info">
+    <strong>官方原文：</strong><br>
+    "GNU make does its work in <strong>two distinct phases</strong>. During the first phase it reads all the makefiles, included makefiles, etc. and internalizes all the variables and their values and implicit and explicit rules, and builds a dependency graph of all the targets and their prerequisites. During the second phase, make uses this internalized data to determine which targets need to be updated and run the recipes necessary to update them."
+  </div>
+
+  <div class="diagram-wrap">
+    <svg width="780" height="200" viewBox="0 0 780 200" xmlns="http://www.w3.org/2000/svg" font-family="system-ui,sans-serif">
+      <!-- Phase 1 -->
+      <rect x="20" y="30" width="340" height="140" rx="12" fill="#1e3a5f" stroke="#3b82f6" stroke-width="2"/>
+      <text x="190" y="58" text-anchor="middle" font-size="13" font-weight="700" fill="#7dd3fc">第一阶段（Phase 1）：读取解析</text>
+      <!-- sub boxes -->
+      <rect x="36" y="68" width="90" height="36" rx="6" fill="#1e40af" stroke="#3b82f6" stroke-width="1"/>
+      <text x="81" y="82" text-anchor="middle" font-size="10" fill="#bfdbfe">读取所有</text>
+      <text x="81" y="95" text-anchor="middle" font-size="10" fill="#bfdbfe">Makefile</text>
+      <rect x="140" y="68" width="90" height="36" rx="6" fill="#1e40af" stroke="#3b82f6" stroke-width="1"/>
+      <text x="185" y="82" text-anchor="middle" font-size="10" fill="#bfdbfe">内化变量</text>
+      <text x="185" y="95" text-anchor="middle" font-size="10" fill="#bfdbfe">与规则</text>
+      <rect x="244" y="68" width="100" height="36" rx="6" fill="#1e40af" stroke="#3b82f6" stroke-width="1"/>
+      <text x="294" y="82" text-anchor="middle" font-size="10" fill="#bfdbfe">构建依赖图</text>
+      <text x="294" y="95" text-anchor="middle" font-size="10" fill="#bfdbfe">Dependency Graph</text>
+      <!-- bottom note -->
+      <text x="190" y="130" text-anchor="middle" font-size="10" fill="#64748b">immediate 展开 / deferred 延迟</text>
+      <text x="190" y="148" text-anchor="middle" font-size="10" fill="#64748b">变量赋值·规则解析·条件指令</text>
+
+      <!-- Arrow -->
+      <path d="M360 100 L420 100" stroke="#f59e0b" stroke-width="2.5" marker-end="url(#arr)"/>
+      <defs>
+        <marker id="arr" markerWidth="8" markerHeight="8" refX="6" refY="3" orient="auto">
+          <path d="M0,0 L0,6 L8,3 z" fill="#f59e0b"/>
+        </marker>
+      </defs>
+      <text x="390" y="92" text-anchor="middle" font-size="10" fill="#f59e0b">内部数据</text>
+
+      <!-- Phase 2 -->
+      <rect x="420" y="30" width="340" height="140" rx="12" fill="#14532d" stroke="#22c55e" stroke-width="2" fill-opacity="0.5" stroke-opacity="0.8"/>
+      <rect x="420" y="30" width="340" height="140" rx="12" fill="#052e16" stroke="#22c55e" stroke-width="2" fill-opacity="0.9"/>
+      <text x="590" y="58" text-anchor="middle" font-size="13" font-weight="700" fill="#86efac">第二阶段（Phase 2）：更新执行</text>
+      <rect x="436" y="68" width="92" height="36" rx="6" fill="#14532d" stroke="#22c55e" stroke-width="1"/>
+      <text x="482" y="82" text-anchor="middle" font-size="10" fill="#bbf7d0">确定需要</text>
+      <text x="482" y="95" text-anchor="middle" font-size="10" fill="#bbf7d0">更新的目标</text>
+      <rect x="540" y="68" width="92" height="36" rx="6" fill="#14532d" stroke="#22c55e" stroke-width="1"/>
+      <text x="586" y="82" text-anchor="middle" font-size="10" fill="#bbf7d0">时间戳比较</text>
+      <text x="586" y="95" text-anchor="middle" font-size="10" fill="#bbf7d0">mtime check</text>
+      <rect x="645" y="68" width="99" height="36" rx="6" fill="#14532d" stroke="#22c55e" stroke-width="1"/>
+      <text x="694" y="82" text-anchor="middle" font-size="10" fill="#bbf7d0">执行 Recipe</text>
+      <text x="694" y="95" text-anchor="middle" font-size="10" fill="#bbf7d0">shell 命令</text>
+      <text x="590" y="130" text-anchor="middle" font-size="10" fill="#64748b">递归处理先决条件 → 目标更新判断</text>
+      <text x="590" y="148" text-anchor="middle" font-size="10" fill="#64748b">隐式规则搜索 · 并行执行 · 错误处理</text>
+    </svg>
+    <div class="diagram-caption">图1：GNU Make 两阶段工作模型概览（来源：GNU Make Manual §3.7）</div>
+  </div>
+
+  <h2>
+    <svg width="18" height="18" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><path d="M9 5H7a2 2 0 00-2 2v12a2 2 0 002 2h10a2 2 0 002-2V7a2 2 0 00-2-2h-2M9 5a2 2 0 002 2h2a2 2 0 002-2M9 5a2 2 0 012-2h2a2 2 0 012 2"/></svg>
+    本文档结构
+  </h2>
+
+  <p>本文将 Make 的内部流程拆解为 <strong>10 个关键步骤</strong>，分两大阶段逐一讲解：</p>
+
+  <div class="table-wrap">
+    <table>
+      <tr>
+        <th>阶段</th><th>步骤</th><th>核心动作</th><th>查看方法</th>
+      </tr>
+      <tr><td rowspan="6" style="color:#3b82f6;font-weight:700">第一阶段<br>读取解析</td><td>①</td><td>启动与初始化（环境变量、内置规则）</td><td><code>make -p</code></td></tr>
+      <tr><td>②</td><td>查找 Makefile 文件（名称搜索顺序）</td><td><code>--debug=v</code></td></tr>
+      <tr><td>③</td><td>逐行解析 Makefile（语法分析）</td><td><code>--debug=v</code></td></tr>
+      <tr><td>④</td><td>变量内化与展开（immediate/deferred）</td><td><code>make -p</code>, <code>$(info)</code></td></tr>
+      <tr><td>⑤</td><td>规则内化与依赖图构建</td><td><code>make -p</code></td></tr>
+      <tr><td>⑥</td><td>重建 Makefile 自身（Remaking Makefiles）</td><td><code>--debug=m</code></td></tr>
+      <tr><td rowspan="4" style="color:#22c55e;font-weight:700">第二阶段<br>更新执行</td><td>⑦</td><td>确定构建目标 (Goal)</td><td><code>--debug=b</code></td></tr>
+      <tr><td>⑧</td><td>隐式规则搜索算法</td><td><code>--debug=i</code></td></tr>
+      <tr><td>⑨</td><td>时间戳比较（mtime）</td><td><code>--debug=w</code>, <code>--debug=b</code></td></tr>
+      <tr><td>⑩</td><td>执行 Recipe（sub-shell 调用）</td><td><code>-n</code>, <code>--debug=j</code></td></tr>
+    </table>
+  </div>
+
+  <div class="callout callout-warn">
+    <strong>提示：</strong> 使用左右方向键可在各章节间快速导航，左侧导航栏高亮显示当前阅读位置。
+  </div>
+
+  <div class="chapter-nav">
+    <button class="chapter-nav-btn hidden">←</button>
+    <button class="chapter-nav-btn" onclick="showSection('step1')">下一节：步骤1 启动与初始化 →</button>
+  </div>
+</section>
+
+<!-- ===================== STEP 1 ===================== -->
+<section id="sec-step1" class="section">
+  <h1>步骤 1：启动与初始化</h1>
+  <p class="section-subtitle">Phase 1 · 第一阶段第一步</p>
+
+  <a class="source-link" href="https://www.gnu.org/software/make/manual/html_node/Options-Summary.html" target="_blank">
+    <svg width="12" height="12" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><path d="M10 6H6a2 2 0 00-2 2v10a2 2 0 002 2h10a2 2 0 002-2v-4M14 4h6m0 0v6m0-6L10 14"/></svg>
+    官方原文：§9.8 Summary of Options — gnu.org
+  </a>
+
+  <div class="step-box">
+    <div class="step-header">
+      <div class="step-num">1</div>
+      <div class="step-title">启动与初始化</div>
+      <span class="step-badge badge-init">初始化</span>
+    </div>
+    <div class="step-body">
+      <p>在 Make 读取任何 Makefile 之前，它首先完成一系列初始化动作：</p>
+      <ol>
+        <li><strong>解析命令行参数</strong>：处理 <code>-f</code>, <code>-j</code>, <code>-d</code> 等选项</li>
+        <li><strong>加载内置规则和变量</strong>：Make 自带数十条隐式规则（如 <code>.c → .o</code>）和预定义变量（如 <code>CC</code>, <code>CFLAGS</code>）</li>
+        <li><strong>读取环境变量</strong>：将当前 shell 环境变量导入为 Make 变量</li>
+        <li><strong>处理 <code>MAKEFILES</code> 环境变量</strong>：若设置了此变量，先读取其中列出的文件</li>
+        <li><strong>处理 <code>-E</code> / <code>--eval</code> 选项</strong>：在读取任何 Makefile 前，先对命令行指定的字符串执行 eval</li>
+      </ol>
+    </div>
+  </div>
+
+  <h2>内置变量与规则</h2>
+  <p>Make 启动时加载的内置规则示例（GNU Make Manual §10.2）：</p>
+  <pre><span class="cm"># 内置的 C 编译隐式规则（简化示意）</span>
+<span class="va">%.o</span> : <span class="va">%.c</span>
+    <span class="va">$(CC)</span> <span class="va">$(CPPFLAGS)</span> <span class="va">$(CFLAGS)</span> <span class="op">-c</span> <span class="op">-o</span> <span class="va">$@</span> <span class="va">$<</span>
+
+<span class="cm"># 内置的 C++ 编译隐式规则</span>
+<span class="va">%.o</span> : <span class="va">%.cc</span>
+    <span class="va">$(CXX)</span> <span class="va">$(CPPFLAGS)</span> <span class="va">$(CXXFLAGS)</span> <span class="op">-c</span> <span class="op">-o</span> <span class="va">$@</span> <span class="va">$<</span>
+
+<span class="cm"># 内置预定义变量</span>
+<span class="va">CC</span>     = cc
+<span class="va">CXX</span>    = g++
+<span class="va">CFLAGS</span> = <span class="cm">(空)</span></pre>
+  <div class="pre-label">内置规则示例</div>
+
+  <h2>环境变量的优先级</h2>
+  <div class="callout callout-info">
+    <strong>官方说明（§6.10 Variables from the Environment）：</strong><br>
+    默认情况下，Makefile 中的变量定义会覆盖同名环境变量。使用 <code>-e</code> (<code>--environment-overrides</code>) 选项可以反转此优先级，使环境变量优先。
+  </div>
+
+  <h2>如何查看初始化结果</h2>
+  <div class="cmd-grid">
+    <div class="cmd-card">
+      <code>make -p -f /dev/null</code>
+      <p>打印所有内置规则和预定义变量数据库，不执行任何目标</p>
+    </div>
+    <div class="cmd-card">
+      <code>make -p 2>&amp;1 | head -100</code>
+      <p>查看完整内部数据库（包含读取 Makefile 后的结果）</p>
+    </div>
+    <div class="cmd-card">
+      <code>make --version</code>
+      <p>查看 Make 版本信息，确认使用的是 GNU Make</p>
+    </div>
+    <div class="cmd-card">
+      <code>make --debug=v ...</code>
+      <p>verbose 级别调试，显示解析了哪些 Makefile</p>
+    </div>
+  </div>
+
+  <h3>示例：查看内置变量</h3>
+  <pre>$ make -p -f /dev/null 2>/dev/null | grep "^CC"
+<span class="str">CC = cc</span>
+
+$ make -p -f /dev/null 2>/dev/null | grep "^CFLAGS"
+<span class="str">CFLAGS =</span>
+
+$ make -p -f /dev/null 2>/dev/null | grep "%.o"
+<span class="str">%.o: %.c
+    $(CC) $(CPPFLAGS) $(CFLAGS) -c -o $@ $<</span></pre>
+
+  <div class="chapter-nav">
+    <button class="chapter-nav-btn" onclick="showSection('overview')">← 上一节：总览</button>
+    <button class="chapter-nav-btn" onclick="showSection('step2')">下一节：步骤2 查找 Makefile →</button>
+  </div>
+</section>
+
+<!-- ===================== STEP 2 ===================== -->
+<section id="sec-step2" class="section">
+  <h1>步骤 2：查找 Makefile 文件</h1>
+  <p class="section-subtitle">Phase 1 · §3.2 What Name to Give Your Makefile</p>
+
+  <a class="source-link" href="https://www.gnu.org/software/make/manual/html_node/Makefile-Names.html" target="_blank">
+    <svg width="12" height="12" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><path d="M10 6H6a2 2 0 00-2 2v10a2 2 0 002 2h10a2 2 0 002-2v-4M14 4h6m0 0v6m0-6L10 14"/></svg>
+    官方原文：§3.2 What Name to Give Your Makefile — gnu.org
+  </a>
+
+  <div class="step-box">
+    <div class="step-header">
+      <div class="step-num">2</div>
+      <div class="step-title">查找 Makefile 文件</div>
+      <span class="step-badge badge-phase1">Phase 1</span>
+    </div>
+    <div class="step-body">
+      <p>当没有使用 <code>-f</code> 选项指定 Makefile 时，GNU Make 按照固定顺序在当前目录查找：</p>
+      <ol>
+        <li><code>GNUmakefile</code> — 仅 GNU Make 会识别此名称</li>
+        <li><code>makefile</code></li>
+        <li><code>Makefile</code>（最常见，推荐使用）</li>
+      </ol>
+      <p>找到第一个存在的文件即停止搜索。如果三个文件都不存在，Make 也不一定出错——某些情况下可以完全依靠隐式规则运行。</p>
+    </div>
+  </div>
+
+  <h2>include 指令的处理</h2>
+  <p>官方手册 §3.3 指出：</p>
+  <div class="callout callout-info">
+    <strong>官方原文：</strong><br>
+    "When make processes an include directive, it suspends reading of the containing makefile and reads from each listed file in turn. When that is finished, make resumes reading the makefile in which the directive appears."
+  </div>
+
+  <pre><span class="kw">include</span> config.mk common.mk
+<span class="kw">-include</span> optional.mk   <span class="cm"># 前缀 - 表示找不到时不报错</span></pre>
+
+  <h2>include 的搜索路径顺序</h2>
+  <div class="table-wrap">
+    <table>
+      <tr><th>优先级</th><th>搜索路径</th><th>说明</th></tr>
+      <tr><td>1</td><td>当前目录</td><td>首先在当前目录查找</td></tr>
+      <tr><td>2</td><td><code>-I dir</code> 指定目录</td><td>按命令行顺序</td></tr>
+      <tr><td>3</td><td><code>/usr/local/include</code></td><td>系统默认目录（平台相关）</td></tr>
+    </table>
+  </div>
+
+  <h2>MAKEFILES 环境变量</h2>
+  <p>若设置了 <code>MAKEFILES</code> 环境变量，其中的文件会在任何 Makefile 之前被读取，类似于隐式 <code>include</code>。但官方手册警告：<strong>不推荐</strong>在项目中依赖此变量。</p>
+
+  <h2>如何查看 Make 读取了哪些文件</h2>
+  <pre><span class="cm"># verbose 调试模式会显示每个被解析的 Makefile</span>
+$ make --debug=v
+<span class="str">Reading makefiles...
+Reading makefile 'Makefile'...
+Reading makefile 'config.mk' (search path)...
+Reading makefile 'common.mk' (search path)...</span>
+
+<span class="cm"># 使用 -w 选项可以追踪目录变化（递归 make 时有用）</span>
+$ make -w
+<span class="str">make: Entering directory '/path/to/project'
+...
+make: Leaving directory '/path/to/project'</span></pre>
+
+  <div class="diagram-wrap">
+    <svg width="660" height="220" viewBox="0 0 660 220" xmlns="http://www.w3.org/2000/svg" font-family="system-ui,sans-serif">
+      <text x="330" y="24" text-anchor="middle" font-size="13" font-weight="700" fill="#1e293b">Makefile 查找流程</text>
+
+      <!-- Start -->
+      <ellipse cx="330" cy="52" rx="70" ry="22" fill="#1e293b" stroke="#3b82f6" stroke-width="2"/>
+      <text x="330" y="57" text-anchor="middle" font-size="11" fill="white">执行 make</text>
+
+      <!-- has -f? -->
+      <rect x="240" y="92" width="180" height="36" rx="8" fill="#fffbeb" stroke="#f59e0b" stroke-width="1.5"/>
+      <text x="330" y="111" text-anchor="middle" font-size="11" fill="#78350f">指定了 -f 选项？</text>
+
+      <!-- yes -->
+      <path d="M330 74 L330 92" stroke="#64748b" stroke-width="1.5" marker-end="url(#arrs)"/>
+      <defs><marker id="arrs" markerWidth="7" markerHeight="7" refX="5" refY="3" orient="auto"><path d="M0,0 L0,6 L7,3 z" fill="#64748b"/></marker></defs>
+
+      <!-- Direct use box -->
+      <rect x="480" y="92" width="140" height="36" rx="8" fill="#dcfce7" stroke="#22c55e" stroke-width="1.5"/>
+      <text x="550" y="111" text-anchor="middle" font-size="11" fill="#14532d">直接使用指定文件</text>
+
+      <path d="M420 110 L480 110" stroke="#22c55e" stroke-width="1.5" marker-end="url(#arrs2)"/>
+      <text x="450" y="105" text-anchor="middle" font-size="10" fill="#22c55e">是</text>
+      <defs><marker id="arrs2" markerWidth="7" markerHeight="7" refX="5" refY="3" orient="auto"><path d="M0,0 L0,6 L7,3 z" fill="#22c55e"/></marker></defs>
+
+      <!-- No branch -->
+      <path d="M330 128 L330 148" stroke="#64748b" stroke-width="1.5" marker-end="url(#arrs)"/>
+      <text x="315" y="143" font-size="10" fill="#ef4444">否</text>
+
+      <!-- GNUmakefile -->
+      <rect x="40" y="148" width="140" height="36" rx="8" fill="#eff6ff" stroke="#3b82f6" stroke-width="1.5"/>
+      <text x="110" y="162" text-anchor="middle" font-size="11" fill="#1e40af">GNUmakefile</text>
+      <text x="110" y="177" text-anchor="middle" font-size="10" fill="#64748b">存在？→ 使用</text>
+
+      <!-- makefile -->
+      <rect x="200" y="148" width="130" height="36" rx="8" fill="#eff6ff" stroke="#3b82f6" stroke-width="1.5"/>
+      <text x="265" y="162" text-anchor="middle" font-size="11" fill="#1e40af">makefile</text>
+      <text x="265" y="177" text-anchor="middle" font-size="10" fill="#64748b">存在？→ 使用</text>
+
+      <!-- Makefile -->
+      <rect x="345" y="148" width="130" height="36" rx="8" fill="#eff6ff" stroke="#3b82f6" stroke-width="1.5"/>
+      <text x="410" y="162" text-anchor="middle" font-size="11" fill="#1e40af">Makefile</text>
+      <text x="410" y="177" text-anchor="middle" font-size="10" fill="#64748b">存在？→ 使用（推荐）</text>
+
+      <!-- none -->
+      <rect x="490" y="148" width="130" height="36" rx="8" fill="#fef2f2" stroke="#ef4444" stroke-width="1.5"/>
+      <text x="555" y="162" text-anchor="middle" font-size="11" fill="#991b1b">三者皆无</text>
+      <text x="555" y="177" text-anchor="middle" font-size="10" fill="#64748b">仅依赖隐式规则</text>
+
+      <!-- lines from "no" -->
+      <path d="M330 148 L330 185 L110 185 L110 184" stroke="#64748b" stroke-width="1" stroke-dasharray="4,3"/>
+      <path d="M330 185 L265 185 L265 184" stroke="#64748b" stroke-width="1" stroke-dasharray="4,3"/>
+      <path d="M330 185 L410 185 L410 184" stroke="#64748b" stroke-width="1" stroke-dasharray="4,3"/>
+      <path d="M330 185 L555 185 L555 184" stroke="#64748b" stroke-width="1" stroke-dasharray="4,3"/>
+
+      <!-- order arrows -->
+      <path d="M180 166 L200 166" stroke="#3b82f6" stroke-width="1.5" marker-end="url(#arrs2)"/>
+      <path d="M330 166 L345 166" stroke="#3b82f6" stroke-width="1.5" marker-end="url(#arrs2)"/>
+      <path d="M475 166 L490 166" stroke="#3b82f6" stroke-width="1.5" marker-end="url(#arrs2)"/>
+      <text x="188" y="160" font-size="9" fill="#3b82f6">①</text>
+      <text x="336" y="160" font-size="9" fill="#3b82f6">②</text>
+      <text x="480" y="160" font-size="9" fill="#3b82f6">③</text>
+    </svg>
+    <div class="diagram-caption">图2：GNU Make Makefile 文件查找流程（来源：§3.2）</div>
+  </div>
+
+  <div class="chapter-nav">
+    <button class="chapter-nav-btn" onclick="showSection('step1')">← 上一节：步骤1</button>
+    <button class="chapter-nav-btn" onclick="showSection('step3')">下一节：步骤3 逐行解析 →</button>
+  </div>
+</section>
+
+<!-- ===================== STEP 3 ===================== -->
+<section id="sec-step3" class="section">
+  <h1>步骤 3：逐行解析 Makefile</h1>
+  <p class="section-subtitle">Phase 1 · §3.8 How Makefiles Are Parsed</p>
+
+  <a class="source-link" href="https://www.gnu.org/software/make/manual/html_node/Parsing-Makefiles.html" target="_blank">
+    <svg width="12" height="12" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><path d="M10 6H6a2 2 0 00-2 2v10a2 2 0 002 2h10a2 2 0 002-2v-4M14 4h6m0 0v6m0-6L10 14"/></svg>
+    官方原文：§3.8 How Makefiles Are Parsed — gnu.org
+  </a>
+
+  <p>官方手册明确给出了解析的六步流程：</p>
+
+  <div class="step-box">
+    <div class="step-header">
+      <div class="step-num">3</div>
+      <div class="step-title">逐行解析 Makefile — 官方定义的6个子步骤</div>
+      <span class="step-badge badge-phase1">Phase 1</span>
+    </div>
+    <div class="step-body">
+      <div class="callout callout-info">
+        <strong>官方原文（§3.8）：</strong><br>
+        "GNU make parses makefiles line-by-line. Parsing proceeds using the following steps:"
+      </div>
+      <ol>
+        <li>读取完整的逻辑行，包括反斜杠续行（<code>Splitting Long Lines</code>）</li>
+        <li>移除注释（<code>#</code> 开头到行尾）</li>
+        <li>若行以 recipe 前缀字符（默认为 Tab）开头，且当前处于规则上下文中，则将该行添加到当前 recipe 并读取下一行</li>
+        <li>展开该行中属于 <em>immediate</em> 展开上下文的元素</li>
+        <li>扫描行中的分隔符（<code>:</code> 或 <code>=</code>），判断这行是宏赋值还是规则</li>
+        <li>内化操作结果并读取下一行</li>
+      </ol>
+    </div>
+  </div>
+
+  <h2>解析顺序的重要性</h2>
+
+  <div class="callout callout-warn">
+    <strong>官方警告：</strong><br>
+    "An important consequence of this is that a macro can expand to an entire rule, if it is one line long."
+    <br>宏展开 <strong>不会</strong> 重新分割行——展开后的换行符会被当作普通空白处理。
+  </div>
+
+  <pre><span class="cm"># 这个可以工作：单行宏展开为完整规则</span>
+<span class="va">myrule</span> = target : ; echo built
+<span class="va">$(myrule)</span>
+
+<span class="cm"># 这个不能工作：多行 define 宏，展开后换行被忽略</span>
+<span class="kw">define</span> myrule
+target:
+        echo built
+<span class="kw">endef</span>
+<span class="cm"># 结果：target 被解析为有 echo 和 built 两个先决条件的规则，而非 recipe</span>
+<span class="cm"># 正确做法：</span>
+<span class="va">$(eval $(myrule))</span>  <span class="cm"># 使用 eval 函数</span></pre>
+
+  <h2>Makefile 的基本语法元素</h2>
+  <div class="table-wrap">
+    <table>
+      <tr><th>元素</th><th>格式</th><th>说明</th></tr>
+      <tr><td>规则</td><td><code>target: prerequisites</code><br><code>⇥ recipe</code></td><td>目标、先决条件、配方（Tab 缩进）</td></tr>
+      <tr><td>变量赋值</td><td><code>VAR = value</code></td><td>递归展开赋值</td></tr>
+      <tr><td>立即赋值</td><td><code>VAR := value</code></td><td>立即展开赋值</td></tr>
+      <tr><td>条件</td><td><code>ifdef</code> / <code>ifeq</code></td><td>条件解析（第一阶段立即处理）</td></tr>
+      <tr><td>指令</td><td><code>include</code> / <code>define</code></td><td>包含文件或定义多行变量</td></tr>
+      <tr><td>注释</td><td><code># ...</code></td><td>解析时被丢弃</td></tr>
+    </table>
+  </div>
+
+  <h2>可视化：解析流程</h2>
+  <div class="diagram-wrap">
+    <svg width="640" height="320" viewBox="0 0 640 320" xmlns="http://www.w3.org/2000/svg" font-family="system-ui,sans-serif">
+      <text x="320" y="22" text-anchor="middle" font-size="12" font-weight="700" fill="#1e293b">Makefile 逐行解析子流程（§3.8）</text>
+
+      <!-- boxes -->
+      <rect x="220" y="35" width="200" height="32" rx="6" fill="#1e293b" stroke="#3b82f6" stroke-width="1.5"/>
+      <text x="320" y="56" text-anchor="middle" font-size="11" fill="#7dd3fc">① 读取完整逻辑行（含续行 \）</text>
+
+      <rect x="220" y="85" width="200" height="32" rx="6" fill="#1e293b" stroke="#3b82f6" stroke-width="1.5"/>
+      <text x="320" y="106" text-anchor="middle" font-size="11" fill="#7dd3fc">② 移除注释 (#...)</text>
+
+      <!-- decision: recipe? -->
+      <polygon points="320,135 420,157 320,179 220,157" fill="#fffbeb" stroke="#f59e0b" stroke-width="1.5"/>
+      <text x="320" y="153" text-anchor="middle" font-size="10" fill="#78350f">Tab开头 且</text>
+      <text x="320" y="166" text-anchor="middle" font-size="10" fill="#78350f">在规则上下文？</text>
+
+      <!-- yes -->
+      <rect x="460" y="145" width="160" height="32" rx="6" fill="#dcfce7" stroke="#22c55e" stroke-width="1.5"/>
+      <text x="540" y="161" text-anchor="middle" font-size="11" fill="#14532d">③ 加入当前 recipe</text>
+      <path d="M420 157 L460 157" stroke="#22c55e" stroke-width="1.5" marker-end="url(#ga)"/>
+      <text x="440" y="152" font-size="10" fill="#22c55e">是</text>
+      <defs><marker id="ga" markerWidth="7" markerHeight="7" refX="5" refY="3" orient="auto"><path d="M0,0 L0,6 L7,3 z" fill="#22c55e"/></marker></defs>
+
+      <!-- no -->
+      <rect x="220" y="197" width="200" height="32" rx="6" fill="#1e293b" stroke="#3b82f6" stroke-width="1.5"/>
+      <text x="320" y="218" text-anchor="middle" font-size="11" fill="#7dd3fc">④ 展开 immediate 上下文元素</text>
+      <path d="M320 179 L320 197" stroke="#64748b" stroke-width="1.5" marker-end="url(#gb)"/>
+      <text x="308" y="193" font-size="10" fill="#ef4444">否</text>
+      <defs><marker id="gb" markerWidth="7" markerHeight="7" refX="5" refY="3" orient="auto"><path d="M0,0 L0,6 L7,3 z" fill="#64748b"/></marker></defs>
+
+      <rect x="220" y="247" width="200" height="32" rx="6" fill="#1e293b" stroke="#3b82f6" stroke-width="1.5"/>
+      <text x="320" y="263" text-anchor="middle" font-size="11" fill="#7dd3fc">⑤ 扫描 : 或 = 分隔符</text>
+      <text x="320" y="276" text-anchor="middle" font-size="10" fill="#64748b">判断：赋值 or 规则</text>
+      <path d="M320 229 L320 247" stroke="#64748b" stroke-width="1.5" marker-end="url(#gb)"/>
+
+      <rect x="220" y="297" width="200" height="20" rx="6" fill="#334155" stroke="#475569" stroke-width="1"/>
+      <text x="320" y="311" text-anchor="middle" font-size="11" fill="#94a3b8">⑥ 内化结果 → 下一行</text>
+      <path d="M320 279 L320 297" stroke="#64748b" stroke-width="1.5" marker-end="url(#gb)"/>
+
+      <!-- connect arrows -->
+      <path d="M320 67 L320 85" stroke="#64748b" stroke-width="1.5" marker-end="url(#gb)"/>
+      <path d="M320 117 L320 135" stroke="#64748b" stroke-width="1.5" marker-end="url(#gb)"/>
+
+      <!-- loop back -->
+      <path d="M540 177 L580 177 L580 52 L420 52" stroke="#94a3b8" stroke-width="1" stroke-dasharray="4,3" marker-end="url(#gc)"/>
+      <defs><marker id="gc" markerWidth="7" markerHeight="7" refX="5" refY="3" orient="auto"><path d="M0,0 L0,6 L7,3 z" fill="#94a3b8"/></marker></defs>
+      <text x="585" y="115" font-size="10" fill="#94a3b8" transform="rotate(90,585,115)">读下一行</text>
+    </svg>
+    <div class="diagram-caption">图3：Makefile 逐行解析子流程（来源：§3.8 How Makefiles Are Parsed）</div>
+  </div>
+
+  <div class="chapter-nav">
+    <button class="chapter-nav-btn" onclick="showSection('step2')">← 上一节：步骤2</button>
+    <button class="chapter-nav-btn" onclick="showSection('step4')">下一节：步骤4 变量展开 →</button>
+  </div>
+</section>
+
+<!-- ===================== STEP 4 ===================== -->
+<section id="sec-step4" class="section">
+  <h1>步骤 4：变量内化与展开</h1>
+  <p class="section-subtitle">Phase 1 · §3.7 How make Reads a Makefile · §6 How to Use Variables</p>
+
+  <a class="source-link" href="https://www.gnu.org/software/make/manual/html_node/Reading-Makefiles.html" target="_blank">
+    <svg width="12" height="12" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><path d="M10 6H6a2 2 0 00-2 2v10a2 2 0 002 2h10a2 2 0 002-2v-4M14 4h6m0 0v6m0-6L10 14"/></svg>
+    官方原文：§3.7 Reading Makefiles · §6 Variables — gnu.org
+  </a>
+
+  <div class="step-box">
+    <div class="step-header">
+      <div class="step-num">4</div>
+      <div class="step-title">变量内化与展开时机</div>
+      <span class="step-badge badge-phase1">Phase 1 关键</span>
+    </div>
+    <div class="step-body">
+      <p>官方手册定义了两种展开时机：</p>
+      <ul>
+        <li><strong>Immediate（立即展开）</strong>：在第一阶段 Makefile 被解析时立即展开</li>
+        <li><strong>Deferred（延迟展开）</strong>：推迟到被引用时（immediate 上下文中），或在第二阶段执行时展开</li>
+      </ul>
+    </div>
+  </div>
+
+  <h2>变量赋值的展开规则</h2>
+  <p>官方手册 §3.7 给出了所有赋值运算符的展开规则：</p>
+
+  <div class="table-wrap expand-table">
+    <table>
+      <tr><th>赋值语法</th><th>左侧（名称）</th><th>右侧（值）</th><th>说明</th></tr>
+      <tr><td><code>VAR = value</code></td><td><span class="imm">立即</span></td><td><span class="def">延迟</span></td><td>递归展开变量（每次引用时展开）</td></tr>
+      <tr><td><code>VAR ?= value</code></td><td><span class="imm">立即</span></td><td><span class="def">延迟</span></td><td>条件赋值（未定义时才赋值）</td></tr>
+      <tr><td><code>VAR := value</code></td><td><span class="imm">立即</span></td><td><span class="imm">立即</span></td><td>简单展开变量（赋值时立即展开）</td></tr>
+      <tr><td><code>VAR ::= value</code></td><td><span class="imm">立即</span></td><td><span class="imm">立即</span></td><td>POSIX 标准的立即展开赋值</td></tr>
+      <tr><td><code>VAR :::= value</code></td><td><span class="imm">立即</span></td><td><span class="imm">立即后转义</span></td><td>展开后将 <code>$</code> 替换为 <code>$$</code></td></tr>
+      <tr><td><code>VAR += value</code></td><td><span class="imm">立即</span></td><td>视情况而定</td><td>若之前是 <code>:=</code> 则立即；否则延迟</td></tr>
+      <tr><td><code>VAR != cmd</code></td><td><span class="imm">立即</span></td><td><span class="imm">立即（shell）</span></td><td>Shell 赋值，右侧交给 shell 执行</td></tr>
+    </table>
+  </div>
+
+  <h2>规则定义的展开规则</h2>
+  <div class="callout callout-info">
+    <strong>官方原文（§3.7 Rule Definition）：</strong><br>
+    "A rule is always expanded the same way, regardless of the form:<br>
+    <code>immediate : immediate ; deferred</code><br>
+    <code>⇥ deferred</code><br>
+    That is, the target and prerequisite sections are expanded immediately, and the recipe used to build the target is always deferred."
+  </div>
+
+  <pre><span class="cm"># 目标和先决条件：立即展开</span>
+<span class="va">$(TARGET)</span> : <span class="va">$(DEPS)</span>
+    <span class="cm"># recipe 内容：延迟展开（第二阶段执行前才展开）</span>
+    <span class="va">$(CC)</span> <span class="op">-o</span> <span class="va">$@</span> <span class="va">$^</span></pre>
+
+  <h2>条件指令</h2>
+  <div class="callout callout-warn">
+    <strong>官方原文：</strong><br>
+    "Conditional directives are parsed immediately. This means, for example, that automatic variables cannot be used in conditional directives, as automatic variables are not set until the recipe for that rule is invoked."
+  </div>
+
+  <pre><span class="cm"># 正确：条件指令可以使用普通变量</span>
+<span class="kw">ifdef</span> DEBUG
+CFLAGS += -g
+<span class="kw">endif</span>
+
+<span class="cm"># 错误！自动变量 $@ 在条件指令中不可用（解析时尚未设置）</span>
+<span class="cm"># ifeq ($@, target)   ← 这是错误用法</span>
+<span class="cm">#     ...             ← 应在 recipe 中用 shell 条件语句代替</span>
+<span class="cm"># endif</span></pre>
+
+  <h2>如何查看变量展开结果</h2>
+  <div class="cmd-grid">
+    <div class="cmd-card">
+      <code>make -p | grep "^VAR"</code>
+      <p>在 make 数据库中查看特定变量最终值</p>
+    </div>
+    <div class="cmd-card">
+      <code>$(info VAR=$(VAR))</code>
+      <p>在 Makefile 中插入 info 函数，解析时打印变量值</p>
+    </div>
+    <div class="cmd-card">
+      <code>$(warning ...)</code>
+      <p>输出警告信息（含文件名和行号），不中断执行</p>
+    </div>
+    <div class="cmd-card">
+      <code>$(error ...)</code>
+      <p>输出错误并终止 make（用于调试时验证变量）</p>
+    </div>
+  </div>
+
+  <h3>实用调试示例</h3>
+  <pre><span class="cm"># 在 Makefile 中插入，查看变量展开时的值</span>
+<span class="va">SRCS</span> := <span class="va">$(wildcard</span> *.c<span class="va">)</span>
+<span class="va">$(info</span> SRCS is: <span class="va">$(SRCS))</span>   <span class="cm"># 第一阶段解析时立即打印</span>
+
+all: <span class="va">$(SRCS:.c=.o)</span>
+    <span class="va">$(info</span> Building $@<span class="va">)</span>    <span class="cm"># 第二阶段执行时打印</span>
+    <span class="va">$(CC)</span> <span class="op">-o</span> <span class="va">$@</span> <span class="va">$^</span></pre>
+
+  <div class="chapter-nav">
+    <button class="chapter-nav-btn" onclick="showSection('step3')">← 上一节：步骤3</button>
+    <button class="chapter-nav-btn" onclick="showSection('step5')">下一节：步骤5 依赖图 →</button>
+  </div>
+</section>
+
+<!-- ===================== STEP 5 ===================== -->
+<section id="sec-step5" class="section">
+  <h1>步骤 5：规则内化与依赖图构建</h1>
+  <p class="section-subtitle">Phase 1 · §3.7 · §4 Writing Rules</p>
+
+  <a class="source-link" href="https://www.gnu.org/software/make/manual/html_node/Reading-Makefiles.html" target="_blank">
+    <svg width="12" height="12" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><path d="M10 6H6a2 2 0 00-2 2v10a2 2 0 002 2h10a2 2 0 002-2v-4M14 4h6m0 0v6m0-6L10 14"/></svg>
+    官方原文：§3.7 · §4 Writing Rules — gnu.org
+  </a>
+
+  <div class="step-box">
+    <div class="step-header">
+      <div class="step-num">5</div>
+      <div class="step-title">构建内部依赖图（Dependency Graph）</div>
+      <span class="step-badge badge-phase1">Phase 1 核心</span>
+    </div>
+    <div class="step-body">
+      <p>第一阶段结束时，Make 完成了内部数据库的构建，其中最重要的结构是<strong>依赖图</strong>：</p>
+      <ul>
+        <li>每个 <strong>目标（target）</strong> 对应图中一个节点</li>
+        <li>每个 <strong>先决条件（prerequisite）</strong> 构成有向边</li>
+        <li>每个节点关联对应的 <strong>recipe（配方）</strong></li>
+        <li>隐式规则的先决条件也在此阶段被检索并加入图中</li>
+      </ul>
+    </div>
+  </div>
+
+  <h2>依赖图示例</h2>
+  <p>以下是一个经典 C 项目 Makefile 对应的依赖图：</p>
+
+  <div class="diagram-wrap">
+    <svg width="680" height="300" viewBox="0 0 680 300" xmlns="http://www.w3.org/2000/svg" font-family="system-ui,sans-serif">
+      <!-- Legend -->
+      <rect x="500" y="15" width="12" height="12" rx="2" fill="#1e40af"/>
+      <text x="516" y="25" font-size="10" fill="#64748b">目标节点</text>
+      <rect x="500" y="32" width="12" height="12" rx="2" fill="#14532d"/>
+      <text x="516" y="42" font-size="10" fill="#64748b">源文件</text>
+
+      <!-- Root: edit -->
+      <rect x="280" y="20" width="120" height="40" rx="8" fill="#1e3a5f" stroke="#3b82f6" stroke-width="2"/>
+      <text x="340" y="36" text-anchor="middle" font-size="12" font-weight="700" fill="#7dd3fc">edit</text>
+      <text x="340" y="51" text-anchor="middle" font-size="10" fill="#64748b">默认 Goal</text>
+
+      <!-- Level 1: .o files -->
+      <rect x="30" y="110" width="80" height="36" rx="6" fill="#1e293b" stroke="#3b82f6" stroke-width="1.5"/>
+      <text x="70" y="133" text-anchor="middle" font-size="11" fill="#93c5fd">main.o</text>
+
+      <rect x="135" y="110" width="80" height="36" rx="6" fill="#1e293b" stroke="#3b82f6" stroke-width="1.5"/>
+      <text x="175" y="133" text-anchor="middle" font-size="11" fill="#93c5fd">kbd.o</text>
+
+      <rect x="240" y="110" width="90" height="36" rx="6" fill="#1e293b" stroke="#3b82f6" stroke-width="1.5"/>
+      <text x="285" y="133" text-anchor="middle" font-size="11" fill="#93c5fd">command.o</text>
+
+      <rect x="350" y="110" width="80" height="36" rx="6" fill="#1e293b" stroke="#3b82f6" stroke-width="1.5"/>
+      <text x="390" y="133" text-anchor="middle" font-size="11" fill="#93c5fd">display.o</text>
+
+      <rect x="450" y="110" width="80" height="36" rx="6" fill="#1e293b" stroke="#3b82f6" stroke-width="1.5"/>
+      <text x="490" y="133" text-anchor="middle" font-size="11" fill="#93c5fd">files.o</text>
+
+      <rect x="548" y="110" width="80" height="36" rx="6" fill="#1e293b" stroke="#3b82f6" stroke-width="1.5"/>
+      <text x="588" y="133" text-anchor="middle" font-size="11" fill="#93c5fd">insert.o</text>
+
+      <!-- Arrows from edit to .o -->
+      <path d="M300 60 L85 110" stroke="#64748b" stroke-width="1.2" marker-end="url(#da)"/>
+      <path d="M315 60 L188 110" stroke="#64748b" stroke-width="1.2" marker-end="url(#da)"/>
+      <path d="M330 60 L285 110" stroke="#64748b" stroke-width="1.2" marker-end="url(#da)"/>
+      <path d="M355 60 L390 110" stroke="#64748b" stroke-width="1.2" marker-end="url(#da)"/>
+      <path d="M370 60 L490 110" stroke="#64748b" stroke-width="1.2" marker-end="url(#da)"/>
+      <path d="M385 60 L588 110" stroke="#64748b" stroke-width="1.2" marker-end="url(#da)"/>
+      <defs><marker id="da" markerWidth="7" markerHeight="7" refX="5" refY="3" orient="auto"><path d="M0,0 L0,6 L7,3 z" fill="#64748b"/></marker></defs>
+
+      <!-- Level 2: .c and .h -->
+      <rect x="20" y="210" width="70" height="30" rx="4" fill="#064e3b" stroke="#10b981" stroke-width="1"/>
+      <text x="55" y="229" text-anchor="middle" font-size="10" fill="#6ee7b7">main.c</text>
+
+      <rect x="100" y="210" width="70" height="30" rx="4" fill="#064e3b" stroke="#10b981" stroke-width="1"/>
+      <text x="135" y="229" text-anchor="middle" font-size="10" fill="#6ee7b7">kbd.c</text>
+
+      <rect x="185" y="210" width="80" height="30" rx="4" fill="#064e3b" stroke="#10b981" stroke-width="1"/>
+      <text x="225" y="229" text-anchor="middle" font-size="10" fill="#6ee7b7">command.c</text>
+
+      <rect x="280" y="210" width="80" height="30" rx="4" fill="#064e3b" stroke="#10b981" stroke-width="1"/>
+      <text x="320" y="229" text-anchor="middle" font-size="10" fill="#6ee7b7">display.c</text>
+
+      <rect x="375" y="210" width="70" height="30" rx="4" fill="#064e3b" stroke="#10b981" stroke-width="1"/>
+      <text x="410" y="229" text-anchor="middle" font-size="10" fill="#6ee7b7">files.c</text>
+
+      <rect x="460" y="210" width="70" height="30" rx="4" fill="#064e3b" stroke="#10b981" stroke-width="1"/>
+      <text x="495" y="229" text-anchor="middle" font-size="10" fill="#6ee7b7">insert.c</text>
+
+      <!-- header -->
+      <rect x="220" y="265" width="100" height="28" rx="4" fill="#422006" stroke="#f59e0b" stroke-width="1"/>
+      <text x="270" y="282" text-anchor="middle" font-size="10" fill="#fbbf24">defs.h</text>
+
+      <!-- .o to .c arrows -->
+      <path d="M55 146 L55 210" stroke="#10b981" stroke-width="1" stroke-dasharray="3,2" marker-end="url(#db)"/>
+      <path d="M165 146 L130 210" stroke="#10b981" stroke-width="1" stroke-dasharray="3,2" marker-end="url(#db)"/>
+      <path d="M280 146 L225 210" stroke="#10b981" stroke-width="1" stroke-dasharray="3,2" marker-end="url(#db)"/>
+      <path d="M380 146 L320 210" stroke="#10b981" stroke-width="1" stroke-dasharray="3,2" marker-end="url(#db)"/>
+      <path d="M480 146 L410 210" stroke="#10b981" stroke-width="1" stroke-dasharray="3,2" marker-end="url(#db)"/>
+      <path d="M570 146 L495 210" stroke="#10b981" stroke-width="1" stroke-dasharray="3,2" marker-end="url(#db)"/>
+      <defs><marker id="db" markerWidth="6" markerHeight="6" refX="4" refY="3" orient="auto"><path d="M0,0 L0,5 L6,3 z" fill="#10b981"/></marker></defs>
+
+      <!-- header arrows -->
+      <path d="M165 146 L270 265" stroke="#f59e0b" stroke-width="1" stroke-dasharray="3,2" marker-end="url(#dc)"/>
+      <path d="M280 146 L270 265" stroke="#f59e0b" stroke-width="1" stroke-dasharray="3,2" marker-end="url(#dc)"/>
+      <path d="M380 146 L270 265" stroke="#f59e0b" stroke-width="1" stroke-dasharray="3,2" marker-end="url(#dc)"/>
+      <defs><marker id="dc" markerWidth="6" markerHeight="6" refX="4" refY="3" orient="auto"><path d="M0,0 L0,5 L6,3 z" fill="#f59e0b"/></marker></defs>
+
+      <!-- recipe labels -->
+      <rect x="460" y="63" width="140" height="22" rx="4" fill="#0f172a" stroke="#475569" stroke-width="1"/>
+      <text x="530" y="77" text-anchor="middle" font-size="9" fill="#94a3b8">recipe: $(CC) -o $@ $^</text>
+      <path d="M400 62 L460 68" stroke="#475569" stroke-width="0.8" stroke-dasharray="3,2"/>
+
+      <rect x="0" y="163" width="130" height="22" rx="4" fill="#0f172a" stroke="#475569" stroke-width="1"/>
+      <text x="65" y="177" text-anchor="middle" font-size="9" fill="#94a3b8">recipe: $(CC) -c $< -o $@</text>
+      <path d="M55 146 L65 163" stroke="#475569" stroke-width="0.8" stroke-dasharray="3,2"/>
+    </svg>
+    <div class="diagram-caption">图4：依赖图示例 —— edit 项目（来源：GNU Make Manual §2.2）</div>
+  </div>
+
+  <h2>如何查看完整内部数据库</h2>
+  <pre>$ make -p 2>/dev/null
+<span class="cm"># 输出示例（节选）：</span>
+<span class="str"># Variables
+CC = cc
+CFLAGS =
+
+# Implicit Rules
+%.o : %.c
+#  recipe from built-in rule
+        $(CC) $(CPPFLAGS) $(CFLAGS) -c -o $@ $<
+
+# Files
+edit: main.o kbd.o command.o display.o files.o insert.o
+#  Makefile:2 (recipe)
+        cc -o edit main.o kbd.o command.o ...
+
+main.o: main.c defs.h
+        cc -c main.c -o main.o</span>
+
+<span class="cm"># 只看数据库，不执行任何构建：</span>
+$ make -qp 2>/dev/null | grep -A3 "^edit"</pre>
+
+  <div class="chapter-nav">
+    <button class="chapter-nav-btn" onclick="showSection('step4')">← 上一节：步骤4</button>
+    <button class="chapter-nav-btn" onclick="showSection('step6')">下一节：步骤6 重建 Makefile →</button>
+  </div>
+</section>
+
+<!-- ===================== STEP 6 ===================== -->
+<section id="sec-step6" class="section">
+  <h1>步骤 6：重建 Makefile 自身</h1>
+  <p class="section-subtitle">Phase 1 特殊步骤 · §3.5 How Makefiles Are Remade</p>
+
+  <a class="source-link" href="https://www.gnu.org/software/make/manual/html_node/Remaking-Makefiles.html" target="_blank">
+    <svg width="12" height="12" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><path d="M10 6H6a2 2 0 00-2 2v10a2 2 0 002 2h10a2 2 0 002-2v-4M14 4h6m0 0v6m0-6L10 14"/></svg>
+    官方原文：§3.5 How Makefiles Are Remade — gnu.org
+  </a>
+
+  <div class="step-box">
+    <div class="step-header">
+      <div class="step-num">6</div>
+      <div class="step-title">重建 Makefile 自身（Remaking Makefiles）</div>
+      <span class="step-badge badge-phase1">Phase 1 特殊</span>
+    </div>
+    <div class="step-body">
+      <div class="callout callout-info">
+        <strong>官方原文（§3.5）：</strong><br>
+        "To this end, after reading in all makefiles make will consider each as a goal target, in the order in which they were processed, and attempt to update it. [...] After all makefiles have been checked, if any have actually been changed, make starts with a clean slate and reads all the makefiles over again."
+      </div>
+      <p>这是一个很多人不知道的隐藏步骤：Make 读取所有 Makefile 后，会将每个 Makefile 文件本身视作一个构建目标，并尝试更新它。如果任何 Makefile 被重建，Make 会<strong>从头开始</strong>重新读取所有 Makefile。</p>
+    </div>
+  </div>
+
+  <h2>典型用途：自动依赖生成</h2>
+  <pre><span class="cm"># 常见模式：从编译器生成依赖文件后包含</span>
+<span class="kw">-include</span> <span class="va">$(SRCS:.c=.d)</span>
+
+<span class="cm"># 规则：生成 .d 依赖文件</span>
+<span class="va">%.d</span>: <span class="va">%.c</span>
+    <span class="va">$(CC)</span> <span class="op">-MM</span> <span class="va">$<</span> <span class="op">-MF</span> <span class="va">$@</span>
+
+<span class="cm"># 第一次 make 时：
+# 1. 读取 Makefile（.d 文件不存在，-include 忽略）
+# 2. 步骤6：尝试更新 .d 文件 → 执行 cc -MM 生成
+# 3. 发现 .d 文件改变 → 重新读取整个 Makefile
+# 4. 这次 include .d 文件成功 → 正确依赖</span></pre>
+
+  <h2>避免无限循环</h2>
+  <div class="callout callout-danger">
+    <strong>官方警告：</strong><br>
+    若 Makefile 有双冒号规则（<code>::</code>）且带有 recipe 但无先决条件，会在每次 make 时重建，导致无限循环。Make 特别处理此情况——<strong>不会</strong>尝试重建标记为 phony 或双冒号无先决条件的 Makefile。
+  </div>
+
+  <pre><span class="cm"># 优化：告知 Make 不需要重建 Makefile，提升启动速度</span>
+<span class="va">.PHONY</span>: Makefile
+<span class="cm"># 或：</span>
+Makefile::;</pre>
+
+  <h2>重建时的特殊规则</h2>
+  <p>官方手册特别指出：<code>-n</code>、<code>-t</code>、<code>-q</code> 选项<strong>不影响</strong> Makefile 自身的重建——即使处于 dry-run 模式，Makefile 也会被真实更新。</p>
+
+  <div class="callout callout-success">
+    <strong>可观测方法：</strong><br>
+    使用 <code>--debug=m</code> 选项，可以在重建 Makefile 阶段看到详细调试输出。
+  </div>
+
+  <pre><span class="cm"># 查看 Makefile 重建过程</span>
+$ make --debug=m
+<span class="str">Reading makefiles...
+Updating makefiles....
+ Considering target file 'Makefile'.
+  File 'Makefile' does not need to be rebuilt.
+Updating goal targets....
+...</span></pre>
+
+  <div class="chapter-nav">
+    <button class="chapter-nav-btn" onclick="showSection('step5')">← 上一节：步骤5</button>
+    <button class="chapter-nav-btn" onclick="showSection('step7')">下一节：步骤7 确定 Goal →</button>
+  </div>
+</section>
+
+<!-- ===================== STEP 7 ===================== -->
+<section id="sec-step7" class="section">
+  <h1>步骤 7：确定构建目标 (Goal)</h1>
+  <p class="section-subtitle">Phase 2 · §2.3 How make Processes a Makefile · §9.2 Arguments to Specify the Goals</p>
+
+  <a class="source-link" href="https://www.gnu.org/software/make/manual/html_node/How-Make-Works.html" target="_blank">
+    <svg width="12" height="12" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><path d="M10 6H6a2 2 0 00-2 2v10a2 2 0 002 2h10a2 2 0 002-2v-4M14 4h6m0 0v6m0-6L10 14"/></svg>
+    官方原文：§2.3 How make Processes a Makefile — gnu.org
+  </a>
+
+  <div class="step-box">
+    <div class="step-header">
+      <div class="step-num">7</div>
+      <div class="step-title">确定构建目标（Default Goal）</div>
+      <span class="step-badge badge-phase2">Phase 2</span>
+    </div>
+    <div class="step-body">
+      <div class="callout callout-info">
+        <strong>官方原文（§2.3）：</strong><br>
+        "By default, make starts with the first target (not targets whose names start with '.' unless they also contain one or more '/'). This is called the <strong>default goal</strong>. Goals are the targets that make strives ultimately to update."
+      </div>
+      <p>第二阶段开始，Make 需要确定要更新的最终目标（Goal）。</p>
+    </div>
+  </div>
+
+  <h2>Goal 确定的三种途径</h2>
+  <div class="table-wrap">
+    <table>
+      <tr><th>优先级</th><th>方式</th><th>示例</th></tr>
+      <tr><td>最高</td><td>命令行显式指定</td><td><code>make clean</code> / <code>make all test</code></td></tr>
+      <tr><td>次高</td><td><code>.DEFAULT_GOAL</code> 变量</td><td><code>.DEFAULT_GOAL := all</code></td></tr>
+      <tr><td>最低</td><td>Makefile 第一条显式规则的目标</td><td>排除 <code>.</code> 开头的目标名</td></tr>
+    </table>
+  </div>
+
+  <pre><span class="cm"># 使用 .DEFAULT_GOAL 覆盖默认行为</span>
+<span class="va">.DEFAULT_GOAL</span> := all
+
+<span class="cm"># 即使 help 定义在 all 前面，默认目标仍是 all</span>
+help:
+    @echo "Usage: make [target]"
+
+all: main.o
+    <span class="va">$(CC)</span> <span class="op">-o</span> program main.o</pre>
+
+  <h2>递归依赖处理算法</h2>
+  <p>官方手册 §2.3 描述了递归处理逻辑：</p>
+  <div class="diagram-wrap">
+    <svg width="620" height="360" viewBox="0 0 620 360" xmlns="http://www.w3.org/2000/svg" font-family="system-ui,sans-serif">
+      <text x="310" y="22" text-anchor="middle" font-size="12" font-weight="700" fill="#1e293b">目标更新递归算法（§2.3）</text>
+
+      <ellipse cx="310" cy="52" rx="90" ry="22" fill="#1e293b" stroke="#3b82f6" stroke-width="2"/>
+      <text x="310" y="57" text-anchor="middle" font-size="11" fill="#7dd3fc">处理目标 T</text>
+
+      <rect x="200" y="90" width="220" height="34" rx="8" fill="#fffbeb" stroke="#f59e0b" stroke-width="1.5"/>
+      <text x="310" y="112" text-anchor="middle" font-size="11" fill="#78350f">对每个先决条件 P，递归处理 P</text>
+      <path d="M310 74 L310 90" stroke="#64748b" stroke-width="1.5" marker-end="url(#ea)"/>
+      <defs><marker id="ea" markerWidth="7" markerHeight="7" refX="5" refY="3" orient="auto"><path d="M0,0 L0,6 L7,3 z" fill="#64748b"/></marker></defs>
+
+      <!-- Decision 1 -->
+      <polygon points="310,145 430,167 310,189 190,167" fill="#f8fafc" stroke="#94a3b8" stroke-width="1.5"/>
+      <text x="310" y="163" text-anchor="middle" font-size="10" fill="#1e293b">T 不存在？</text>
+      <text x="310" y="176" text-anchor="middle" font-size="10" fill="#1e293b">或 P 比 T 新？</text>
+      <path d="M310 124 L310 145" stroke="#64748b" stroke-width="1.5" marker-end="url(#ea)"/>
+
+      <!-- yes: run recipe -->
+      <rect x="460" y="155" width="140" height="34" rx="8" fill="#dcfce7" stroke="#22c55e" stroke-width="1.5"/>
+      <text x="530" y="175" text-anchor="middle" font-size="11" fill="#14532d">执行 T 的 Recipe</text>
+      <path d="M430 167 L460 167" stroke="#22c55e" stroke-width="1.5" marker-end="url(#eb)"/>
+      <text x="445" y="162" font-size="10" fill="#22c55e">是</text>
+      <defs><marker id="eb" markerWidth="7" markerHeight="7" refX="5" refY="3" orient="auto"><path d="M0,0 L0,6 L7,3 z" fill="#22c55e"/></marker></defs>
+
+      <!-- no: skip -->
+      <rect x="190" y="210" width="240" height="34" rx="8" fill="#f1f5f9" stroke="#94a3b8" stroke-width="1.5"/>
+      <text x="310" y="232" text-anchor="middle" font-size="11" fill="#475569">T 已是最新，无需更新</text>
+      <path d="M310 189 L310 210" stroke="#64748b" stroke-width="1.5" marker-end="url(#ea)"/>
+      <text x="296" y="204" font-size="10" fill="#ef4444">否</text>
+
+      <!-- examples -->
+      <rect x="20" y="265" width="580" height="80" rx="8" fill="#0f172a" stroke="#334155" stroke-width="1"/>
+      <text x="310" y="283" text-anchor="middle" font-size="11" font-weight="700" fill="#7dd3fc">官方示例说明</text>
+      <text x="36" y="300" font-size="10" fill="#94a3b8">若修改了 insert.c：make 编译 insert.o（更新），然后重链接 edit（insert.o 比 edit 新）</text>
+      <text x="36" y="316" font-size="10" fill="#94a3b8">若修改了 command.h：make 重编译 kbd.o、command.o、files.o，然后重链接 edit</text>
+      <text x="36" y="332" font-size="10" fill="#94a3b8">若 .c .h 文件无更改：make 打印 "Nothing to be done for 'all'"</text>
+    </svg>
+    <div class="diagram-caption">图5：目标更新递归算法（来源：§2.3）</div>
+  </div>
+
+  <h2>如何观测 Goal 确定过程</h2>
+  <div class="cmd-grid">
+    <div class="cmd-card">
+      <code>make --debug=b</code>
+      <p>basic 调试：显示哪些目标过期需要重建，以及构建是否成功</p>
+    </div>
+    <div class="cmd-card">
+      <code>make --debug=w</code>
+      <p>why 调试：解释每个目标为什么需要被重建（哪个先决条件更新了）</p>
+    </div>
+    <div class="cmd-card">
+      <code>make -q [target]</code>
+      <p>Question 模式：不执行任何操作，返回码 0=已最新，1=需重建，2=错误</p>
+    </div>
+    <div class="cmd-card">
+      <code>make --trace</code>
+      <p>等同于 --debug=print,why，显示每个目标的处置信息</p>
+    </div>
+  </div>
+
+  <div class="chapter-nav">
+    <button class="chapter-nav-btn" onclick="showSection('step6')">← 上一节：步骤6</button>
+    <button class="chapter-nav-btn" onclick="showSection('step8')">下一节：步骤8 隐式规则 →</button>
+  </div>
+</section>
+
+<!-- ===================== STEP 8 ===================== -->
+<section id="sec-step8" class="section">
+  <h1>步骤 8：隐式规则搜索算法</h1>
+  <p class="section-subtitle">Phase 2 · §10.8 Implicit Rule Search Algorithm</p>
+
+  <a class="source-link" href="https://www.gnu.org/software/make/manual/html_node/Implicit-Rule-Search.html" target="_blank">
+    <svg width="12" height="12" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><path d="M10 6H6a2 2 0 00-2 2v10a2 2 0 002 2h10a2 2 0 002-2v-4M14 4h6m0 0v6m0-6L10 14"/></svg>
+    官方原文：§10.8 Implicit Rule Search Algorithm — gnu.org
+  </a>
+
+  <div class="step-box">
+    <div class="step-header">
+      <div class="step-num">8</div>
+      <div class="step-title">隐式规则搜索算法</div>
+      <span class="step-badge badge-phase2">Phase 2</span>
+    </div>
+    <div class="step-body">
+      <p>当一个目标没有显式 recipe 时，Make 会按照以下算法搜索适用的隐式规则（§10.8 完整算法）：</p>
+      <ol>
+        <li>将目标 <code>t</code> 分为目录部分 <code>d</code> 和其余部分 <code>n</code></li>
+        <li>列出所有匹配 <code>t</code> 或 <code>n</code> 的模式规则</li>
+        <li>若列表中有非通配规则，移除所有通配规则（<code>%: %</code>）</li>
+        <li>移除所有无 recipe 的规则</li>
+        <li>对每条候选规则，找出 stem（<code>%</code> 匹配的部分），计算先决条件名，检查先决条件是否存在或应该存在</li>
+        <li>若步骤5未找到，尝试递归——检查先决条件是否可由其他隐式规则生成（规则链）</li>
+        <li>若仍未找到，再次以放宽的"应该存在"定义重试步骤5和6（向后兼容）</li>
+        <li>若仍无适用规则，使用 <code>.DEFAULT</code> 规则（若存在）</li>
+      </ol>
+    </div>
+  </div>
+
+  <h2>常见内置隐式规则</h2>
+  <div class="table-wrap">
+    <table>
+      <tr><th>模式</th><th>触发条件</th><th>默认 Recipe</th></tr>
+      <tr><td><code>%.o: %.c</code></td><td>存在 <code>foo.c</code></td><td><code>$(CC) $(CPPFLAGS) $(CFLAGS) -c -o $@ $&lt;</code></td></tr>
+      <tr><td><code>%.o: %.cc</code></td><td>存在 <code>foo.cc</code></td><td><code>$(CXX) $(CPPFLAGS) $(CXXFLAGS) -c -o $@ $&lt;</code></td></tr>
+      <tr><td><code>%.o: %.f</code></td><td>存在 <code>foo.f</code></td><td><code>$(FC) $(FFLAGS) -c -o $@ $&lt;</code></td></tr>
+      <tr><td><code>%: %.o</code></td><td>存在 <code>foo.o</code></td><td><code>$(CC) $(LDFLAGS) $^ $(LOADLIBES) $(LDLIBS) -o $@</code></td></tr>
+      <tr><td><code>%.c: %.y</code></td><td>存在 <code>foo.y</code> (yacc)</td><td><code>$(YACC) $(YFLAGS) -o $@ $&lt;</code></td></tr>
+    </table>
+  </div>
+
+  <h2>隐式规则链（Chained Rules）</h2>
+  <p>Make 可以自动创建规则链。例如，若存在 <code>foo.y</code>（Yacc 文件），Make 可以：</p>
+  <pre>foo.y → foo.c  <span class="cm">(yacc 规则)</span>
+foo.c → foo.o  <span class="cm">(cc 编译规则)</span>
+foo.o → foo    <span class="cm">(链接规则)</span></pre>
+
+  <div class="callout callout-info">
+    <strong>官方说明（§10.4）：</strong> 中间文件（intermediate files）会在构建完成后自动删除，除非用 <code>.SECONDARY</code> 或 <code>.PRECIOUS</code> 标记保留。
+  </div>
+
+  <h2>观测隐式规则搜索过程</h2>
+  <pre><span class="cm"># --debug=i 专门显示隐式规则搜索</span>
+$ make --debug=i main.o
+<span class="str">Trying pattern rule with stem 'main'.
+Trying implicit prerequisite 'main.c'.
+Found an implicit rule for target 'main.o'.
+  Using pattern rule for %.o from %.c.</span>
+
+<span class="cm"># 查看所有内置隐式规则</span>
+$ make -p -f /dev/null 2>/dev/null | grep "^%"
+<span class="str">%.o : %.c
+%.o : %.cc
+%.o : %.cpp</span></pre>
+
+  <div class="chapter-nav">
+    <button class="chapter-nav-btn" onclick="showSection('step7')">← 上一节：步骤7</button>
+    <button class="chapter-nav-btn" onclick="showSection('step9')">下一节：步骤9 时间戳比较 →</button>
+  </div>
+</section>
+
+<!-- ===================== STEP 9 ===================== -->
+<section id="sec-step9" class="section">
+  <h1>步骤 9：时间戳比较（mtime）</h1>
+  <p class="section-subtitle">Phase 2 · §2.3 · §4.3 Types of Prerequisites</p>
+
+  <a class="source-link" href="https://www.gnu.org/software/make/manual/html_node/How-Make-Works.html" target="_blank">
+    <svg width="12" height="12" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><path d="M10 6H6a2 2 0 00-2 2v10a2 2 0 002 2h10a2 2 0 002-2v-4M14 4h6m0 0v6m0-6L10 14"/></svg>
+    官方原文：§2.3 · §4.3 Types of Prerequisites — gnu.org
+  </a>
+
+  <div class="step-box">
+    <div class="step-header">
+      <div class="step-num">9</div>
+      <div class="step-title">时间戳比较（mtime 检查）</div>
+      <span class="step-badge badge-phase2">Phase 2 核心</span>
+    </div>
+    <div class="step-body">
+      <p>Make 决定是否重建目标的核心依据是文件的<strong>最后修改时间（mtime）</strong>。以下任一条件成立，目标就需要重建：</p>
+      <ol>
+        <li><strong>目标文件不存在</strong></li>
+        <li><strong>任意先决条件的 mtime 比目标文件的 mtime 更新</strong></li>
+      </ol>
+      <div class="callout callout-info">
+        <strong>官方原文：</strong><br>
+        "The recompilation must be done if the source file, or any of the header files named as prerequisites, is more recent than the object file, or if the object file does not exist."
+      </div>
+    </div>
+  </div>
+
+  <h2>两类先决条件</h2>
+  <p>官方手册 §4.3 定义了两种先决条件类型：</p>
+  <div class="table-wrap">
+    <table>
+      <tr><th>类型</th><th>语法</th><th>触发条件</th><th>说明</th></tr>
+      <tr><td><strong>普通先决条件</strong><br>(Normal Prerequisites)</td><td><code>target: P1 P2</code></td><td>P 比目标新 → 重建目标</td><td>影响构建顺序 + 触发重建</td></tr>
+      <tr><td><strong>仅序先决条件</strong><br>(Order-only Prerequisites)</td><td><code>target: P1 | P2</code></td><td>P 比目标新 → <strong>不触发</strong>重建</td><td>仅保证 P 先被处理，不触发时间戳检查</td></tr>
+    </table>
+  </div>
+
+  <pre><span class="cm"># 普通先决条件：config.mk 更新会触发重建</span>
+output.txt: input.txt config.mk
+    process $< > $@
+
+<span class="cm"># 仅序先决条件：obj/ 目录必须先存在，但目录时间戳不触发重建</span>
+main.o: main.c | obj/
+    <span class="va">$(CC)</span> <span class="op">-c</span> main.c <span class="op">-o</span> obj/main.o
+
+obj/:
+    mkdir -p obj/</pre>
+
+  <h2>时间戳比较流程</h2>
+  <div class="diagram-wrap">
+    <svg width="620" height="280" viewBox="0 0 620 280" xmlns="http://www.w3.org/2000/svg" font-family="system-ui,sans-serif">
+      <text x="310" y="22" text-anchor="middle" font-size="12" font-weight="700" fill="#1e293b">时间戳比较决策树</text>
+
+      <!-- Start -->
+      <ellipse cx="310" cy="52" rx="90" ry="20" fill="#1e293b" stroke="#3b82f6" stroke-width="2"/>
+      <text x="310" y="57" text-anchor="middle" font-size="11" fill="#7dd3fc">需要更新目标 T？</text>
+
+      <!-- Q1 -->
+      <polygon points="310,90 430,112 310,134 190,112" fill="#fffbeb" stroke="#f59e0b" stroke-width="1.5"/>
+      <text x="310" y="108" text-anchor="middle" font-size="10" fill="#78350f">T 文件</text>
+      <text x="310" y="121" text-anchor="middle" font-size="10" fill="#78350f">是否存在？</text>
+      <path d="M310 72 L310 90" stroke="#64748b" stroke-width="1.5" marker-end="url(#fa)"/>
+      <defs><marker id="fa" markerWidth="7" markerHeight="7" refX="5" refY="3" orient="auto"><path d="M0,0 L0,6 L7,3 z" fill="#64748b"/></marker></defs>
+
+      <!-- No: must build -->
+      <rect x="10" y="100" width="150" height="34" rx="8" fill="#fef2f2" stroke="#ef4444" stroke-width="1.5"/>
+      <text x="85" y="120" text-anchor="middle" font-size="11" fill="#dc2626">⚡ 必须构建</text>
+      <text x="85" y="132" text-anchor="middle" font-size="10" fill="#94a3b8">目标不存在</text>
+      <path d="M190 112 L160 112" stroke="#ef4444" stroke-width="1.5" marker-end="url(#fb)"/>
+      <text x="175" y="107" font-size="10" fill="#ef4444">否</text>
+      <defs><marker id="fb" markerWidth="7" markerHeight="7" refX="5" refY="3" orient="auto"><path d="M0,0 L0,6 L7,3 z" fill="#ef4444"/></marker></defs>
+
+      <!-- Yes: check prereqs -->
+      <polygon points="310,155 440,177 310,199 180,177" fill="#f8fafc" stroke="#94a3b8" stroke-width="1.5"/>
+      <text x="310" y="173" text-anchor="middle" font-size="10" fill="#1e293b">任意普通先决条件</text>
+      <text x="310" y="186" text-anchor="middle" font-size="10" fill="#1e293b">mtime &gt; T 的 mtime？</text>
+      <path d="M310 134 L310 155" stroke="#64748b" stroke-width="1.5" marker-end="url(#fa)"/>
+      <text x="325" y="149" font-size="10" fill="#22c55e">是</text>
+
+      <!-- Yes: needs rebuild -->
+      <rect x="460" y="165" width="150" height="34" rx="8" fill="#fef2f2" stroke="#ef4444" stroke-width="1.5"/>
+      <text x="535" y="185" text-anchor="middle" font-size="11" fill="#dc2626">⚡ 需要重建</text>
+      <text x="535" y="197" text-anchor="middle" font-size="10" fill="#94a3b8">先决条件更新</text>
+      <path d="M440 177 L460 177" stroke="#ef4444" stroke-width="1.5" marker-end="url(#fb)"/>
+      <text x="450" y="172" font-size="10" fill="#ef4444">是</text>
+
+      <!-- No: up to date -->
+      <rect x="185" y="218" width="250" height="34" rx="8" fill="#dcfce7" stroke="#22c55e" stroke-width="1.5"/>
+      <text x="310" y="238" text-anchor="middle" font-size="11" fill="#14532d">✓ T 已是最新（up to date）</text>
+      <text x="310" y="250" text-anchor="middle" font-size="10" fill="#64748b">跳过，不执行 Recipe</text>
+      <path d="M310 199 L310 218" stroke="#64748b" stroke-width="1.5" marker-end="url(#fa)"/>
+      <text x="296" y="213" font-size="10" fill="#22c55e">否</text>
+    </svg>
+    <div class="diagram-caption">图6：时间戳比较决策树（来源：§2.3 · §4.3）</div>
+  </div>
+
+  <h2>如何观测时间戳比较</h2>
+  <div class="cmd-grid">
+    <div class="cmd-card">
+      <code>make --debug=w target</code>
+      <p>显示每个目标需要重建的原因（"why"），包含哪个先决条件比目标新</p>
+    </div>
+    <div class="cmd-card">
+      <code>make --debug=b target</code>
+      <p>基本调试：显示哪些目标被认为过期（out-of-date）</p>
+    </div>
+    <div class="cmd-card">
+      <code>make -q target; echo $?</code>
+      <p>返回码：0=已最新，1=需更新。不执行任何命令</p>
+    </div>
+    <div class="cmd-card">
+      <code>make -d 2>&amp;1 | grep "newer"</code>
+      <p>全量调试，过滤"newer than"相关的时间戳比较信息</p>
+    </div>
+  </div>
+
+  <h3>--debug=w 输出示例</h3>
+  <pre>$ make --debug=w
+<span class="str">  Considering target file 'main.o'.
+   File 'main.o' does not exist.
+    Considering target file 'main.c'.
+    Looking for an implicit rule for 'main.c'.
+    No implicit rule found for 'main.c'.
+    Finished prerequisites of target file 'main.c'.
+    No recipe for 'main.c' and no prerequisites actually changed.
+   Prerequisite 'main.c' is newer than target 'main.o'.
+  Must remake target 'main.o'.</span></pre>
+
+  <div class="chapter-nav">
+    <button class="chapter-nav-btn" onclick="showSection('step8')">← 上一节：步骤8</button>
+    <button class="chapter-nav-btn" onclick="showSection('step10')">下一节：步骤10 执行 Recipe →</button>
+  </div>
+</section>
+
+<!-- ===================== STEP 10 ===================== -->
+<section id="sec-step10" class="section">
+  <h1>步骤 10：执行 Recipe（配方）</h1>
+  <p class="section-subtitle">Phase 2 · §5 Writing Recipes · §5.3 Recipe Execution</p>
+
+  <a class="source-link" href="https://www.gnu.org/software/make/manual/html_node/Execution.html" target="_blank">
+    <svg width="12" height="12" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><path d="M10 6H6a2 2 0 00-2 2v10a2 2 0 002 2h10a2 2 0 002-2v-4M14 4h6m0 0v6m0-6L10 14"/></svg>
+    官方原文：§5.3 Recipe Execution — gnu.org
+  </a>
+
+  <div class="step-box">
+    <div class="step-header">
+      <div class="step-num">10</div>
+      <div class="step-title">执行 Recipe —— Sub-Shell 调用</div>
+      <span class="step-badge badge-phase2">Phase 2 最终</span>
+    </div>
+    <div class="step-body">
+      <div class="callout callout-info">
+        <strong>官方原文（§5.3）：</strong><br>
+        "When it is time to execute recipes to update a target, they are executed by invoking a <strong>new sub-shell for each line of the recipe</strong>, unless the .ONESHELL special target is in effect."
+      </div>
+      <p>关键要点：</p>
+      <ul>
+        <li>每行 recipe <strong>在独立的子 shell</strong> 中执行（默认 <code>/bin/sh</code>）</li>
+        <li>因此，<code>cd</code>、设置环境变量等操作<strong>不会影响后续行</strong></li>
+        <li>使用 <code>.ONESHELL</code> 可让整个 recipe 在同一 shell 中运行</li>
+      </ul>
+    </div>
+  </div>
+
+  <h2>Recipe 执行机制详解</h2>
+  <pre><span class="cm"># 错误示例：cd 不影响下一行</span>
+wrong-target:
+    cd /tmp          <span class="cm"># sub-shell 1</span>
+    pwd              <span class="cm"># sub-shell 2，还是原目录！</span>
+
+<span class="cm"># 正确做法1：同一行用 && 连接</span>
+correct1:
+    cd /tmp && pwd   <span class="cm"># 同一 sub-shell</span>
+
+<span class="cm"># 正确做法2：续行</span>
+correct2:
+    cd /tmp; \
+    pwd              <span class="cm"># 同一 sub-shell（\ 续行）</span>
+
+<span class="cm"># 正确做法3：使用 .ONESHELL</span>
+<span class="va">.ONESHELL</span>:
+oneshell-target:
+    cd /tmp
+    pwd              <span class="cm"># 同一 shell 中执行，正确</span></pre>
+
+  <h2>Recipe 前缀字符的含义</h2>
+  <div class="table-wrap">
+    <table>
+      <tr><th>前缀</th><th>效果</th><th>示例</th></tr>
+      <tr><td><code>@</code></td><td>不回显命令（静默执行）</td><td><code>@echo "Done"</code> → 只输出 Done，不显示 echo 命令</td></tr>
+      <tr><td><code>-</code></td><td>忽略命令错误，继续执行</td><td><code>-rm *.o</code> → 删除失败也继续</td></tr>
+      <tr><td><code>+</code></td><td>即使 <code>-n</code> 模式也执行</td><td>递归 make 中使用</td></tr>
+    </table>
+  </div>
+
+  <h2>并行执行（Parallel Execution）</h2>
+  <p>官方手册 §5.4 介绍了并行构建：</p>
+  <div class="callout callout-info">
+    <strong>官方说明：</strong> 使用 <code>-j N</code> 选项，Make 会同时启动最多 N 个 recipe。互不依赖的目标可以并发构建，显著加速大型项目。
+  </div>
+
+  <pre><span class="cm"># 使用所有 CPU 核心并行构建</span>
+$ make -j$(nproc)
+
+<span class="cm"># 指定最多 4 个并行任务</span>
+$ make -j4
+
+<span class="cm"># 并行时保证各目标输出不混杂</span>
+$ make -j4 --output-sync=target</pre>
+
+  <h2>错误处理</h2>
+  <div class="table-wrap">
+    <table>
+      <tr><th>选项</th><th>行为</th></tr>
+      <tr><td>默认</td><td>recipe 返回非零退出码 → 立即停止，删除目标文件（除非 <code>.PRECIOUS</code>）</td></tr>
+      <tr><td><code>-k</code> / <code>--keep-going</code></td><td>发生错误后继续处理其他独立目标</td></tr>
+      <tr><td><code>-i</code> / <code>--ignore-errors</code></td><td>忽略所有错误</td></tr>
+      <tr><td>recipe 前加 <code>-</code></td><td>仅忽略该行的错误</td></tr>
+    </table>
+  </div>
+
+  <h2>如何观测 Recipe 执行</h2>
+  <div class="cmd-grid">
+    <div class="cmd-card">
+      <code>make -n</code>
+      <p>Dry-run：打印将要执行的命令，但不实际执行（--just-print / --dry-run）</p>
+    </div>
+    <div class="cmd-card">
+      <code>make --debug=j</code>
+      <p>显示每个子命令（job）的详细调用信息，包括 PID</p>
+    </div>
+    <div class="cmd-card">
+      <code>make --debug=p</code>
+      <p>即使命令前有 @ 也打印出来（print 模式）</p>
+    </div>
+    <div class="cmd-card">
+      <code>make -s</code>
+      <p>Silent 模式：完全静默，不打印任何命令</p>
+    </div>
+  </div>
+
+  <h3>-n Dry-run 示例</h3>
+  <pre>$ make -n
+<span class="str">cc -c -o main.o main.c
+cc -c -o kbd.o kbd.c
+cc -c -o command.o command.c
+cc -o edit main.o kbd.o command.o</span>
+
+<span class="cm"># --debug=j 显示 job 调用详情</span>
+$ make --debug=j
+<span class="str">Putting child 0x... (main.o) PID 12345 on the chain.
+Live child 0x... (main.o) PID 12345
+Reaping winning child 0x... PID 12345
+Successfully remade target file 'main.o'.</span></pre>
+
+  <div class="chapter-nav">
+    <button class="chapter-nav-btn" onclick="showSection('step9')">← 上一节：步骤9</button>
+    <button class="chapter-nav-btn" onclick="showSection('debug')">下一节：调试选项全览 →</button>
+  </div>
+</section>
+
+<!-- ===================== DEBUG ===================== -->
+<section id="sec-debug" class="section">
+  <h1>调试选项全览</h1>
+  <p class="section-subtitle">§9.8 Summary of Options · make -d / --debug</p>
+
+  <a class="source-link" href="https://www.gnu.org/software/make/manual/html_node/Options-Summary.html" target="_blank">
+    <svg width="12" height="12" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><path d="M10 6H6a2 2 0 00-2 2v10a2 2 0 002 2h10a2 2 0 002-2v-4M14 4h6m0 0v6m0-6L10 14"/></svg>
+    官方原文：§9.8 Summary of Options — gnu.org
+  </a>
+
+  <h2>--debug 选项的各级别</h2>
+  <p>官方手册 §9.8 完整定义了 <code>--debug</code> 的各个标志（仅第一个字母有效，可组合）：</p>
+
+  <div class="table-wrap">
+    <table>
+      <tr>
+        <th>标志</th><th>全名</th><th>含义</th><th>典型用途</th>
+      </tr>
+      <tr>
+        <td><span class="debug-tag">a</span></td>
+        <td>all</td>
+        <td>所有调试输出（等同于 <code>-d</code>）</td>
+        <td>全量分析</td>
+      </tr>
+      <tr>
+        <td><span class="debug-tag">b</span></td>
+        <td>basic</td>
+        <td>打印每个被认为过期的目标，以及构建是否成功</td>
+        <td>快速了解哪些目标需要重建</td>
+      </tr>
+      <tr>
+        <td><span class="debug-tag">v</span></td>
+        <td>verbose</td>
+        <td>basic 基础上增加：解析了哪些 Makefile、哪些先决条件不需要重建等</td>
+        <td>了解解析过程</td>
+      </tr>
+      <tr>
+        <td><span class="debug-tag">i</span></td>
+        <td>implicit</td>
+        <td>描述每个目标的隐式规则搜索过程</td>
+        <td>诊断为何找不到规则</td>
+      </tr>
+      <tr>
+        <td><span class="debug-tag">j</span></td>
+        <td>jobs</td>
+        <td>显示子命令调用的详细信息（PID、状态等）</td>
+        <td>并行构建调试</td>
+      </tr>
+      <tr>
+        <td><span class="debug-tag">m</span></td>
+        <td>makefile</td>
+        <td>在重建 Makefile 阶段也启用调试消息</td>
+        <td>调试 Makefile 自身重建</td>
+      </tr>
+      <tr>
+        <td><span class="debug-tag">p</span></td>
+        <td>print</td>
+        <td>即使 recipe 被 <code>@</code> 或 <code>.SILENT</code> 静默，也打印出来（含文件名和行号）</td>
+        <td>查看所有实际执行的命令</td>
+      </tr>
+      <tr>
+        <td><span class="debug-tag">w</span></td>
+        <td>why</td>
+        <td>解释为什么每个目标需要重建（哪个先决条件更新了）</td>
+        <td>诊断意外重建原因</td>
+      </tr>
+      <tr>
+        <td><span class="debug-tag">n</span></td>
+        <td>none</td>
+        <td>禁用所有之前启用的调试标志</td>
+        <td>重置调试状态</td>
+      </tr>
+    </table>
+  </div>
+
+  <h2>其他关键诊断选项</h2>
+  <div class="table-wrap">
+    <table>
+      <tr><th>选项</th><th>作用</th><th>使用场景</th></tr>
+      <tr><td><code>-d</code></td><td>等同于 <code>--debug=a</code>，最全量输出</td><td>深度调试</td></tr>
+      <tr><td><code>-p</code></td><td>打印内部数据库（规则 + 变量值），然后正常执行</td><td>查看最终变量值和规则</td></tr>
+      <tr><td><code>-n</code></td><td>Dry-run，打印命令但不执行</td><td>预览构建操作</td></tr>
+      <tr><td><code>-q</code></td><td>Question 模式，只返回退出码</td><td>脚本中检查是否需要构建</td></tr>
+      <tr><td><code>--trace</code></td><td>等同于 <code>--debug=print,why</code></td><td>追踪每个目标的处置</td></tr>
+      <tr><td><code>--warn-undefined-variables</code></td><td>引用未定义变量时发出警告</td><td>调试变量错误</td></tr>
+      <tr><td><code>-w</code></td><td>打印进入/离开目录的消息</td><td>递归 make 追踪</td></tr>
+    </table>
+  </div>
+
+  <h2>组合使用示例</h2>
+  <pre><span class="cm"># 最常用的调试组合：查看为什么重建 + 隐式规则搜索</span>
+$ make --debug=wi target
+
+<span class="cm"># 查看数据库，不执行构建</span>
+$ make -qp 2>/dev/null | grep -A5 "^target:"
+
+<span class="cm"># Dry-run + 显示静默命令</span>
+$ make -n --debug=p
+
+<span class="cm"># 仅查看内置规则（不读取任何 Makefile）</span>
+$ make -p -f /dev/null 2>/dev/null
+
+<span class="cm"># 追踪完整流程</span>
+$ make --debug=a 2>&amp;1 | tee make.log</pre>
+
+  <div class="chapter-nav">
+    <button class="chapter-nav-btn" onclick="showSection('step10')">← 上一节：步骤10</button>
+    <button class="chapter-nav-btn" onclick="showSection('observe')">下一节：每步结果查看 →</button>
+  </div>
+</section>
+
+<!-- ===================== OBSERVE ===================== -->
+<section id="sec-observe" class="section">
+  <h1>每步处理结果如何查看</h1>
+  <p class="section-subtitle">各步骤的可观测方法汇总</p>
+
+  <h2>完整对照表</h2>
+  <div class="table-wrap">
+    <table>
+      <tr>
+        <th>步骤</th><th>内部动作</th><th>查看命令</th><th>输出信息</th>
+      </tr>
+      <tr>
+        <td>① 初始化</td>
+        <td>加载内置规则和变量</td>
+        <td><code>make -p -f /dev/null</code></td>
+        <td>所有内置规则、预定义变量列表</td>
+      </tr>
+      <tr>
+        <td>② 查找文件</td>
+        <td>搜索并读取 Makefile</td>
+        <td><code>make --debug=v</code></td>
+        <td>"Reading makefile 'xxx'..."</td>
+      </tr>
+      <tr>
+        <td>③ 逐行解析</td>
+        <td>语法分析、指令处理</td>
+        <td><code>make --debug=v</code></td>
+        <td>verbose 模式显示解析详情</td>
+      </tr>
+      <tr>
+        <td>④ 变量展开</td>
+        <td>immediate/deferred 展开</td>
+        <td><code>$(info VAR=$(VAR))</code><br><code>make -p | grep "^VAR"</code></td>
+        <td>变量最终展开值</td>
+      </tr>
+      <tr>
+        <td>⑤ 依赖图</td>
+        <td>构建目标—先决条件图</td>
+        <td><code>make -p</code></td>
+        <td>完整规则数据库（含先决条件）</td>
+      </tr>
+      <tr>
+        <td>⑥ 重建 Makefile</td>
+        <td>检查并重建 Makefile 自身</td>
+        <td><code>make --debug=m</code></td>
+        <td>"Updating makefiles..."</td>
+      </tr>
+      <tr>
+        <td>⑦ 确定 Goal</td>
+        <td>选择默认/指定目标</td>
+        <td><code>make --debug=b</code></td>
+        <td>显示哪些目标被考虑更新</td>
+      </tr>
+      <tr>
+        <td>⑧ 隐式规则</td>
+        <td>搜索适用的隐式规则</td>
+        <td><code>make --debug=i</code></td>
+        <td>每个目标的隐式规则搜索过程</td>
+      </tr>
+      <tr>
+        <td>⑨ 时间戳比较</td>
+        <td>mtime 判断是否需要重建</td>
+        <td><code>make --debug=w</code><br><code>make -q; echo $?</code></td>
+        <td>"Prerequisite X is newer than Y"</td>
+      </tr>
+      <tr>
+        <td>⑩ 执行 Recipe</td>
+        <td>调用子 shell 执行命令</td>
+        <td><code>make -n</code><br><code>make --debug=j</code></td>
+        <td>实际执行的命令 / PID / 状态</td>
+      </tr>
+    </table>
+  </div>
+
+  <h2>实用调试工作流</h2>
+
+  <div class="step-box">
+    <div class="step-header">
+      <div class="step-num" style="background:#f59e0b">!</div>
+      <div class="step-title">问题：为什么目标被意外重建？</div>
+    </div>
+    <div class="step-body">
+      <pre><span class="cm"># 步骤1：查看是哪个先决条件更新了</span>
+$ make --debug=w target
+<span class="cm"># 输出中查找 "is newer than"</span>
+
+<span class="cm"># 步骤2：检查文件时间戳</span>
+$ ls -la main.c main.o
+
+<span class="cm"># 步骤3：用 -q 确认需要重建</span>
+$ make -q target; echo "exit: $?"</pre>
+    </div>
+  </div>
+
+  <div class="step-box">
+    <div class="step-header">
+      <div class="step-num" style="background:#f59e0b">!</div>
+      <div class="step-title">问题：隐式规则为何未被触发？</div>
+    </div>
+    <div class="step-body">
+      <pre><span class="cm"># 查看隐式规则搜索过程</span>
+$ make --debug=i target
+<span class="cm"># 查看所有可用的隐式规则</span>
+$ make -p -f /dev/null 2>/dev/null | grep -A3 "%.o"
+<span class="cm"># 检查文件名是否匹配模式</span>
+$ ls *.c</pre>
+    </div>
+  </div>
+
+  <div class="step-box">
+    <div class="step-header">
+      <div class="step-num" style="background:#f59e0b">!</div>
+      <div class="step-title">问题：变量值不符合预期？</div>
+    </div>
+    <div class="step-body">
+      <pre><span class="cm"># 方法1：在 Makefile 中插入 info</span>
+<span class="va">$(info</span> CC=$(CC) CFLAGS=$(CFLAGS)<span class="va">)</span>
+
+<span class="cm"># 方法2：用 -p 查看最终数据库</span>
+$ make -p 2>/dev/null | grep "^CFLAGS\|^CC"
+
+<span class="cm"># 方法3：警告未定义变量</span>
+$ make --warn-undefined-variables</pre>
+    </div>
+  </div>
+
+  <div class="chapter-nav">
+    <button class="chapter-nav-btn" onclick="showSection('debug')">← 上一节：调试选项</button>
+    <button class="chapter-nav-btn" onclick="showSection('flowchart')">下一节：完整流程图 →</button>
+  </div>
+</section>
+
+<!-- ===================== FLOWCHART ===================== -->
+<section id="sec-flowchart" class="section">
+  <h1>GNU Make 完整内部处理流程图</h1>
+  <p class="section-subtitle">基于官方文档 §2.3 · §3.5 · §3.7 · §3.8 · §10.8 综合整理</p>
+
+  <a class="source-link" href="https://www.gnu.org/software/make/manual/make.html" target="_blank">
+    <svg width="12" height="12" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><path d="M10 6H6a2 2 0 00-2 2v10a2 2 0 002 2h10a2 2 0 002-2v-4M14 4h6m0 0v6m0-6L10 14"/></svg>
+    官方原文：GNU Make Manual — gnu.org
+  </a>
+
+  <div class="diagram-wrap" style="overflow-x:auto;">
+    <svg width="700" height="980" viewBox="0 0 700 980" xmlns="http://www.w3.org/2000/svg" font-family="system-ui,sans-serif">
+
+      <!-- Phase 1 background -->
+      <rect x="10" y="10" width="680" height="540" rx="16" fill="#0f172a" stroke="#3b82f6" stroke-width="1.5" fill-opacity="0.5"/>
+      <text x="350" y="35" text-anchor="middle" font-size="14" font-weight="700" fill="#3b82f6">第一阶段（Phase 1）：读取 &amp; 解析</text>
+
+      <!-- Phase 2 background -->
+      <rect x="10" y="570" width="680" height="390" rx="16" fill="#0a1f0a" stroke="#22c55e" stroke-width="1.5" fill-opacity="0.5"/>
+      <text x="350" y="595" text-anchor="middle" font-size="14" font-weight="700" fill="#22c55e">第二阶段（Phase 2）：更新 &amp; 执行</text>
+
+      <!-- START -->
+      <ellipse cx="350" cy="62" rx="100" ry="22" fill="#1e3a5f" stroke="#60a5fa" stroke-width="2"/>
+      <text x="350" y="68" text-anchor="middle" font-size="13" font-weight="700" fill="#7dd3fc">用户执行 make</text>
+
+      <!-- Step 1 -->
+      <rect x="195" y="100" width="310" height="44" rx="8" fill="#1e2d4a" stroke="#3b82f6" stroke-width="1.5"/>
+      <text x="350" y="119" text-anchor="middle" font-size="12" font-weight="700" fill="#93c5fd">① 启动初始化</text>
+      <text x="350" y="136" text-anchor="middle" font-size="10" fill="#64748b">解析参数 · 加载内置规则 · 读取环境变量</text>
+      <path d="M350 84 L350 100" stroke="#60a5fa" stroke-width="1.5" marker-end="url(#mka)"/>
+      <defs><marker id="mka" markerWidth="7" markerHeight="7" refX="5" refY="3" orient="auto"><path d="M0,0 L0,6 L7,3 z" fill="#60a5fa"/></marker></defs>
+
+      <!-- Step 2 -->
+      <rect x="195" y="162" width="310" height="44" rx="8" fill="#1e2d4a" stroke="#3b82f6" stroke-width="1.5"/>
+      <text x="350" y="181" text-anchor="middle" font-size="12" font-weight="700" fill="#93c5fd">② 查找 Makefile</text>
+      <text x="350" y="198" text-anchor="middle" font-size="10" fill="#64748b">GNUmakefile → makefile → Makefile</text>
+      <path d="M350 144 L350 162" stroke="#60a5fa" stroke-width="1.5" marker-end="url(#mka)"/>
+
+      <!-- Step 3 -->
+      <rect x="195" y="224" width="310" height="44" rx="8" fill="#1e2d4a" stroke="#3b82f6" stroke-width="1.5"/>
+      <text x="350" y="243" text-anchor="middle" font-size="12" font-weight="700" fill="#93c5fd">③ 逐行解析 Makefile</text>
+      <text x="350" y="260" text-anchor="middle" font-size="10" fill="#64748b">读取逻辑行 · 去注释 · 分辨赋值/规则/指令</text>
+      <path d="M350 206 L350 224" stroke="#60a5fa" stroke-width="1.5" marker-end="url(#mka)"/>
+
+      <!-- include branch -->
+      <rect x="505" y="230" width="140" height="34" rx="6" fill="#1a2744" stroke="#6366f1" stroke-width="1"/>
+      <text x="575" y="245" text-anchor="middle" font-size="10" fill="#a5b4fc">遇到 include</text>
+      <text x="575" y="258" text-anchor="middle" font-size="10" fill="#a5b4fc">→ 递归读取</text>
+      <path d="M505 247 L505 247" stroke="#6366f1" stroke-width="1" stroke-dasharray="3,2"/>
+      <path d="M505 247 L505 247" stroke="transparent"/>
+      <line x1="505" y1="247" x2="505" y2="247" stroke="#6366f1"/>
+
+      <!-- Step 4 -->
+      <rect x="195" y="286" width="310" height="44" rx="8" fill="#1e2d4a" stroke="#3b82f6" stroke-width="1.5"/>
+      <text x="350" y="305" text-anchor="middle" font-size="12" font-weight="700" fill="#93c5fd">④ 变量内化与展开</text>
+      <text x="350" y="322" text-anchor="middle" font-size="10" fill="#64748b">immediate 立即展开 / deferred 延迟展开</text>
+      <path d="M350 268 L350 286" stroke="#60a5fa" stroke-width="1.5" marker-end="url(#mka)"/>
+
+      <!-- Step 5 -->
+      <rect x="195" y="348" width="310" height="44" rx="8" fill="#1e2d4a" stroke="#3b82f6" stroke-width="1.5"/>
+      <text x="350" y="367" text-anchor="middle" font-size="12" font-weight="700" fill="#93c5fd">⑤ 规则内化 · 构建依赖图</text>
+      <text x="350" y="384" text-anchor="middle" font-size="10" fill="#64748b">目标-先决条件图 + 关联 Recipe</text>
+      <path d="M350 330 L350 348" stroke="#60a5fa" stroke-width="1.5" marker-end="url(#mka)"/>
+
+      <!-- Step 6 -->
+      <rect x="195" y="410" width="310" height="44" rx="8" fill="#1e2d4a" stroke="#3b82f6" stroke-width="1.5"/>
+      <text x="350" y="429" text-anchor="middle" font-size="12" font-weight="700" fill="#93c5fd">⑥ 尝试重建 Makefile 自身</text>
+      <text x="350" y="446" text-anchor="middle" font-size="10" fill="#64748b">若 Makefile 被更新 → 重新从①开始</text>
+      <path d="M350 392 L350 410" stroke="#60a5fa" stroke-width="1.5" marker-end="url(#mka)"/>
+
+      <!-- Restart loop arrow -->
+      <path d="M195 432 L140 432 L140 62 L250 62" stroke="#6366f1" stroke-width="1" stroke-dasharray="4,3" marker-end="url(#mkb)"/>
+      <text x="125" y="260" font-size="9" fill="#818cf8" transform="rotate(-90,125,260)">Makefile 改变 → 重启</text>
+      <defs><marker id="mkb" markerWidth="7" markerHeight="7" refX="5" refY="3" orient="auto"><path d="M0,0 L0,6 L7,3 z" fill="#6366f1"/></marker></defs>
+
+      <!-- Phase separator arrow -->
+      <path d="M350 454 L350 490" stroke="#f59e0b" stroke-width="2" stroke-dasharray="6,3" marker-end="url(#mkc)"/>
+      <text x="375" y="476" font-size="10" fill="#f59e0b">内部数据库就绪</text>
+      <defs><marker id="mkc" markerWidth="7" markerHeight="7" refX="5" refY="3" orient="auto"><path d="M0,0 L0,6 L7,3 z" fill="#f59e0b"/></marker></defs>
+
+      <!-- Phase 2 label -->
+      <ellipse cx="350" cy="510" rx="160" ry="20" fill="#1c3529" stroke="#22c55e" stroke-width="1.5"/>
+      <text x="350" y="515" text-anchor="middle" font-size="11" fill="#86efac">进入第二阶段</text>
+      <path d="M350 490 L350 490" stroke="#f59e0b" stroke-width="1.5"/>
+      <path d="M350 488 L350 490" stroke="transparent"/>
+
+      <!-- Step 7 -->
+      <rect x="195" y="616" width="310" height="44" rx="8" fill="#0d2b1d" stroke="#22c55e" stroke-width="1.5"/>
+      <text x="350" y="635" text-anchor="middle" font-size="12" font-weight="700" fill="#86efac">⑦ 确定构建 Goal（目标）</text>
+      <text x="350" y="652" text-anchor="middle" font-size="10" fill="#64748b">命令行指定 / .DEFAULT_GOAL / 第一条规则</text>
+      <path d="M350 530 L350 616" stroke="#22c55e" stroke-width="1.5" marker-end="url(#mkd)"/>
+      <defs><marker id="mkd" markerWidth="7" markerHeight="7" refX="5" refY="3" orient="auto"><path d="M0,0 L0,6 L7,3 z" fill="#22c55e"/></marker></defs>
+
+      <!-- Step 8 -->
+      <rect x="195" y="678" width="310" height="44" rx="8" fill="#0d2b1d" stroke="#22c55e" stroke-width="1.5"/>
+      <text x="350" y="697" text-anchor="middle" font-size="12" font-weight="700" fill="#86efac">⑧ 递归处理先决条件</text>
+      <text x="350" y="714" text-anchor="middle" font-size="10" fill="#64748b">搜索隐式规则 · 递归处理每个依赖</text>
+      <path d="M350 660 L350 678" stroke="#22c55e" stroke-width="1.5" marker-end="url(#mkd)"/>
+
+      <!-- Step 9 -->
+      <rect x="195" y="740" width="310" height="44" rx="8" fill="#0d2b1d" stroke="#22c55e" stroke-width="1.5"/>
+      <text x="350" y="759" text-anchor="middle" font-size="12" font-weight="700" fill="#86efac">⑨ 时间戳比较（mtime）</text>
+      <text x="350" y="776" text-anchor="middle" font-size="10" fill="#64748b">目标不存在 OR 先决条件更新 → 需重建</text>
+      <path d="M350 722 L350 740" stroke="#22c55e" stroke-width="1.5" marker-end="url(#mkd)"/>
+
+      <!-- Decision -->
+      <polygon points="350,800 460,820 350,840 240,820" fill="#052e16" stroke="#22c55e" stroke-width="1.5"/>
+      <text x="350" y="824" text-anchor="middle" font-size="10" fill="#86efac">需要重建？</text>
+      <path d="M350 784 L350 800" stroke="#22c55e" stroke-width="1.5" marker-end="url(#mkd)"/>
+
+      <!-- No: done -->
+      <rect x="80" y="808" width="140" height="34" rx="8" fill="#052e16" stroke="#10b981" stroke-width="1.5"/>
+      <text x="150" y="825" text-anchor="middle" font-size="11" fill="#6ee7b7">✓ Nothing to do</text>
+      <text x="150" y="838" text-anchor="middle" font-size="10" fill="#64748b">目标已最新</text>
+      <path d="M240 820 L220 820" stroke="#10b981" stroke-width="1.5" marker-end="url(#mke)"/>
+      <text x="232" y="815" font-size="10" fill="#10b981">否</text>
+      <defs><marker id="mke" markerWidth="7" markerHeight="7" refX="5" refY="3" orient="auto"><path d="M0,0 L0,6 L7,3 z" fill="#10b981"/></marker></defs>
+
+      <!-- Step 10 -->
+      <rect x="195" y="858" width="310" height="44" rx="8" fill="#0d2b1d" stroke="#22c55e" stroke-width="1.5"/>
+      <text x="350" y="877" text-anchor="middle" font-size="12" font-weight="700" fill="#86efac">⑩ 执行 Recipe</text>
+      <text x="350" y="894" text-anchor="middle" font-size="10" fill="#64748b">每行启动新 sub-shell · 并行 -j · 错误处理</text>
+      <path d="M350 840 L350 858" stroke="#22c55e" stroke-width="1.5" marker-end="url(#mkd)"/>
+      <text x="365" y="854" font-size="10" fill="#ef4444">是</text>
+
+      <!-- End -->
+      <ellipse cx="350" cy="945" rx="100" ry="22" fill="#1c3529" stroke="#22c55e" stroke-width="2"/>
+      <text x="350" y="951" text-anchor="middle" font-size="12" font-weight="700" fill="#86efac">构建完成</text>
+      <path d="M350 902 L350 923" stroke="#22c55e" stroke-width="1.5" marker-end="url(#mkd)"/>
+
+      <!-- Observation callouts -->
+      <rect x="525" y="616" width="145" height="28" rx="4" fill="#0f172a" stroke="#475569" stroke-width="1"/>
+      <text x="597" y="634" text-anchor="middle" font-size="9" fill="#94a3b8">--debug=b,w  |  -q</text>
+      <line x1="505" y1="638" x2="525" y2="630" stroke="#475569" stroke-width="0.8" stroke-dasharray="3,2"/>
+
+      <rect x="525" y="678" width="145" height="28" rx="4" fill="#0f172a" stroke="#475569" stroke-width="1"/>
+      <text x="597" y="696" text-anchor="middle" font-size="9" fill="#94a3b8">--debug=i</text>
+      <line x1="505" y1="700" x2="525" y2="692" stroke="#475569" stroke-width="0.8" stroke-dasharray="3,2"/>
+
+      <rect x="525" y="740" width="145" height="28" rx="4" fill="#0f172a" stroke="#475569" stroke-width="1"/>
+      <text x="597" y="758" text-anchor="middle" font-size="9" fill="#94a3b8">--debug=w  |  make -q</text>
+      <line x1="505" y1="762" x2="525" y2="754" stroke="#475569" stroke-width="0.8" stroke-dasharray="3,2"/>
+
+      <rect x="525" y="858" width="145" height="28" rx="4" fill="#0f172a" stroke="#475569" stroke-width="1"/>
+      <text x="597" y="876" text-anchor="middle" font-size="9" fill="#94a3b8">make -n  |  --debug=j</text>
+      <line x1="505" y1="880" x2="525" y2="872" stroke="#475569" stroke-width="0.8" stroke-dasharray="3,2"/>
+    </svg>
+    <div class="diagram-caption">图7：GNU Make 完整内部处理流程图（基于官方文档综合整理）</div>
+  </div>
+
+  <div class="chapter-nav">
+    <button class="chapter-nav-btn" onclick="showSection('observe')">← 上一节：每步查看</button>
+    <button class="chapter-nav-btn" onclick="showSection('refs')">下一节：官方文档索引 →</button>
+  </div>
+</section>
+
+<!-- ===================== REFS ===================== -->
+<section id="sec-refs" class="section">
+  <h1>官方文档索引</h1>
+  <p class="section-subtitle">本文档所有内容均基于以下官方权威来源</p>
+
+  <div class="callout callout-success">
+    <strong>文档版本：</strong> GNU Make Manual, Edition 0.77，最后更新 2023年2月26日，适用于 GNU make 4.4.1 版本。
+  </div>
+
+  <h2>章节原文链接</h2>
+  <div class="table-wrap">
+    <table>
+      <tr><th>章节</th><th>标题</th><th>链接</th></tr>
+      <tr><td>§1</td><td>Overview of make</td><td><a href="https://www.gnu.org/software/make/manual/html_node/Overview.html" target="_blank" style="color:var(--primary)">gnu.org/...Overview</a></td></tr>
+      <tr><td>§2.3</td><td>How make Processes a Makefile</td><td><a href="https://www.gnu.org/software/make/manual/html_node/How-Make-Works.html" target="_blank" style="color:var(--primary)">gnu.org/...How-Make-Works</a></td></tr>
+      <tr><td>§3.2</td><td>What Name to Give Your Makefile</td><td><a href="https://www.gnu.org/software/make/manual/html_node/Makefile-Names.html" target="_blank" style="color:var(--primary)">gnu.org/...Makefile-Names</a></td></tr>
+      <tr><td>§3.3</td><td>Including Other Makefiles</td><td><a href="https://www.gnu.org/software/make/manual/html_node/Include.html" target="_blank" style="color:var(--primary)">gnu.org/...Include</a></td></tr>
+      <tr><td>§3.5</td><td>How Makefiles Are Remade</td><td><a href="https://www.gnu.org/software/make/manual/html_node/Remaking-Makefiles.html" target="_blank" style="color:var(--primary)">gnu.org/...Remaking-Makefiles</a></td></tr>
+      <tr><td>§3.7</td><td>How make Reads a Makefile</td><td><a href="https://www.gnu.org/software/make/manual/html_node/Reading-Makefiles.html" target="_blank" style="color:var(--primary)">gnu.org/...Reading-Makefiles</a></td></tr>
+      <tr><td>§3.8</td><td>How Makefiles Are Parsed</td><td><a href="https://www.gnu.org/software/make/manual/html_node/Parsing-Makefiles.html" target="_blank" style="color:var(--primary)">gnu.org/...Parsing-Makefiles</a></td></tr>
+      <tr><td>§4.3</td><td>Types of Prerequisites</td><td><a href="https://www.gnu.org/software/make/manual/html_node/Prerequisite-Types.html" target="_blank" style="color:var(--primary)">gnu.org/...Prerequisite-Types</a></td></tr>
+      <tr><td>§5.3</td><td>Recipe Execution</td><td><a href="https://www.gnu.org/software/make/manual/html_node/Execution.html" target="_blank" style="color:var(--primary)">gnu.org/...Execution</a></td></tr>
+      <tr><td>§5.4</td><td>Parallel Execution</td><td><a href="https://www.gnu.org/software/make/manual/html_node/Parallel.html" target="_blank" style="color:var(--primary)">gnu.org/...Parallel</a></td></tr>
+      <tr><td>§6.2</td><td>The Two Flavors of Variables</td><td><a href="https://www.gnu.org/software/make/manual/html_node/Flavors.html" target="_blank" style="color:var(--primary)">gnu.org/...Flavors</a></td></tr>
+      <tr><td>§9.8</td><td>Summary of Options</td><td><a href="https://www.gnu.org/software/make/manual/html_node/Options-Summary.html" target="_blank" style="color:var(--primary)">gnu.org/...Options-Summary</a></td></tr>
+      <tr><td>§10.2</td><td>Catalogue of Built-In Rules</td><td><a href="https://www.gnu.org/software/make/manual/html_node/Catalogue-of-Rules.html" target="_blank" style="color:var(--primary)">gnu.org/...Catalogue-of-Rules</a></td></tr>
+      <tr><td>§10.4</td><td>Chains of Implicit Rules</td><td><a href="https://www.gnu.org/software/make/manual/html_node/Chained-Rules.html" target="_blank" style="color:var(--primary)">gnu.org/...Chained-Rules</a></td></tr>
+      <tr><td>§10.8</td><td>Implicit Rule Search Algorithm</td><td><a href="https://www.gnu.org/software/make/manual/html_node/Implicit-Rule-Search.html" target="_blank" style="color:var(--primary)">gnu.org/...Implicit-Rule-Search</a></td></tr>
+      <tr><td>完整手册</td><td>GNU Make Manual (HTML)</td><td><a href="https://www.gnu.org/software/make/manual/make.html" target="_blank" style="color:var(--primary)">www.gnu.org/software/make/manual/make.html</a></td></tr>
+      <tr><td>man page</td><td>make(1) Linux Manual Page</td><td><a href="https://www.man7.org/linux/man-pages/man1/make.1.html" target="_blank" style="color:var(--primary)">man7.org/...make.1</a></td></tr>
+    </table>
+  </div>
+
+  <h2>快速参考卡片</h2>
+  <div class="cmd-grid">
+    <div class="cmd-card">
+      <code>make -p -f /dev/null</code>
+      <p>查看所有内置规则和变量（Phase 1 初始状态）</p>
+    </div>
+    <div class="cmd-card">
+      <code>make --debug=v</code>
+      <p>查看 Makefile 读取和解析过程</p>
+    </div>
+    <div class="cmd-card">
+      <code>make --debug=i</code>
+      <p>查看隐式规则搜索过程</p>
+    </div>
+    <div class="cmd-card">
+      <code>make --debug=w</code>
+      <p>查看每个目标为什么需要重建</p>
+    </div>
+    <div class="cmd-card">
+      <code>make --debug=j</code>
+      <p>查看 sub-shell 调用详情</p>
+    </div>
+    <div class="cmd-card">
+      <code>make -n</code>
+      <p>Dry-run：预览将执行的命令</p>
+    </div>
+    <div class="cmd-card">
+      <code>make -qp</code>
+      <p>查看内部数据库，不执行构建</p>
+    </div>
+    <div class="cmd-card">
+      <code>make --debug=a</code>
+      <p>全量调试输出（等同于 -d）</p>
+    </div>
+  </div>
+
+  <div class="chapter-nav">
+    <button class="chapter-nav-btn" onclick="showSection('flowchart')">← 上一节：流程图</button>
+    <button class="chapter-nav-btn hidden">→</button>
+  </div>
+</section>
+
+</div><!-- content-wrapper -->
+</main>
+
+<script>
+  // Section management
+  const sections = ['overview','step1','step2','step3','step4','step5','step6','step7','step8','step9','step10','debug','observe','flowchart','refs'];
+  let currentIdx = 0;
+
+  function showSection(id) {
+    // Hide all
+    document.querySelectorAll('.section').forEach(s => s.classList.remove('active'));
+    document.querySelectorAll('.nav-item').forEach(n => n.classList.remove('active'));
+
+    // Show target
+    const sec = document.getElementById('sec-' + id);
+    if (sec) {
+      sec.classList.add('active');
+      currentIdx = sections.indexOf(id);
+    }
+
+    // Highlight nav
+    document.querySelectorAll('.nav-item').forEach(n => {
+      if (n.getAttribute('onclick') && n.getAttribute('onclick').includes("'"+id+"'")) {
+        n.classList.add('active');
+      }
+    });
+
+    // Scroll to top
+    window.scrollTo({ top: 0, behavior: 'smooth' });
+
+    // Close sidebar on mobile
+    if (window.innerWidth <= 768) {
+      closeSidebar();
+    }
+
+    updateProgress();
+  }
+
+  // Progress bar
+  function updateProgress() {
+    const pct = sections.length > 1 ? (currentIdx / (sections.length - 1)) * 100 : 0;
+    document.getElementById('progress-bar').style.width = pct + '%';
+  }
+
+  // Keyboard navigation
+  document.addEventListener('keydown', function(e) {
+    if (e.key === 'ArrowRight') {
+      if (currentIdx < sections.length - 1) showSection(sections[currentIdx + 1]);
+    } else if (e.key === 'ArrowLeft') {
+      if (currentIdx > 0) showSection(sections[currentIdx - 1]);
+    }
+  });
+
+  // Sidebar toggle
+  function toggleSidebar() {
+    const sidebar = document.getElementById('sidebar');
+    const overlay = document.getElementById('overlay');
+    sidebar.classList.toggle('open');
+    overlay.classList.toggle('open');
+  }
+
+  function closeSidebar() {
+    document.getElementById('sidebar').classList.remove('open');
+    document.getElementById('overlay').classList.remove('open');
+  }
+
+  // Scroll-based progress (for single section reading)
+  window.addEventListener('scroll', function() {
+    const scrollTop = window.scrollY;
+    const docHeight = document.documentElement.scrollHeight - window.innerHeight;
+    if (docHeight > 0) {
+      const sectionBase = currentIdx / (sections.length - 1);
+      const sectionRange = 1 / (sections.length - 1);
+      const scrollPct = Math.min(scrollTop / Math.max(docHeight, 1), 1);
+      const pct = (sectionBase + scrollPct * sectionRange) * 100;
+      document.getElementById('progress-bar').style.width = Math.min(pct, 100) + '%';
+    }
+  });
+
+  // Init
+  showSection('overview');
+</script>
+</body>
+</html>
