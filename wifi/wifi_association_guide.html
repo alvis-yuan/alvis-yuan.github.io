@@ -1,0 +1,1784 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>WiFi 关联过程深度解析 — IEEE 802.11</title>
+<style>
+  :root {
+    --primary: #0ea5e9;
+    --primary-dark: #0284c7;
+    --accent: #f59e0b;
+    --bg: #0f172a;
+    --bg2: #1e293b;
+    --bg3: #334155;
+    --text: #e2e8f0;
+    --text-muted: #94a3b8;
+    --border: #334155;
+    --nav-width: 260px;
+    --header-h: 52px;
+    --progress-h: 3px;
+  }
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  html { scroll-behavior: smooth; font-size: 16px; }
+  body {
+    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", "PingFang SC", "Hiragino Sans GB", "Microsoft YaHei", sans-serif;
+    background: var(--bg);
+    color: var(--text);
+    display: flex;
+    flex-direction: column;
+    min-height: 100vh;
+    overflow-x: hidden;
+  }
+
+  /* Progress Bar */
+  #progress-bar {
+    position: fixed;
+    top: 0; left: 0;
+    height: var(--progress-h);
+    background: linear-gradient(90deg, var(--primary), var(--accent));
+    width: 0%;
+    z-index: 1000;
+    transition: width 0.1s linear;
+  }
+
+  /* Header */
+  header {
+    position: fixed;
+    top: var(--progress-h); left: 0; right: 0;
+    height: var(--header-h);
+    background: rgba(15,23,42,0.95);
+    backdrop-filter: blur(8px);
+    border-bottom: 1px solid var(--border);
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    padding: 0 1.2rem;
+    z-index: 900;
+  }
+  .header-title {
+    font-size: 1rem;
+    font-weight: 700;
+    color: var(--primary);
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+  }
+  .hamburger {
+    display: none;
+    flex-direction: column;
+    gap: 5px;
+    cursor: pointer;
+    padding: 4px;
+    flex-shrink: 0;
+  }
+  .hamburger span {
+    display: block;
+    width: 24px;
+    height: 2px;
+    background: var(--text);
+    border-radius: 2px;
+    transition: all 0.3s;
+  }
+  .hamburger.open span:nth-child(1) { transform: rotate(45deg) translate(5px,5px); }
+  .hamburger.open span:nth-child(2) { opacity: 0; }
+  .hamburger.open span:nth-child(3) { transform: rotate(-45deg) translate(5px,-5px); }
+
+  /* Overlay */
+  #overlay {
+    display: none;
+    position: fixed;
+    inset: 0;
+    background: rgba(0,0,0,0.5);
+    z-index: 850;
+  }
+
+  /* Sidebar */
+  nav#sidebar {
+    position: fixed;
+    top: calc(var(--progress-h) + var(--header-h));
+    left: 0;
+    width: var(--nav-width);
+    bottom: 0;
+    background: var(--bg2);
+    border-right: 1px solid var(--border);
+    overflow-y: auto;
+    z-index: 800;
+    transition: transform 0.3s ease;
+    padding-bottom: 2rem;
+  }
+  nav#sidebar::-webkit-scrollbar { width: 4px; }
+  nav#sidebar::-webkit-scrollbar-track { background: transparent; }
+  nav#sidebar::-webkit-scrollbar-thumb { background: var(--border); border-radius: 2px; }
+
+  .nav-group-title {
+    font-size: 0.68rem;
+    font-weight: 700;
+    text-transform: uppercase;
+    letter-spacing: 0.08em;
+    color: var(--text-muted);
+    padding: 1.1rem 1rem 0.4rem;
+  }
+  .nav-item {
+    display: block;
+    padding: 0.48rem 1rem 0.48rem 1.2rem;
+    font-size: 0.82rem;
+    color: var(--text-muted);
+    cursor: pointer;
+    border-left: 3px solid transparent;
+    transition: all 0.2s;
+    line-height: 1.4;
+  }
+  .nav-item:hover { color: var(--text); background: rgba(255,255,255,0.04); }
+  .nav-item.active {
+    color: var(--primary);
+    border-left-color: var(--primary);
+    background: rgba(14,165,233,0.08);
+  }
+
+  /* Main Content */
+  main {
+    margin-left: var(--nav-width);
+    margin-top: calc(var(--progress-h) + var(--header-h));
+    padding: 2rem 2.5rem 4rem;
+    max-width: 900px;
+    min-width: 0;
+  }
+
+  section {
+    margin-bottom: 4rem;
+    scroll-margin-top: calc(var(--header-h) + var(--progress-h) + 20px);
+  }
+  section h2 {
+    font-size: 1.6rem;
+    font-weight: 800;
+    color: var(--text);
+    margin-bottom: 0.5rem;
+    padding-bottom: 0.5rem;
+    border-bottom: 2px solid var(--primary);
+    line-height: 1.3;
+  }
+  section h3 {
+    font-size: 1.1rem;
+    font-weight: 700;
+    color: var(--accent);
+    margin: 1.8rem 0 0.7rem;
+  }
+  section h4 {
+    font-size: 0.95rem;
+    font-weight: 600;
+    color: var(--primary);
+    margin: 1.2rem 0 0.5rem;
+  }
+  p {
+    line-height: 1.8;
+    color: var(--text);
+    margin-bottom: 0.9rem;
+    font-size: 0.93rem;
+  }
+
+  /* Guide Box */
+  .guide-box {
+    background: linear-gradient(135deg, rgba(14,165,233,0.12), rgba(245,158,11,0.08));
+    border: 1px solid rgba(14,165,233,0.3);
+    border-radius: 10px;
+    padding: 1rem 1.2rem;
+    margin-bottom: 1.5rem;
+    font-size: 0.88rem;
+    line-height: 1.7;
+    color: #bae6fd;
+  }
+  .guide-box::before {
+    content: "📖 导读";
+    display: block;
+    font-weight: 700;
+    font-size: 0.8rem;
+    color: var(--primary);
+    margin-bottom: 0.4rem;
+    letter-spacing: 0.05em;
+  }
+
+  /* Code / Monospace */
+  code {
+    font-family: "JetBrains Mono", "Fira Code", "Cascadia Code", monospace;
+    font-size: 0.82em;
+    background: rgba(255,255,255,0.08);
+    padding: 0.1em 0.4em;
+    border-radius: 4px;
+    color: #7dd3fc;
+  }
+
+  /* Tables */
+  .table-wrap { overflow-x: auto; margin: 1rem 0; border-radius: 8px; }
+  table {
+    width: 100%;
+    border-collapse: collapse;
+    font-size: 0.83rem;
+    min-width: 520px;
+  }
+  thead tr { background: var(--bg3); }
+  th {
+    padding: 0.65rem 0.9rem;
+    text-align: left;
+    font-weight: 700;
+    color: var(--primary);
+    white-space: nowrap;
+    border-bottom: 2px solid var(--primary);
+  }
+  td {
+    padding: 0.55rem 0.9rem;
+    border-bottom: 1px solid var(--border);
+    vertical-align: top;
+    line-height: 1.5;
+  }
+  tr:last-child td { border-bottom: none; }
+  tr:nth-child(even) td { background: rgba(255,255,255,0.025); }
+  td:first-child { font-weight: 600; color: #7dd3fc; white-space: nowrap; }
+
+  /* SVG containers */
+  .svg-wrap {
+    background: var(--bg2);
+    border: 1px solid var(--border);
+    border-radius: 12px;
+    padding: 1rem;
+    margin: 1.5rem 0;
+    overflow-x: auto;
+  }
+  .svg-wrap svg { display: block; max-width: 100%; height: auto; }
+
+  /* Info boxes */
+  .info-box {
+    background: rgba(14,165,233,0.08);
+    border-left: 4px solid var(--primary);
+    border-radius: 0 8px 8px 0;
+    padding: 0.8rem 1rem;
+    margin: 1rem 0;
+    font-size: 0.88rem;
+    line-height: 1.7;
+  }
+  .warn-box {
+    background: rgba(245,158,11,0.1);
+    border-left: 4px solid var(--accent);
+    border-radius: 0 8px 8px 0;
+    padding: 0.8rem 1rem;
+    margin: 1rem 0;
+    font-size: 0.88rem;
+    line-height: 1.7;
+  }
+  .warn-box strong { color: var(--accent); }
+
+  /* Nav keyboard hint */
+  .kbd-hint {
+    display: flex;
+    gap: 0.5rem;
+    align-items: center;
+    font-size: 0.75rem;
+    color: var(--text-muted);
+    margin-top: 0.3rem;
+  }
+  kbd {
+    display: inline-block;
+    padding: 1px 6px;
+    background: var(--bg3);
+    border: 1px solid var(--border);
+    border-radius: 4px;
+    font-size: 0.75em;
+    color: var(--text);
+  }
+
+  /* Source links */
+  .source-ref {
+    font-size: 0.78rem;
+    color: var(--text-muted);
+    margin-top: 0.3rem;
+  }
+  .source-ref a {
+    color: var(--primary);
+    text-decoration: none;
+  }
+  .source-ref a:hover { text-decoration: underline; }
+
+  /* Timeline */
+  .timeline { position: relative; padding-left: 2rem; margin: 1rem 0; }
+  .timeline::before {
+    content: "";
+    position: absolute;
+    left: 6px; top: 0; bottom: 0;
+    width: 2px;
+    background: linear-gradient(to bottom, var(--primary), var(--accent));
+  }
+  .timeline-item {
+    position: relative;
+    margin-bottom: 1.2rem;
+  }
+  .timeline-item::before {
+    content: "";
+    position: absolute;
+    left: -1.7rem;
+    top: 6px;
+    width: 12px; height: 12px;
+    border-radius: 50%;
+    background: var(--primary);
+    border: 2px solid var(--bg);
+  }
+  .timeline-item .t-year {
+    font-size: 0.75rem;
+    font-weight: 700;
+    color: var(--accent);
+    margin-bottom: 0.2rem;
+  }
+  .timeline-item .t-title {
+    font-weight: 700;
+    color: var(--text);
+    font-size: 0.92rem;
+    margin-bottom: 0.3rem;
+  }
+  .timeline-item .t-desc {
+    font-size: 0.83rem;
+    color: var(--text-muted);
+    line-height: 1.6;
+  }
+
+  /* Principle box */
+  .principle-box {
+    background: linear-gradient(135deg, rgba(245,158,11,0.1), rgba(14,165,233,0.08));
+    border: 1px solid rgba(245,158,11,0.35);
+    border-radius: 12px;
+    padding: 1.2rem 1.4rem;
+    margin: 1.2rem 0;
+  }
+  .principle-box h4 {
+    color: var(--accent);
+    margin-top: 0;
+    margin-bottom: 0.6rem;
+    font-size: 1rem;
+  }
+  .principle-box p {
+    font-size: 0.88rem;
+    margin-bottom: 0.5rem;
+  }
+  .principle-box p:last-child { margin-bottom: 0; }
+
+  /* Field bit layout */
+  .bit-row {
+    display: flex;
+    flex-wrap: nowrap;
+    font-size: 0.7rem;
+    overflow-x: auto;
+    margin: 0.8rem 0;
+    border-radius: 6px;
+    border: 1px solid var(--border);
+  }
+  .bit-cell {
+    flex: 1 1 0;
+    min-width: 30px;
+    text-align: center;
+    border-right: 1px solid var(--border);
+    padding: 4px 2px;
+  }
+  .bit-cell:last-child { border-right: none; }
+  .bit-cell.head {
+    background: var(--bg3);
+    color: var(--primary);
+    font-weight: 700;
+    font-size: 0.65rem;
+    padding: 3px 2px;
+  }
+  .bit-cell.val {
+    background: rgba(14,165,233,0.07);
+    color: var(--text);
+    font-family: monospace;
+    font-size: 0.72rem;
+  }
+
+  /* Responsive */
+  @media (max-width: 768px) {
+    :root { --nav-width: 260px; }
+    .hamburger { display: flex; }
+    nav#sidebar {
+      transform: translateX(-100%);
+    }
+    nav#sidebar.open {
+      transform: translateX(0);
+      z-index: 870;
+    }
+    #overlay.open { display: block; }
+    main {
+      margin-left: 0;
+      padding: 1.2rem 1rem 3rem;
+    }
+    .header-title { font-size: 0.88rem; }
+    section h2 { font-size: 1.25rem; }
+    .bit-row { font-size: 0.6rem; }
+    .bit-cell { min-width: 22px; }
+  }
+</style>
+</head>
+<body>
+
+<div id="progress-bar"></div>
+
+<header>
+  <div class="header-title">📡 WiFi 关联过程 — IEEE 802.11 深度解析</div>
+  <div style="display:flex;align-items:center;gap:0.8rem;">
+    <div class="kbd-hint" style="display:none" id="kbd-hint-header">
+      <kbd>←</kbd><kbd>→</kbd> 章节导航
+    </div>
+    <button class="hamburger" id="hamburger" aria-label="菜单">
+      <span></span><span></span><span></span>
+    </button>
+  </div>
+</header>
+
+<div id="overlay"></div>
+
+<nav id="sidebar">
+  <div class="nav-group-title">基础概念</div>
+  <div class="nav-item" data-section="s0">0. 概述与术语</div>
+
+  <div class="nav-group-title">扫描与发现</div>
+  <div class="nav-item" data-section="s1">1. 被动扫描 / 主动扫描</div>
+  <div class="nav-item" data-section="s2">2. Beacon 与 Probe 帧格式</div>
+
+  <div class="nav-group-title">关联核心流程</div>
+  <div class="nav-item" data-section="s3">3. 802.11 开放认证</div>
+  <div class="nav-item" data-section="s4">4. 关联请求 / 响应</div>
+  <div class="nav-item" data-section="s5">5. 状态机与 AID</div>
+
+  <div class="nav-group-title">安全握手</div>
+  <div class="nav-item" data-section="s6">6. 802.1X / EAP 认证</div>
+  <div class="nav-item" data-section="s7">7. WPA2 四次握手 (4-Way Handshake)</div>
+
+  <div class="nav-group-title">帧结构详解</div>
+  <div class="nav-item" data-section="s8">8. MAC 帧通用格式</div>
+  <div class="nav-item" data-section="s9">9. 各关键信令帧字段</div>
+
+  <div class="nav-group-title">演化历史</div>
+  <div class="nav-item" data-section="s10">10. WEP → WPA → WPA2 → WPA3</div>
+  <div class="nav-item" data-section="s11">11. WPA3 SAE 流程详解</div>
+
+  <div class="nav-group-title">总结</div>
+  <div class="nav-item" data-section="s12">12. 第一性原理总结</div>
+
+  <div style="padding:1rem 1rem 0;border-top:1px solid var(--border);margin-top:1rem;">
+    <div class="kbd-hint">
+      <kbd>←</kbd><kbd>→</kbd> 键盘翻章
+    </div>
+  </div>
+</nav>
+
+<main id="main-content">
+
+<!-- ===================== Section 0 ===================== -->
+<section id="s0">
+  <h2>0. 概述与核心术语</h2>
+  <div class="guide-box">
+    本章是全文的入口。WiFi 关联（Association）并不是一个单一动作，而是一套有严格状态定义的协议流程。读懂术语是读懂后续每一条信令的前提：STA 是谁，AP 是谁，BSS 意味着什么？这些概念在 IEEE 802.11-2020 标准中有精确定义。
+  </div>
+
+  <h3>核心角色</h3>
+  <div class="table-wrap">
+    <table>
+      <thead><tr><th>缩写</th><th>全称</th><th>说明</th></tr></thead>
+      <tbody>
+        <tr><td>STA</td><td>Station（站点）</td><td>任何符合 802.11 的无线设备（手机、电脑等）</td></tr>
+        <tr><td>AP</td><td>Access Point（接入点）</td><td>无线局域网的基础设施节点，提供 BSS 服务</td></tr>
+        <tr><td>BSS</td><td>Basic Service Set</td><td>一个 AP 所服务的无线基本服务集合</td></tr>
+        <tr><td>BSSID</td><td>BSS Identifier</td><td>AP 的 MAC 地址，唯一标识一个 BSS</td></tr>
+        <tr><td>SSID</td><td>Service Set ID</td><td>人类可读的网络名称（如 "MyWiFi"）</td></tr>
+        <tr><td>DS</td><td>Distribution System</td><td>连接多个 AP 的骨干网络（通常是以太网）</td></tr>
+        <tr><td>RSNA</td><td>Robust Security Network Association</td><td>基于 WPA2/WPA3 的安全关联状态</td></tr>
+        <tr><td>PMK</td><td>Pairwise Master Key</td><td>由 EAP 或 PSK 派生的主密钥（256 bit）</td></tr>
+        <tr><td>PTK</td><td>Pairwise Transient Key</td><td>由 PMK + Nonce 派生，用于单播加密</td></tr>
+        <tr><td>GTK</td><td>Group Temporal Key</td><td>由 AP 派生，用于广播/组播加密</td></tr>
+        <tr><td>AID</td><td>Association Identifier</td><td>AP 为每个已关联 STA 分配的唯一 ID（1-2007）</td></tr>
+      </tbody>
+    </table>
+  </div>
+
+  <h3>整体流程鸟瞰</h3>
+  <p>一次完整的 WiFi 接入（以 WPA2-PSK 为例）包含以下有序阶段：</p>
+  <div class="svg-wrap">
+    <svg viewBox="0 0 760 200" xmlns="http://www.w3.org/2000/svg" font-family="system-ui,sans-serif">
+      <defs>
+        <linearGradient id="g1" x1="0" y1="0" x2="1" y2="0">
+          <stop offset="0%" stop-color="#0ea5e9"/>
+          <stop offset="100%" stop-color="#f59e0b"/>
+        </linearGradient>
+      </defs>
+      <!-- Steps -->
+      <rect x="10" y="70" width="100" height="60" rx="8" fill="#0ea5e9" fill-opacity="0.2" stroke="#0ea5e9" stroke-width="1.5"/>
+      <text x="60" y="96" text-anchor="middle" fill="#7dd3fc" font-size="11" font-weight="bold">① 扫描</text>
+      <text x="60" y="112" text-anchor="middle" fill="#94a3b8" font-size="9.5">Scan</text>
+      <text x="60" y="126" text-anchor="middle" fill="#94a3b8" font-size="9">(Passive/Active)</text>
+
+      <rect x="130" y="70" width="100" height="60" rx="8" fill="#0ea5e9" fill-opacity="0.2" stroke="#0ea5e9" stroke-width="1.5"/>
+      <text x="180" y="96" text-anchor="middle" fill="#7dd3fc" font-size="11" font-weight="bold">② 认证</text>
+      <text x="180" y="112" text-anchor="middle" fill="#94a3b8" font-size="9.5">Auth</text>
+      <text x="180" y="126" text-anchor="middle" fill="#94a3b8" font-size="9">(Open System)</text>
+
+      <rect x="250" y="70" width="100" height="60" rx="8" fill="#0ea5e9" fill-opacity="0.2" stroke="#0ea5e9" stroke-width="1.5"/>
+      <text x="300" y="96" text-anchor="middle" fill="#7dd3fc" font-size="11" font-weight="bold">③ 关联</text>
+      <text x="300" y="112" text-anchor="middle" fill="#94a3b8" font-size="9.5">Association</text>
+      <text x="300" y="126" text-anchor="middle" fill="#94a3b8" font-size="9">(Req/Resp)</text>
+
+      <rect x="370" y="70" width="110" height="60" rx="8" fill="#f59e0b" fill-opacity="0.15" stroke="#f59e0b" stroke-width="1.5"/>
+      <text x="425" y="96" text-anchor="middle" fill="#fde68a" font-size="11" font-weight="bold">④ EAP 认证</text>
+      <text x="425" y="112" text-anchor="middle" fill="#94a3b8" font-size="9.5">802.1X/EAP</text>
+      <text x="425" y="126" text-anchor="middle" fill="#94a3b8" font-size="9">(仅企业网)</text>
+
+      <rect x="500" y="70" width="110" height="60" rx="8" fill="#f59e0b" fill-opacity="0.15" stroke="#f59e0b" stroke-width="1.5"/>
+      <text x="555" y="96" text-anchor="middle" fill="#fde68a" font-size="11" font-weight="bold">⑤ 四次握手</text>
+      <text x="555" y="112" text-anchor="middle" fill="#94a3b8" font-size="9.5">4-Way Handshake</text>
+      <text x="555" y="126" text-anchor="middle" fill="#94a3b8" font-size="9">(EAPOL-Key)</text>
+
+      <rect x="630" y="70" width="110" height="60" rx="8" fill="#10b981" fill-opacity="0.15" stroke="#10b981" stroke-width="1.5"/>
+      <text x="685" y="96" text-anchor="middle" fill="#6ee7b7" font-size="11" font-weight="bold">⑥ 数据传输</text>
+      <text x="685" y="112" text-anchor="middle" fill="#94a3b8" font-size="9.5">DHCP / IP</text>
+      <text x="685" y="126" text-anchor="middle" fill="#94a3b8" font-size="9">(已加密)</text>
+
+      <!-- Arrows -->
+      <line x1="110" y1="100" x2="128" y2="100" stroke="#0ea5e9" stroke-width="2" marker-end="url(#arr)"/>
+      <line x1="230" y1="100" x2="248" y2="100" stroke="#0ea5e9" stroke-width="2" marker-end="url(#arr)"/>
+      <line x1="350" y1="100" x2="368" y2="100" stroke="#0ea5e9" stroke-width="2" marker-end="url(#arr)"/>
+      <line x1="480" y1="100" x2="498" y2="100" stroke="#f59e0b" stroke-width="2" marker-end="url(#arr2)"/>
+      <line x1="610" y1="100" x2="628" y2="100" stroke="#f59e0b" stroke-width="2" marker-end="url(#arr2)"/>
+      <defs>
+        <marker id="arr" markerWidth="8" markerHeight="8" refX="6" refY="3" orient="auto">
+          <path d="M0,0 L0,6 L8,3 z" fill="#0ea5e9"/>
+        </marker>
+        <marker id="arr2" markerWidth="8" markerHeight="8" refX="6" refY="3" orient="auto">
+          <path d="M0,0 L0,6 L8,3 z" fill="#f59e0b"/>
+        </marker>
+      </defs>
+
+      <!-- Legend -->
+      <rect x="10" y="155" width="12" height="8" fill="#0ea5e9" fill-opacity="0.5"/>
+      <text x="26" y="163" fill="#94a3b8" font-size="9">802.11 标准流程</text>
+      <rect x="140" y="155" width="12" height="8" fill="#f59e0b" fill-opacity="0.5"/>
+      <text x="156" y="163" fill="#94a3b8" font-size="9">安全密钥协商</text>
+      <rect x="270" y="155" width="12" height="8" fill="#10b981" fill-opacity="0.5"/>
+      <text x="286" y="163" fill="#94a3b8" font-size="9">已建立 RSNA</text>
+    </svg>
+  </div>
+  <div class="source-ref">参考来源：
+    <a href="https://howiwifi.com/2020/07/16/802-11-frame-exchanges/" target="_blank">802.11 Frame Exchanges — howiwifi.com</a> ·
+    <a href="https://www.cisco.com/en/US/docs/wireless/wlan_adapter/secure_client/5.1.0/administration/guide/C1_Network_Security.html" target="_blank">Cisco 802.11 Network Security Fundamentals</a>
+  </div>
+</section>
+
+<!-- ===================== Section 1 ===================== -->
+<section id="s1">
+  <h2>1. 被动扫描 / 主动扫描</h2>
+  <div class="guide-box">
+    STA 在关联之前首先必须发现可用的 AP。802.11 定义了两种扫描方式：被动扫描像收音机调台一样倾听，主动扫描则主动发出 Probe Request 叫板所有 AP。本章通过 MSC 图呈现两种扫描的信令交互差异。
+  </div>
+
+  <h3>被动扫描（Passive Scanning）</h3>
+  <p>STA 逐信道监听 AP 周期性广播的 <strong>Beacon 帧</strong>（默认间隔 102.4 ms / 100 TU）。STA 无需发送任何帧，能耗低，但发现延迟高。Beacon 帧包含 SSID、支持速率、安全配置（RSN IE）、时间戳等关键信息。</p>
+
+  <h3>主动扫描（Active Scanning）</h3>
+  <p>STA 在每个信道发出 <strong>Probe Request</strong> 广播帧，等待 AP 回复 <strong>Probe Response</strong>。Probe Request 可携带 SSID（定向探测）或空 SSID（发现所有 AP）。探测速率选最低速（2.4GHz=1Mbps，5GHz=6Mbps）以最大覆盖。</p>
+
+  <div class="svg-wrap">
+    <!-- MSC: Passive vs Active Scanning -->
+    <svg viewBox="0 0 700 320" xmlns="http://www.w3.org/2000/svg" font-family="system-ui,sans-serif">
+      <!-- Passive Scan -->
+      <text x="160" y="20" text-anchor="middle" fill="#f59e0b" font-size="13" font-weight="bold">被动扫描</text>
+
+      <!-- Actors -->
+      <line x1="70" y1="30" x2="70" y2="300" stroke="#334155" stroke-width="1.5" stroke-dasharray="4,3"/>
+      <line x1="250" y1="30" x2="250" y2="300" stroke="#334155" stroke-width="1.5" stroke-dasharray="4,3"/>
+      <rect x="30" y="28" width="80" height="24" rx="5" fill="#1e3a5f" stroke="#0ea5e9" stroke-width="1.2"/>
+      <text x="70" y="44" text-anchor="middle" fill="#7dd3fc" font-size="11">STA</text>
+      <rect x="210" y="28" width="80" height="24" rx="5" fill="#1e3a5f" stroke="#0ea5e9" stroke-width="1.2"/>
+      <text x="250" y="44" text-anchor="middle" fill="#7dd3fc" font-size="11">AP</text>
+
+      <!-- Beacon frames -->
+      <line x1="250" y1="80" x2="80" y2="100" stroke="#94a3b8" stroke-width="1.5" marker-end="url(#arr3)"/>
+      <text x="165" y="90" text-anchor="middle" fill="#94a3b8" font-size="10">Beacon (广播, 含SSID)</text>
+
+      <line x1="250" y1="130" x2="80" y2="150" stroke="#94a3b8" stroke-width="1.5" stroke-dasharray="5,3" marker-end="url(#arr3)"/>
+      <text x="165" y="142" text-anchor="middle" fill="#64748b" font-size="9">Beacon (间隔~102ms)</text>
+
+      <line x1="250" y1="175" x2="80" y2="195" stroke="#94a3b8" stroke-width="1.5" stroke-dasharray="5,3" marker-end="url(#arr3)"/>
+      <text x="165" y="187" text-anchor="middle" fill="#64748b" font-size="9">Beacon ...</text>
+
+      <text x="70" y="225" text-anchor="middle" fill="#6ee7b7" font-size="9.5">STA 建立 AP 候选列表</text>
+      <rect x="30" y="230" width="80" height="14" rx="3" fill="#10b981" fill-opacity="0.15" stroke="#10b981" stroke-width="0.8"/>
+      <text x="70" y="240" text-anchor="middle" fill="#6ee7b7" font-size="8.5">无需发送任何帧 ✓</text>
+
+      <defs>
+        <marker id="arr3" markerWidth="7" markerHeight="7" refX="5" refY="3" orient="auto">
+          <path d="M0,0 L0,6 L7,3 z" fill="#94a3b8"/>
+        </marker>
+        <marker id="arr4" markerWidth="7" markerHeight="7" refX="5" refY="3" orient="auto">
+          <path d="M0,0 L0,6 L7,3 z" fill="#0ea5e9"/>
+        </marker>
+      </defs>
+
+      <!-- Divider -->
+      <line x1="330" y1="30" x2="330" y2="300" stroke="#334155" stroke-width="1" stroke-dasharray="2,4"/>
+
+      <!-- Active Scan -->
+      <text x="530" y="20" text-anchor="middle" fill="#f59e0b" font-size="13" font-weight="bold">主动扫描</text>
+
+      <line x1="430" y1="30" x2="430" y2="300" stroke="#334155" stroke-width="1.5" stroke-dasharray="4,3"/>
+      <line x1="630" y1="30" x2="630" y2="300" stroke="#334155" stroke-width="1.5" stroke-dasharray="4,3"/>
+      <rect x="390" y="28" width="80" height="24" rx="5" fill="#1e3a5f" stroke="#0ea5e9" stroke-width="1.2"/>
+      <text x="430" y="44" text-anchor="middle" fill="#7dd3fc" font-size="11">STA</text>
+      <rect x="590" y="28" width="80" height="24" rx="5" fill="#1e3a5f" stroke="#0ea5e9" stroke-width="1.2"/>
+      <text x="630" y="44" text-anchor="middle" fill="#7dd3fc" font-size="11">AP</text>
+
+      <!-- Probe Request -->
+      <line x1="440" y1="80" x2="620" y2="80" stroke="#0ea5e9" stroke-width="1.8" marker-end="url(#arr4)"/>
+      <text x="530" y="73" text-anchor="middle" fill="#7dd3fc" font-size="10" font-weight="bold">Probe Request</text>
+      <text x="530" y="93" text-anchor="middle" fill="#64748b" font-size="9">[DA=FF:FF:FF:FF:FF:FF, SSID]</text>
+
+      <!-- ACK (optional from AP internally) -->
+      <!-- Probe Response -->
+      <line x1="620" y1="130" x2="440" y2="130" stroke="#0ea5e9" stroke-width="1.8" marker-end="url(#arr5)"/>
+      <text x="530" y="123" text-anchor="middle" fill="#7dd3fc" font-size="10" font-weight="bold">Probe Response</text>
+      <text x="530" y="143" text-anchor="middle" fill="#64748b" font-size="9">[SSID, 速率, RSNI, TIM...]</text>
+
+      <!-- ACK -->
+      <line x1="440" y1="168" x2="620" y2="168" stroke="#334155" stroke-width="1.2" stroke-dasharray="4,2" marker-end="url(#arr4)"/>
+      <text x="530" y="162" text-anchor="middle" fill="#475569" font-size="9">ACK</text>
+
+      <text x="430" y="210" text-anchor="middle" fill="#6ee7b7" font-size="9.5">STA 选择最佳 AP</text>
+      <rect x="380" y="218" width="100" height="14" rx="3" fill="#10b981" fill-opacity="0.15" stroke="#10b981" stroke-width="0.8"/>
+      <text x="430" y="228" text-anchor="middle" fill="#6ee7b7" font-size="8.5">信噪比最高 → 选定 ✓</text>
+
+      <defs>
+        <marker id="arr5" markerWidth="7" markerHeight="7" refX="5" refY="3" orient="auto">
+          <path d="M0,0 L0,6 L7,3 z" fill="#0ea5e9"/>
+        </marker>
+      </defs>
+    </svg>
+  </div>
+
+  <div class="table-wrap">
+    <table>
+      <thead><tr><th>维度</th><th>被动扫描</th><th>主动扫描</th></tr></thead>
+      <tbody>
+        <tr><td>STA 发帧</td><td>无</td><td>Probe Request（每信道）</td></tr>
+        <tr><td>发现延迟</td><td>高（取决于 Beacon 间隔）</td><td>低（主动触发）</td></tr>
+        <tr><td>能耗</td><td>低</td><td>高</td></tr>
+        <tr><td>隐藏 SSID</td><td>无法发现</td><td>定向 Probe 可发现</td></tr>
+        <tr><td>典型场景</td><td>初次启动、省电模式</td><td>快速漫游、连接前</td></tr>
+      </tbody>
+    </table>
+  </div>
+  <div class="source-ref">参考来源：
+    <a href="https://howiwifi.com/2020/07/16/802-11-frame-exchanges/" target="_blank">802.11 Frame Exchanges — howiwifi.com</a> ·
+    <a href="https://www.cisco.com/en/US/docs/wireless/wlan_adapter/secure_client/5.1.0/administration/guide/C1_Network_Security.html" target="_blank">Cisco Wireless Security Guide</a>
+  </div>
+</section>
+
+<!-- ===================== Section 2 ===================== -->
+<section id="s2">
+  <h2>2. Beacon 与 Probe 帧格式</h2>
+  <div class="guide-box">
+    Beacon 和 Probe Response 是 STA 获得 AP 能力信息的主要载体。它们的帧体（Frame Body）由固定字段和可变长度的"信息元素（Information Element，IE）"组成。理解 IE 结构（Type-Length-Value）是解读 WiFi 抓包的关键。
+  </div>
+
+  <h3>管理帧通用帧体结构</h3>
+  <p>Beacon/Probe Response/Association Request 等管理帧的 Frame Body 均采用 TLV（类型-长度-值）编码的 IE 列表：</p>
+
+  <div class="bit-row">
+    <div class="bit-cell head">Element ID<br/>(1 Byte)</div>
+    <div class="bit-cell head">Length<br/>(1 Byte)</div>
+    <div class="bit-cell head" style="flex:3">Value<br/>(0~255 Bytes, 由 Length 决定)</div>
+  </div>
+
+  <h3>Beacon 帧固定字段</h3>
+  <div class="table-wrap">
+    <table>
+      <thead><tr><th>字段</th><th>长度</th><th>说明</th></tr></thead>
+      <tbody>
+        <tr><td>Timestamp</td><td>8 Bytes</td><td>AP 当前时间戳，STA 据此同步时钟（单位：microseconds）</td></tr>
+        <tr><td>Beacon Interval</td><td>2 Bytes</td><td>Beacon 发送间隔，默认 100 TU（1 TU = 1024 μs ≈ 1.024 ms）</td></tr>
+        <tr><td>Capability Info</td><td>2 Bytes</td><td>AP 能力位图：ESS/IBSS/CF-Pollable/Privacy/Short Preamble 等标志位</td></tr>
+      </tbody>
+    </table>
+  </div>
+
+  <h3>关键信息元素（IE）</h3>
+  <div class="table-wrap">
+    <table>
+      <thead><tr><th>IE 名称</th><th>Element ID</th><th>包含内容</th></tr></thead>
+      <tbody>
+        <tr><td>SSID</td><td>0</td><td>网络名称（0-32 字节 UTF-8 字符串）</td></tr>
+        <tr><td>Supported Rates</td><td>1</td><td>AP 支持的基础速率列表（Mbps×2，最高位=1 表示基本速率）</td></tr>
+        <tr><td>DS Parameter Set</td><td>3</td><td>当前工作信道号（1 Byte）</td></tr>
+        <tr><td>TIM</td><td>5</td><td>流量指示映射（Traffic Indication Map），Beacon 独有，告知省电客户端是否有缓存帧</td></tr>
+        <tr><td>RSN（WPA2）</td><td>48</td><td>RSN Information Element：包含 Group Cipher Suite、Pairwise Cipher Suite、AKM Suite（认证与密钥管理）</td></tr>
+        <tr><td>HT Capabilities</td><td>45</td><td>802.11n 能力：MCS 集合、40MHz、LDPC、STBC 等</td></tr>
+        <tr><td>VHT Capabilities</td><td>191</td><td>802.11ac 能力：MCS 映射、最大 MPDU 长度、波束成形等</td></tr>
+        <tr><td>Extended Supported Rates</td><td>50</td><td>额外速率列表（当速率超过 8 个时使用）</td></tr>
+      </tbody>
+    </table>
+  </div>
+
+  <div class="info-box">
+    <strong>Probe Request vs Probe Response：</strong>Probe Request 仅包含 STA 自身能力（SSID、Supported Rates、HT/VHT/HE Capabilities 等）；Probe Response 的内容与 Beacon 高度一致，但 <em>不含 TIM</em> 且 <em>包含 STA 在 Probe Request 中请求的 IE</em>。
+  </div>
+  <div class="source-ref">参考来源：
+    <a href="https://mrncciew.com/2014/10/27/cwap-802-11-probe-requestresponse/" target="_blank">CWAP 802.11 Probe Request/Response — mrncciew.com</a> ·
+    IEEE 802.11-2020 Section 9.3
+  </div>
+</section>
+
+<!-- ===================== Section 3 ===================== -->
+<section id="s3">
+  <h2>3. 802.11 开放系统认证</h2>
+  <div class="guide-box">
+    这是关联前的"握手礼"——形式大于内容。802.11 标准最初设计了 WEP 共享密钥认证，但由于 WEP 的严重安全缺陷，现代网络几乎全部使用"开放系统认证"（Open System Authentication），本质上是一次空认证（NULL Auth），真正的身份验证发生在关联之后的 EAP/4-Way Handshake 阶段。
+  </div>
+
+  <h3>信令流程（MSC）</h3>
+  <div class="svg-wrap">
+    <svg viewBox="0 0 500 240" xmlns="http://www.w3.org/2000/svg" font-family="system-ui,sans-serif">
+      <defs>
+        <marker id="ba" markerWidth="7" markerHeight="7" refX="5" refY="3" orient="auto">
+          <path d="M0,0 L0,6 L7,3 z" fill="#0ea5e9"/>
+        </marker>
+        <marker id="ba2" markerWidth="7" markerHeight="7" refX="5" refY="3" orient="auto">
+          <path d="M0,0 L0,6 L7,3 z" fill="#475569"/>
+        </marker>
+      </defs>
+
+      <line x1="100" y1="30" x2="100" y2="230" stroke="#334155" stroke-width="1.5" stroke-dasharray="4,3"/>
+      <line x1="380" y1="30" x2="380" y2="230" stroke="#334155" stroke-width="1.5" stroke-dasharray="4,3"/>
+
+      <rect x="55" y="16" width="90" height="26" rx="6" fill="#1e3a5f" stroke="#0ea5e9" stroke-width="1.5"/>
+      <text x="100" y="33" text-anchor="middle" fill="#7dd3fc" font-size="12" font-weight="bold">STA</text>
+
+      <rect x="335" y="16" width="90" height="26" rx="6" fill="#1e3a5f" stroke="#0ea5e9" stroke-width="1.5"/>
+      <text x="380" y="33" text-anchor="middle" fill="#7dd3fc" font-size="12" font-weight="bold">AP</text>
+
+      <!-- State label -->
+      <text x="100" y="62" text-anchor="middle" fill="#64748b" font-size="9">State 1: 未认证未关联</text>
+
+      <!-- Auth Request -->
+      <line x1="112" y1="80" x2="368" y2="80" stroke="#0ea5e9" stroke-width="2" marker-end="url(#ba)"/>
+      <rect x="165" y="62" width="150" height="20" rx="3" fill="#0c1a2e"/>
+      <text x="240" y="75" text-anchor="middle" fill="#7dd3fc" font-size="10.5" font-weight="bold">Authentication Request</text>
+      <text x="240" y="92" text-anchor="middle" fill="#64748b" font-size="8.5">[Auth Algorithm=0(Open), Seq=1, Status=0]</text>
+
+      <!-- ACK -->
+      <line x1="368" y1="112" x2="112" y2="112" stroke="#475569" stroke-width="1.2" stroke-dasharray="4,2" marker-end="url(#ba2)"/>
+      <text x="240" y="108" text-anchor="middle" fill="#475569" font-size="8.5">ACK</text>
+
+      <!-- Auth Response -->
+      <line x1="368" y1="148" x2="112" y2="148" stroke="#0ea5e9" stroke-width="2" marker-end="url(#ba2)"/>
+      <rect x="165" y="130" width="150" height="20" rx="3" fill="#0c1a2e"/>
+      <text x="240" y="143" text-anchor="middle" fill="#7dd3fc" font-size="10.5" font-weight="bold">Authentication Response</text>
+      <text x="240" y="160" text-anchor="middle" fill="#64748b" font-size="8.5">[Auth Algorithm=0, Seq=2, Status=0(成功)]</text>
+
+      <!-- ACK -->
+      <line x1="112" y1="182" x2="368" y2="182" stroke="#475569" stroke-width="1.2" stroke-dasharray="4,2" marker-end="url(#ba)"/>
+      <text x="240" y="178" text-anchor="middle" fill="#475569" font-size="8.5">ACK</text>
+
+      <text x="100" y="210" text-anchor="middle" fill="#6ee7b7" font-size="9.5">State 2: 已认证未关联</text>
+    </svg>
+  </div>
+
+  <h3>Authentication 帧固定字段</h3>
+  <div class="table-wrap">
+    <table>
+      <thead><tr><th>字段</th><th>长度</th><th>说明</th></tr></thead>
+      <tbody>
+        <tr><td>Authentication Algorithm Number</td><td>2 Bytes</td><td>0 = Open System；1 = Shared Key（WEP，已废弃）；3 = SAE（WPA3）</td></tr>
+        <tr><td>Authentication Transaction Seq Number</td><td>2 Bytes</td><td>Request=1，Response=2（SAE Commit=1, Confirm=2）</td></tr>
+        <tr><td>Status Code</td><td>2 Bytes</td><td>0 = 成功；其他值表示失败原因（如 1=Unspecified Failure）</td></tr>
+        <tr><td>Challenge Text（可选）</td><td>可变</td><td>仅 WEP 共享密钥认证使用，现代网络不使用</td></tr>
+      </tbody>
+    </table>
+  </div>
+
+  <div class="warn-box">
+    <strong>⚠️ 重要说明：</strong>开放系统认证不做任何身份验证，AP 对任何 STA 的 Auth Request 都会回复成功。真正的认证由后续的 802.1X/EAP（企业网）或 WPA2 4-Way Handshake（个人网）完成。这是 WiFi 历史遗留的设计，为了向后兼容 WEP 时代。
+  </div>
+  <div class="source-ref">参考来源：
+    <a href="https://www.supernetworks.org/pages/blog/80211-authentication-association-authorization-wifi" target="_blank">Authentication, Association & Authorization in 802.11 WiFi — supernetworks.org</a> ·
+    <a href="https://networkengineering.stackexchange.com/questions/55790/why-do-we-have-authentication-before-association-in-802-11" target="_blank">Why authentication before association — networkengineering.stackexchange.com</a>
+  </div>
+</section>
+
+<!-- ===================== Section 4 ===================== -->
+<section id="s4">
+  <h2>4. 关联请求 / 关联响应</h2>
+  <div class="guide-box">
+    关联是 STA 正式"入网"的动作——AP 为 STA 分配资源（AID）并记录其能力。关联请求帧携带 STA 完整的能力集（速率、HT/VHT/HE、安全参数），AP 审核后决定接受（Status=0）或拒绝（Status≠0）。这是 State 2 → State 3 的关键跳变。
+  </div>
+
+  <h3>完整信令流程（MSC）</h3>
+  <div class="svg-wrap">
+    <svg viewBox="0 0 520 280" xmlns="http://www.w3.org/2000/svg" font-family="system-ui,sans-serif">
+      <defs>
+        <marker id="ca" markerWidth="7" markerHeight="7" refX="5" refY="3" orient="auto">
+          <path d="M0,0 L0,6 L7,3 z" fill="#0ea5e9"/>
+        </marker>
+        <marker id="ca2" markerWidth="7" markerHeight="7" refX="5" refY="3" orient="auto">
+          <path d="M0,0 L0,6 L7,3 z" fill="#475569"/>
+        </marker>
+        <marker id="ca3" markerWidth="7" markerHeight="7" refX="5" refY="3" orient="auto">
+          <path d="M0,0 L0,6 L7,3 z" fill="#0ea5e9"/>
+        </marker>
+      </defs>
+
+      <line x1="90" y1="30" x2="90" y2="270" stroke="#334155" stroke-width="1.5" stroke-dasharray="4,3"/>
+      <line x1="400" y1="30" x2="400" y2="270" stroke="#334155" stroke-width="1.5" stroke-dasharray="4,3"/>
+
+      <rect x="45" y="16" width="90" height="26" rx="6" fill="#1e3a5f" stroke="#0ea5e9" stroke-width="1.5"/>
+      <text x="90" y="33" text-anchor="middle" fill="#7dd3fc" font-size="12" font-weight="bold">STA</text>
+      <rect x="355" y="16" width="90" height="26" rx="6" fill="#1e3a5f" stroke="#0ea5e9" stroke-width="1.5"/>
+      <text x="400" y="33" text-anchor="middle" fill="#7dd3fc" font-size="12" font-weight="bold">AP</text>
+
+      <text x="245" y="52" text-anchor="middle" fill="#64748b" font-size="9">— State 2: 已认证，未关联 —</text>
+
+      <!-- Assoc Request -->
+      <line x1="102" y1="72" x2="388" y2="72" stroke="#0ea5e9" stroke-width="2" marker-end="url(#ca)"/>
+      <text x="245" y="66" text-anchor="middle" fill="#7dd3fc" font-size="11" font-weight="bold">Association Request</text>
+      <text x="245" y="84" text-anchor="middle" fill="#64748b" font-size="8.5">[Capability Info | Listen Interval | SSID | Supported Rates | RSN IE | HT/VHT Cap]</text>
+
+      <!-- ACK -->
+      <line x1="388" y1="108" x2="102" y2="108" stroke="#475569" stroke-width="1.2" stroke-dasharray="4,2" marker-end="url(#ca2)"/>
+      <text x="245" y="104" text-anchor="middle" fill="#475569" font-size="8.5">ACK ← AP 确认收帧，开始检查各字段兼容性</text>
+
+      <!-- AP processing -->
+      <rect x="360" y="115" width="80" height="30" rx="4" fill="#1e293b" stroke="#475569" stroke-width="1"/>
+      <text x="400" y="128" text-anchor="middle" fill="#94a3b8" font-size="8">AP 审核能力</text>
+      <text x="400" y="140" text-anchor="middle" fill="#94a3b8" font-size="8">分配 AID</text>
+
+      <!-- Assoc Response -->
+      <line x1="388" y1="165" x2="102" y2="165" stroke="#0ea5e9" stroke-width="2" marker-end="url(#ca2)"/>
+      <text x="245" y="158" text-anchor="middle" fill="#7dd3fc" font-size="11" font-weight="bold">Association Response</text>
+      <text x="245" y="178" text-anchor="middle" fill="#64748b" font-size="8.5">[Capability Info | Status Code=0 | AID | Supported Rates | HT/VHT Info]</text>
+
+      <!-- ACK -->
+      <line x1="102" y1="205" x2="388" y2="205" stroke="#475569" stroke-width="1.2" stroke-dasharray="4,2" marker-end="url(#ca)"/>
+      <text x="245" y="201" text-anchor="middle" fill="#475569" font-size="8.5">ACK</text>
+
+      <text x="245" y="232" text-anchor="middle" fill="#6ee7b7" font-size="10">— State 3: 已认证，已关联 —</text>
+      <text x="245" y="248" text-anchor="middle" fill="#94a3b8" font-size="8.5">STA 获得 AID，可发送 802.11 数据帧（WPA2 网络中仍只允许 EAPOL）</text>
+    </svg>
+  </div>
+
+  <h3>Association Request 帧字段（源：IEEE 802.11-2020）</h3>
+  <div class="table-wrap">
+    <table>
+      <thead><tr><th>字段 / IE</th><th>是否必须</th><th>说明</th></tr></thead>
+      <tbody>
+        <tr><td>Capability Information</td><td>必须</td><td>STA 能力位图（与 Beacon 中格式相同，告知 AP STA 支持哪些特性）</td></tr>
+        <tr><td>Listen Interval</td><td>必须</td><td>STA 省电模式下多少个 Beacon 间隔醒来一次（AP 据此决定缓帧时长）</td></tr>
+        <tr><td>SSID (IE 0)</td><td>必须</td><td>要关联的网络名称</td></tr>
+        <tr><td>Supported Rates (IE 1)</td><td>必须</td><td>STA 支持的速率集合（前 8 个）</td></tr>
+        <tr><td>Extended Sup. Rates (IE 50)</td><td>可选</td><td>额外速率（超过 8 个时使用）</td></tr>
+        <tr><td>Power Capability (IE 33)</td><td>可选</td><td>STA 最小/最大发射功率（dBm）</td></tr>
+        <tr><td>Supported Channels (IE 36)</td><td>可选</td><td>STA 支持的信道列表</td></tr>
+        <tr><td>RSN IE (IE 48)</td><td>WPA2 必须</td><td>STA 选择的 Cipher Suite 和 AKM（用于协商加密算法）</td></tr>
+        <tr><td>HT Capabilities (IE 45)</td><td>可选(11n)</td><td>MIMO 流数、40MHz、LDPC、STBC、A-MPDU 参数等</td></tr>
+        <tr><td>VHT Capabilities (IE 191)</td><td>可选(11ac)</td><td>80/160MHz、MU-MIMO、波束成形 Sounding 等</td></tr>
+        <tr><td>HE Capabilities (IE 255+)</td><td>可选(11ax)</td><td>OFDMA、1024-QAM、BSS Coloring、TWT 等（Wi-Fi 6）</td></tr>
+      </tbody>
+    </table>
+  </div>
+
+  <h3>Association Response 帧字段</h3>
+  <div class="table-wrap">
+    <table>
+      <thead><tr><th>字段 / IE</th><th>说明</th></tr></thead>
+      <tbody>
+        <tr><td>Capability Information</td><td>AP 的能力（用于确认 STA 能兼容的特性）</td></tr>
+        <tr><td>Status Code</td><td><strong>0 = 成功</strong>；非 0 = 失败（如 17=不支持的速率，12=拒绝关联）</td></tr>
+        <tr><td>Association ID (AID)</td><td>AP 分配的关联标识，范围 1-2007，高 2 bit 固定为 1（即实际值 0xC001~0xC7D7）</td></tr>
+        <tr><td>Supported Rates (IE 1)</td><td>AP 实际将使用的速率集合（两者交集）</td></tr>
+        <tr><td>HT Information (IE 61)</td><td>AP 的 HT 配置（主信道、次信道偏移、保护模式等）</td></tr>
+        <tr><td>VHT Operation (IE 192)</td><td>AP 的 VHT 配置（信道宽度、中心频率索引）</td></tr>
+      </tbody>
+    </table>
+  </div>
+  <div class="source-ref">参考来源：
+    <a href="https://mrncciew.com/2014/10/28/802-11-mgmt-association-reqresponse/" target="_blank">802.11 Mgmt: Association Req/Response — mrncciew.com</a> ·
+    IEEE 802.11-2020 Table 9-35 (Assoc Request), Table 9-36 (Assoc Response)
+  </div>
+</section>
+
+<!-- ===================== Section 5 ===================== -->
+<section id="s5">
+  <h2>5. 802.11 状态机与 AID</h2>
+  <div class="guide-box">
+    802.11 标准用四态状态机精确定义 STA 的每个阶段权限。理解状态机才能理解为什么某些帧只能在特定状态发送，以及 Disassociation/Deauthentication 帧如何触发状态回退。AID 是 AP 管理 TIM（省电通知）的关键索引。
+  </div>
+
+  <div class="svg-wrap">
+    <svg viewBox="0 0 680 280" xmlns="http://www.w3.org/2000/svg" font-family="system-ui,sans-serif">
+      <defs>
+        <marker id="sm1" markerWidth="7" markerHeight="7" refX="5" refY="3" orient="auto">
+          <path d="M0,0 L0,6 L7,3 z" fill="#0ea5e9"/>
+        </marker>
+        <marker id="sm2" markerWidth="7" markerHeight="7" refX="5" refY="3" orient="auto">
+          <path d="M0,0 L0,6 L7,3 z" fill="#f87171"/>
+        </marker>
+      </defs>
+
+      <!-- State 1 -->
+      <rect x="20" y="100" width="130" height="80" rx="10" fill="#1e293b" stroke="#475569" stroke-width="2"/>
+      <text x="85" y="130" text-anchor="middle" fill="#94a3b8" font-size="11" font-weight="bold">State 1</text>
+      <text x="85" y="148" text-anchor="middle" fill="#64748b" font-size="9">未认证</text>
+      <text x="85" y="163" text-anchor="middle" fill="#64748b" font-size="9">未关联</text>
+      <text x="85" y="175" text-anchor="middle" fill="#475569" font-size="8">仅广播/组播帧</text>
+
+      <!-- State 2 -->
+      <rect x="200" y="100" width="130" height="80" rx="10" fill="#1e293b" stroke="#0ea5e9" stroke-width="2"/>
+      <text x="265" y="130" text-anchor="middle" fill="#7dd3fc" font-size="11" font-weight="bold">State 2</text>
+      <text x="265" y="148" text-anchor="middle" fill="#7dd3fc" font-size="9">已认证</text>
+      <text x="265" y="163" text-anchor="middle" fill="#64748b" font-size="9">未关联</text>
+      <text x="265" y="175" text-anchor="middle" fill="#475569" font-size="8">仍限广播帧</text>
+
+      <!-- State 3 -->
+      <rect x="390" y="100" width="130" height="80" rx="10" fill="#1e293b" stroke="#0ea5e9" stroke-width="2"/>
+      <text x="455" y="130" text-anchor="middle" fill="#7dd3fc" font-size="11" font-weight="bold">State 3</text>
+      <text x="455" y="148" text-anchor="middle" fill="#7dd3fc" font-size="9">已认证</text>
+      <text x="455" y="163" text-anchor="middle" fill="#7dd3fc" font-size="9">已关联</text>
+      <text x="455" y="175" text-anchor="middle" fill="#475569" font-size="8">802.11 数据帧（含 EAPOL）</text>
+
+      <!-- State 4 -->
+      <rect x="570" y="100" width="100" height="80" rx="10" fill="#1e293b" stroke="#10b981" stroke-width="2"/>
+      <text x="620" y="130" text-anchor="middle" fill="#6ee7b7" font-size="11" font-weight="bold">State 4</text>
+      <text x="620" y="148" text-anchor="middle" fill="#6ee7b7" font-size="9">RSNA</text>
+      <text x="620" y="163" text-anchor="middle" fill="#6ee7b7" font-size="9">已建立</text>
+      <text x="620" y="175" text-anchor="middle" fill="#475569" font-size="8">加密数据帧</text>
+
+      <!-- Forward arrows -->
+      <line x1="152" y1="140" x2="198" y2="140" stroke="#0ea5e9" stroke-width="2" marker-end="url(#sm1)"/>
+      <text x="175" y="132" text-anchor="middle" fill="#7dd3fc" font-size="8">Auth</text>
+      <text x="175" y="143" text-anchor="middle" fill="#7dd3fc" font-size="8">Success</text>
+
+      <line x1="332" y1="140" x2="388" y2="140" stroke="#0ea5e9" stroke-width="2" marker-end="url(#sm1)"/>
+      <text x="360" y="132" text-anchor="middle" fill="#7dd3fc" font-size="8">Assoc</text>
+      <text x="360" y="143" text-anchor="middle" fill="#7dd3fc" font-size="8">Response=0</text>
+
+      <line x1="522" y1="140" x2="568" y2="140" stroke="#10b981" stroke-width="2" marker-end="url(#sm1)"/>
+      <text x="545" y="132" text-anchor="middle" fill="#6ee7b7" font-size="8">4-Way</text>
+      <text x="545" y="143" text-anchor="middle" fill="#6ee7b7" font-size="8">OK</text>
+
+      <!-- Backward arrows (regression) -->
+      <path d="M200,170 C180,220 100,220 85,182" stroke="#f87171" stroke-width="1.5" fill="none" marker-end="url(#sm2)" stroke-dasharray="5,3"/>
+      <text x="140" y="235" text-anchor="middle" fill="#f87171" font-size="8">Deauthentication</text>
+
+      <path d="M390,170 C360,250 200,250 200,182" stroke="#f87171" stroke-width="1.5" fill="none" marker-end="url(#sm2)" stroke-dasharray="5,3"/>
+      <text x="295" y="265" text-anchor="middle" fill="#f87171" font-size="8">Disassociation → State 2</text>
+
+      <!-- Legend -->
+      <text x="20" y="30" fill="#94a3b8" font-size="10" font-weight="bold">802.11 STA 状态机</text>
+      <line x1="20" y1="50" x2="50" y2="50" stroke="#0ea5e9" stroke-width="2"/>
+      <text x="55" y="54" fill="#94a3b8" font-size="9">正向跃迁</text>
+      <line x1="120" y1="50" x2="150" y2="50" stroke="#f87171" stroke-width="1.5" stroke-dasharray="5,3"/>
+      <text x="155" y="54" fill="#94a3b8" font-size="9">状态回退</text>
+    </svg>
+  </div>
+
+  <h3>AID（关联标识符）</h3>
+  <p>AID 是 AP 在 Association Response 中分配给 STA 的 <strong>14 bit 无符号整数（1~2007）</strong>，在帧头中高 2 bit 固定为 1。AP 用 AID 维护 Beacon 帧中的 <strong>TIM（Traffic Indication Map）</strong>位图：当 AP 为某 STA 缓存了下行帧时，TIM 中对应 AID 的 bit 置 1，STA 收到 Beacon 后检查自己 AID 对应的 bit，若为 1 则唤醒发送 PS-Poll 取帧。</p>
+
+  <div class="warn-box">
+    <strong>Disassociation vs Deauthentication：</strong><br/>
+    • <strong>Disassociation</strong>：从 State 3/4 → State 2（仍保留认证状态，STA 可直接发 AssocReq 重新关联，无需重新 Auth）<br/>
+    • <strong>Deauthentication</strong>：从任意状态 → State 1（完全重置，需重新走 Auth→Assoc 完整流程）<br/>
+    两者均携带 <strong>Reason Code</strong> 字段说明原因（如 Code 3 = "STA 离开 BSS"，Code 5 = "AP 不活跃"）
+  </div>
+  <div class="source-ref">参考来源：
+    <a href="https://howiwifi.com/2020/07/16/802-11-frame-exchanges/" target="_blank">802.11 Frame Exchanges — howiwifi.com</a> ·
+    <a href="https://blogs.arubanetworks.com/industries/understanding-802-11-state-machine/" target="_blank">Understanding 802.11 State Machine — Aruba Networks</a>
+  </div>
+</section>
+
+<!-- ===================== Section 6 ===================== -->
+<section id="s6">
+  <h2>6. 802.1X / EAP 认证（企业网）</h2>
+  <div class="guide-box">
+    WPA2-Enterprise 网络在完成 802.11 关联之后，STA 还需要通过 802.1X/EAP 框架向 RADIUS 服务器证明身份。AP 作为"认证者（Authenticator）"充当透明中继，维护受控端口（Controlled Port）和非受控端口（Uncontrolled Port）两个虚拟端口。只有 EAP 成功后，受控端口才打开。
+  </div>
+
+  <h3>三方角色</h3>
+  <div class="table-wrap">
+    <table>
+      <thead><tr><th>角色</th><th>802.1X 称谓</th><th>说明</th></tr></thead>
+      <tbody>
+        <tr><td>STA（无线客户端）</td><td>Supplicant（申请者）</td><td>发起认证，提供凭据（证书/用户名密码）</td></tr>
+        <tr><td>AP</td><td>Authenticator（认证者）</td><td>透明中继 EAP 消息；维护端口状态；发起 4-Way Handshake</td></tr>
+        <tr><td>RADIUS 服务器</td><td>Authentication Server</td><td>最终验证 STA 身份；成功后返回 PMK（MSK 前 32 字节）</td></tr>
+      </tbody>
+    </table>
+  </div>
+
+  <h3>EAP-PEAP/MSCHAPv2 信令流程（MSC）</h3>
+  <div class="svg-wrap">
+    <svg viewBox="0 0 680 440" xmlns="http://www.w3.org/2000/svg" font-family="system-ui,sans-serif">
+      <defs>
+        <marker id="ea1" markerWidth="7" markerHeight="7" refX="5" refY="3" orient="auto">
+          <path d="M0,0 L0,6 L7,3 z" fill="#0ea5e9"/>
+        </marker>
+        <marker id="ea2" markerWidth="7" markerHeight="7" refX="5" refY="3" orient="auto">
+          <path d="M0,0 L0,6 L7,3 z" fill="#f59e0b"/>
+        </marker>
+        <marker id="ea3" markerWidth="7" markerHeight="7" refX="5" refY="3" orient="auto">
+          <path d="M0,0 L0,6 L7,3 z" fill="#10b981"/>
+        </marker>
+      </defs>
+
+      <!-- Lifelines -->
+      <line x1="80" y1="30" x2="80" y2="430" stroke="#334155" stroke-width="1.5" stroke-dasharray="4,3"/>
+      <line x1="320" y1="30" x2="320" y2="430" stroke="#334155" stroke-width="1.5" stroke-dasharray="4,3"/>
+      <line x1="580" y1="30" x2="580" y2="430" stroke="#334155" stroke-width="1.5" stroke-dasharray="4,3"/>
+
+      <!-- Actors -->
+      <rect x="30" y="12" width="100" height="26" rx="6" fill="#1e3a5f" stroke="#0ea5e9" stroke-width="1.5"/>
+      <text x="80" y="29" text-anchor="middle" fill="#7dd3fc" font-size="11" font-weight="bold">STA (申请者)</text>
+
+      <rect x="265" y="12" width="110" height="26" rx="6" fill="#1e293b" stroke="#f59e0b" stroke-width="1.5"/>
+      <text x="320" y="29" text-anchor="middle" fill="#fde68a" font-size="11" font-weight="bold">AP (认证者)</text>
+
+      <rect x="530" y="12" width="100" height="26" rx="6" fill="#1a3a2a" stroke="#10b981" stroke-width="1.5"/>
+      <text x="580" y="29" text-anchor="middle" fill="#6ee7b7" font-size="10" font-weight="bold">RADIUS 服务器</text>
+
+      <!-- Step 1: EAPOL-Start -->
+      <line x1="92" y1="62" x2="308" y2="62" stroke="#0ea5e9" stroke-width="1.8" marker-end="url(#ea1)"/>
+      <text x="200" y="57" text-anchor="middle" fill="#7dd3fc" font-size="9.5" font-weight="bold">EAPOL-Start</text>
+
+      <!-- Step 2: EAP-Request/Identity -->
+      <line x1="308" y1="90" x2="92" y2="90" stroke="#f59e0b" stroke-width="1.8" marker-end="url(#ea2)"/>
+      <text x="200" y="85" text-anchor="middle" fill="#fde68a" font-size="9.5">EAP-Request / Identity</text>
+
+      <!-- Step 3: EAP-Response/Identity -->
+      <line x1="92" y1="118" x2="308" y2="118" stroke="#0ea5e9" stroke-width="1.8" marker-end="url(#ea1)"/>
+      <text x="200" y="112" text-anchor="middle" fill="#7dd3fc" font-size="9.5">EAP-Response / Identity</text>
+      <!-- AP to RADIUS -->
+      <line x1="332" y1="118" x2="568" y2="118" stroke="#f59e0b" stroke-width="1.5" stroke-dasharray="5,2" marker-end="url(#ea2)"/>
+      <text x="450" y="112" text-anchor="middle" fill="#94a3b8" font-size="8.5">RADIUS Access-Request</text>
+
+      <!-- PEAP TLS Handshake zone -->
+      <rect x="10" y="132" width="640" height="68" rx="6" fill="rgba(245,158,11,0.05)" stroke="#f59e0b" stroke-width="0.8" stroke-dasharray="4,3"/>
+      <text x="330" y="148" text-anchor="middle" fill="#f59e0b" font-size="9" font-weight="bold">PEAP Phase 1: TLS 隧道建立（多轮往返）</text>
+      <text x="200" y="163" text-anchor="middle" fill="#94a3b8" font-size="8.5">← TLS Client Hello / Server Hello + Certificate →</text>
+      <text x="200" y="177" text-anchor="middle" fill="#94a3b8" font-size="8.5">← TLS Client Key Exchange / Change Cipher Spec / Finished →</text>
+      <text x="450" y="163" text-anchor="middle" fill="#64748b" font-size="8">(RADIUS 中转)</text>
+      <text x="450" y="177" text-anchor="middle" fill="#64748b" font-size="8">TLS 隧道已建立 ✓</text>
+
+      <!-- Phase 2 -->
+      <text x="200" y="218" text-anchor="middle" fill="#fde68a" font-size="8.5">PEAP Phase 2: 隧道内 MSCHAPv2</text>
+      <line x1="308" y1="228" x2="92" y2="228" stroke="#f59e0b" stroke-width="1.5" marker-end="url(#ea2)"/>
+      <text x="200" y="223" text-anchor="middle" fill="#94a3b8" font-size="8">EAP-Request / MSCHAPv2 Challenge</text>
+      <line x1="92" y1="248" x2="308" y2="248" stroke="#0ea5e9" stroke-width="1.5" marker-end="url(#ea1)"/>
+      <text x="200" y="243" text-anchor="middle" fill="#94a3b8" font-size="8">EAP-Response / MSCHAPv2 Response (NT hash)</text>
+
+      <!-- RADIUS check -->
+      <line x1="332" y1="262" x2="568" y2="262" stroke="#f59e0b" stroke-width="1.5" stroke-dasharray="5,2" marker-end="url(#ea2)"/>
+      <text x="450" y="256" text-anchor="middle" fill="#94a3b8" font-size="8">RADIUS Access-Request</text>
+      <line x1="568" y1="280" x2="332" y2="280" stroke="#10b981" stroke-width="1.5" stroke-dasharray="5,2" marker-end="url(#ea3)"/>
+      <text x="450" y="275" text-anchor="middle" fill="#6ee7b7" font-size="8">RADIUS Access-Accept + MSK(PMK)</text>
+
+      <!-- EAP Success -->
+      <line x1="308" y1="308" x2="92" y2="308" stroke="#10b981" stroke-width="2" marker-end="url(#ea3)"/>
+      <text x="200" y="302" text-anchor="middle" fill="#6ee7b7" font-size="10" font-weight="bold">EAP-Success</text>
+
+      <!-- Port open -->
+      <rect x="280" y="318" width="80" height="20" rx="4" fill="rgba(16,185,129,0.1)" stroke="#10b981" stroke-width="0.8"/>
+      <text x="320" y="331" text-anchor="middle" fill="#6ee7b7" font-size="8">受控端口开放 ✓</text>
+
+      <!-- PMK note -->
+      <text x="200" y="358" text-anchor="middle" fill="#94a3b8" font-size="8.5">STA 和 AP 均持有 PMK（256 bit）→ 进入 4-Way Handshake</text>
+      <text x="450" y="358" text-anchor="middle" fill="#6ee7b7" font-size="8">PMK = MSK[0:31] (前 256 bit)</text>
+
+      <!-- Controlled port note -->
+      <line x1="92" y1="385" x2="308" y2="385" stroke="#334155" stroke-width="1" stroke-dasharray="3,3"/>
+      <text x="200" y="400" text-anchor="middle" fill="#64748b" font-size="8">通过非受控端口（Uncontrolled Port）传输 EAP</text>
+      <text x="200" y="413" text-anchor="middle" fill="#64748b" font-size="8">认证成功后受控端口（Controlled Port）打开</text>
+    </svg>
+  </div>
+
+  <div class="info-box">
+    <strong>PMK 的来源：</strong>企业网中，RADIUS Access-Accept 携带 MSK（Master Session Key，至少 64 字节）。PMK = MSK 的前 32 字节（256 bit）。个人网（WPA2-PSK）中，PMK 直接由密码短语（Passphrase）通过 PBKDF2-HMAC-SHA1 派生：<code>PMK = PBKDF2(HMAC-SHA1, Passphrase, SSID, 4096, 256bit)</code>
+  </div>
+  <div class="source-ref">参考来源：
+    <a href="https://www.pinglabz.com/eapol-explained/" target="_blank">EAPOL Explained — pinglabz.com</a> ·
+    <a href="https://community.nxp.com/t5/Wireless-Connectivity-Knowledge/802-11-Wi-Fi-Security-Concepts/ta-p/1163551" target="_blank">Wi-Fi Security Concepts — NXP Community</a>
+  </div>
+</section>
+
+<!-- ===================== Section 7 ===================== -->
+<section id="s7">
+  <h2>7. WPA2 四次握手（4-Way Handshake）</h2>
+  <div class="guide-box">
+    这是 WiFi 安全的核心。四次 EAPOL-Key 帧交换用于在不传输 PMK 本身的前提下，双向验证双方均持有相同的 PMK，并协商出用于实际数据加密的 PTK（单播密钥）和 GTK（组播密钥）。每一条消息的 Key Information 字段精确控制协商状态。
+  </div>
+
+  <h3>密钥层级</h3>
+  <div class="svg-wrap">
+    <svg viewBox="0 0 600 180" xmlns="http://www.w3.org/2000/svg" font-family="system-ui,sans-serif">
+      <!-- PMK -->
+      <rect x="240" y="10" width="120" height="32" rx="6" fill="rgba(245,158,11,0.2)" stroke="#f59e0b" stroke-width="1.5"/>
+      <text x="300" y="31" text-anchor="middle" fill="#fde68a" font-size="11" font-weight="bold">PMK (256 bit)</text>
+
+      <!-- PRF -->
+      <line x1="300" y1="42" x2="300" y2="62" stroke="#475569" stroke-width="1.5"/>
+      <rect x="220" y="62" width="160" height="24" rx="4" fill="#1e293b" stroke="#475569" stroke-width="1"/>
+      <text x="300" y="78" text-anchor="middle" fill="#94a3b8" font-size="9">PRF-384/512(PMK, ANonce, SNonce, MACs)</text>
+
+      <!-- PTK -->
+      <line x1="300" y1="86" x2="300" y2="100" stroke="#475569" stroke-width="1.5"/>
+      <rect x="160" y="100" width="280" height="32" rx="6" fill="rgba(14,165,233,0.15)" stroke="#0ea5e9" stroke-width="1.5"/>
+      <text x="300" y="120" text-anchor="middle" fill="#7dd3fc" font-size="11" font-weight="bold">PTK (384 or 512 bit)</text>
+
+      <!-- PTK sub-keys -->
+      <line x1="220" y1="132" x2="120" y2="150" stroke="#334155" stroke-width="1.2"/>
+      <line x1="300" y1="132" x2="300" y2="150" stroke="#334155" stroke-width="1.2"/>
+      <line x1="380" y1="132" x2="490" y2="150" stroke="#334155" stroke-width="1.2"/>
+
+      <rect x="60" y="150" width="120" height="24" rx="4" fill="#0f172a" stroke="#334155" stroke-width="1"/>
+      <text x="120" y="166" text-anchor="middle" fill="#94a3b8" font-size="9">KCK (128 bit)</text>
+      <text x="120" y="176" text-anchor="middle" fill="#64748b" font-size="7.5">完整性校验密钥</text>
+
+      <rect x="235" y="150" width="130" height="24" rx="4" fill="#0f172a" stroke="#334155" stroke-width="1"/>
+      <text x="300" y="166" text-anchor="middle" fill="#94a3b8" font-size="9">KEK (128 bit)</text>
+      <text x="300" y="176" text-anchor="middle" fill="#64748b" font-size="7.5">密钥加密密钥</text>
+
+      <rect x="430" y="150" width="130" height="24" rx="4" fill="#0f172a" stroke="#334155" stroke-width="1"/>
+      <text x="495" y="166" text-anchor="middle" fill="#94a3b8" font-size="9">TK (128 bit)</text>
+      <text x="495" y="176" text-anchor="middle" fill="#64748b" font-size="7.5">数据加密密钥(AES-CCMP)</text>
+    </svg>
+  </div>
+
+  <h3>四次握手信令流程（MSC）</h3>
+  <div class="svg-wrap">
+    <svg viewBox="0 0 600 390" xmlns="http://www.w3.org/2000/svg" font-family="system-ui,sans-serif">
+      <defs>
+        <marker id="hs1" markerWidth="7" markerHeight="7" refX="5" refY="3" orient="auto">
+          <path d="M0,0 L0,6 L7,3 z" fill="#f59e0b"/>
+        </marker>
+        <marker id="hs2" markerWidth="7" markerHeight="7" refX="5" refY="3" orient="auto">
+          <path d="M0,0 L0,6 L7,3 z" fill="#0ea5e9"/>
+        </marker>
+        <marker id="hs3" markerWidth="7" markerHeight="7" refX="5" refY="3" orient="auto">
+          <path d="M0,0 L0,6 L7,3 z" fill="#475569"/>
+        </marker>
+      </defs>
+
+      <line x1="100" y1="40" x2="100" y2="380" stroke="#334155" stroke-width="1.5" stroke-dasharray="4,3"/>
+      <line x1="460" y1="40" x2="460" y2="380" stroke="#334155" stroke-width="1.5" stroke-dasharray="4,3"/>
+
+      <rect x="50" y="20" width="100" height="28" rx="6" fill="#1a2e1a" stroke="#10b981" stroke-width="1.5"/>
+      <text x="100" y="38" text-anchor="middle" fill="#6ee7b7" font-size="11" font-weight="bold">STA (申请者)</text>
+      <rect x="410" y="20" width="100" height="28" rx="6" fill="#1e293b" stroke="#f59e0b" stroke-width="1.5"/>
+      <text x="460" y="38" text-anchor="middle" fill="#fde68a" font-size="11" font-weight="bold">AP (认证者)</text>
+
+      <!-- Msg 1 -->
+      <rect x="380" y="52" width="100" height="20" rx="3" fill="#0f172a"/>
+      <text x="460" y="65" text-anchor="middle" fill="#fde68a" font-size="8">生成 ANonce</text>
+      <line x1="448" y1="84" x2="112" y2="84" stroke="#f59e0b" stroke-width="2" marker-end="url(#hs2)"/>
+      <rect x="160" y="68" width="160" height="18" rx="3" fill="#0c1a2e"/>
+      <text x="240" y="80" text-anchor="middle" fill="#fde68a" font-size="10" font-weight="bold">消息1: EAPOL-Key</text>
+      <text x="240" y="96" text-anchor="middle" fill="#64748b" font-size="8">[ANonce, Key ACK=1, Key MIC=0]</text>
+
+      <!-- STA compute PTK -->
+      <rect x="30" y="104" width="130" height="20" rx="3" fill="#0f172a"/>
+      <text x="95" y="117" text-anchor="middle" fill="#6ee7b7" font-size="8">生成 SNonce → 计算 PTK</text>
+
+      <!-- Msg 2 -->
+      <line x1="112" y1="136" x2="448" y2="136" stroke="#0ea5e9" stroke-width="2" marker-end="url(#hs1)"/>
+      <rect x="160" y="120" width="160" height="18" rx="3" fill="#0c1a2e"/>
+      <text x="240" y="132" text-anchor="middle" fill="#7dd3fc" font-size="10" font-weight="bold">消息2: EAPOL-Key</text>
+      <text x="240" y="148" text-anchor="middle" fill="#64748b" font-size="8">[SNonce, Key MIC=1, RSN IE, Secure=0]</text>
+
+      <!-- ACK -->
+      <line x1="448" y1="166" x2="112" y2="166" stroke="#475569" stroke-width="1.2" stroke-dasharray="4,2" marker-end="url(#hs2)"/>
+      <text x="240" y="162" text-anchor="middle" fill="#475569" font-size="7.5">ACK</text>
+
+      <!-- AP compute PTK -->
+      <rect x="400" y="172" width="120" height="20" rx="3" fill="#0f172a"/>
+      <text x="460" y="185" text-anchor="middle" fill="#fde68a" font-size="8">验证 MIC → 计算 PTK → 生成 GTK</text>
+
+      <!-- Msg 3 -->
+      <line x1="448" y1="206" x2="112" y2="206" stroke="#f59e0b" stroke-width="2" marker-end="url(#hs2)"/>
+      <rect x="160" y="190" width="160" height="18" rx="3" fill="#0c1a2e"/>
+      <text x="240" y="202" text-anchor="middle" fill="#fde68a" font-size="10" font-weight="bold">消息3: EAPOL-Key</text>
+      <text x="240" y="218" text-anchor="middle" fill="#64748b" font-size="8">[ANonce, Key MIC=1, Install=1, GTK(加密), RSN IE]</text>
+
+      <!-- ACK -->
+      <line x1="112" y1="236" x2="448" y2="236" stroke="#475569" stroke-width="1.2" stroke-dasharray="4,2" marker-end="url(#hs1)"/>
+      <text x="240" y="232" text-anchor="middle" fill="#475569" font-size="7.5">ACK</text>
+
+      <!-- STA install keys -->
+      <rect x="30" y="242" width="130" height="20" rx="3" fill="#0f172a"/>
+      <text x="95" y="255" text-anchor="middle" fill="#6ee7b7" font-size="8">安装 PTK + GTK ✓</text>
+
+      <!-- Msg 4 -->
+      <line x1="112" y1="276" x2="448" y2="276" stroke="#0ea5e9" stroke-width="2" marker-end="url(#hs1)"/>
+      <rect x="160" y="260" width="160" height="18" rx="3" fill="#0c1a2e"/>
+      <text x="240" y="272" text-anchor="middle" fill="#7dd3fc" font-size="10" font-weight="bold">消息4: EAPOL-Key</text>
+      <text x="240" y="288" text-anchor="middle" fill="#64748b" font-size="8">[Key MIC=1, Secure=1, 确认安装]</text>
+
+      <!-- AP install keys -->
+      <rect x="400" y="294" width="120" height="20" rx="3" fill="#0f172a"/>
+      <text x="460" y="307" text-anchor="middle" fill="#fde68a" font-size="8">安装 PTK + GTK ✓</text>
+
+      <!-- ACK -->
+      <line x1="448" y1="326" x2="112" y2="326" stroke="#475569" stroke-width="1.2" stroke-dasharray="4,2" marker-end="url(#hs2)"/>
+      <text x="240" y="322" text-anchor="middle" fill="#475569" font-size="7.5">ACK</text>
+
+      <!-- Done -->
+      <rect x="80" y="345" width="340" height="22" rx="5" fill="rgba(16,185,129,0.1)" stroke="#10b981" stroke-width="1"/>
+      <text x="250" y="360" text-anchor="middle" fill="#6ee7b7" font-size="10" font-weight="bold">RSNA 建立 ✓ — 开始 AES-CCMP 加密数据传输</text>
+    </svg>
+  </div>
+
+  <h3>EAPOL-Key 帧 Key Information 字段（2 Bytes 位图）</h3>
+  <div class="table-wrap">
+    <table>
+      <thead><tr><th>位</th><th>名称</th><th>消息1</th><th>消息2</th><th>消息3</th><th>消息4</th></tr></thead>
+      <tbody>
+        <tr><td>Bit 0-2</td><td>Key Descriptor Version</td><td colspan="4">2 = HMAC-SHA1 + AES (WPA2-CCMP)</td></tr>
+        <tr><td>Bit 3</td><td>Key Type</td><td>1</td><td>1</td><td>1</td><td>1</td></tr>
+        <tr><td>Bit 6</td><td>Install</td><td>0</td><td>0</td><td><strong>1</strong></td><td>0</td></tr>
+        <tr><td>Bit 7</td><td>Key ACK</td><td><strong>1</strong></td><td>0</td><td><strong>1</strong></td><td>0</td></tr>
+        <tr><td>Bit 8</td><td>Key MIC</td><td>0</td><td><strong>1</strong></td><td><strong>1</strong></td><td><strong>1</strong></td></tr>
+        <tr><td>Bit 9</td><td>Secure</td><td>0</td><td>0</td><td><strong>1</strong></td><td><strong>1</strong></td></tr>
+        <tr><td>Bit 12</td><td>Encrypted Key Data</td><td>0</td><td>0</td><td><strong>1</strong>(GTK 已加密)</td><td>0</td></tr>
+      </tbody>
+    </table>
+  </div>
+  <div class="source-ref">参考来源：
+    <a href="https://howiwifi.com/2020/07/16/802-11-frame-exchanges/" target="_blank">802.11 Frame Exchanges — howiwifi.com</a> ·
+    <a href="https://infishark.com/blogs/learn/eapol-packets-explained-what-they-are-and-how-theyre-structured" target="_blank">EAPOL Packets Explained — infishark.com</a> ·
+    <a href="https://medium.com/wifi-testing/four-way-handshake-32356fbec1b5" target="_blank">Four-Way Handshake — medium.com/wifi-testing</a>
+  </div>
+</section>
+
+<!-- ===================== Section 8 ===================== -->
+<section id="s8">
+  <h2>8. MAC 帧通用格式详解</h2>
+  <div class="guide-box">
+    802.11 的所有帧（管理、控制、数据）共享同一个 MAC 层帧头结构。Frame Control 字段是每帧的"身份证"，2 字节内编码了帧类型、子类型、方向、重传、省电、分段等关键控制信息。理解帧头格式是分析任何 WiFi 抓包的基础。
+  </div>
+
+  <h3>802.11 MAC 帧通用结构</h3>
+  <div class="svg-wrap">
+    <svg viewBox="0 0 740 120" xmlns="http://www.w3.org/2000/svg" font-family="system-ui,sans-serif">
+      <!-- Frame structure -->
+      <rect x="10" y="20" width="70" height="50" rx="4" fill="rgba(14,165,233,0.2)" stroke="#0ea5e9" stroke-width="1.5"/>
+      <text x="45" y="42" text-anchor="middle" fill="#7dd3fc" font-size="9.5" font-weight="bold">Frame</text>
+      <text x="45" y="55" text-anchor="middle" fill="#7dd3fc" font-size="9.5" font-weight="bold">Control</text>
+      <text x="45" y="68" text-anchor="middle" fill="#64748b" font-size="8">2 Bytes</text>
+
+      <rect x="82" y="20" width="55" height="50" rx="4" fill="rgba(14,165,233,0.15)" stroke="#0ea5e9" stroke-width="1.5"/>
+      <text x="109" y="42" text-anchor="middle" fill="#7dd3fc" font-size="9.5">Duration/</text>
+      <text x="109" y="55" text-anchor="middle" fill="#7dd3fc" font-size="9.5">ID</text>
+      <text x="109" y="68" text-anchor="middle" fill="#64748b" font-size="8">2 Bytes</text>
+
+      <rect x="139" y="20" width="75" height="50" rx="4" fill="rgba(14,165,233,0.12)" stroke="#0ea5e9" stroke-width="1.5"/>
+      <text x="176" y="48" text-anchor="middle" fill="#7dd3fc" font-size="9.5">Address 1</text>
+      <text x="176" y="60" text-anchor="middle" fill="#7dd3fc" font-size="9.5">(RA/DA)</text>
+      <text x="176" y="68" text-anchor="middle" fill="#64748b" font-size="8">6 Bytes</text>
+
+      <rect x="216" y="20" width="75" height="50" rx="4" fill="rgba(14,165,233,0.12)" stroke="#0ea5e9" stroke-width="1.5"/>
+      <text x="253" y="48" text-anchor="middle" fill="#7dd3fc" font-size="9.5">Address 2</text>
+      <text x="253" y="60" text-anchor="middle" fill="#7dd3fc" font-size="9.5">(TA/SA)</text>
+      <text x="253" y="68" text-anchor="middle" fill="#64748b" font-size="8">6 Bytes</text>
+
+      <rect x="293" y="20" width="75" height="50" rx="4" fill="rgba(14,165,233,0.12)" stroke="#0ea5e9" stroke-width="1.5"/>
+      <text x="330" y="48" text-anchor="middle" fill="#7dd3fc" font-size="9.5">Address 3</text>
+      <text x="330" y="60" text-anchor="middle" fill="#7dd3fc" font-size="9.5">(BSSID)</text>
+      <text x="330" y="68" text-anchor="middle" fill="#64748b" font-size="8">6 Bytes</text>
+
+      <rect x="370" y="20" width="60" height="50" rx="4" fill="rgba(14,165,233,0.1)" stroke="#334155" stroke-width="1.5"/>
+      <text x="400" y="45" text-anchor="middle" fill="#7dd3fc" font-size="9.5">Sequence</text>
+      <text x="400" y="58" text-anchor="middle" fill="#7dd3fc" font-size="9.5">Control</text>
+      <text x="400" y="68" text-anchor="middle" fill="#64748b" font-size="8">2 Bytes</text>
+
+      <rect x="432" y="20" width="75" height="50" rx="4" fill="rgba(14,165,233,0.07)" stroke="#334155" stroke-width="1" stroke-dasharray="4,2"/>
+      <text x="469" y="48" text-anchor="middle" fill="#94a3b8" font-size="9">Address 4</text>
+      <text x="469" y="60" text-anchor="middle" fill="#64748b" font-size="8">(WDS 可选)</text>
+      <text x="469" y="70" text-anchor="middle" fill="#64748b" font-size="8">6 Bytes</text>
+
+      <rect x="509" y="20" width="120" height="50" rx="4" fill="rgba(16,185,129,0.1)" stroke="#10b981" stroke-width="1.5"/>
+      <text x="569" y="48" text-anchor="middle" fill="#6ee7b7" font-size="9.5">Frame Body</text>
+      <text x="569" y="60" text-anchor="middle" fill="#6ee7b7" font-size="9.5">(Payload)</text>
+      <text x="569" y="70" text-anchor="middle" fill="#64748b" font-size="8">0~2304 Bytes</text>
+
+      <rect x="631" y="20" width="60" height="50" rx="4" fill="rgba(245,158,11,0.15)" stroke="#f59e0b" stroke-width="1.5"/>
+      <text x="661" y="48" text-anchor="middle" fill="#fde68a" font-size="9.5">FCS</text>
+      <text x="661" y="62" text-anchor="middle" fill="#fde68a" font-size="9">(CRC-32)</text>
+      <text x="661" y="74" text-anchor="middle" fill="#64748b" font-size="8">4 Bytes</text>
+
+      <!-- Minimum frame label -->
+      <line x1="10" y1="80" x2="200" y2="80" stroke="#0ea5e9" stroke-width="0.8"/>
+      <text x="105" y="96" text-anchor="middle" fill="#64748b" font-size="8">最小帧（FC+Duration+Addr1+FCS）</text>
+    </svg>
+  </div>
+
+  <h3>Frame Control 字段（2 Bytes = 16 bits）</h3>
+  <div class="bit-row">
+    <div class="bit-cell head">Protocol<br/>Version<br/>b1-0</div>
+    <div class="bit-cell head">Type<br/>b3-2</div>
+    <div class="bit-cell head">Subtype<br/>b7-4</div>
+    <div class="bit-cell head">To DS<br/>b8</div>
+    <div class="bit-cell head">From DS<br/>b9</div>
+    <div class="bit-cell head">More Frag<br/>b10</div>
+    <div class="bit-cell head">Retry<br/>b11</div>
+    <div class="bit-cell head">Pwr Mgmt<br/>b12</div>
+    <div class="bit-cell head">More Data<br/>b13</div>
+    <div class="bit-cell head">Protected<br/>b14</div>
+    <div class="bit-cell head">Order<br/>b15</div>
+  </div>
+
+  <div class="table-wrap">
+    <table>
+      <thead><tr><th>子字段</th><th>位</th><th>说明</th></tr></thead>
+      <tbody>
+        <tr><td>Protocol Version</td><td>b1-0</td><td>固定 = 00（当前只有版本 0）</td></tr>
+        <tr><td>Type</td><td>b3-2</td><td>00=管理帧 01=控制帧 10=数据帧 11=保留</td></tr>
+        <tr><td>Subtype</td><td>b7-4</td><td>依 Type 而定（管理帧：0000=AssocReq, 1011=Auth, 1000=Beacon...）</td></tr>
+        <tr><td>To DS</td><td>b8</td><td>1=帧从 STA 发往 DS（上行）</td></tr>
+        <tr><td>From DS</td><td>b9</td><td>1=帧从 DS 发往 STA（下行）</td></tr>
+        <tr><td>More Fragments</td><td>b10</td><td>1=后续还有分片</td></tr>
+        <tr><td>Retry</td><td>b11</td><td>1=此帧为重传帧</td></tr>
+        <tr><td>Power Management</td><td>b12</td><td>1=STA 完成此帧传输后进入省电模式</td></tr>
+        <tr><td>More Data</td><td>b13</td><td>1=AP 仍有数据缓存等待 STA 取走（省电模式）</td></tr>
+        <tr><td>Protected Frame</td><td>b14</td><td>1=Frame Body 已使用 WEP/TKIP/CCMP 加密</td></tr>
+        <tr><td>Order/+HTC</td><td>b15</td><td>1=HT Control 字段存在（QoS 管理帧）</td></tr>
+      </tbody>
+    </table>
+  </div>
+
+  <h3>四个地址字段的含义</h3>
+  <div class="table-wrap">
+    <table>
+      <thead><tr><th>To DS</th><th>From DS</th><th>Addr1(RA)</th><th>Addr2(TA)</th><th>Addr3</th><th>Addr4</th><th>典型场景</th></tr></thead>
+      <tbody>
+        <tr><td>0</td><td>0</td><td>DA</td><td>SA</td><td>BSSID</td><td>N/A</td><td>IBSS / 管理帧</td></tr>
+        <tr><td>0</td><td>1</td><td>DA</td><td>BSSID</td><td>SA</td><td>N/A</td><td>AP → STA（下行）</td></tr>
+        <tr><td>1</td><td>0</td><td>BSSID</td><td>SA</td><td>DA</td><td>N/A</td><td>STA → AP（上行）</td></tr>
+        <tr><td>1</td><td>1</td><td>RA</td><td>TA</td><td>DA</td><td>SA</td><td>WDS 无线网桥</td></tr>
+      </tbody>
+    </table>
+  </div>
+  <div class="source-ref">参考来源：
+    <a href="https://mrncciew.com/2013/04/24/802-11-frame-format/" target="_blank">802.11 Frame Format — mrncciew.com</a> ·
+    <a href="https://www.ii.pwr.edu.pl/~kano/course/module8/8.2.1.1/8.2.1.1.html" target="_blank">8.2.1.1 Wireless 802.11 Frame — ii.pwr.edu.pl</a>
+  </div>
+</section>
+
+<!-- ===================== Section 9 ===================== -->
+<section id="s9">
+  <h2>9. 各关键信令帧字段汇总</h2>
+  <div class="guide-box">
+    本章对关联流程中每条关键信令的完整字段进行横向对比，并给出 Wireshark 过滤器。这是工程分析时的速查参考。每条帧都是 Type=00（管理帧）下不同 Subtype 的实例化。
+  </div>
+
+  <h3>管理帧类型速查</h3>
+  <div class="table-wrap">
+    <table>
+      <thead><tr><th>Subtype (4bit)</th><th>帧名称</th><th>方向</th><th>Wireshark 过滤器</th></tr></thead>
+      <tbody>
+        <tr><td>0000 (0x0)</td><td>Association Request</td><td>STA → AP</td><td><code>wlan.fc.type_subtype == 0x00</code></td></tr>
+        <tr><td>0001 (0x1)</td><td>Association Response</td><td>AP → STA</td><td><code>wlan.fc.type_subtype == 0x01</code></td></tr>
+        <tr><td>0010 (0x2)</td><td>Reassociation Request</td><td>STA → AP</td><td><code>wlan.fc.type_subtype == 0x02</code></td></tr>
+        <tr><td>0011 (0x3)</td><td>Reassociation Response</td><td>AP → STA</td><td><code>wlan.fc.type_subtype == 0x03</code></td></tr>
+        <tr><td>0100 (0x4)</td><td>Probe Request</td><td>STA → 广播</td><td><code>wlan.fc.type_subtype == 0x04</code></td></tr>
+        <tr><td>0101 (0x5)</td><td>Probe Response</td><td>AP → STA</td><td><code>wlan.fc.type_subtype == 0x05</code></td></tr>
+        <tr><td>1000 (0x8)</td><td>Beacon</td><td>AP → 广播</td><td><code>wlan.fc.type_subtype == 0x08</code></td></tr>
+        <tr><td>1010 (0xA)</td><td>Disassociation</td><td>双向</td><td><code>wlan.fc.type_subtype == 0x0a</code></td></tr>
+        <tr><td>1011 (0xB)</td><td>Authentication</td><td>双向</td><td><code>wlan.fc.type_subtype == 0x0b</code></td></tr>
+        <tr><td>1100 (0xC)</td><td>Deauthentication</td><td>双向</td><td><code>wlan.fc.type_subtype == 0x0c</code></td></tr>
+      </tbody>
+    </table>
+  </div>
+
+  <h3>Reassociation（重关联）</h3>
+  <p>当 STA 从一个 AP 漫游到另一个 AP 时，使用 Reassociation Request 代替 Association Request。唯一区别：Reassociation Request 额外包含 <strong>Current AP Address</strong> 字段（6 Bytes），携带原 AP 的 BSSID，供新 AP 联系原 AP 转移缓存帧。</p>
+
+  <h3>Disassociation / Deauthentication 帧</h3>
+  <div class="table-wrap">
+    <table>
+      <thead><tr><th>Reason Code</th><th>含义</th></tr></thead>
+      <tbody>
+        <tr><td>1</td><td>Unspecified reason</td></tr>
+        <tr><td>2</td><td>Previous authentication no longer valid</td></tr>
+        <tr><td>3</td><td>STA 离开 BSS（正常断开）</td></tr>
+        <tr><td>4</td><td>由于不活跃而超时</td></tr>
+        <tr><td>5</td><td>AP 无法处理更多关联 STA</td></tr>
+        <tr><td>6</td><td>来自未认证 STA 的 Class 2 帧</td></tr>
+        <tr><td>7</td><td>来自未关联 STA 的 Class 3 帧</td></tr>
+        <tr><td>17</td><td>不支持 STA 请求的速率</td></tr>
+      </tbody>
+    </table>
+  </div>
+
+  <h3>EAPOL 帧头（4 Bytes）</h3>
+  <div class="bit-row">
+    <div class="bit-cell head">Version<br/>(1B)</div>
+    <div class="bit-cell head">Packet Type<br/>(1B)</div>
+    <div class="bit-cell head" style="flex:2">Packet Body Length<br/>(2B, Big-Endian)</div>
+    <div class="bit-cell head" style="flex:4">Packet Body<br/>(变长)</div>
+  </div>
+  <div class="table-wrap">
+    <table>
+      <thead><tr><th>Packet Type</th><th>值</th><th>用途</th></tr></thead>
+      <tbody>
+        <tr><td>EAP-Packet</td><td>0x00</td><td>携带 EAP 认证数据（企业网 EAP 消息）</td></tr>
+        <tr><td>EAPOL-Start</td><td>0x01</td><td>STA 主动发起认证（可选，AP 也可主动 EAP-Request）</td></tr>
+        <tr><td>EAPOL-Logoff</td><td>0x02</td><td>STA 注销，撤销授权</td></tr>
+        <tr><td>EAPOL-Key</td><td>0x03</td><td><strong>4-Way Handshake 的载体</strong>（WPA2 个人/企业均使用）</td></tr>
+      </tbody>
+    </table>
+  </div>
+  <div class="source-ref">参考来源：
+    <a href="https://en.wikipedia.org/wiki/802.11_frame_types" target="_blank">802.11 Frame Types — Wikipedia</a> ·
+    <a href="https://howiwifi.com/2020/07/13/802-11-frame-types-and-formats/" target="_blank">802.11 Frame Types and Formats — howiwifi.com</a> ·
+    <a href="https://infishark.com/blogs/learn/eapol-packets-explained-what-they-are-and-how-theyre-structured" target="_blank">EAPOL Packets Explained — infishark.com</a>
+  </div>
+</section>
+
+<!-- ===================== Section 10 ===================== -->
+<section id="s10">
+  <h2>10. WiFi 安全演化：WEP → WPA → WPA2 → WPA3</h2>
+  <div class="guide-box">
+    WiFi 安全标准的每次演化，都是对前代协议被攻破后的防御性升级。从 WEP 的静态密钥到 WPA3 的 SAE 零知识证明，关联流程中的安全握手部分经历了根本性的变革。了解这条演化链，才能理解每个设计决策背后的安全动机。
+  </div>
+
+  <div class="timeline">
+    <div class="timeline-item">
+      <div class="t-year">1997 — IEEE 802.11 原始标准</div>
+      <div class="t-title">WEP（Wired Equivalent Privacy）</div>
+      <div class="t-desc">使用 RC4 流密码，64/128 bit 静态密钥，IV 仅 24 bit（约 5000 帧后重复）。采用 CRC-32 校验（非加密完整性）。<br/>关联流程：支持"共享密钥认证"——AP 发 Challenge Text，STA 用 WEP 密钥加密后回传。由于 RC4 密钥流可从密文推导，共享密钥认证实际上比开放认证更不安全。<br/><strong>致命缺陷：</strong>2001年 Fluhrer-Mantin-Shamir 攻击（FMS attack）证明 24 bit IV 使 WEP 密钥可在数分钟内被破解。</div>
+    </div>
+
+    <div class="timeline-item">
+      <div class="t-year">2003 — Wi-Fi Alliance / IEEE 802.11i 草案</div>
+      <div class="t-title">WPA（Wi-Fi Protected Access）= TKIP</div>
+      <div class="t-desc">紧急替代方案，设计为可通过固件升级部署在 WEP 硬件上。引入 <strong>TKIP（Temporal Key Integrity Protocol）</strong>：每数据包动态生成 128 bit 密钥（混合基础密钥 + MAC + 序列号），64 bit MIC（"Michael"）检测篡改，IV 扩展为 48 bit。<br/>引入 <strong>4-Way Handshake</strong> 和 <strong>PMK 机制</strong>（重大进步）。支持 PSK（个人）和 802.1X（企业）模式。<br/><strong>仍用 RC4</strong>：Beck-Tews 攻击（2008）可在约 12 分钟内伪造 ARP 数据包；WPA/TKIP 于 2012 年被 IEEE 禁用。</div>
+    </div>
+
+    <div class="timeline-item">
+      <div class="t-year">2004 — IEEE 802.11i-2004 / WPA2</div>
+      <div class="t-title">WPA2 = AES-CCMP（彻底重建）</div>
+      <div class="t-desc">完全实现 IEEE 802.11i，放弃 RC4，采用 <strong>AES-CCMP（Counter Mode with CBC-MAC Protocol）</strong>：128 bit AES 块加密 + CBC-MAC 完整性保护。PTK/GTK 密钥生成机制成熟稳定。<br/>关联流程变化：开放系统认证（形式）→ 关联（携带 RSN IE 协商 CCMP）→ 4-Way Handshake 建立 PTK/GTK → 数据加密。<br/>2017年 KRACK（Key Reinstallation Attack）攻击揭示 4-Way Handshake 的重放漏洞，但通过补丁可修复。离线字典攻击始终是 PSK 模式的威胁。</div>
+    </div>
+
+    <div class="timeline-item">
+      <div class="t-year">2018 — Wi-Fi Alliance WPA3</div>
+      <div class="t-title">WPA3 = SAE + 前向保密 + PMF 强制</div>
+      <div class="t-desc"><strong>WPA3-Personal：</strong>用 <strong>SAE（Simultaneous Authentication of Equals / Dragonfly）</strong>替代 PSK，基于椭圆曲线 Diffie-Hellman 的零知识证明，密码从不在空中传输，抵抗离线字典攻击，提供前向保密。<br/><strong>WPA3-Enterprise：</strong>192-bit 安全套件（GCMP-256 + HMAC-SHA-384）。<br/><strong>Enhanced Open（OWE）：</strong>开放网络自动加密，无需密码，每客户端唯一密钥。<br/><strong>PMF（Protected Management Frames）强制：</strong>管理帧加密，防止伪造 Deauth/Disassoc 攻击。</div>
+    </div>
+
+    <div class="timeline-item">
+      <div class="t-year">2019+ — Wi-Fi 6/6E (802.11ax) / Wi-Fi 7 (802.11be)</div>
+      <div class="t-title">关联流程的效率革命</div>
+      <div class="t-desc">Wi-Fi 6 引入 <strong>TWT（Target Wake Time）</strong>：在关联时协商唤醒时间表，提升物联网省电性能。<strong>BSS Coloring</strong> 减少空间复用干扰。<strong>MU-OFDMA</strong> 允许多 STA 同时在不同子载波上接入。Wi-Fi 7（802.11be）新增 <strong>Multi-Link Operation（MLO）</strong>：STA 可同时在多个频段（2.4/5/6 GHz）建立逻辑链路，关联过程扩展为多链路协商。</div>
+    </div>
+  </div>
+
+  <h3>安全机制对比</h3>
+  <div class="table-wrap">
+    <table>
+      <thead><tr><th>特性</th><th>WEP</th><th>WPA</th><th>WPA2</th><th>WPA3</th></tr></thead>
+      <tbody>
+        <tr><td>加密算法</td><td>RC4(弱)</td><td>RC4+TKIP</td><td>AES-CCMP</td><td>AES-CCMP / GCMP-256</td></tr>
+        <tr><td>密钥长度</td><td>64/128 bit</td><td>128 bit/帧</td><td>128 bit</td><td>128/256 bit</td></tr>
+        <tr><td>认证方式</td><td>共享密钥/开放</td><td>PSK/802.1X</td><td>PSK/802.1X</td><td>SAE/802.1X-192</td></tr>
+        <tr><td>4-Way Handshake</td><td>无</td><td>有</td><td>有</td><td>有（PMK 来自 SAE）</td></tr>
+        <tr><td>前向保密</td><td>无</td><td>无</td><td>无</td><td>有（SAE）</td></tr>
+        <tr><td>抵抗离线字典攻击</td><td>无</td><td>弱</td><td>弱</td><td>强（SAE 设计保证）</td></tr>
+        <tr><td>管理帧保护（PMF）</td><td>无</td><td>无</td><td>可选</td><td>强制</td></tr>
+        <tr><td>开放网络加密</td><td>无</td><td>无</td><td>无</td><td>OWE（Enhanced Open）</td></tr>
+      </tbody>
+    </table>
+  </div>
+  <div class="source-ref">参考来源：
+    <a href="https://www.ezurio.com/resources/blog/wi-fi-security-protocols-explained" target="_blank">Wi-Fi Security Protocols Explained — ezurio.com</a> ·
+    <a href="https://www.geeksforgeeks.org/computer-networks/wifi-protected-access-wpa/" target="_blank">WiFi Protected Access — GeeksforGeeks</a> ·
+    <a href="https://www.net.in.tum.de/fileadmin/TUM/NET/NET-2024-09-1/NET-2024-09-1_14.pdf" target="_blank">Evolution of Wireless Security — TUM (PDF)</a>
+  </div>
+</section>
+
+<!-- ===================== Section 11 ===================== -->
+<section id="s11">
+  <h2>11. WPA3 SAE（Dragonfly）流程详解</h2>
+  <div class="guide-box">
+    SAE 是 WPA3-Personal 的核心创新。它将原来简单的"开放认证"替换为真正的密码认证——基于椭圆曲线密码的 Dragonfly 握手。SAE 的关键特性是：密码本身永不在空中传输，即使攻击者监听全过程，也无法离线暴力破解密码，并且每次会话生成独立的 PMK（前向保密）。
+  </div>
+
+  <h3>SAE 关联流程（MSC）</h3>
+  <div class="svg-wrap">
+    <svg viewBox="0 0 580 400" xmlns="http://www.w3.org/2000/svg" font-family="system-ui,sans-serif">
+      <defs>
+        <marker id="sa1" markerWidth="7" markerHeight="7" refX="5" refY="3" orient="auto">
+          <path d="M0,0 L0,6 L7,3 z" fill="#a855f7"/>
+        </marker>
+        <marker id="sa2" markerWidth="7" markerHeight="7" refX="5" refY="3" orient="auto">
+          <path d="M0,0 L0,6 L7,3 z" fill="#0ea5e9"/>
+        </marker>
+        <marker id="sa3" markerWidth="7" markerHeight="7" refX="5" refY="3" orient="auto">
+          <path d="M0,0 L0,6 L7,3 z" fill="#10b981"/>
+        </marker>
+      </defs>
+
+      <line x1="90" y1="40" x2="90" y2="390" stroke="#334155" stroke-width="1.5" stroke-dasharray="4,3"/>
+      <line x1="460" y1="40" x2="460" y2="390" stroke="#334155" stroke-width="1.5" stroke-dasharray="4,3"/>
+
+      <rect x="40" y="20" width="100" height="26" rx="6" fill="#2d1b69" stroke="#a855f7" stroke-width="1.5"/>
+      <text x="90" y="37" text-anchor="middle" fill="#d8b4fe" font-size="11" font-weight="bold">STA</text>
+      <rect x="410" y="20" width="100" height="26" rx="6" fill="#2d1b69" stroke="#a855f7" stroke-width="1.5"/>
+      <text x="460" y="37" text-anchor="middle" fill="#d8b4fe" font-size="11" font-weight="bold">AP</text>
+
+      <!-- Phase 1: Commit -->
+      <rect x="160" y="52" width="230" height="16" rx="3" fill="rgba(168,85,247,0.1)" stroke="#a855f7" stroke-width="0.8"/>
+      <text x="275" y="63" text-anchor="middle" fill="#a855f7" font-size="9" font-weight="bold">Phase 1: Commit（承诺阶段）</text>
+
+      <rect x="50" y="70" width="80" height="20" rx="3" fill="#0f172a"/>
+      <text x="90" y="83" text-anchor="middle" fill="#94a3b8" font-size="7.5">PWE = f(pwd, SSID, MAC)</text>
+      <text x="90" y="91" text-anchor="middle" fill="#94a3b8" font-size="7.5">m,n ← 随机数</text>
+
+      <!-- STA Commit -->
+      <line x1="102" y1="108" x2="448" y2="108" stroke="#a855f7" stroke-width="2" marker-end="url(#sa1)"/>
+      <rect x="170" y="94" width="185" height="16" rx="3" fill="#0c1a2e"/>
+      <text x="262" y="106" text-anchor="middle" fill="#d8b4fe" font-size="9.5" font-weight="bold">Auth(Commit): Scalar_STA, Element_STA</text>
+      <text x="262" y="120" text-anchor="middle" fill="#64748b" font-size="7.5">[Auth Alg=3(SAE), Seq=1, Scalar=m+n, Elem=N=-(n*PWE)]</text>
+
+      <!-- AP Commit -->
+      <rect x="430" y="128" width="80" height="20" rx="3" fill="#0f172a"/>
+      <text x="460" y="141" text-anchor="middle" fill="#94a3b8" font-size="7.5">PWE = f(pwd, SSID, MAC)</text>
+      <text x="460" y="149" text-anchor="middle" fill="#94a3b8" font-size="7.5">i,j ← 随机数</text>
+
+      <line x1="448" y1="168" x2="102" y2="168" stroke="#a855f7" stroke-width="2" marker-end="url(#sa2)"/>
+      <rect x="170" y="154" width="185" height="16" rx="3" fill="#0c1a2e"/>
+      <text x="262" y="166" text-anchor="middle" fill="#d8b4fe" font-size="9.5" font-weight="bold">Auth(Commit): Scalar_AP, Element_AP</text>
+      <text x="262" y="180" text-anchor="middle" fill="#64748b" font-size="7.5">[Auth Alg=3(SAE), Seq=1, Scalar=i+j, Elem=J=-(j*PWE)]</text>
+
+      <!-- Phase 2: Confirm -->
+      <rect x="160" y="196" width="230" height="16" rx="3" fill="rgba(168,85,247,0.1)" stroke="#a855f7" stroke-width="0.8"/>
+      <text x="275" y="207" text-anchor="middle" fill="#a855f7" font-size="9" font-weight="bold">Phase 2: Confirm（确认阶段）</text>
+
+      <rect x="30" y="215" width="120" height="20" rx="3" fill="#0f172a"/>
+      <text x="90" y="228" text-anchor="middle" fill="#94a3b8" font-size="7.5">S=m*((i+j)*J) → PMK=KDF(S)</text>
+
+      <!-- STA Confirm -->
+      <line x1="102" y1="248" x2="448" y2="248" stroke="#a855f7" stroke-width="2" marker-end="url(#sa1)"/>
+      <rect x="185" y="234" width="155" height="16" rx="3" fill="#0c1a2e"/>
+      <text x="262" y="246" text-anchor="middle" fill="#d8b4fe" font-size="9.5" font-weight="bold">Auth(Confirm): Send-Confirm_STA</text>
+      <text x="262" y="260" text-anchor="middle" fill="#64748b" font-size="7.5">[Seq=2, Confirm=H(KCK, cnt, Scalar_STA, Elem_STA...)]</text>
+
+      <!-- AP Confirm -->
+      <rect x="430" y="268" width="100" height="20" rx="3" fill="#0f172a"/>
+      <text x="460" y="278" text-anchor="middle" fill="#94a3b8" font-size="7.5">S=i*((m+n)*N) → PMK=KDF(S)</text>
+      <text x="460" y="287" text-anchor="middle" fill="#94a3b8" font-size="7.5">验证 Confirm_STA ✓</text>
+
+      <line x1="448" y1="304" x2="102" y2="304" stroke="#a855f7" stroke-width="2" marker-end="url(#sa2)"/>
+      <rect x="185" y="290" width="155" height="16" rx="3" fill="#0c1a2e"/>
+      <text x="262" y="302" text-anchor="middle" fill="#d8b4fe" font-size="9.5" font-weight="bold">Auth(Confirm): Send-Confirm_AP</text>
+      <text x="262" y="316" text-anchor="middle" fill="#64748b" font-size="7.5">[Seq=2, Confirm=H(KCK, cnt, Scalar_AP, Elem_AP...)]</text>
+
+      <!-- Association + 4-Way -->
+      <text x="262" y="342" text-anchor="middle" fill="#94a3b8" font-size="9">↓ 双方均持有相同 PMK ↓</text>
+
+      <rect x="120" y="352" width="315" height="16" rx="4" fill="rgba(14,165,233,0.1)" stroke="#0ea5e9" stroke-width="0.8"/>
+      <text x="277" y="363" text-anchor="middle" fill="#7dd3fc" font-size="8.5">Association Request/Response（携带 RSN IE AKM=SAE）</text>
+
+      <rect x="120" y="374" width="315" height="16" rx="4" fill="rgba(16,185,129,0.1)" stroke="#10b981" stroke-width="0.8"/>
+      <text x="277" y="385" text-anchor="middle" fill="#6ee7b7" font-size="8.5">4-Way Handshake → PTK/GTK → RSNA 建立 ✓</text>
+    </svg>
+  </div>
+
+  <h3>SAE vs WPA2-PSK 关键差异</h3>
+  <div class="table-wrap">
+    <table>
+      <thead><tr><th>维度</th><th>WPA2-PSK</th><th>WPA3-SAE</th></tr></thead>
+      <tbody>
+        <tr><td>密码传输</td><td>PMK=PBKDF2(pwd)，一旦捕获握手即可离线攻击</td><td>密码用于生成 PWE（椭圆曲线点），零知识证明，永不在空中传输</td></tr>
+        <tr><td>PMK 来源</td><td>固定：PMK=PBKDF2(pwd, SSID, 4096, 256)</td><td>每次会话随机：PMK=KDF(S=m*((i+j)*J), ...)</td></tr>
+        <tr><td>前向保密</td><td>无（知道密码可解密历史流量）</td><td>有（每会话独立 PMK，历史流量安全）</td></tr>
+        <tr><td>字典攻击</td><td>可能（离线暴力破解捕获的握手包）</td><td>不可能（commit 阶段绑定随机数，每猜一次需在线交互）</td></tr>
+        <tr><td>Auth 帧数量</td><td>2帧（OpenAuth Req/Resp）</td><td>4帧（Commit×2 + Confirm×2）</td></tr>
+        <tr><td>Auth Algorithm</td><td>0（Open System）</td><td>3（SAE）</td></tr>
+      </tbody>
+    </table>
+  </div>
+  <div class="source-ref">参考来源：
+    <a href="https://www.extremenetworks.com/resources/blogs/wireless-security-in-a-6-ghz-wi-fi-6e-world" target="_blank">Wireless Security in a 6GHz Wi-Fi 6E World — Extreme Networks</a> ·
+    <a href="https://arubanetworking.hpe.com/techdocs/aos/wifi-design-deploy/security/modes/wpa3-personal/" target="_blank">WPA3-Personal — Aruba/HPE TechDocs</a> ·
+    <a href="https://www.purple.ai/en-us/guides/wpa3-the-next-generation-of-wifi-security-explained" target="_blank">WPA3 Explained — purple.ai</a>
+  </div>
+</section>
+
+<!-- ===================== Section 12 ===================== -->
+<section id="s12">
+  <h2>12. 第一性原理总结</h2>
+  <div class="guide-box">
+    第一性原理（First Principles）要求我们剥离历史偶然性和技术细节的外壳，回归最基本的问题：WiFi 关联流程究竟在解决什么根本问题？每一个协议设计决策背后的最深层逻辑是什么？
+  </div>
+
+  <div class="principle-box">
+    <h4>🎯 根本问题 1：无线信道是共享且不可信的</h4>
+    <p>与有线网络不同，802.11 的物理介质（射频空间）对所有设备开放，任何人都可以监听、干扰、伪造。因此，关联流程必须解决三个不可回避的根本问题：</p>
+    <p><strong>① 发现（Discovery）</strong>：在无中心协调的射频空间里，两个设备如何"找到彼此"？→ Beacon/Probe 机制解决。</p>
+    <p><strong>② 协商（Negotiation）</strong>：双方能力不同，如何就速率、信道宽度、安全算法等达成一致？→ Auth/Association Request/Response 帧交换解决。</p>
+    <p><strong>③ 信任（Trust）</strong>：如何在不安全信道上建立安全通道？→ 4-Way Handshake 用公开交换的随机数（Nonce）+ 共享秘密（PMK），通过 PRF 派生会话密钥，不传输秘密本身。</p>
+  </div>
+
+  <div class="principle-box">
+    <h4>🧮 根本问题 2：对称密码学的密钥分发困境</h4>
+    <p>加密需要共享密钥，但在不安全信道上协商密钥本身就是悖论。802.11 的解法：</p>
+    <p><strong>WPA2 PSK 模式：</strong>预先在带外（Out-of-Band）共享密码（物理交换），用 PBKDF2 派生 PMK，再通过 4-Way Handshake 从 PMK 派生会话密钥（PTK/GTK）。Nonce 公开交换，PMK 不暴露，攻击者得不到 PTK。</p>
+    <p><strong>WPA3 SAE 模式：</strong>用椭圆曲线 Diffie-Hellman 进一步解决"PMK 本身是固定的"问题——每次会话的共享秘密 S 由临时随机数决定，即使密码泄露，历史会话密钥也无法推导（前向保密的本质）。</p>
+  </div>
+
+  <div class="principle-box">
+    <h4>⚖️ 根本问题 3：状态机是协议复杂性的最小表达</h4>
+    <p>关联流程的 4 个状态（未认证未关联 → 已认证未关联 → 已关联 → RSNA）不是任意设计，而是对"允许哪些操作"的最小化约束集合：</p>
+    <p>• 状态 1 → 2：建立"我认识你"（Identity）——历史上用于 WEP，现代用于向后兼容占位</p>
+    <p>• 状态 2 → 3：建立"我接受你"（Admission）——AP 确认 STA 能力兼容，分配资源（AID）</p>
+    <p>• 状态 3 → 4：建立"我信任你"（Trust）——密码学证明双方持有相同 PMK，派生加密密钥</p>
+    <p>每一次状态跳变都对应一个不可缺少的逻辑层次。任何简化都会破坏安全性或兼容性。</p>
+  </div>
+
+  <div class="principle-box">
+    <h4>🔄 演化规律：被动适应 → 主动防御 → 零信任</h4>
+    <p><strong>WEP（1997）</strong>：假设攻击者不存在，用简单加密提供"等同有线"的安全幻觉。</p>
+    <p><strong>WPA/WPA2（2003-2004）</strong>：承认攻击者存在，用 4-Way Handshake 分离会话密钥与长期秘密，用 MIC/CCMP 提供真实的完整性保护。但 PMK 固定导致前向保密缺失。</p>
+    <p><strong>WPA3（2018）</strong>：接受"密码可能最终泄露"的假设，通过 SAE 的临时秘密保证前向保密；通过 PMF 保护管理帧防止脱离攻击；通过 OWE 让开放网络也有加密。</p>
+    <p>→ <strong>第一性原理结论</strong>：WiFi 关联流程的每一次演化，本质上是对"信任假设"的逐步收紧：从假设信道可信，到假设信道不可信，再到假设长期秘密也可能泄露。这是安全工程从"边界防御"走向"零信任架构"的必然轨迹。</p>
+  </div>
+
+  <div class="principle-box">
+    <h4>📡 物理层约束决定协议上界</h4>
+    <p>WiFi 协议的所有设计都受制于射频物理规律：</p>
+    <p>• <strong>半双工</strong>（不能同时收发）→ CSMA/CA 碰撞避免、ACK 确认机制的必要性</p>
+    <p>• <strong>广播介质</strong>（所有人可听）→ 加密在协议层必须实现（不能假设物理层隔离）</p>
+    <p>• <strong>信号衰减</strong>（覆盖有限）→ 漫游机制（Reassociation、PMK Caching、Fast BSS Transition）的必要性</p>
+    <p>• <strong>频谱共享</strong>（干扰不可避免）→ RTS/CTS、NAV 机制；频段演化（2.4→5→6GHz）本质是逃离拥塞</p>
+    <p>→ 802.11 协议栈的每一层设计，都是对物理约束的工程化应答。理解物理约束，才能理解协议设计的必然性。</p>
+  </div>
+
+  <div class="info-box" style="margin-top:2rem;">
+    <strong>📚 主要参考来源（原文链接）</strong><br/>
+    • <a href="https://standards.ieee.org/ieee/802.11/7028/" target="_blank" style="color:#7dd3fc">IEEE 802.11-2020 标准</a>（官方权威，付费文档）<br/>
+    • <a href="https://howiwifi.com/2020/07/16/802-11-frame-exchanges/" target="_blank" style="color:#7dd3fc">802.11 Frame Exchanges — howiwifi.com</a>（基于 IEEE 802.11-2016）<br/>
+    • <a href="https://mrncciew.com/2014/10/28/802-11-mgmt-association-reqresponse/" target="_blank" style="color:#7dd3fc">Association Req/Response 帧详解 — mrncciew.com</a>（基于 IEEE 802.11-2012）<br/>
+    • <a href="https://www.cisco.com/en/US/docs/wireless/wlan_adapter/secure_client/5.1.0/administration/guide/C1_Network_Security.html" target="_blank" style="color:#7dd3fc">Cisco 802.11 Network Security Fundamentals</a><br/>
+    • <a href="https://infishark.com/blogs/learn/eapol-packets-explained-what-they-are-and-how-theyre-structured" target="_blank" style="color:#7dd3fc">EAPOL Packets Explained — infishark.com</a><br/>
+    • <a href="https://arubanetworking.hpe.com/techdocs/aos/wifi-design-deploy/security/modes/wpa3-personal/" target="_blank" style="color:#7dd3fc">WPA3-Personal SAE 流程 — Aruba/HPE TechDocs</a><br/>
+    • <a href="https://www.extremenetworks.com/resources/blogs/wireless-security-in-a-6-ghz-wi-fi-6e-world" target="_blank" style="color:#7dd3fc">Wi-Fi Security in 6GHz World — Extreme Networks</a><br/>
+    • <a href="https://www.supernetworks.org/pages/blog/80211-authentication-association-authorization-wifi" target="_blank" style="color:#7dd3fc">Auth/Assoc/Authorization 的本质区别 — supernetworks.org</a>
+  </div>
+</section>
+
+</main>
+
+<script>
+// ============ Section IDs in order ============
+const SECTIONS = ['s0','s1','s2','s3','s4','s5','s6','s7','s8','s9','s10','s11','s12'];
+let currentSectionIdx = 0;
+
+// ============ Progress Bar ============
+function updateProgress() {
+  const el = document.getElementById('main-content');
+  const scrollTop = window.scrollY;
+  const docH = document.documentElement.scrollHeight - window.innerHeight;
+  const pct = docH > 0 ? Math.min(100, (scrollTop / docH) * 100) : 0;
+  document.getElementById('progress-bar').style.width = pct + '%';
+}
+
+// ============ Active Nav Item ============
+function updateActiveNav() {
+  const sections = SECTIONS.map(id => document.getElementById(id)).filter(Boolean);
+  const scrollY = window.scrollY + 80;
+  let active = sections[0];
+  for (const sec of sections) {
+    if (sec.getBoundingClientRect().top + window.scrollY - 80 <= scrollY) {
+      active = sec;
+    }
+  }
+  if (active) {
+    currentSectionIdx = SECTIONS.indexOf(active.id);
+    document.querySelectorAll('.nav-item').forEach(el => {
+      el.classList.toggle('active', el.dataset.section === active.id);
+    });
+  }
+}
+
+// ============ Scroll handler ============
+let scrollTicking = false;
+window.addEventListener('scroll', () => {
+  if (!scrollTicking) {
+    requestAnimationFrame(() => {
+      updateProgress();
+      updateActiveNav();
+      scrollTicking = false;
+    });
+    scrollTicking = true;
+  }
+}, { passive: true });
+
+// ============ Nav click ============
+document.querySelectorAll('.nav-item').forEach(el => {
+  el.addEventListener('click', () => {
+    const sec = document.getElementById(el.dataset.section);
+    if (sec) {
+      sec.scrollIntoView({ behavior: 'smooth', block: 'start' });
+    }
+    // Close sidebar on mobile
+    if (window.innerWidth <= 768) {
+      document.getElementById('sidebar').classList.remove('open');
+      document.getElementById('overlay').classList.remove('open');
+      document.getElementById('hamburger').classList.remove('open');
+    }
+  });
+});
+
+// ============ Hamburger ============
+const hamburger = document.getElementById('hamburger');
+const sidebar = document.getElementById('sidebar');
+const overlay = document.getElementById('overlay');
+
+hamburger.addEventListener('click', () => {
+  const open = sidebar.classList.toggle('open');
+  overlay.classList.toggle('open', open);
+  hamburger.classList.toggle('open', open);
+});
+overlay.addEventListener('click', () => {
+  sidebar.classList.remove('open');
+  overlay.classList.remove('open');
+  hamburger.classList.remove('open');
+});
+
+// ============ Keyboard navigation ============
+document.addEventListener('keydown', (e) => {
+  if (e.target.tagName === 'INPUT' || e.target.tagName === 'TEXTAREA') return;
+  if (e.key === 'ArrowRight' || e.key === 'ArrowDown') {
+    const next = Math.min(currentSectionIdx + 1, SECTIONS.length - 1);
+    const sec = document.getElementById(SECTIONS[next]);
+    if (sec) sec.scrollIntoView({ behavior: 'smooth', block: 'start' });
+  } else if (e.key === 'ArrowLeft' || e.key === 'ArrowUp') {
+    const prev = Math.max(currentSectionIdx - 1, 0);
+    const sec = document.getElementById(SECTIONS[prev]);
+    if (sec) sec.scrollIntoView({ behavior: 'smooth', block: 'start' });
+  }
+});
+
+// ============ Show keyboard hint on desktop ============
+function checkDesktop() {
+  const hint = document.getElementById('kbd-hint-header');
+  if (hint) hint.style.display = window.innerWidth > 768 ? 'flex' : 'none';
+}
+window.addEventListener('resize', checkDesktop);
+checkDesktop();
+
+// Init
+updateProgress();
+updateActiveNav();
+</script>
+</body>
+</html>
