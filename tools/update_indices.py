@@ -25,7 +25,8 @@ TITLE_RE = re.compile(r'<title[^>]*>(.*?)</title>', re.IGNORECASE | re.DOTALL)
 
 # 目录简介（相对 ROOT 的路径；空字符串表示站点根目录）
 DIR_INTROS = {
-    '': '嵌入式与网络协议技术笔记库：蓝牙、WiFi、TLS、总线、驱动、Buildroot 等专题。',
+    '': '嵌入式与网络协议技术笔记库：蓝牙、WiFi、TLS、网络协议、程序设计、总线、驱动、Buildroot、工具等专题。',
+    'program': 'C 语言标准、Linux 系统编程、并发与设计模式等程序设计笔记。',
     'bt': '蓝牙 Core 规范导读、信令索引、抓包流程与深度专题。',
     'bt/overview': 'Bluetooth Core 6.0 各协议层规范概览（Vol 1 / Part A–H）。',
     'bt/misc': '经典蓝牙与 BLE 深度专题：配对演进、报文解析、基带/射频、L2CAP/ATT/SDP 等。',
@@ -40,11 +41,11 @@ DIR_INTROS = {
     'protocol': '应用层网络协议：MQTT、TCP、DHCP 等专题。',
     'protocol/dhcp': 'DHCP（RFC 2131）图解导读与规范原文。',
     'protocol/mqtt': 'MQTT v3.1 / v5.0 图解导读、抓包实战与 OASIS 规范原文。',
-    'protocol/tcp': 'TCP 可靠传输原理与 Wireshark 报文分析。',
+    'protocol/tcp': 'TCP 可靠传输、Wireshark 分析与 Linux 内核 IP/邻居/路由子系统。',
     'tls': 'TLS/SSL 协议、密码学基础、PKI、证书与握手抓包。',
     'tls/packet': 'TLS 1.2 / 1.3 解密抓包逐包分析。',
     'tls/rfc': 'TLS 相关 RFC 图解导读与规范原文存档。',
-    'tools': '开发与协作工具笔记。',
+    'tools': '开发工具：Git、抓包（tcpdump/TShark）、网络配置（ip 命令）等。',
     'wifi': 'IEEE 802.11 标准导读、协议栈、关联/认证、调制技术与跨协议对比。',
 }
 
@@ -61,10 +62,24 @@ MODULE_GROUPS = {
         ('WiFi / 802.11', '标准、协议栈、认证与调制', ['wifi/']),
         ('TLS / 密码学', '协议演化、RFC、抓包与 PKI', ['tls/']),
         ('网络协议', 'MQTT、TCP、DHCP', ['protocol/']),
+        ('程序设计', 'C 语言、系统编程、并发与设计模式', ['program/']),
         ('总线与接口', 'USB、串口等', ['bus/']),
         ('Linux 驱动', '设备模型与外设子系统', ['driver/']),
         ('Buildroot', '嵌入式构建系统', ['buildroot/']),
-        ('工具', '开发工具', ['tools/']),
+        ('工具', 'Git、抓包与网络命令', ['tools/']),
+    ],
+    'program': [
+        ('C 语言标准与安全', 'C89/C99/C11 与头文件安全分析', [
+            'c_standards_guide.html', 'c_functions_safe_overview.html',
+            'c_header_safe_func_guide.html',
+        ]),
+        ('系统编程导读', 'Linux 系统编程经典书籍笔记', [
+            'linux_system_programming_2nd_guide.html', 'system_program_with_linux_guide.html',
+        ]),
+        ('GCC 扩展', 'GCC 语言与编译器扩展', ['gcc_extension_guide.html']),
+        ('并发与设计', 'pthread、状态机、设计模式', [
+            'pthread_guide.html', 'fsm_guide.html', 'design_pattern_guide.html',
+        ]),
     ],
     'bt': [
         ('规范概览', 'Core 6.0 各层协议导读', ['overview/']),
@@ -159,6 +174,9 @@ MODULE_GROUPS = {
             'ssl_tls_evolution.html', 'tls_key_exchange_guide.html',
             'tls_signature_guide.html', 'tls_full_flow.html',
         ]),
+        ('握手与认证原理', 'TLS 握手逻辑与跨协议认证本质', [
+            'tls_negotiatation_principle.html', 'auth_principle.html',
+        ]),
         ('RFC 导读', 'TLS 相关 RFC 图解', ['rfc/']),
         ('抓包分析', 'TLS 1.2/1.3 解密抓包', ['packet/']),
         ('抓包素材', '从 pcap 导出的证书链 PEM/DER', ['certs_from_pcap/']),
@@ -179,6 +197,7 @@ MODULE_GROUPS = {
     'protocol/tcp': [
         ('协议原理', '可靠传输机制', ['tcp_transmission.html']),
         ('抓包分析', 'Wireshark 实战', ['wireshark_*.html']),
+        ('Linux 网络子系统', 'IP、邻居、路由内核实现', ['*_subsystem_guide.html']),
     ],
     'protocol/dhcp': [
         ('图解导读', 'RFC 2131 DHCP 导读', ['dhcp_rfc2131_guide.html']),
@@ -217,6 +236,8 @@ MODULE_GROUPS = {
     ],
     'tools': [
         ('版本控制', 'Git 原理与常用命令', ['git_guide.html']),
+        ('抓包与分析', 'tcpdump、TShark', ['tcpdump_guide.html', 'tshark_guide.html']),
+        ('网络配置', 'iproute2 ip 命令', ['ip_command_guide.html']),
     ],
 }
 
@@ -226,6 +247,8 @@ def is_local_link(href: str) -> bool:
         return False
     href = href.strip()
     if href.startswith('#'):
+        return False
+    if href.startswith('/'):
         return False
     p = urlparse(href)
     if p.scheme and p.scheme not in ('',):
@@ -267,10 +290,29 @@ def extract_page_title(path: Path) -> str:
     return t or path.name
 
 
+def dir_index_href(dirname: str) -> str:
+    """子目录链接显式指向 index.html，便于静态托管与本地打开。"""
+    return f'{dirname.rstrip("/")}/index.html'
+
+
+def dir_link_variants(name: str):
+    """目录条目在匹配分组时同时识别 dir/ 与 dir/index.html。"""
+    variants = {name}
+    if name.endswith('/index.html'):
+        variants.add(name[: -len('index.html')] + '/')
+    elif name.endswith('/'):
+        variants.add(name + 'index.html')
+    return variants
+
+
 def matches_pattern(name: str, pattern: str) -> bool:
-    if pattern.endswith('/'):
-        return name == pattern or name.rstrip('/') + '/' == pattern
-    return fnmatch.fnmatch(name, pattern)
+    for variant in dir_link_variants(name):
+        if pattern.endswith('/'):
+            if variant == pattern or variant.rstrip('/') + '/' == pattern:
+                return True
+        elif fnmatch.fnmatch(variant, pattern):
+            return True
+    return False
 
 
 def assign_to_groups(items, groups_spec):
@@ -341,13 +383,19 @@ def extract_description(dirpath: Path) -> str:
     return t[:300] + ('...' if len(t) > 300 else '')
 
 
+def resolve_subdir(d: Path, href: str) -> Path:
+    if href.endswith('/index.html'):
+        return d / href[: -len('/index.html')]
+    return d / href.rstrip('/')
+
+
 def link_label(d: Path, href: str, kind: str) -> str:
     if kind == 'dir':
-        sub = d / href.rstrip('/')
+        sub = resolve_subdir(d, href)
         rel = dir_rel_path(sub)
         intro = DIR_INTROS.get(rel, '')
         if intro:
-            name = href.rstrip('/') or rel or '/'
+            name = sub.name or rel or '/'
             return f'{name} — {intro}'
         idx = sub / 'index.html'
         if idx.exists():
@@ -386,11 +434,18 @@ def render_functional_index(d: Path, items):
 
 def write_index_for_dir(d: Path):
     items = []
+    skip_names = {'__pycache__', 'node_modules'}
     for p in sorted(d.iterdir(), key=lambda x: (x.is_file(), x.name.lower())):
-        if p.name.lower().startswith('.'):
+        if p.name.lower().startswith('.') or p.name in skip_names:
             continue
         if p.is_dir():
-            items.append((p.name + '/', p.name + '/', 'dir'))
+            if (p / 'index.html').exists():
+                href = dir_index_href(p.name)
+            elif (p / 'index.htm').exists():
+                href = f'{p.name}/index.htm'
+            else:
+                href = p.name + '/'
+            items.append((p.name + '/', href, 'dir'))
         elif p.suffix.lower() in HTML_EXTS and p.name.lower() not in ('index.html', 'index.htm'):
             items.append((p.name, p.name, 'file'))
 
