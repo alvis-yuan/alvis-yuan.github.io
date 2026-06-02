@@ -1,0 +1,2021 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Linux I2C 子系统深度解析</title>
+<style>
+  :root {
+    --bg: #0f1117;
+    --bg2: #1a1d27;
+    --bg3: #22263a;
+    --border: #2e3352;
+    --accent: #4f8ef7;
+    --accent2: #7c5cbf;
+    --accent3: #27ae8f;
+    --text: #e2e8f0;
+    --text2: #94a3b8;
+    --text3: #64748b;
+    --warn: #f59e0b;
+    --danger: #ef4444;
+    --success: #10b981;
+    --nav-w: 280px;
+    --hdr: 56px;
+  }
+  *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+  html { scroll-behavior: smooth; font-size: 16px; }
+  body {
+    font-family: 'Segoe UI', system-ui, -apple-system, sans-serif;
+    background: var(--bg);
+    color: var(--text);
+    line-height: 1.7;
+    overflow-x: hidden;
+  }
+
+  /* ===== PROGRESS BAR ===== */
+  #progress-bar {
+    position: fixed; top: 0; left: 0; height: 3px; width: 0%;
+    background: linear-gradient(90deg, var(--accent), var(--accent2));
+    z-index: 9999; transition: width 0.1s linear;
+  }
+
+  /* ===== TOP HEADER ===== */
+  #top-header {
+    position: fixed; top: 3px; left: 0; right: 0; height: var(--hdr);
+    background: rgba(15,17,23,0.95); backdrop-filter: blur(12px);
+    border-bottom: 1px solid var(--border);
+    display: flex; align-items: center; padding: 0 16px; gap: 12px;
+    z-index: 1000;
+  }
+  #hamburger {
+    display: none; flex-direction: column; justify-content: center; gap: 5px;
+    cursor: pointer; background: none; border: none; padding: 6px; border-radius: 6px;
+  }
+  #hamburger span {
+    display: block; width: 22px; height: 2px; background: var(--text);
+    border-radius: 2px; transition: all 0.3s;
+  }
+  #hamburger.open span:nth-child(1) { transform: translateY(7px) rotate(45deg); }
+  #hamburger.open span:nth-child(2) { opacity: 0; }
+  #hamburger.open span:nth-child(3) { transform: translateY(-7px) rotate(-45deg); }
+  #header-title {
+    font-size: 0.95rem; font-weight: 700; color: var(--accent);
+    white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+  }
+  #nav-arrows {
+    margin-left: auto; display: flex; gap: 6px;
+  }
+  .nav-btn {
+    background: var(--bg3); border: 1px solid var(--border); color: var(--text2);
+    border-radius: 6px; padding: 5px 12px; cursor: pointer; font-size: 0.8rem;
+    transition: all 0.2s;
+  }
+  .nav-btn:hover { background: var(--accent); color: #fff; border-color: var(--accent); }
+  .nav-btn:disabled { opacity: 0.35; cursor: not-allowed; }
+  #progress-text { font-size: 0.75rem; color: var(--text3); white-space: nowrap; }
+
+  /* ===== SIDEBAR NAV ===== */
+  #sidebar {
+    position: fixed; top: calc(3px + var(--hdr)); left: 0;
+    width: var(--nav-w); height: calc(100vh - 3px - var(--hdr));
+    background: var(--bg2); border-right: 1px solid var(--border);
+    overflow-y: auto; overflow-x: hidden;
+    z-index: 900; transition: transform 0.3s ease;
+    padding-bottom: 40px;
+  }
+  #sidebar::-webkit-scrollbar { width: 4px; }
+  #sidebar::-webkit-scrollbar-track { background: transparent; }
+  #sidebar::-webkit-scrollbar-thumb { background: var(--border); border-radius: 4px; }
+
+  .nav-group-header {
+    display: flex; align-items: center; justify-content: space-between;
+    padding: 10px 14px 6px;
+    font-size: 0.7rem; font-weight: 700; text-transform: uppercase;
+    letter-spacing: 0.08em; color: var(--text3);
+    cursor: pointer; user-select: none;
+    border-top: 1px solid var(--border); margin-top: 4px;
+  }
+  .nav-group-header:first-child { border-top: none; margin-top: 0; }
+  .nav-group-arrow { transition: transform 0.25s; font-size: 0.65rem; }
+  .nav-group-header.collapsed .nav-group-arrow { transform: rotate(-90deg); }
+  .nav-group-items { overflow: hidden; transition: max-height 0.3s ease; }
+  .nav-group-items.collapsed { max-height: 0 !important; }
+
+  .nav-item {
+    display: block; padding: 7px 14px 7px 24px;
+    font-size: 0.82rem; color: var(--text2); text-decoration: none;
+    border-left: 2px solid transparent; transition: all 0.2s;
+    cursor: pointer;
+  }
+  .nav-item:hover { color: var(--text); background: var(--bg3); }
+  .nav-item.active {
+    color: var(--accent); border-left-color: var(--accent);
+    background: rgba(79,142,247,0.08); font-weight: 600;
+  }
+
+  /* ===== MAIN CONTENT ===== */
+  #main {
+    margin-left: var(--nav-w);
+    padding-top: calc(3px + var(--hdr) + 32px);
+    min-height: 100vh;
+    transition: margin-left 0.3s ease;
+  }
+  .content-wrap {
+    max-width: 860px; margin: 0 auto; padding: 0 24px 80px;
+  }
+
+  /* ===== SECTION ===== */
+  .section {
+    margin-bottom: 72px; scroll-margin-top: calc(var(--hdr) + 3px + 20px);
+  }
+  .section-tag {
+    display: inline-block; font-size: 0.7rem; font-weight: 700;
+    text-transform: uppercase; letter-spacing: 0.1em;
+    padding: 2px 10px; border-radius: 4px; margin-bottom: 12px;
+    background: rgba(79,142,247,0.15); color: var(--accent);
+  }
+  h1.sec-title {
+    font-size: clamp(1.5rem, 4vw, 2rem); font-weight: 800; color: var(--text);
+    margin-bottom: 8px; line-height: 1.3;
+  }
+  h2.sec-title {
+    font-size: clamp(1.25rem, 3vw, 1.6rem); font-weight: 700; color: var(--text);
+    margin-bottom: 6px; padding-bottom: 8px;
+    border-bottom: 1px solid var(--border);
+  }
+  .sec-desc { color: var(--text2); margin-bottom: 24px; font-size: 0.95rem; }
+
+  /* ===== CONTENT ELEMENTS ===== */
+  p { margin-bottom: 14px; color: var(--text); }
+  h3 { font-size: 1.05rem; color: var(--accent); margin: 20px 0 8px; font-weight: 600; }
+  h4 { font-size: 0.95rem; color: var(--accent3); margin: 16px 0 6px; font-weight: 600; }
+  ul, ol { margin: 10px 0 14px 20px; color: var(--text); }
+  li { margin-bottom: 5px; }
+  strong { color: var(--warn); font-weight: 600; }
+  em { color: var(--text2); font-style: italic; }
+
+  /* code inline */
+  code {
+    font-family: 'Cascadia Code', 'Fira Code', 'Consolas', monospace;
+    font-size: 0.82em; background: var(--bg3); color: #a5d6ff;
+    padding: 2px 6px; border-radius: 4px; border: 1px solid var(--border);
+  }
+
+  /* code block */
+  pre {
+    background: #0d1117; border: 1px solid var(--border);
+    border-radius: 8px; padding: 16px 18px; overflow-x: auto;
+    margin: 14px 0; font-size: 0.82rem; line-height: 1.6;
+    max-width: 100%;
+  }
+  pre code {
+    background: none; border: none; padding: 0; color: #c9d1d9;
+    font-size: inherit;
+  }
+  .pre-label {
+    font-size: 0.7rem; color: var(--text3); margin-bottom: 4px;
+    font-family: monospace; text-transform: uppercase;
+  }
+
+  /* syntax highlight classes */
+  .c-comment { color: #6a737d; }
+  .c-string  { color: #a5d6ff; }
+  .c-kw      { color: #ff7b72; }
+  .c-path    { color: #7ee787; }
+  .c-num     { color: #f2cc60; }
+  .c-prompt  { color: #6e7f99; user-select: none; }
+  .c-out     { color: #9ecf88; }
+  .c-cmd     { color: #e2c08d; }
+
+  /* info boxes */
+  .box {
+    border-radius: 8px; padding: 14px 16px; margin: 16px 0;
+    border-left: 3px solid;
+  }
+  .box-info  { background: rgba(79,142,247,0.07); border-color: var(--accent); }
+  .box-warn  { background: rgba(245,158,11,0.07); border-color: var(--warn); }
+  .box-tip   { background: rgba(39,174,143,0.07); border-color: var(--accent3); }
+  .box-danger{ background: rgba(239,68,68,0.08);  border-color: var(--danger); }
+  .box-label {
+    font-size: 0.7rem; font-weight: 800; text-transform: uppercase;
+    letter-spacing: 0.1em; margin-bottom: 6px;
+  }
+  .box-info  .box-label { color: var(--accent); }
+  .box-warn  .box-label { color: var(--warn); }
+  .box-tip   .box-label { color: var(--accent3); }
+  .box-danger .box-label { color: var(--danger); }
+  .box p { margin: 0; font-size: 0.9rem; }
+
+  /* source link */
+  .source-link {
+    display: inline-flex; align-items: center; gap: 5px;
+    font-size: 0.75rem; color: var(--text3); text-decoration: none;
+    padding: 3px 8px; border: 1px solid var(--border); border-radius: 4px;
+    background: var(--bg3); margin-bottom: 16px; transition: all 0.2s;
+  }
+  .source-link:hover { color: var(--accent); border-color: var(--accent); }
+
+  /* table */
+  .tbl-wrap { overflow-x: auto; margin: 14px 0; border-radius: 8px; }
+  table { border-collapse: collapse; width: 100%; font-size: 0.85rem; }
+  th {
+    background: var(--bg3); color: var(--accent);
+    padding: 10px 14px; text-align: left; font-weight: 600;
+    border-bottom: 2px solid var(--border);
+  }
+  td { padding: 9px 14px; border-bottom: 1px solid var(--border); color: var(--text2); }
+  tr:last-child td { border-bottom: none; }
+  tr:hover td { background: rgba(255,255,255,0.02); }
+
+  /* SVG diagrams */
+  .svg-wrap {
+    background: var(--bg2); border: 1px solid var(--border);
+    border-radius: 10px; padding: 20px; margin: 20px 0;
+    overflow-x: auto; text-align: center;
+  }
+  .svg-caption {
+    text-align: center; font-size: 0.78rem; color: var(--text3);
+    margin-top: 8px; font-style: italic;
+  }
+
+  /* summary box */
+  .summary-box {
+    background: linear-gradient(135deg, rgba(79,142,247,0.05), rgba(124,92,191,0.05));
+    border: 1px solid var(--border); border-radius: 10px;
+    padding: 20px 24px; margin-top: 32px;
+  }
+  .summary-box h3 { color: var(--accent2); margin-top: 0; }
+  .summary-box ul { color: var(--text2); }
+
+  /* first-principle box */
+  .principle-box {
+    background: linear-gradient(135deg, rgba(39,174,143,0.05), rgba(79,142,247,0.05));
+    border: 1px solid var(--accent3); border-radius: 10px;
+    padding: 20px 24px; margin-top: 20px;
+  }
+  .principle-box h3 { color: var(--accent3); margin-top: 0; }
+
+  /* divider */
+  .divider { border: none; border-top: 1px solid var(--border); margin: 32px 0; }
+
+  /* chip badge */
+  .badge {
+    display: inline-block; font-size: 0.7rem; font-weight: 700;
+    padding: 2px 8px; border-radius: 3px; margin: 0 3px;
+  }
+  .badge-blue   { background: rgba(79,142,247,0.2);  color: var(--accent); }
+  .badge-purple { background: rgba(124,92,191,0.2);  color: #b088ff; }
+  .badge-green  { background: rgba(39,174,143,0.2);  color: var(--accent3); }
+  .badge-yellow { background: rgba(245,158,11,0.2);  color: var(--warn); }
+
+  /* Overlay for mobile */
+  #overlay {
+    display: none; position: fixed; inset: 0; background: rgba(0,0,0,0.6);
+    z-index: 850; backdrop-filter: blur(2px);
+  }
+
+  /* ===== RESPONSIVE ===== */
+  @media (max-width: 768px) {
+    :root { --nav-w: 260px; }
+    #hamburger { display: flex; }
+    #sidebar { transform: translateX(-100%); }
+    #sidebar.open { transform: translateX(0); }
+    #overlay.open { display: block; }
+    #main { margin-left: 0; }
+    .content-wrap { padding: 0 14px 60px; }
+    pre { font-size: 0.75rem; padding: 12px; }
+    #progress-text { display: none; }
+  }
+</style>
+</head>
+<body>
+
+<!-- Progress Bar -->
+<div id="progress-bar"></div>
+
+<!-- Top Header -->
+<header id="top-header">
+  <button id="hamburger" aria-label="菜单" onclick="toggleSidebar()">
+    <span></span><span></span><span></span>
+  </button>
+  <div id="header-title">Linux I2C 子系统深度解析</div>
+  <span id="progress-text">0%</span>
+  <div id="nav-arrows">
+    <button class="nav-btn" id="btn-prev" onclick="navigateChapter(-1)" disabled>← 上章</button>
+    <button class="nav-btn" id="btn-next" onclick="navigateChapter(1)">下章 →</button>
+  </div>
+</header>
+
+<!-- Sidebar Overlay -->
+<div id="overlay" onclick="toggleSidebar()"></div>
+
+<!-- Sidebar -->
+<nav id="sidebar">
+  <div class="nav-group-header" onclick="toggleGroup(this)">
+    <span>📡 概述与基础</span>
+    <span class="nav-group-arrow">▼</span>
+  </div>
+  <div class="nav-group-items" id="grp0">
+    <a class="nav-item" onclick="scrollToSection('sec-intro')">1. I2C 协议简介</a>
+    <a class="nav-item" onclick="scrollToSection('sec-arch')">2. Linux I2C 层级架构</a>
+  </div>
+
+  <div class="nav-group-header" onclick="toggleGroup(this)">
+    <span>🗂️ Sysfs 目录结构</span>
+    <span class="nav-group-arrow">▼</span>
+  </div>
+  <div class="nav-group-items" id="grp1">
+    <a class="nav-item" onclick="scrollToSection('sec-sysfs')">3. /sys/bus/i2c 结构</a>
+    <a class="nav-item" onclick="scrollToSection('sec-logical')">4. 逻辑 I2C 总线</a>
+    <a class="nav-item" onclick="scrollToSection('sec-devices')">5. 设备目录详解</a>
+  </div>
+
+  <div class="nav-group-header" onclick="toggleGroup(this)">
+    <span>🔌 /dev 接口</span>
+    <span class="nav-group-arrow">▼</span>
+  </div>
+  <div class="nav-group-items" id="grp2">
+    <a class="nav-item" onclick="scrollToSection('sec-devinterface')">6. /dev/i2c-N 接口</a>
+  </div>
+
+  <div class="nav-group-header" onclick="toggleGroup(this)">
+    <span>🛠️ 调试工具</span>
+    <span class="nav-group-arrow">▼</span>
+  </div>
+  <div class="nav-group-items" id="grp3">
+    <a class="nav-item" onclick="scrollToSection('sec-tools')">7. i2c-tools 套件</a>
+    <a class="nav-item" onclick="scrollToSection('sec-i2cdetect')">  i2cdetect</a>
+    <a class="nav-item" onclick="scrollToSection('sec-i2cdump')">  i2cdump</a>
+    <a class="nav-item" onclick="scrollToSection('sec-i2cget')">  i2cget</a>
+    <a class="nav-item" onclick="scrollToSection('sec-i2cset')">  i2cset</a>
+    <a class="nav-item" onclick="scrollToSection('sec-i2ctransfer')">  i2ctransfer</a>
+    <a class="nav-item" onclick="scrollToSection('sec-dmesg')">8. dmesg 与内核日志</a>
+  </div>
+
+  <div class="nav-group-header" onclick="toggleGroup(this)">
+    <span>📋 综合总结</span>
+    <span class="nav-group-arrow">▼</span>
+  </div>
+  <div class="nav-group-items" id="grp4">
+    <a class="nav-item" onclick="scrollToSection('sec-final')">9. 综合总结</a>
+  </div>
+</nav>
+
+<!-- Main Content -->
+<main id="main">
+<div class="content-wrap">
+
+<!-- ==================== SECTION 1 ==================== -->
+<section class="section" id="sec-intro">
+  <div class="section-tag">第一章</div>
+  <h1 class="sec-title">I2C 协议简介</h1>
+  <p class="sec-desc">从协议规范出发，理解 Linux I2C 子系统的设计基础</p>
+  <a href="https://docs.kernel.org/5.15/i2c/summary.html" class="source-link" target="_blank">
+    🔗 原文：Introduction to I2C and SMBus — The Linux Kernel documentation
+  </a>
+
+  <p>I²C（读作 "I squared C"，在内核文档中写作 I2C）是 Philips 公司开发的协议。它是一种<strong>双线低速协议</strong>（可变速，最高 400 kHz），具有高速扩展（3.4 MHz）。I2C 为连接多种低频率或低带宽通信需求的设备提供了低成本总线，在嵌入式系统中被广泛使用。</p>
+
+  <p>某些系统使用不符合品牌要求的变体，因此不以 I2C 名称销售，而采用不同名称，例如 <strong>TWI（Two Wire Interface，两线接口）</strong> 和 <strong>IIC</strong>。</p>
+
+  <div class="box box-info">
+    <div class="box-label">📖 官方规范</div>
+    <p>I2C 官方规范是 NXP Semiconductors 发布的《I2C-bus specification and user manual》（UM10204）。</p>
+  </div>
+
+  <h3>SMBus（系统管理总线）</h3>
+  <p>SMBus（System Management Bus）基于 I2C 协议，是 I2C 协议和信令的子集。许多 I2C 设备可在 SMBus 上工作，但某些 SMBus 协议增加了超出 I2C 品牌要求的语义。现代 PC 主板依赖 SMBus，通过 SMBus 连接的最常见设备是使用 I2C EEPROM 配置的 RAM 模块以及硬件监控芯片。</p>
+
+  <h3>Linux 内核中的术语</h3>
+  <div class="tbl-wrap">
+    <table>
+      <tr><th>术语</th><th>I2C 规范</th><th>Linux 内核称呼</th><th>驱动位置</th></tr>
+      <tr>
+        <td><strong>主机芯片（Master）</strong></td>
+        <td>发起通信的节点</td>
+        <td><strong>适配器（Adapter）/ 总线</strong></td>
+        <td><code>drivers/i2c/busses/</code></td>
+      </tr>
+      <tr>
+        <td><strong>算法（Algorithm）</strong></td>
+        <td>—</td>
+        <td>可用于实现整类 I2C 适配器的通用代码</td>
+        <td><code>drivers/i2c/algos/</code></td>
+      </tr>
+      <tr>
+        <td><strong>从机芯片（Slave）</strong></td>
+        <td>响应主机通信的节点</td>
+        <td><strong>客户端（Client）</strong></td>
+        <td><code>drivers/media/i2c/</code> 等</td>
+      </tr>
+    </table>
+  </div>
+
+  <div class="svg-wrap">
+    <svg viewBox="0 0 600 180" xmlns="http://www.w3.org/2000/svg" style="max-width:100%; width:580px;">
+      <defs>
+        <marker id="arr" markerWidth="8" markerHeight="6" refX="8" refY="3" orient="auto">
+          <polygon points="0 0, 8 3, 0 6" fill="#4f8ef7"/>
+        </marker>
+      </defs>
+      <!-- VCC / GND rails -->
+      <rect x="10" y="40" width="580" height="6" rx="2" fill="#22263a" stroke="#2e3352"/>
+      <rect x="10" y="140" width="580" height="6" rx="2" fill="#22263a" stroke="#2e3352"/>
+      <!-- SDA / SCL lines -->
+      <line x1="10" y1="75"  x2="590" y2="75"  stroke="#4f8ef7" stroke-width="2.5" stroke-dasharray="4,2"/>
+      <line x1="10" y1="110" x2="590" y2="110" stroke="#27ae8f" stroke-width="2.5" stroke-dasharray="4,2"/>
+      <!-- Labels -->
+      <text x="596" y="79" font-size="11" fill="#4f8ef7" font-family="monospace">SDA</text>
+      <text x="596" y="114" font-size="11" fill="#27ae8f" font-family="monospace">SCL</text>
+      <!-- Master -->
+      <rect x="18" y="58" width="90" height="50" rx="6" fill="#1a2040" stroke="#4f8ef7" stroke-width="1.5"/>
+      <text x="63" y="80" text-anchor="middle" font-size="11" fill="#4f8ef7" font-weight="bold">Master</text>
+      <text x="63" y="96" text-anchor="middle" font-size="9" fill="#94a3b8">(Adapter)</text>
+      <line x1="108" y1="75" x2="108" y2="75" stroke="#4f8ef7" stroke-width="2"/>
+      <line x1="108" y1="110" x2="108" y2="110" stroke="#27ae8f" stroke-width="2"/>
+      <!-- Slaves -->
+      <rect x="170" y="58" width="85" height="50" rx="6" fill="#1a2040" stroke="#7c5cbf" stroke-width="1.5"/>
+      <text x="212" y="80" text-anchor="middle" font-size="11" fill="#7c5cbf" font-weight="bold">Slave 1</text>
+      <text x="212" y="96" text-anchor="middle" font-size="9" fill="#94a3b8">(Client)</text>
+
+      <rect x="310" y="58" width="85" height="50" rx="6" fill="#1a2040" stroke="#7c5cbf" stroke-width="1.5"/>
+      <text x="352" y="80" text-anchor="middle" font-size="11" fill="#7c5cbf" font-weight="bold">Slave 2</text>
+      <text x="352" y="96" text-anchor="middle" font-size="9" fill="#94a3b8">(Client)</text>
+
+      <rect x="450" y="58" width="85" height="50" rx="6" fill="#1a2040" stroke="#7c5cbf" stroke-width="1.5"/>
+      <text x="492" y="80" text-anchor="middle" font-size="11" fill="#7c5cbf" font-weight="bold">Slave 3</text>
+      <text x="492" y="96" text-anchor="middle" font-size="9" fill="#94a3b8">(Client)</text>
+
+      <!-- Pull-up indicator -->
+      <text x="300" y="30" text-anchor="middle" font-size="10" fill="#f59e0b">Pull-up 电阻 (VCC)</text>
+      <line x1="212" y1="40" x2="212" y2="75" stroke="#f59e0b" stroke-width="1.2" stroke-dasharray="2,2"/>
+      <line x1="352" y1="40" x2="352" y2="75" stroke="#f59e0b" stroke-width="1.2" stroke-dasharray="2,2"/>
+      <line x1="212" y1="40" x2="212" y2="110" stroke="#f59e0b" stroke-width="1.2" stroke-dasharray="2,2"/>
+      <line x1="352" y1="40" x2="352" y2="110" stroke="#f59e0b" stroke-width="1.2" stroke-dasharray="2,2"/>
+      <line x1="492" y1="40" x2="492" y2="75" stroke="#f59e0b" stroke-width="1.2" stroke-dasharray="2,2"/>
+      <line x1="492" y1="40" x2="492" y2="110" stroke="#f59e0b" stroke-width="1.2" stroke-dasharray="2,2"/>
+      <!-- GND label -->
+      <text x="300" y="162" text-anchor="middle" font-size="10" fill="#64748b">GND</text>
+    </svg>
+    <p class="svg-caption">图1：I2C 总线拓扑 — 一个主机（Master/Adapter）连接多个从机（Slave/Client）共享 SDA 和 SCL 两根线</p>
+  </div>
+
+  <h3>I2C 信号特性</h3>
+  <ul>
+    <li>I2C 只需要 <strong>两根信号线</strong>（SCL 时钟线、SDA 数据线），节省 PCB 空间并最大限度减少信号质量问题。</li>
+    <li>大多数 I2C 设备使用 <strong>7 位地址</strong>，总线速度最高 400 kHz；存在尚未广泛使用的高速扩展（3.4 MHz）。</li>
+    <li>I2C 是一种<strong>多主机总线</strong>；使用<strong>漏极开路信令</strong>在主机之间进行仲裁，以及握手和同步时钟。</li>
+  </ul>
+
+  <div class="summary-box">
+    <h3>📝 本章总结</h3>
+    <ul>
+      <li>I2C 是 NXP（原 Philips）设计的两线低速串行协议，官方规范为 UM10204。</li>
+      <li>Linux 内核将 I2C <strong>主机（Master）</strong>抽象为 <strong>Adapter（适配器）</strong>，将 <strong>从机（Slave）</strong>抽象为 <strong>Client（客户端）</strong>。</li>
+      <li>SMBus 是 I2C 的子集协议，被现代 PC 广泛用于硬件监控和 EEPROM 配置。</li>
+    </ul>
+  </div>
+
+  <div class="principle-box">
+    <h3>🔬 第一性原理</h3>
+    <p>I2C 的根本设计动机是：用最少的硬件引脚（仅2根）实现多设备互联。为此它选择了<strong>共享漏极开路总线</strong>（天然"线与"），任何设备都可以将线拉低，从而实现多主机仲裁、时钟同步和从机 ACK 应答，这正是整个 Linux I2C 子系统分层设计的基础出发点。</p>
+  </div>
+</section>
+
+<!-- ==================== SECTION 2 ==================== -->
+<section class="section" id="sec-arch">
+  <div class="section-tag">第二章</div>
+  <h2 class="sec-title">Linux I2C 层级架构</h2>
+  <p class="sec-desc">内核如何分层抽象 I2C 硬件与驱动</p>
+  <a href="https://docs.kernel.org/driver-api/i2c.html" class="source-link" target="_blank">
+    🔗 原文：I2C and SMBus Subsystem — The Linux Kernel documentation
+  </a>
+
+  <p>Linux I2C 编程接口支持总线交互的<strong>主机端（master side）</strong>和<strong>从机端（slave side）</strong>。编程接口围绕两种驱动和两种设备构建：</p>
+
+  <ul>
+    <li><strong>I2C 适配器驱动（Adapter Driver）</strong>：抽象控制器硬件；绑定到物理设备（例如 PCI 设备或 platform_device），并暴露 <code>struct i2c_adapter</code>，代表其管理的每个 I2C 总线段。</li>
+    <li><strong>I2C 客户端驱动（Client Driver）</strong>：每个 I2C 总线段上的 I2C 设备由 <code>struct i2c_client</code> 表示，这些设备会绑定到 <code>struct i2c_driver</code>，后者遵循标准的 Linux 驱动模型。</li>
+  </ul>
+
+  <h3>核心数据结构</h3>
+  <div class="tbl-wrap">
+    <table>
+      <tr><th>数据结构</th><th>角色</th><th>说明</th></tr>
+      <tr>
+        <td><code>struct i2c_adapter</code></td>
+        <td>总线/适配器</td>
+        <td>代表一条 I2C 总线，包含算法指针、总线编号、设备列表等</td>
+      </tr>
+      <tr>
+        <td><code>struct i2c_algorithm</code></td>
+        <td>传输方法</td>
+        <td>定义 <code>xfer()</code>、<code>smbus_xfer()</code>、<code>functionality()</code> 等回调</td>
+      </tr>
+      <tr>
+        <td><code>struct i2c_client</code></td>
+        <td>从机设备</td>
+        <td>代表总线上的一个 I2C 设备，含地址、名称、所属 adapter 等</td>
+      </tr>
+      <tr>
+        <td><code>struct i2c_driver</code></td>
+        <td>设备驱动</td>
+        <td>含 <code>probe()</code>、<code>remove()</code>、<code>id_table</code> 等，遵循 Linux 驱动模型</td>
+      </tr>
+      <tr>
+        <td><code>struct i2c_board_info</code></td>
+        <td>设备描述</td>
+        <td>用于构建 I2C 设备信息表（类型、地址、IRQ 等），在静态注册场景使用</td>
+      </tr>
+      <tr>
+        <td><code>struct i2c_msg</code></td>
+        <td>消息</td>
+        <td>一次 I2C 读或写传输的基本单元，含地址、标志、数据缓冲区</td>
+      </tr>
+    </table>
+  </div>
+
+  <div class="svg-wrap">
+    <svg viewBox="0 0 680 460" xmlns="http://www.w3.org/2000/svg" style="max-width:100%; width:640px;">
+      <defs>
+        <marker id="arr2" markerWidth="8" markerHeight="6" refX="8" refY="3" orient="auto">
+          <polygon points="0 0, 8 3, 0 6" fill="#4f8ef7"/>
+        </marker>
+        <marker id="arr3" markerWidth="8" markerHeight="6" refX="8" refY="3" orient="auto">
+          <polygon points="0 0, 8 3, 0 6" fill="#7c5cbf"/>
+        </marker>
+      </defs>
+
+      <!-- Layer 1: User Space -->
+      <rect x="8" y="8" width="664" height="64" rx="8" fill="rgba(79,142,247,0.05)" stroke="#4f8ef7" stroke-width="1.5"/>
+      <text x="340" y="28" text-anchor="middle" font-size="10" fill="#4f8ef7" font-weight="700" letter-spacing="1">用户空间 (User Space)</text>
+      <rect x="60" y="36" width="130" height="28" rx="5" fill="#1a2040" stroke="#4f8ef7" stroke-width="1"/>
+      <text x="125" y="55" text-anchor="middle" font-size="10" fill="#94a3b8">应用程序 / i2c-tools</text>
+      <rect x="210" y="36" width="130" height="28" rx="5" fill="#1a2040" stroke="#4f8ef7" stroke-width="1"/>
+      <text x="275" y="55" text-anchor="middle" font-size="10" fill="#94a3b8">Python / Shell 脚本</text>
+      <rect x="360" y="36" width="130" height="28" rx="5" fill="#1a2040" stroke="#4f8ef7" stroke-width="1"/>
+      <text x="425" y="55" text-anchor="middle" font-size="10" fill="#94a3b8">C 程序 (ioctl)</text>
+
+      <!-- Arrow user -> kernel -->
+      <line x1="340" y1="73" x2="340" y2="97" stroke="#4f8ef7" stroke-width="1.5" marker-end="url(#arr2)"/>
+      <text x="355" y="90" font-size="9" fill="#64748b">/dev/i2c-N</text>
+
+      <!-- Layer 2: Kernel - i2c-dev -->
+      <rect x="8" y="100" width="664" height="44" rx="8" fill="rgba(124,92,191,0.06)" stroke="#7c5cbf" stroke-width="1.5"/>
+      <text x="340" y="118" text-anchor="middle" font-size="10" fill="#7c5cbf" font-weight="700">i2c-dev 内核模块（字符设备，Major 89）</text>
+      <text x="340" y="134" text-anchor="middle" font-size="9" fill="#64748b">open() / ioctl(I2C_SLAVE) / read() / write() / I2C_RDWR</text>
+
+      <!-- Arrow i2c-dev -> i2c-core -->
+      <line x1="340" y1="145" x2="340" y2="167" stroke="#7c5cbf" stroke-width="1.5" marker-end="url(#arr3)"/>
+
+      <!-- Layer 3: i2c-core -->
+      <rect x="8" y="170" width="664" height="54" rx="8" fill="rgba(39,174,143,0.06)" stroke="#27ae8f" stroke-width="1.5"/>
+      <text x="340" y="190" text-anchor="middle" font-size="11" fill="#27ae8f" font-weight="700">I2C Core（i2c-core.c）</text>
+      <text x="340" y="207" text-anchor="middle" font-size="9" fill="#64748b">i2c_transfer() · i2c_smbus_xfer() · 设备注册/探测 · 驱动匹配 · 总线管理</text>
+      <text x="340" y="220" text-anchor="middle" font-size="9" fill="#64748b">struct i2c_adapter · struct i2c_client · struct i2c_driver · struct i2c_algorithm</text>
+
+      <!-- Arrow core -> subsystems -->
+      <line x1="200" y1="225" x2="200" y2="247" stroke="#27ae8f" stroke-width="1.5" marker-end="url(#arr2)"/>
+      <line x1="470" y1="225" x2="470" y2="247" stroke="#27ae8f" stroke-width="1.5" marker-end="url(#arr2)"/>
+
+      <!-- Layer 4: Client Drivers & Bus Drivers -->
+      <rect x="8" y="250" width="310" height="80" rx="8" fill="rgba(245,158,11,0.05)" stroke="#f59e0b" stroke-width="1.5"/>
+      <text x="163" y="270" text-anchor="middle" font-size="10" fill="#f59e0b" font-weight="700">I2C 客户端驱动（Client Drivers）</text>
+      <text x="163" y="286" text-anchor="middle" font-size="9" fill="#64748b">drivers/media/i2c/  drivers/hwmon/</text>
+      <text x="163" y="300" text-anchor="middle" font-size="9" fill="#64748b">drivers/input/  drivers/rtc/</text>
+      <text x="163" y="314" text-anchor="middle" font-size="9" fill="#64748b">struct i2c_driver → probe() / remove()</text>
+      <text x="163" y="326" text-anchor="middle" font-size="9" fill="#64748b">struct i2c_client（从机设备）</text>
+
+      <rect x="362" y="250" width="310" height="80" rx="8" fill="rgba(79,142,247,0.05)" stroke="#4f8ef7" stroke-width="1.5"/>
+      <text x="517" y="270" text-anchor="middle" font-size="10" fill="#4f8ef7" font-weight="700">I2C 总线/适配器驱动（Bus Drivers）</text>
+      <text x="517" y="286" text-anchor="middle" font-size="9" fill="#64748b">drivers/i2c/busses/  (i2c-designware, i2c-bcm2835…)</text>
+      <text x="517" y="300" text-anchor="middle" font-size="9" fill="#64748b">struct i2c_adapter + struct i2c_algorithm</text>
+      <text x="517" y="314" text-anchor="middle" font-size="9" fill="#64748b">xfer() → 将 I2C 消息转为寄存器操作</text>
+      <text x="517" y="326" text-anchor="middle" font-size="9" fill="#64748b">i2c_add_adapter() / i2c_add_numbered_adapter()</text>
+
+      <!-- Arrow to Hardware -->
+      <line x1="163" y1="331" x2="163" y2="353" stroke="#f59e0b" stroke-width="1.5" marker-end="url(#arr2)"/>
+      <line x1="517" y1="331" x2="517" y2="353" stroke="#4f8ef7" stroke-width="1.5" marker-end="url(#arr2)"/>
+
+      <!-- Layer 5: Hardware -->
+      <rect x="8" y="356" width="664" height="56" rx="8" fill="rgba(255,255,255,0.02)" stroke="#2e3352" stroke-width="1.5"/>
+      <text x="340" y="376" text-anchor="middle" font-size="10" fill="#64748b" font-weight="700">硬件层（Hardware）</text>
+      <text x="163" y="396" text-anchor="middle" font-size="10" fill="#64748b">I2C 从机设备（传感器/EEPROM/IO扩展器…）</text>
+      <text x="517" y="396" text-anchor="middle" font-size="10" fill="#64748b">I2C 控制器（SoC 片内 / PCIe / Platform Device）</text>
+
+      <!-- Sysfs label on side -->
+      <rect x="8" y="420" width="664" height="32" rx="6" fill="rgba(39,174,143,0.04)" stroke="#27ae8f" stroke-width="1" stroke-dasharray="4,2"/>
+      <text x="340" y="440" text-anchor="middle" font-size="10" fill="#27ae8f">📁 /sys/bus/i2c/ · /sys/class/i2c-dev/ · /dev/i2c-N — 跨越内核/用户边界的接口</text>
+    </svg>
+    <p class="svg-caption">图2：Linux I2C 子系统层级架构图</p>
+  </div>
+
+  <h3>适配器驱动（Adapter Driver）</h3>
+  <p>I2C "适配器驱动" 抽象控制器硬件；它绑定到物理设备（可能是 PCI 设备或 platform_device），并暴露 <code>struct i2c_adapter</code>，代表其管理的每个 I2C 总线段。Linux 内核在源目录 <code>drivers/i2c/busses</code> 下提供了多种 I2C 总线驱动，用于将内核 I2C API 转换为针对不同系统的寄存器操作。</p>
+
+  <h3>struct i2c_algorithm — 传输方法</h3>
+  <div class="pre-label">来源：docs.kernel.org/driver-api/i2c.html</div>
+  <pre><code><span class="c-kw">struct</span> i2c_algorithm {
+    <span class="c-kw">union</span> {
+        <span class="c-kw">int</span> (*xfer)(<span class="c-kw">struct</span> i2c_adapter *adap, <span class="c-kw">struct</span> i2c_msg *msgs, <span class="c-kw">int</span> num);
+        <span class="c-kw">int</span> (*master_xfer)(...);  <span class="c-comment">/* 已废弃，使用 xfer */</span>
+    };
+    <span class="c-kw">int</span> (*smbus_xfer)(<span class="c-kw">struct</span> i2c_adapter *adap, u16 addr,
+                      <span class="c-kw">unsigned short</span> flags, <span class="c-kw">char</span> read_write,
+                      u8 command, <span class="c-kw">int</span> size, <span class="c-kw">union</span> i2c_smbus_data *data);
+    u32 (*functionality)(<span class="c-kw">struct</span> i2c_adapter *adap);
+};</code></pre>
+
+  <h3>struct i2c_client — 从机设备</h3>
+  <div class="pre-label">来源：docs.kernel.org/driver-api/i2c.html</div>
+  <pre><code><span class="c-kw">struct</span> i2c_client {
+    <span class="c-kw">unsigned short</span> flags;       <span class="c-comment">/* I2C_CLIENT_PEC | I2C_CLIENT_TEN | ... */</span>
+    <span class="c-kw">unsigned short</span> addr;        <span class="c-comment">/* I2C 总线上使用的地址 */</span>
+    <span class="c-kw">char</span>           name[I2C_NAME_SIZE]; <span class="c-comment">/* 设备类型/芯片名称 */</span>
+    <span class="c-kw">struct</span> i2c_adapter *adapter; <span class="c-comment">/* 管理该设备所在总线段的适配器 */</span>
+    <span class="c-kw">struct</span> device  dev;          <span class="c-comment">/* 驱动模型设备节点 */</span>
+    <span class="c-kw">int</span>            irq;          <span class="c-comment">/* 该设备产生的 IRQ（如有）*/</span>
+    <span class="c-kw">struct</span> dentry  *debugfs;     <span class="c-comment">/* I2C core 为该 client 创建的 debugfs 子目录 */</span>
+};</code></pre>
+
+  <h3>struct i2c_driver — 设备驱动</h3>
+  <div class="pre-label">来源：docs.kernel.org/driver-api/i2c.html</div>
+  <pre><code><span class="c-kw">struct</span> i2c_driver {
+    <span class="c-kw">unsigned int</span> class;
+    <span class="c-kw">int</span>  (*probe)(<span class="c-kw">struct</span> i2c_client *client);   <span class="c-comment">/* 设备绑定回调 */</span>
+    <span class="c-kw">void</span> (*remove)(<span class="c-kw">struct</span> i2c_client *client); <span class="c-comment">/* 设备解绑回调 */</span>
+    <span class="c-kw">void</span> (*shutdown)(<span class="c-kw">struct</span> i2c_client *client);
+    <span class="c-kw">struct</span> device_driver       driver;
+    <span class="c-kw">const struct</span> i2c_device_id *id_table; <span class="c-comment">/* 驱动支持的 I2C 设备列表 */</span>
+    <span class="c-kw">int</span>  (*detect)(<span class="c-kw">struct</span> i2c_client *client, <span class="c-kw">struct</span> i2c_board_info *info);
+    <span class="c-kw">const unsigned short</span>      *address_list; <span class="c-comment">/* 探测地址列表（用于 detect）*/</span>
+};</code></pre>
+
+  <h3>设备实例化方式</h3>
+  <a href="https://www.kernel.org/doc/html/v6.11/i2c/instantiating-devices.html" class="source-link" target="_blank">
+    🔗 原文：How to instantiate I2C devices — The Linux Kernel documentation
+  </a>
+  <p>与 PCI 或 USB 设备不同，I2C 设备不在硬件层面枚举。软件必须知道每个 I2C 总线段上连接了哪些设备及其地址。实例化 I2C 设备有几种方式：</p>
+
+  <div class="tbl-wrap">
+    <table>
+      <tr><th>方法</th><th>场景</th><th>机制</th></tr>
+      <tr>
+        <td><strong>方法1：静态声明</strong></td>
+        <td>嵌入式系统、已知总线号</td>
+        <td>设备树（DTS）、ACPI 或 board files；总线注册时自动实例化</td>
+      </tr>
+      <tr>
+        <td><strong>方法2：新风格驱动</strong></td>
+        <td>枚举设备（DT/ACPI）</td>
+        <td>驱动模型自动绑定</td>
+      </tr>
+      <tr>
+        <td><strong>方法3：探测（Probing）</strong></td>
+        <td>无其他手段时</td>
+        <td>使用 I2C_SMBUS_QUICK 探测，须在总线设置 class 位域</td>
+      </tr>
+      <tr>
+        <td><strong>方法4：用户空间实例化</strong></td>
+        <td>调试/开发</td>
+        <td>写入 <code>/sys/bus/i2c/devices/i2c-N/new_device</code></td>
+      </tr>
+    </table>
+  </div>
+
+  <div class="box box-info">
+    <div class="box-label">📌 关键说明</div>
+    <p>如有可能，应首选方法 1 和方法 2。方法 3（探测）仅在没有其他方式时才使用，因为它可能带来不希望的副作用。<br>
+    通过 sysfs 的 <code>new_device</code> 和 <code>delete_device</code> 两个只写属性文件，可在用户空间动态实例化和删除 I2C 设备。</p>
+  </div>
+
+  <div class="summary-box">
+    <h3>📝 本章总结</h3>
+    <ul>
+      <li>Linux I2C 子系统分为：<strong>用户空间工具层 → i2c-dev → I2C Core → 客户端驱动 / 总线驱动 → 硬件</strong>。</li>
+      <li>核心抽象：<code>i2c_adapter</code>（总线）、<code>i2c_algorithm</code>（传输方法）、<code>i2c_client</code>（从机设备）、<code>i2c_driver</code>（驱动）。</li>
+      <li>I2C 设备不可自动枚举，依赖 DTS/ACPI 静态声明或用户空间显式实例化。</li>
+      <li>总线驱动位于 <code>drivers/i2c/busses/</code>，客户端驱动按功能分布在各子系统目录下。</li>
+    </ul>
+  </div>
+
+  <div class="principle-box">
+    <h3>🔬 第一性原理</h3>
+    <p>Linux I2C 子系统分层的根本原因：<strong>硬件多样性 + 设备多样性 = 需要两个正交的抽象维度</strong>。适配器层隔离 SoC 差异（寄存器操作各不相同），客户端层隔离设备差异（传感器、EEPROM、GPIO 扩展器语义各不相同）。i2c_algorithm 是两层之间的接口契约，使得任意适配器都能驱动任意客户端。</p>
+  </div>
+</section>
+
+<!-- ==================== SECTION 3 ==================== -->
+<section class="section" id="sec-sysfs">
+  <div class="section-tag">第三章</div>
+  <h2 class="sec-title">/sys/bus/i2c 目录结构</h2>
+  <p class="sec-desc">Sysfs 是理解 Linux I2C 拓扑的主要入口</p>
+  <a href="https://docs.kernel.org/i2c/i2c-sysfs.html" class="source-link" target="_blank">
+    🔗 原文：Linux I2C Sysfs — The Linux Kernel documentation
+  </a>
+
+  <p>Linux Sysfs 文件系统通常挂载在 <code>/sys</code> 目录。I2C Sysfs 位于 <code>/sys/bus/i2c/devices</code>，可以直接 <code>cd</code> 进入。该目录下有一系列符号链接：</p>
+
+  <ul>
+    <li>以 <code>i2c-</code> 开头的链接是 <strong>I2C 总线</strong>，可以是物理或逻辑总线。</li>
+    <li>以数字开头、以数字结尾的链接是 <strong>I2C 设备</strong>，格式为 <code>${总线号}-${设备地址}</code>，其中总线号为十进制，地址为十六进制。</li>
+  </ul>
+
+  <p>以 Google Pixel 3 手机为例：</p>
+  <div class="pre-label">示例：/sys/bus/i2c/devices 目录内容（来源：docs.kernel.org/i2c/i2c-sysfs.html）</div>
+  <pre><code><span class="c-prompt">blueline:/sys/bus/i2c/devices $ </span><span class="c-cmd">ls</span>
+<span class="c-out">0-0008  0-0061  1-0028  3-0043  4-0036  4-0041  i2c-1  i2c-3
+0-000c  0-0066  2-0049  4-000b  4-0040  i2c-0   i2c-2  i2c-4</span></code></pre>
+
+  <p>其中 <code>i2c-2</code> 是编号为 2 的 I2C 总线，<code>2-0049</code> 是总线 2 地址 0x49 处绑定了内核驱动的 I2C 设备。</p>
+
+  <h3>完整 /sys/bus/i2c 目录结构</h3>
+
+  <div class="svg-wrap">
+    <svg viewBox="0 0 700 400" xmlns="http://www.w3.org/2000/svg" style="max-width:100%; width:660px;">
+      <!-- Root -->
+      <rect x="230" y="10" width="200" height="32" rx="6" fill="#1a2040" stroke="#4f8ef7" stroke-width="1.5"/>
+      <text x="330" y="31" text-anchor="middle" font-size="12" fill="#4f8ef7" font-weight="bold">/sys/bus/i2c/</text>
+
+      <!-- Three main branches -->
+      <line x1="330" y1="42" x2="330" y2="58" stroke="#2e3352" stroke-width="1.5"/>
+      <line x1="110" y1="58" x2="560" y2="58" stroke="#2e3352" stroke-width="1.5"/>
+      <line x1="110" y1="58" x2="110" y2="74" stroke="#2e3352" stroke-width="1.5"/>
+      <line x1="330" y1="58" x2="330" y2="74" stroke="#2e3352" stroke-width="1.5"/>
+      <line x1="560" y1="58" x2="560" y2="74" stroke="#2e3352" stroke-width="1.5"/>
+
+      <!-- devices/ -->
+      <rect x="30" y="74" width="165" height="30" rx="5" fill="#1a2040" stroke="#27ae8f" stroke-width="1.5"/>
+      <text x="112" y="93" text-anchor="middle" font-size="11" fill="#27ae8f" font-weight="bold">devices/</text>
+
+      <!-- drivers/ -->
+      <rect x="245" y="74" width="165" height="30" rx="5" fill="#1a2040" stroke="#7c5cbf" stroke-width="1.5"/>
+      <text x="327" y="93" text-anchor="middle" font-size="11" fill="#7c5cbf" font-weight="bold">drivers/</text>
+
+      <!-- uevent etc -->
+      <rect x="460" y="74" width="165" height="30" rx="5" fill="#1a2040" stroke="#64748b" stroke-width="1"/>
+      <text x="542" y="89" text-anchor="middle" font-size="10" fill="#64748b">uevent · subsystem</text>
+      <text x="542" y="101" text-anchor="middle" font-size="9" fill="#64748b">drivers_probe · drivers_autoprobe</text>
+
+      <!-- devices subtree -->
+      <line x1="112" y1="104" x2="112" y2="120" stroke="#2e3352" stroke-width="1.5"/>
+      <line x1="30" y1="120" x2="195" y2="120" stroke="#2e3352" stroke-width="1.5"/>
+      <line x1="30" y1="120" x2="30" y2="134" stroke="#2e3352" stroke-width="1.5"/>
+      <line x1="112" y1="120" x2="112" y2="134" stroke="#2e3352" stroke-width="1.5"/>
+      <line x1="195" y1="120" x2="195" y2="134" stroke="#2e3352" stroke-width="1.5"/>
+
+      <!-- i2c-N buses -->
+      <rect x="0" y="134" width="108" height="26" rx="4" fill="#0d1a30" stroke="#27ae8f" stroke-width="1"/>
+      <text x="54" y="151" text-anchor="middle" font-size="10" fill="#27ae8f">i2c-N (总线)</text>
+
+      <!-- X-YYYY devices -->
+      <rect x="64" y="134" width="108" height="26" rx="4" fill="#0d1a30" stroke="#f59e0b" stroke-width="1"/>
+      <text x="118" y="151" text-anchor="middle" font-size="10" fill="#f59e0b">N-XXXX (设备)</text>
+
+      <!-- new/delete_device -->
+      <rect x="148" y="134" width="102" height="26" rx="4" fill="#0d1a30" stroke="#64748b" stroke-width="1"/>
+      <text x="199" y="147" text-anchor="middle" font-size="9" fill="#64748b">new_device</text>
+      <text x="199" y="157" text-anchor="middle" font-size="9" fill="#64748b">delete_device</text>
+
+      <!-- i2c-N subtree -->
+      <line x1="54" y1="160" x2="54" y2="176" stroke="#2e3352" stroke-width="1"/>
+      <line x1="10" y1="176" x2="100" y2="176" stroke="#2e3352" stroke-width="1"/>
+      <line x1="10" y1="176" x2="10" y2="188" stroke="#2e3352" stroke-width="1"/>
+      <line x1="55" y1="176" x2="55" y2="188" stroke="#2e3352" stroke-width="1"/>
+      <line x1="100" y1="176" x2="100" y2="188" stroke="#2e3352" stroke-width="1"/>
+
+      <rect x="0" y="188" width="22" height="22" rx="3" fill="#0d1017" stroke="#2e3352" stroke-width="1"/>
+      <text x="11" y="203" text-anchor="middle" font-size="8" fill="#64748b">name</text>
+      <rect x="34" y="188" width="42" height="22" rx="3" fill="#0d1017" stroke="#2e3352" stroke-width="1"/>
+      <text x="55" y="203" text-anchor="middle" font-size="8" fill="#64748b">device →</text>
+      <rect x="88" y="188" width="36" height="22" rx="3" fill="#0d1017" stroke="#2e3352" stroke-width="1"/>
+      <text x="106" y="203" text-anchor="middle" font-size="8" fill="#64748b">i2c-dev</text>
+
+      <!-- N-XXXX device subtree -->
+      <line x1="118" y1="160" x2="118" y2="176" stroke="#2e3352" stroke-width="1"/>
+      <line x1="72" y1="176" x2="182" y2="176" stroke="#2e3352" stroke-width="1"/>
+      <line x1="72" y1="176" x2="72" y2="188" stroke="#2e3352" stroke-width="1"/>
+      <line x1="118" y1="176" x2="118" y2="188" stroke="#2e3352" stroke-width="1"/>
+      <line x1="168" y1="176" x2="168" y2="188" stroke="#2e3352" stroke-width="1"/>
+
+      <rect x="54" y="188" width="36" height="22" rx="3" fill="#0d1017" stroke="#f59e0b" stroke-width="1"/>
+      <text x="72" y="199" text-anchor="middle" font-size="8" fill="#f59e0b">name</text>
+      <text x="72" y="208" text-anchor="middle" font-size="7" fill="#64748b">芯片型号</text>
+      <rect x="101" y="188" width="40" height="22" rx="3" fill="#0d1017" stroke="#f59e0b" stroke-width="1"/>
+      <text x="121" y="199" text-anchor="middle" font-size="8" fill="#f59e0b">driver →</text>
+      <text x="121" y="208" text-anchor="middle" font-size="7" fill="#64748b">驱动路径</text>
+      <rect x="152" y="188" width="40" height="22" rx="3" fill="#0d1017" stroke="#f59e0b" stroke-width="1"/>
+      <text x="172" y="199" text-anchor="middle" font-size="8" fill="#f59e0b">modalias</text>
+      <text x="172" y="208" text-anchor="middle" font-size="7" fill="#64748b">模块别名</text>
+
+      <!-- drivers subtree -->
+      <line x1="327" y1="104" x2="327" y2="120" stroke="#2e3352" stroke-width="1.5"/>
+      <line x1="270" y1="120" x2="395" y2="120" stroke="#2e3352" stroke-width="1.5"/>
+      <line x1="270" y1="120" x2="270" y2="134" stroke="#2e3352" stroke-width="1.5"/>
+      <line x1="395" y1="120" x2="395" y2="134" stroke="#2e3352" stroke-width="1.5"/>
+
+      <rect x="220" y="134" width="112" height="26" rx="4" fill="#0d1a30" stroke="#7c5cbf" stroke-width="1"/>
+      <text x="276" y="151" text-anchor="middle" font-size="10" fill="#7c5cbf">i2c_adapter/</text>
+
+      <rect x="348" y="134" width="112" height="26" rx="4" fill="#0d1a30" stroke="#7c5cbf" stroke-width="1"/>
+      <text x="404" y="151" text-anchor="middle" font-size="10" fill="#7c5cbf">{driver_name}/</text>
+
+      <!-- /sys/class/i2c-dev -->
+      <rect x="220" y="260" width="260" height="54" rx="8" fill="rgba(39,174,143,0.05)" stroke="#27ae8f" stroke-width="1.5" stroke-dasharray="5,3"/>
+      <text x="350" y="280" text-anchor="middle" font-size="11" fill="#27ae8f" font-weight="bold">/sys/class/i2c-dev/</text>
+      <text x="350" y="296" text-anchor="middle" font-size="9" fill="#64748b">i2c-0/ · i2c-1/ · i2c-N/</text>
+      <text x="350" y="308" text-anchor="middle" font-size="9" fill="#64748b">dev(Major:Minor) · name · uevent</text>
+
+      <!-- /dev/i2c-N -->
+      <rect x="490" y="260" width="180" height="54" rx="8" fill="rgba(79,142,247,0.05)" stroke="#4f8ef7" stroke-width="1.5" stroke-dasharray="5,3"/>
+      <text x="580" y="280" text-anchor="middle" font-size="11" fill="#4f8ef7" font-weight="bold">/dev/i2c-N</text>
+      <text x="580" y="296" text-anchor="middle" font-size="9" fill="#64748b">字符设备 Major=89</text>
+      <text x="580" y="308" text-anchor="middle" font-size="9" fill="#64748b">i2c-dev 模块创建</text>
+
+      <line x1="350" y1="260" x2="350" y2="240" stroke="#27ae8f" stroke-width="1" stroke-dasharray="3,2"/>
+      <line x1="580" y1="260" x2="580" y2="240" stroke="#4f8ef7" stroke-width="1" stroke-dasharray="3,2"/>
+
+      <rect x="260" y="220" width="380" height="22" rx="4" fill="#0d1117" stroke="#2e3352" stroke-width="1"/>
+      <text x="450" y="235" text-anchor="middle" font-size="10" fill="#64748b">相关目录（由 i2c-dev 内核模块连接）</text>
+
+      <!-- Legend -->
+      <rect x="10" y="320" width="680" height="70" rx="8" fill="rgba(255,255,255,0.01)" stroke="#2e3352" stroke-width="1"/>
+      <text x="340" y="338" text-anchor="middle" font-size="10" fill="#64748b" font-weight="700">图例</text>
+      <rect x="30" y="350" width="12" height="10" rx="2" fill="none" stroke="#27ae8f" stroke-width="1.5"/>
+      <text x="48" y="360" font-size="9" fill="#94a3b8">I2C 总线/适配器</text>
+      <rect x="150" y="350" width="12" height="10" rx="2" fill="none" stroke="#f59e0b" stroke-width="1.5"/>
+      <text x="168" y="360" font-size="9" fill="#94a3b8">I2C 设备目录</text>
+      <rect x="270" y="350" width="12" height="10" rx="2" fill="none" stroke="#7c5cbf" stroke-width="1.5"/>
+      <text x="288" y="360" font-size="9" fill="#94a3b8">驱动目录</text>
+      <rect x="380" y="350" width="12" height="10" rx="2" fill="none" stroke="#4f8ef7" stroke-width="1.5" stroke-dasharray="3,2"/>
+      <text x="398" y="360" font-size="9" fill="#94a3b8">/dev 字符设备</text>
+      <rect x="510" y="350" width="12" height="10" rx="2" fill="none" stroke="#27ae8f" stroke-width="1.5" stroke-dasharray="3,2"/>
+      <text x="528" y="360" font-size="9" fill="#94a3b8">/sys/class 映射</text>
+    </svg>
+    <p class="svg-caption">图3：/sys/bus/i2c 完整目录结构关系图</p>
+  </div>
+
+  <h3>关键路径说明</h3>
+  <div class="tbl-wrap">
+    <table>
+      <tr><th>路径</th><th>含义</th></tr>
+      <tr><td><code>/sys/bus/i2c/devices/</code></td><td>所有 I2C 总线和设备的符号链接列表</td></tr>
+      <tr><td><code>/sys/bus/i2c/devices/i2c-N/</code></td><td>第 N 号逻辑 I2C 总线目录</td></tr>
+      <tr><td><code>/sys/bus/i2c/devices/N-XXXX/</code></td><td>总线 N 地址 0xXXXX 处的 I2C 设备目录</td></tr>
+      <tr><td><code>/sys/bus/i2c/devices/i2c-N/new_device</code></td><td>只写文件，用于从用户空间实例化 I2C 设备</td></tr>
+      <tr><td><code>/sys/bus/i2c/devices/i2c-N/delete_device</code></td><td>只写文件，用于从用户空间删除 I2C 设备</td></tr>
+      <tr><td><code>/sys/bus/i2c/drivers/</code></td><td>已注册的 I2C 驱动目录</td></tr>
+      <tr><td><code>/sys/class/i2c-dev/</code></td><td>字符设备（i2c-dev）接口，含 Major/Minor 号</td></tr>
+      <tr><td><code>/dev/i2c-N</code></td><td>用户空间访问接口，字符设备 Major=89</td></tr>
+    </table>
+  </div>
+
+  <h3>查看适配器信息</h3>
+  <div class="pre-label">通过 sysfs 查看 i2c-7 的信息</div>
+  <pre><code><span class="c-prompt">~$ </span><span class="c-cmd">cd /sys/bus/i2c/devices/i2c-7</span>
+<span class="c-prompt">/sys/bus/i2c/devices/i2c-7$ </span><span class="c-cmd">ls</span>
+<span class="c-out">7-0071         i2c-60         name           subsystem
+delete_device  i2c-73         new_device     uevent
+device         i2c-86         of_node
+i2c-203        i2c-dev        power</span>
+
+<span class="c-comment"># 读取总线名称</span>
+<span class="c-prompt">/sys/bus/i2c/devices/i2c-7$ </span><span class="c-cmd">cat name</span>
+<span class="c-out">npcm_i2c_7</span>
+
+<span class="c-comment"># 读取 device 符号链接，判断是否为物理总线</span>
+<span class="c-prompt">/sys/bus/i2c/devices/i2c-7$ </span><span class="c-cmd">readlink device</span>
+<span class="c-out">../../f0087000.i2c</span>
+<span class="c-comment"># 链接指向 .i2c 结尾的目录 → 物理 I2C 总线</span></code></pre>
+
+  <div class="summary-box">
+    <h3>📝 本章总结</h3>
+    <ul>
+      <li><code>/sys/bus/i2c/devices/</code> 是 Linux I2C Sysfs 的主入口，包含 I2C 总线（<code>i2c-N</code>）和设备（<code>N-XXXX</code>）的符号链接。</li>
+      <li><code>new_device</code> / <code>delete_device</code> 文件允许在用户空间动态实例化/删除 I2C 设备。</li>
+      <li>通过读取总线目录下的 <code>device</code> 符号链接可以判断是物理总线还是逻辑（MUX）总线。</li>
+      <li><code>/sys/class/i2c-dev/</code> 和 <code>/dev/i2c-N</code> 由 <code>i2c-dev</code> 模块维护，提供字符设备访问接口。</li>
+    </ul>
+  </div>
+</section>
+
+<!-- ==================== SECTION 4 ==================== -->
+<section class="section" id="sec-logical">
+  <div class="section-tag">第四章</div>
+  <h2 class="sec-title">逻辑 I2C 总线与 MUX 拓扑</h2>
+  <p class="sec-desc">理解物理总线、逻辑总线与 I2C MUX 的关系</p>
+  <a href="https://docs.kernel.org/i2c/i2c-sysfs.html" class="source-link" target="_blank">
+    🔗 原文：Linux I2C Sysfs — The Linux Kernel documentation
+  </a>
+
+  <p>I2C 拓扑可能很复杂，因为存在 I2C MUX（I2C 多路复用器）。Linux 内核将 MUX 通道抽象为逻辑 I2C 总线编号。</p>
+
+  <h3>术语定义</h3>
+  <div class="tbl-wrap">
+    <table>
+      <tr><th>术语</th><th>定义</th></tr>
+      <tr>
+        <td><strong>（物理）I2C 总线控制器</strong></td>
+        <td>Linux 运行的硬件系统可能有多个物理 I2C 总线控制器，控制器是硬件和物理的，系统在内存空间中定义了多个寄存器来操控控制器。Linux 内核在 <code>drivers/i2c/busses</code> 下有 I2C 总线驱动将内核 I2C API 转换为针对不同系统的寄存器操作。</td>
+      </tr>
+      <tr>
+        <td><strong>I2C 总线物理编号</strong></td>
+        <td>对于每个物理 I2C 总线控制器，系统厂商可能为每个控制器分配一个物理编号。例如寄存器地址最低的第一个 I2C 总线控制器可能被称为 I2C-0。</td>
+      </tr>
+      <tr>
+        <td><strong>逻辑 I2C 总线</strong></td>
+        <td>在 Linux I2C Sysfs 中看到的每个 I2C 总线号都是一个已分配编号的逻辑 I2C 总线，类似于软件代码通常基于虚拟内存地址而非物理内存地址编写。每个逻辑 I2C 总线可能是物理 I2C 总线控制器的抽象，或是 I2C MUX 背后某个通道的抽象。</td>
+      </tr>
+      <tr>
+        <td><strong>物理 I2C 总线</strong></td>
+        <td>如果逻辑 I2C 总线是物理 I2C 总线控制器的直接抽象，则称为物理 I2C 总线。</td>
+      </tr>
+    </table>
+  </div>
+
+  <div class="box box-warn">
+    <div class="box-label">⚠️ 注意事项（Caveat）</div>
+    <p>在设备树（DTS）的 <code>aliases</code> 段中，可以将 I2C 总线物理编号重命名为不同的逻辑 I2C 总线编号。最佳实践是：<strong>保持物理 I2C 总线编号与对应逻辑 I2C 总线编号相同</strong>，而不是重命名，以避免混淆。参见 <code>arch/arm/boot/dts/nuvoton-npcm730-gsj.dts</code>。</p>
+  </div>
+
+  <h3>MUX 拓扑示例</h3>
+  <p>以下是文档中使用的复杂 I2C 拓扑示例（来源：docs.kernel.org/i2c/i2c-sysfs.html）：</p>
+
+  <pre><code><span class="c-out">i2c-7 (物理 I2C 总线控制器 7)
+└── 7-0071 (4 通道 I2C MUX，地址 0x71)
+    ├── i2c-60 (channel-0)
+    ├── i2c-73 (channel-1)
+    │   ├── 73-0040 (I2C 传感器，带 hwmon 目录)
+    │   ├── 73-0070 (I2C MUX 0x70，存在于 DTS 但 probe 失败)
+    │   └── 73-0072 (8 通道 I2C MUX，地址 0x72)
+    │       ├── i2c-78 (channel-0)
+    │       ├── ... (channel-1…6, i2c-79…i2c-84)
+    │       └── i2c-85 (channel-7)
+    ├── i2c-86 (channel-2)
+    └── i2c-203 (channel-3)</span></code></pre>
+
+  <div class="svg-wrap">
+    <svg viewBox="0 0 700 360" xmlns="http://www.w3.org/2000/svg" style="max-width:100%; width:660px;">
+      <!-- Physical bus i2c-7 -->
+      <rect x="260" y="10" width="140" height="34" rx="7" fill="#1a2040" stroke="#4f8ef7" stroke-width="2"/>
+      <text x="330" y="24" text-anchor="middle" font-size="11" fill="#4f8ef7" font-weight="700">i2c-7</text>
+      <text x="330" y="38" text-anchor="middle" font-size="9" fill="#94a3b8">物理总线控制器 7</text>
+
+      <!-- line to MUX -->
+      <line x1="330" y1="44" x2="330" y2="66" stroke="#4f8ef7" stroke-width="1.5"/>
+
+      <!-- MUX 0x71 -->
+      <rect x="230" y="66" width="200" height="34" rx="7" fill="#1a2040" stroke="#f59e0b" stroke-width="2"/>
+      <text x="330" y="80" text-anchor="middle" font-size="11" fill="#f59e0b" font-weight="700">7-0071</text>
+      <text x="330" y="93" text-anchor="middle" font-size="9" fill="#94a3b8">4通道 MUX @ 0x71</text>
+
+      <!-- Lines from MUX to 4 channels -->
+      <line x1="330" y1="100" x2="330" y2="114" stroke="#f59e0b" stroke-width="1"/>
+      <line x1="70" y1="114" x2="580" y2="114" stroke="#f59e0b" stroke-width="1"/>
+      <line x1="70" y1="114" x2="70" y2="128" stroke="#f59e0b" stroke-width="1"/>
+      <line x1="230" y1="114" x2="230" y2="128" stroke="#f59e0b" stroke-width="1"/>
+      <line x1="430" y1="114" x2="430" y2="128" stroke="#f59e0b" stroke-width="1"/>
+      <line x1="580" y1="114" x2="580" y2="128" stroke="#f59e0b" stroke-width="1"/>
+
+      <!-- ch0: i2c-60 -->
+      <rect x="20" y="128" width="100" height="28" rx="5" fill="#0d1a30" stroke="#27ae8f" stroke-width="1.5"/>
+      <text x="70" y="142" text-anchor="middle" font-size="10" fill="#27ae8f" font-weight="600">i2c-60</text>
+      <text x="70" y="152" text-anchor="middle" font-size="8" fill="#64748b">channel-0</text>
+
+      <!-- ch1: i2c-73 -->
+      <rect x="165" y="128" width="130" height="28" rx="5" fill="#0d1a30" stroke="#27ae8f" stroke-width="2"/>
+      <text x="230" y="142" text-anchor="middle" font-size="10" fill="#27ae8f" font-weight="700">i2c-73</text>
+      <text x="230" y="152" text-anchor="middle" font-size="8" fill="#64748b">channel-1</text>
+
+      <!-- ch2: i2c-86 -->
+      <rect x="375" y="128" width="100" height="28" rx="5" fill="#0d1a30" stroke="#27ae8f" stroke-width="1.5"/>
+      <text x="425" y="142" text-anchor="middle" font-size="10" fill="#27ae8f" font-weight="600">i2c-86</text>
+      <text x="425" y="152" text-anchor="middle" font-size="8" fill="#64748b">channel-2</text>
+
+      <!-- ch3: i2c-203 -->
+      <rect x="530" y="128" width="100" height="28" rx="5" fill="#0d1a30" stroke="#27ae8f" stroke-width="1.5"/>
+      <text x="580" y="142" text-anchor="middle" font-size="10" fill="#27ae8f" font-weight="600">i2c-203</text>
+      <text x="580" y="152" text-anchor="middle" font-size="8" fill="#64748b">channel-3</text>
+
+      <!-- i2c-73 subtree -->
+      <line x1="230" y1="156" x2="230" y2="172" stroke="#27ae8f" stroke-width="1"/>
+      <line x1="130" y1="172" x2="340" y2="172" stroke="#27ae8f" stroke-width="1"/>
+      <line x1="130" y1="172" x2="130" y2="186" stroke="#27ae8f" stroke-width="1"/>
+      <line x1="230" y1="172" x2="230" y2="186" stroke="#27ae8f" stroke-width="1"/>
+      <line x1="340" y1="172" x2="340" y2="186" stroke="#27ae8f" stroke-width="1"/>
+
+      <!-- 73-0040 sensor -->
+      <rect x="80" y="186" width="110" height="28" rx="5" fill="#0d1017" stroke="#7c5cbf" stroke-width="1.5"/>
+      <text x="135" y="199" text-anchor="middle" font-size="10" fill="#7c5cbf">73-0040</text>
+      <text x="135" y="210" text-anchor="middle" font-size="8" fill="#64748b">传感器(ina230)</text>
+
+      <!-- 73-0070 failed -->
+      <rect x="200" y="186" width="110" height="28" rx="5" fill="#0d1017" stroke="#ef4444" stroke-width="1.5" stroke-dasharray="3,2"/>
+      <text x="255" y="199" text-anchor="middle" font-size="10" fill="#ef4444">73-0070</text>
+      <text x="255" y="210" text-anchor="middle" font-size="8" fill="#64748b">probe 失败</text>
+
+      <!-- 73-0072 MUX2 -->
+      <rect x="285" y="186" width="120" height="28" rx="5" fill="#0d1017" stroke="#f59e0b" stroke-width="1.5"/>
+      <text x="345" y="199" text-anchor="middle" font-size="10" fill="#f59e0b">73-0072</text>
+      <text x="345" y="210" text-anchor="middle" font-size="8" fill="#94a3b8">8通道 MUX @ 0x72</text>
+
+      <!-- 73-0072 subtree -->
+      <line x1="345" y1="214" x2="345" y2="228" stroke="#f59e0b" stroke-width="1"/>
+      <line x1="295" y1="228" x2="420" y2="228" stroke="#f59e0b" stroke-width="1"/>
+      <line x1="295" y1="228" x2="295" y2="240" stroke="#f59e0b" stroke-width="1"/>
+      <line x1="345" y1="228" x2="345" y2="240" stroke="#f59e0b" stroke-width="1"/>
+      <line x1="420" y1="228" x2="420" y2="240" stroke="#f59e0b" stroke-width="1"/>
+
+      <rect x="258" y="240" width="76" height="24" rx="4" fill="#0d1017" stroke="#27ae8f" stroke-width="1"/>
+      <text x="296" y="253" text-anchor="middle" font-size="9" fill="#27ae8f">i2c-78</text>
+      <text x="296" y="261" text-anchor="middle" font-size="7" fill="#64748b">ch-0</text>
+
+      <rect x="308" y="240" width="76" height="24" rx="4" fill="#0d1017" stroke="#64748b" stroke-width="1"/>
+      <text x="346" y="253" text-anchor="middle" font-size="9" fill="#64748b">i2c-79…84</text>
+      <text x="346" y="261" text-anchor="middle" font-size="7" fill="#64748b">ch1-6</text>
+
+      <rect x="390" y="240" width="76" height="24" rx="4" fill="#0d1017" stroke="#27ae8f" stroke-width="1"/>
+      <text x="428" y="253" text-anchor="middle" font-size="9" fill="#27ae8f">i2c-85</text>
+      <text x="428" y="261" text-anchor="middle" font-size="7" fill="#64748b">ch-7</text>
+
+      <!-- Labels -->
+      <text x="20" y="305" font-size="9" fill="#4f8ef7">■ 物理总线</text>
+      <text x="110" y="305" font-size="9" fill="#f59e0b">■ I2C MUX</text>
+      <text x="195" y="305" font-size="9" fill="#27ae8f">■ 逻辑总线（MUX通道）</text>
+      <text x="360" y="305" font-size="9" fill="#7c5cbf">■ 从机设备（正常）</text>
+      <text x="490" y="305" font-size="9" fill="#ef4444">■ 从机设备（失败）</text>
+
+      <!-- Annotation arrow for channel-3 of 0x72 = i2c-81 -->
+      <rect x="20" y="320" width="660" height="32" rx="6" fill="rgba(39,174,143,0.05)" stroke="#27ae8f" stroke-width="1"/>
+      <text x="350" y="334" text-anchor="middle" font-size="9" fill="#27ae8f">
+        查找 0x72 MUX 的 channel-3：readlink channel-3 → ../i2c-81
+      </text>
+      <text x="350" y="346" text-anchor="middle" font-size="9" fill="#64748b">
+        逻辑总线号 i2c-81 即可用于 i2c-tools 命令和内核 I2C API
+      </text>
+    </svg>
+    <p class="svg-caption">图4：I2C MUX 拓扑结构 — 物理总线通过 MUX 扇出为多个逻辑总线（来源：docs.kernel.org/i2c/i2c-sysfs.html）</p>
+  </div>
+
+  <h3>区分物理与逻辑 I2C 总线</h3>
+  <p>区分的简单方法是读取 I2C 总线目录下的 <code>device</code> 符号链接：</p>
+  <div class="pre-label">来源：docs.kernel.org/i2c/i2c-sysfs.html</div>
+  <pre><code><span class="c-comment"># 物理总线示例：device 链接指向以 .i2c 结尾的目录</span>
+<span class="c-prompt">$ </span><span class="c-cmd">readlink /sys/bus/i2c/devices/i2c-7/device</span>
+<span class="c-out">../../f0087000.i2c</span>
+<span class="c-prompt">$ </span><span class="c-cmd">ls /sys/bus/i2c/devices/i2c-7/mux_device</span>
+<span class="c-out">ls: /sys/bus/i2c/devices/i2c-7/mux_device: No such file or directory</span>
+<span class="c-comment"># 没有 mux_device → 物理总线</span>
+
+<span class="c-comment"># 逻辑总线示例：device 链接指向另一 I2C 总线</span>
+<span class="c-prompt">$ </span><span class="c-cmd">readlink /sys/bus/i2c/devices/i2c-73/device</span>
+<span class="c-out">../../i2c-7</span>
+<span class="c-prompt">$ </span><span class="c-cmd">readlink /sys/bus/i2c/devices/i2c-73/mux_device</span>
+<span class="c-out">../7-0071</span>
+<span class="c-comment"># mux_device 存在 → 逻辑总线（由 7-0071 MUX 扇出）</span></code></pre>
+
+  <h3>查找逻辑 I2C 总线号的完整步骤</h3>
+  <div class="pre-label">来源：docs.kernel.org/i2c/i2c-sysfs.html — 查找 0x72 MUX channel-3 的逻辑总线号</div>
+  <pre><code><span class="c-comment"># 步骤1：进入物理总线目录</span>
+<span class="c-prompt">~$ </span><span class="c-cmd">cd /sys/bus/i2c/devices/i2c-7</span>
+<span class="c-prompt">/sys/bus/i2c/devices/i2c-7$ </span><span class="c-cmd">ls</span>
+<span class="c-out">7-0071  i2c-60  i2c-73  i2c-86  i2c-203  name  device  ...</span>
+
+<span class="c-comment"># 步骤2：进入 MUX 设备目录</span>
+<span class="c-prompt">/sys/bus/i2c/devices/i2c-7$ </span><span class="c-cmd">cd 7-0071/</span>
+<span class="c-prompt">/sys/bus/i2c/devices/i2c-7/7-0071$ </span><span class="c-cmd">readlink channel-1</span>
+<span class="c-out">../i2c-73</span>
+<span class="c-comment"># channel-1 对应逻辑总线 i2c-73</span>
+
+<span class="c-comment"># 步骤3：进入 i2c-73，找到第二级 MUX</span>
+<span class="c-prompt">$ </span><span class="c-cmd">cd /sys/bus/i2c/devices/i2c-73</span>
+<span class="c-prompt">/sys/bus/i2c/devices/i2c-73$ </span><span class="c-cmd">cd 73-0072</span>
+<span class="c-prompt">/sys/bus/i2c/devices/i2c-73/73-0072$ </span><span class="c-cmd">readlink channel-3</span>
+<span class="c-out">../i2c-81</span>
+<span class="c-comment"># 找到！0x72 MUX 的 channel-3 是逻辑总线 i2c-81</span></code></pre>
+
+  <h3>固定逻辑总线号（Pinned Logical I2C Bus Number）</h3>
+  <p>若未在 DTS 中指定，当 I2C MUX 驱动应用且 MUX 设备成功 probe 后，内核将根据当前最大逻辑总线号递增分配 MUX 通道的逻辑总线号。例如，若系统的最高逻辑总线号为 <code>i2c-15</code>，且成功应用 4 通道 MUX，则 MUX channel 0 为 <code>i2c-16</code>，以此类推直到 <code>i2c-19</code> 为 channel 3。</p>
+
+  <p>内核软件开发者可以在 DTS 中将扇出 MUX 通道固定到静态逻辑 I2C 总线号。参见 <code>arch/arm/boot/dts/aspeed-bmc-facebook-wedge400.dts</code>。</p>
+
+  <div class="box box-tip">
+    <div class="box-label">💡 提示</div>
+    <p>可以设计一个易于人工记忆或按算术规律计算的逻辑 I2C 总线号方案。例如，将总线 3 上 MUX 的扇出通道固定为从 30 开始，则 30 为总线 3 上 MUX channel 0 的逻辑总线号，37 为 channel 7 的逻辑总线号。</p>
+  </div>
+
+  <div class="summary-box">
+    <h3>📝 本章总结</h3>
+    <ul>
+      <li>Linux 内核将 I2C MUX 通道抽象为<strong>逻辑 I2C 总线</strong>，每次访问逻辑总线时，内核自动切换 MUX 到对应通道。</li>
+      <li>通过读取总线目录下 <code>device</code> 链接（指向 <code>.i2c</code> → 物理总线，指向 <code>i2c-X</code> → 逻辑总线）和 <code>mux_device</code> 链接来区分。</li>
+      <li>逻辑总线号默认动态分配（按当前最大号递增），也可通过 DTS <code>aliases</code> 固定。</li>
+      <li>查找 MUX 通道对应的逻辑总线号：进入 MUX 设备目录 → 读取 <code>channel-N</code> 符号链接。</li>
+    </ul>
+  </div>
+
+  <div class="principle-box">
+    <h3>🔬 第一性原理</h3>
+    <p>MUX 逻辑总线的本质是<strong>透明代理</strong>：对上层（用户空间、驱动）完全隐藏 MUX 的存在，访问逻辑总线 81 和访问物理总线 7 在接口上完全一致，内核在传输前自动完成 MUX 通道切换。这正是操作系统抽象层的价值所在——消灭硬件差异，提供统一接口。</p>
+  </div>
+</section>
+
+<!-- ==================== SECTION 5 ==================== -->
+<section class="section" id="sec-devices">
+  <div class="section-tag">第五章</div>
+  <h2 class="sec-title">I2C 设备目录详解</h2>
+  <p class="sec-desc">深入了解每个 I2C 设备目录的内容</p>
+  <a href="https://docs.kernel.org/i2c/i2c-sysfs.html" class="source-link" target="_blank">
+    🔗 原文：Linux I2C Sysfs — The Linux Kernel documentation（I2C Devices 章节）
+  </a>
+
+  <p>每个 I2C 设备目录名称格式为 <code>${bus}-${addr}</code>，<code>${bus}</code> 是十进制逻辑总线号，<code>${addr}</code> 是十六进制 I2C 地址。</p>
+
+  <h3>设备目录基本文件</h3>
+  <div class="tbl-wrap">
+    <table>
+      <tr><th>文件/目录</th><th>类型</th><th>说明</th></tr>
+      <tr><td><code>name</code></td><td>普通文件</td><td>设备名称（芯片型号），内核驱动 probe 时使用的名称</td></tr>
+      <tr><td><code>driver</code></td><td>符号链接</td><td>指向 probe 该设备的内核驱动；若不存在则表示 probe 失败</td></tr>
+      <tr><td><code>modalias</code></td><td>普通文件</td><td>模块别名，用于 udev 自动加载驱动</td></tr>
+      <tr><td><code>of_node</code></td><td>符号链接</td><td>指向设备树（DTS）节点</td></tr>
+      <tr><td><code>power/</code></td><td>目录</td><td>电源管理相关文件</td></tr>
+      <tr><td><code>subsystem</code></td><td>符号链接</td><td>指向 <code>/sys/bus/i2c</code></td></tr>
+      <tr><td><code>uevent</code></td><td>普通文件</td><td>udev 事件信息</td></tr>
+    </table>
+  </div>
+
+  <h3>读取设备名称和驱动信息</h3>
+  <div class="pre-label">来源：docs.kernel.org/i2c/i2c-sysfs.html</div>
+  <pre><code><span class="c-prompt">/sys/bus/i2c/devices/i2c-73$ </span><span class="c-cmd">cat 73-0040/name</span>
+<span class="c-out">ina230</span>
+
+<span class="c-prompt">/sys/bus/i2c/devices/i2c-73$ </span><span class="c-cmd">cat 73-0070/name</span>
+<span class="c-out">pca9546</span>
+
+<span class="c-prompt">/sys/bus/i2c/devices/i2c-73$ </span><span class="c-cmd">cat 73-0072/name</span>
+<span class="c-out">pca9547</span>
+
+<span class="c-comment"># 查看驱动链接</span>
+<span class="c-prompt">/sys/bus/i2c/devices/i2c-73$ </span><span class="c-cmd">readlink -f 73-0040/driver</span>
+<span class="c-out">/sys/bus/i2c/drivers/ina2xx</span>
+
+<span class="c-prompt">/sys/bus/i2c/devices/i2c-73$ </span><span class="c-cmd">readlink -f 73-0072/driver</span>
+<span class="c-out">/sys/bus/i2c/drivers/pca954x</span></code></pre>
+
+  <h3>判断 probe 失败</h3>
+  <p>如果 <code>driver</code> 链接不存在，可能意味着该内核驱动 probe 失败。可通过 <code>dmesg</code> 查找错误信息：</p>
+  <div class="pre-label">来源：docs.kernel.org/i2c/i2c-sysfs.html</div>
+  <pre><code><span class="c-prompt">/sys/bus/i2c/devices/i2c-73$ </span><span class="c-cmd">ls 73-0070/driver</span>
+<span class="c-out">ls: 73-0070/driver: No such file or directory</span>
+
+<span class="c-prompt">/sys/bus/i2c/devices/i2c-73$ </span><span class="c-cmd">dmesg | grep 73-0070</span>
+<span class="c-out">pca954x 73-0070: probe failed
+pca954x 73-0070: probe failed</span></code></pre>
+
+  <h3>I2C MUX 设备</h3>
+  <p>I2C MUX 设备目录内包含 <code>channel-*</code> 符号链接，指向其逻辑 I2C 总线目录：</p>
+  <div class="pre-label">来源：docs.kernel.org/i2c/i2c-sysfs.html</div>
+  <pre><code><span class="c-prompt">/sys/bus/i2c/devices/i2c-73$ </span><span class="c-cmd">ls -l 73-0072/channel-*</span>
+<span class="c-out">lrwxrwxrwx ... 73-0072/channel-0 -> ../i2c-78
+lrwxrwxrwx ... 73-0072/channel-1 -> ../i2c-79
+lrwxrwxrwx ... 73-0072/channel-2 -> ../i2c-80
+lrwxrwxrwx ... 73-0072/channel-3 -> ../i2c-81
+lrwxrwxrwx ... 73-0072/channel-4 -> ../i2c-82
+lrwxrwxrwx ... 73-0072/channel-5 -> ../i2c-83
+lrwxrwxrwx ... 73-0072/channel-6 -> ../i2c-84
+lrwxrwxrwx ... 73-0072/channel-7 -> ../i2c-85</span></code></pre>
+
+  <h3>I2C 传感器设备 / Hwmon</h3>
+  <p>I2C 传感器设备也很常见。如果它们被内核 hwmon（硬件监控）驱动成功 probe，则在 I2C 设备目录内会看到 <code>hwmon</code> 目录：</p>
+  <div class="pre-label">来源：docs.kernel.org/i2c/i2c-sysfs.html</div>
+  <pre><code><span class="c-prompt">/sys/bus/i2c/devices/i2c-73/73-0040/hwmon/hwmon17$ </span><span class="c-cmd">ls</span>
+<span class="c-out">curr1_input        in0_lcrit_alarm    name               subsystem
+device             in1_crit           power              uevent
+in0_crit           in1_crit_alarm     power1_crit        update_interval
+in0_crit_alarm     in1_input          power1_crit_alarm
+in0_input          in1_lcrit          power1_input
+in0_lcrit          in1_lcrit_alarm    shunt_resistor</span></code></pre>
+
+  <div class="box box-info">
+    <div class="box-label">📖 更多参考</div>
+    <p>关于 Hwmon Sysfs 的更多信息，请参阅内核文档：<strong>Naming and data format standards for sysfs files</strong>（<code>Documentation/hwmon/sysfs-interface.rst</code>）</p>
+  </div>
+
+  <div class="summary-box">
+    <h3>📝 本章总结</h3>
+    <ul>
+      <li>I2C 设备目录以 <code>${bus}-${addr}</code> 命名，<code>name</code> 文件记录芯片型号，<code>driver</code> 链接记录所用驱动。</li>
+      <li><code>driver</code> 链接缺失 → probe 失败，结合 <code>dmesg</code> 可定位错误原因。</li>
+      <li>MUX 设备额外包含 <code>channel-*</code> 符号链接指向各逻辑子总线。</li>
+      <li>传感器设备若被 hwmon 驱动绑定，则包含 <code>hwmon/</code> 子目录，其中的 sysfs 文件遵循标准命名约定（<code>in0_input</code>、<code>curr1_input</code> 等）。</li>
+    </ul>
+  </div>
+</section>
+
+<!-- ==================== SECTION 6 ==================== -->
+<section class="section" id="sec-devinterface">
+  <div class="section-tag">第六章</div>
+  <h2 class="sec-title">/dev/i2c-N 用户空间接口</h2>
+  <p class="sec-desc">通过字符设备直接访问 I2C 适配器</p>
+  <a href="https://docs.kernel.org/i2c/dev-interface.html" class="source-link" target="_blank">
+    🔗 原文：Implementing I2C device drivers in userspace — The Linux Kernel documentation
+  </a>
+
+  <p>通常，I2C 设备由内核驱动控制。但也可以通过 <code>/dev</code> 接口从用户空间访问适配器上的所有设备。需要加载 <code>i2c-dev</code> 模块。</p>
+
+  <h3>设备文件规范</h3>
+  <ul>
+    <li>每个已注册的 I2C 适配器从 0 开始分配编号。</li>
+    <li>I2C 设备文件是<strong>字符设备文件</strong>，主设备号为 <code>89</code>，次设备号对应总线编号。</li>
+    <li>文件命名为 <code>i2c-%d</code>（<code>i2c-0</code>、<code>i2c-1</code>……<code>i2c-10</code>……）。</li>
+    <li>所有 256 个次设备号都为 I2C 保留。</li>
+    <li>可检查 <code>/sys/class/i2c-dev/</code> 来查看编号与适配器的对应关系，或运行 <code>i2cdetect -l</code>。</li>
+  </ul>
+
+  <div class="box box-warn">
+    <div class="box-label">⚠️ 适配器编号注意</div>
+    <p>适配器编号是动态分配的，不能做过多假设，甚至可能在两次启动之间发生变化。应通过 <code>/sys/class/i2c-dev/</code> 或 <code>i2cdetect -l</code> 来确定实际编号。</p>
+  </div>
+
+  <h3>C 语言访问示例</h3>
+  <div class="pre-label">来源：docs.kernel.org/i2c/dev-interface.html</div>
+  <pre><code><span class="c-kw">#include</span> <span class="c-string">&lt;linux/i2c-dev.h&gt;</span>
+<span class="c-kw">#include</span> <span class="c-string">&lt;i2c/smbus.h&gt;</span>
+
+<span class="c-kw">int</span> file;
+<span class="c-kw">int</span> adapter_nr = <span class="c-num">2</span>; <span class="c-comment">/* 通常动态确定 */</span>
+<span class="c-kw">char</span> filename[<span class="c-num">20</span>];
+
+<span class="c-comment">/* 步骤1：打开设备文件 */</span>
+snprintf(filename, <span class="c-num">19</span>, <span class="c-string">"/dev/i2c-%d"</span>, adapter_nr);
+file = open(filename, O_RDWR);
+<span class="c-kw">if</span> (file &lt; <span class="c-num">0</span>) { <span class="c-comment">/* ERROR HANDLING */</span> exit(<span class="c-num">1</span>); }
+
+<span class="c-comment">/* 步骤2：指定从机地址 */</span>
+<span class="c-kw">int</span> addr = <span class="c-num">0x40</span>; <span class="c-comment">/* I2C 从机地址 */</span>
+<span class="c-kw">if</span> (ioctl(file, I2C_SLAVE, addr) &lt; <span class="c-num">0</span>) { exit(<span class="c-num">1</span>); }
+
+<span class="c-comment">/* 步骤3a：使用 SMBus 命令（推荐）*/</span>
+__u8 reg = <span class="c-num">0x10</span>;
+__s32 res = i2c_smbus_read_word_data(file, reg);
+<span class="c-kw">if</span> (res &lt; <span class="c-num">0</span>) { <span class="c-comment">/* 错误处理 */</span> }
+
+<span class="c-comment">/* 步骤3b：使用原始 I2C 写（等效于 SMBus write_word_data）*/</span>
+<span class="c-kw">char</span> buf[<span class="c-num">3</span>];
+buf[<span class="c-num">0</span>] = reg;   buf[<span class="c-num">1</span>] = <span class="c-num">0x43</span>;  buf[<span class="c-num">2</span>] = <span class="c-num">0x65</span>;
+<span class="c-kw">if</span> (write(file, buf, <span class="c-num">3</span>) != <span class="c-num">3</span>) { <span class="c-comment">/* 错误处理 */</span> }</code></pre>
+
+  <h3>支持的 ioctl 命令</h3>
+  <div class="tbl-wrap">
+    <table>
+      <tr><th>ioctl 命令</th><th>说明</th></tr>
+      <tr>
+        <td><code>I2C_SLAVE</code></td>
+        <td>设置从机地址；若地址已被其他驱动使用则失败</td>
+      </tr>
+      <tr>
+        <td><code>I2C_SLAVE_FORCE</code></td>
+        <td>强制设置从机地址（即使已被使用），危险！</td>
+      </tr>
+      <tr>
+        <td><code>I2C_TENBIT</code></td>
+        <td>启用/禁用 10 位地址模式（需要 I2C_FUNC_10BIT_ADDR）</td>
+      </tr>
+      <tr>
+        <td><code>I2C_PEC</code></td>
+        <td>启用/禁用 SMBus 数据包错误校验（PEC）</td>
+      </tr>
+      <tr>
+        <td><code>I2C_FUNCS</code></td>
+        <td>查询适配器支持的功能（I2C_FUNC_* 标志）</td>
+      </tr>
+      <tr>
+        <td><code>I2C_RDWR</code></td>
+        <td>执行联合读/写事务（无中间 STOP），仅当适配器支持 I2C_FUNC_I2C 时有效</td>
+      </tr>
+      <tr>
+        <td><code>I2C_SMBUS</code></td>
+        <td>执行 SMBus 事务</td>
+      </tr>
+    </table>
+  </div>
+
+  <div class="box box-info">
+    <div class="box-label">📖 i2c-dev 模块说明</div>
+    <p>i2c-dev 驱动负责校验从用户空间传入的所有参数的有效性。在此之后，通过 i2c-dev 从用户空间发起的调用与内核 I2C 芯片驱动直接发起的调用没有区别。这意味着 I2C 总线驱动无需实现任何特殊逻辑来支持用户空间访问。可以将 i2c-dev 视为一个可以从用户空间编程的通用 I2C 芯片驱动。</p>
+  </div>
+
+  <div class="summary-box">
+    <h3>📝 本章总结</h3>
+    <ul>
+      <li><code>/dev/i2c-N</code> 是字符设备（主设备号 89），由 <code>i2c-dev</code> 内核模块提供，允许用户空间程序直接访问 I2C 适配器。</li>
+      <li>访问流程：<code>open("/dev/i2c-N") → ioctl(I2C_SLAVE, addr) → read()/write() 或 SMBus 函数</code>。</li>
+      <li>SMBus 命令优于原始 I2C 读写，条件允许时应优先使用。</li>
+      <li>i2c-dev 模块完成参数验证，对总线驱动完全透明，无需特殊适配。</li>
+    </ul>
+  </div>
+</section>
+
+<!-- ==================== SECTION 7 ==================== -->
+<section class="section" id="sec-tools">
+  <div class="section-tag">第七章</div>
+  <h2 class="sec-title">i2c-tools 调试工具套件</h2>
+  <p class="sec-desc">Linux 下 I2C 调试的核心工具集合</p>
+  <a href="https://i2c.wiki.kernel.org/index.php/I2C_Tools" class="source-link" target="_blank">
+    🔗 原文：I2C Tools for Linux — Linux i2c Wiki (kernel.org)
+  </a>
+
+  <p>i2c-tools 包包含一组异构的 Linux I2C 工具：总线探测工具、芯片寄存器转储工具、寄存器级 SMBus 访问助手、EEPROM 解码脚本，以及用于 SMBus 访问的 Python 模块。支持所有包含 I2C 内核支持的 Linux 版本。</p>
+
+  <div class="box box-info">
+    <div class="box-label">📦 安装方式</div>
+    <p>代码仓库：<code>git clone git://git.kernel.org/pub/scm/utils/i2c-tools/i2c-tools.git</code><br>
+    发布包：https://www.kernel.org/pub/software/utils/i2c-tools/<br>
+    Debian/Ubuntu：<code>apt install i2c-tools</code></p>
+  </div>
+
+  <div class="tbl-wrap">
+    <table>
+      <tr><th>工具</th><th>功能简述</th><th>危险等级</th></tr>
+      <tr>
+        <td><code>i2cdetect</code></td>
+        <td>探测 I2C 总线上的设备，列出所有总线</td>
+        <td><span class="badge badge-green">低</span></td>
+      </tr>
+      <tr>
+        <td><code>i2cdump</code></td>
+        <td>转储 I2C 设备的寄存器内容</td>
+        <td><span class="badge badge-yellow">中</span></td>
+      </tr>
+      <tr>
+        <td><code>i2cget</code></td>
+        <td>读取 I2C/SMBus 芯片特定寄存器的值</td>
+        <td><span class="badge badge-yellow">中</span></td>
+      </tr>
+      <tr>
+        <td><code>i2cset</code></td>
+        <td>向 I2C/SMBus 芯片寄存器写入值</td>
+        <td><span class="badge badge-blue">高</span></td>
+      </tr>
+      <tr>
+        <td><code>i2ctransfer</code></td>
+        <td>在一次传输中发送多条用户自定义 I2C 消息</td>
+        <td><span class="badge badge-blue">高</span></td>
+      </tr>
+    </table>
+  </div>
+</section>
+
+<!-- i2cdetect -->
+<section class="section" id="sec-i2cdetect">
+  <div class="section-tag">工具详解</div>
+  <h3 style="font-size:1.3rem; color:var(--accent); margin-bottom:8px;">i2cdetect — 检测 I2C 芯片</h3>
+  <a href="https://manpages.debian.org/unstable/i2c-tools/i2cdetect.8.en.html" class="source-link" target="_blank">
+    🔗 i2cdetect 手册页
+  </a>
+
+  <p><code>i2cdetect</code> 是扫描 I2C 总线以查找连接设备的程序。输出是一个列出指定总线上检测到的设备的表格。</p>
+
+  <h4>常用用法</h4>
+  <pre><code><span class="c-comment"># 列出系统所有 I2C 总线（包括 MUX 逻辑总线）</span>
+<span class="c-prompt">$ </span><span class="c-cmd">i2cdetect -l</span>
+<span class="c-out">i2c-7   i2c    npcm_i2c_7              I2C adapter
+i2c-73  i2c    i2c-7-mux (chan_id 1)  I2C adapter
+i2c-78  i2c    i2c-73-mux (chan_id 0) I2C adapter
+i2c-81  i2c    i2c-73-mux (chan_id 3) I2C adapter</span>
+
+<span class="c-comment"># 扫描 i2c-1 总线上的设备（-y 跳过交互确认）</span>
+<span class="c-prompt">$ </span><span class="c-cmd">i2cdetect -y 1</span>
+<span class="c-out">     0  1  2  3  4  5  6  7  8  9  a  b  c  d  e  f
+00:          -- -- -- -- -- -- -- -- -- -- -- -- --
+10: -- -- -- -- -- -- -- -- -- -- -- -- -- -- -- --
+20: -- -- -- -- -- -- -- -- -- -- -- -- -- -- -- --
+30: -- -- -- -- -- -- -- -- -- -- -- -- -- -- -- --
+40: -- -- -- -- -- -- -- -- -- -- -- -- -- -- -- --
+50: -- -- -- -- -- -- -- -- -- -- -- -- -- -- -- --
+60: -- -- -- -- -- -- -- 67 -- -- -- -- -- -- -- --
+70: -- -- -- -- -- -- -- --</span>
+
+<span class="c-comment"># 扫描指定地址范围（0x08 到 0x0f）</span>
+<span class="c-prompt">$ </span><span class="c-cmd">i2cdetect -y 1 0x08 0x0f</span></code></pre>
+
+  <h4>输出单元符号含义</h4>
+  <div class="tbl-wrap">
+    <table>
+      <tr><th>符号</th><th>含义</th></tr>
+      <tr><td><code>--</code></td><td>该地址没有设备响应</td></tr>
+      <tr><td><code>UU</code></td><td>该地址已被某个内核驱动占用，跳过探测</td></tr>
+      <tr><td><code>XX</code></td><td>设备存在，但跳过（被 <code>-r</code> 模式忽略）</td></tr>
+      <tr><td><code>HH</code>（十六进制）</td><td>该地址有设备响应，显示地址十六进制值</td></tr>
+    </table>
+  </div>
+
+  <h4>主要选项</h4>
+  <div class="tbl-wrap">
+    <table>
+      <tr><th>选项</th><th>说明</th></tr>
+      <tr><td><code>-l</code></td><td>列出所有 I2C 适配器（不扫描）</td></tr>
+      <tr><td><code>-y</code></td><td>禁用交互式确认，直接执行</td></tr>
+      <tr><td><code>-a</code></td><td>强制扫描通常保留的地址（0x00-0x02 和 0x78-0x7f）</td></tr>
+      <tr><td><code>-r</code></td><td>使用 read byte 代替 Quick 命令扫描（对某些设备更安全）</td></tr>
+      <tr><td><code>-q</code></td><td>使用 SMBus Quick 命令（默认）</td></tr>
+      <tr><td><code>-F</code></td><td>显示适配器支持的功能列表</td></tr>
+      <tr><td><code>-V</code></td><td>显示版本号</td></tr>
+    </table>
+  </div>
+</section>
+
+<!-- i2cdump -->
+<section class="section" id="sec-i2cdump">
+  <div class="section-tag">工具详解</div>
+  <h3 style="font-size:1.3rem; color:var(--accent); margin-bottom:8px;">i2cdump — 检查 I2C 寄存器</h3>
+  <a href="https://manpages.debian.org/unstable/i2c-tools/i2cdump.8.en.html" class="source-link" target="_blank">
+    🔗 i2cdump 手册页
+  </a>
+
+  <p><code>i2cdump</code> 是检查 I2C 设备寄存器内容的工具，可以以不同模式（字节、字、块）转储寄存器。</p>
+
+  <h4>基本语法</h4>
+  <pre><code>i2cdump [-f] [-y] [-r first-last] i2cbus address [mode]</code></pre>
+
+  <h4>常用示例</h4>
+  <pre><code><span class="c-comment"># 转储 i2c-0 总线地址 0x2d 设备的所有寄存器（字节模式，跳过确认）</span>
+<span class="c-prompt"># </span><span class="c-cmd">i2cdump -y 0 0x2d b</span>
+
+<span class="c-comment"># 仅转储寄存器 0x00 到 0x3f</span>
+<span class="c-prompt"># </span><span class="c-cmd">i2cdump -r 0x00-0x3f 1 0x2d</span>
+
+<span class="c-comment"># 字模式转储（每次读取 2 字节）</span>
+<span class="c-prompt"># </span><span class="c-cmd">i2cdump -y 1 0x50 w</span></code></pre>
+
+  <h4>模式参数说明</h4>
+  <div class="tbl-wrap">
+    <table>
+      <tr><th>模式</th><th>说明</th></tr>
+      <tr><td><code>b</code></td><td>字节模式（默认）：每次读取 1 个字节</td></tr>
+      <tr><td><code>w</code></td><td>字模式：每次读取 2 个字节</td></tr>
+      <tr><td><code>i</code></td><td>I2C 块模式：使用 I2C 块读取</td></tr>
+    </table>
+  </div>
+</section>
+
+<!-- i2cget -->
+<section class="section" id="sec-i2cget">
+  <div class="section-tag">工具详解</div>
+  <h3 style="font-size:1.3rem; color:var(--accent); margin-bottom:8px;">i2cget — 读取 I2C/SMBus 寄存器</h3>
+  <a href="https://manpages.debian.org/unstable/i2c-tools/i2cget.8.en.html" class="source-link" target="_blank">
+    🔗 i2cget 手册页
+  </a>
+
+  <p><code>i2cget</code> 用于读取 I2C/SMBus 芯片寄存器的值。</p>
+
+  <h4>基本语法</h4>
+  <pre><code>i2cget [-f] [-y] [-a] i2cbus chip-address [data-address [mode [length]]]</code></pre>
+
+  <h4>常用示例</h4>
+  <pre><code><span class="c-comment"># 从 i2c-1 总线地址 0x68 的设备读取寄存器 0x00（字节模式）</span>
+<span class="c-prompt"># </span><span class="c-cmd">i2cget -y 1 0x68 0x00 b</span>
+<span class="c-out">0x6a</span>
+
+<span class="c-comment"># 读取字（2字节）</span>
+<span class="c-prompt"># </span><span class="c-cmd">i2cget -y 1 0x68 0x00 w</span>
+<span class="c-out">0x006a</span>
+
+<span class="c-comment"># 读取 EEPROM 前 8 字节（I2C 块读取，来源：kernel.org patch）</span>
+<span class="c-prompt"># </span><span class="c-cmd">i2cget -y 4 0x50 0x00 i 8</span>
+<span class="c-out">0x00 0x01 0x02 0x03 0x04 0x05 0x06 0x07</span>
+
+<span class="c-comment"># 读/写字节事务（先写寄存器地址，再读返回值）</span>
+<span class="c-prompt"># </span><span class="c-cmd">i2cget -y 1 0x68 0x00 c</span></code></pre>
+
+  <h4>mode 参数说明</h4>
+  <div class="tbl-wrap">
+    <table>
+      <tr><th>mode</th><th>说明</th></tr>
+      <tr><td><code>b</code></td><td>读取字节数据（read byte data）</td></tr>
+      <tr><td><code>w</code></td><td>读取字数据（read word data）</td></tr>
+      <tr><td><code>c</code></td><td>写字节/读字节事务（write byte/read byte）</td></tr>
+      <tr><td><code>i</code></td><td>I2C 块读取（read I2C block）；需附加 length 参数</td></tr>
+      <tr><td><code>p</code> 后缀</td><td>追加 p 启用 SMBus PEC（不适用于 I2C 块事务）</td></tr>
+    </table>
+  </div>
+</section>
+
+<!-- i2cset -->
+<section class="section" id="sec-i2cset">
+  <div class="section-tag">工具详解</div>
+  <h3 style="font-size:1.3rem; color:var(--accent); margin-bottom:8px;">i2cset — 写入 I2C/SMBus 寄存器</h3>
+  <a href="https://manpages.debian.org/unstable/i2c-tools/i2cset.8.en.html" class="source-link" target="_blank">
+    🔗 i2cset 手册页
+  </a>
+
+  <p><code>i2cset</code> 用于向 I2C/SMBus 芯片寄存器写入值。</p>
+
+  <div class="box box-danger">
+    <div class="box-label">⚠️ 危险警告</div>
+    <p>不当使用 <code>i2cset</code> 可能损坏您的 I2C 总线、导致数据丢失，或产生更严重的后果。向内存 DIMM 上的串行 EEPROM（芯片地址 0x50 到 0x57 之间）写入数据可能<strong>损毁内存，导致系统无法启动！</strong>请极其谨慎地使用此程序。</p>
+  </div>
+
+  <h4>基本语法</h4>
+  <pre><code>i2cset [-f] [-y] [-m mask] [-r] [-a] i2cbus chip-address data-address [value] ... [mode]</code></pre>
+
+  <h4>常用示例</h4>
+  <pre><code><span class="c-comment"># 向 i2c-1 总线 0x2d 设备的寄存器 0x11 写入值 0xaa（字节模式）</span>
+<span class="c-prompt"># </span><span class="c-cmd">i2cset -y 1 0x2d 0x11 0xaa b</span>
+
+<span class="c-comment"># 写入字（2字节）</span>
+<span class="c-prompt"># </span><span class="c-cmd">i2cset -y 1 0x2d 0x11 0x1234 w</span>
+
+<span class="c-comment"># 带掩码写（-m 0x0f 只修改低4位）</span>
+<span class="c-prompt"># </span><span class="c-cmd">i2cset -y -m 0x0f 1 0x2d 0x11 0xaa b</span>
+
+<span class="c-comment"># 写后读回验证（-r 选项）</span>
+<span class="c-prompt"># </span><span class="c-cmd">i2cset -y -r 1 0x2d 0x11 0xaa b</span></code></pre>
+
+  <h4>主要选项</h4>
+  <div class="tbl-wrap">
+    <table>
+      <tr><th>选项</th><th>说明</th></tr>
+      <tr><td><code>-y</code></td><td>禁用交互式确认</td></tr>
+      <tr><td><code>-f</code></td><td>强制访问，即使设备正被驱动使用（危险！）</td></tr>
+      <tr><td><code>-m mask</code></td><td>位掩码，只修改与掩码对应的位</td></tr>
+      <tr><td><code>-r</code></td><td>写入后立即读回并显示，验证写入结果</td></tr>
+    </table>
+  </div>
+</section>
+
+<!-- i2ctransfer -->
+<section class="section" id="sec-i2ctransfer">
+  <div class="section-tag">工具详解</div>
+  <h3 style="font-size:1.3rem; color:var(--accent); margin-bottom:8px;">i2ctransfer — 自定义 I2C 消息传输</h3>
+  <a href="https://manpages.debian.org/unstable/i2c-tools/i2ctransfer.8.en.html" class="source-link" target="_blank">
+    🔗 i2ctransfer 手册页
+  </a>
+
+  <p><code>i2ctransfer</code> 是 Wolfram Sang 开发的工具，允许在一次传输中发送用户自定义的多条 I2C 消息，没有 SMBus 降级。主要用于测试 I2C 主控制器。</p>
+
+  <div class="box box-danger">
+    <div class="box-label">⚠️ 危险警告</div>
+    <p>i2ctransfer 若使用不当可能极其危险。它可能混乱您的 I2C 总线、导致数据丢失，或产生更严重的后果。向内存 DIMM 上的串行 EEPROM 写入可能<strong>损毁内存，导致系统无法启动！</strong></p>
+  </div>
+
+  <h4>基本语法</h4>
+  <pre><code>i2ctransfer [-f] [-y] [-v] [-V] [-a] i2cbus desc [data] [desc [data]] ...</code></pre>
+  <p>消息描述格式：<code>{r|w}Length@Address</code>，读消息用 <code>r</code>，写消息用 <code>w</code>。</p>
+
+  <h4>官方使用示例</h4>
+  <div class="pre-label">来源：i2ctransfer 手册页（patchwork.kernel.org）</div>
+  <pre><code><span class="c-comment"># 从 i2c-0 总线地址 0x50 的 EEPROM，从偏移 0x64 读取 8 字节</span>
+<span class="c-comment"># （第一条消息写1字节设置内存指针，第二条消息读取数据）</span>
+<span class="c-prompt"># </span><span class="c-cmd">i2ctransfer 0 w1@0x50 0x64 r8</span>
+
+<span class="c-comment"># 向同一 EEPROM 的偏移 0x42 写入 0xff 0xfe ... 0xf0</span>
+<span class="c-comment"># （一条写消息：第一字节设置指针为 0x42，后续字节从 0xff 递减）</span>
+<span class="c-prompt"># </span><span class="c-cmd">i2ctransfer 0 w17@0x50 0x42 0xff-</span></code></pre>
+
+  <h4>数据后缀说明</h4>
+  <div class="tbl-wrap">
+    <table>
+      <tr><th>后缀</th><th>含义</th><th>示例</th></tr>
+      <tr><td><code>=</code></td><td>保持值不变直到消息结束</td><td><code>0=</code> → 0, 0, 0, ...</td></tr>
+      <tr><td><code>+</code></td><td>每字节递增 1</td><td><code>0+</code> → 0, 1, 2, ...</td></tr>
+      <tr><td><code>-</code></td><td>每字节递减 1</td><td><code>0xff-</code> → 0xff, 0xfe, 0xfd, ...</td></tr>
+      <tr><td><code>p</code></td><td>以该值为种子生成 8 位伪随机序列</td><td><code>0p</code> → 0x00, 0x50, 0xb0, ...</td></tr>
+    </table>
+  </div>
+</section>
+
+<!-- ==================== SECTION 8 ==================== -->
+<section class="section" id="sec-dmesg">
+  <div class="section-tag">第八章</div>
+  <h2 class="sec-title">dmesg 与内核日志调试</h2>
+  <p class="sec-desc">利用内核消息辅助 I2C 问题诊断</p>
+
+  <p>除 i2c-tools 外，<code>dmesg</code> 是排查 I2C 问题的重要手段。Linux 内核 I2C 子系统在设备注册、probe、传输错误时会输出详细日志。</p>
+
+  <h3>常用 dmesg 过滤命令</h3>
+  <div class="pre-label">通过 dmesg 获取 I2C 调试信息</div>
+  <pre><code><span class="c-comment"># 查看所有 I2C 相关的内核消息</span>
+<span class="c-prompt">$ </span><span class="c-cmd">dmesg | grep i2c</span>
+<span class="c-out">[    0.691360] i2c /dev entries driver
+[    0.824513] omap_i2c 40b00000.i2c: bus 0 rev0.12 at 100 kHz
+[    0.830432] omap_i2c 40b10000.i2c: bus 1 rev0.12 at 100 kHz
+[    0.930545] omap_i2c 42120000.i2c: bus 2 rev0.12 at 400 kHz</span>
+
+<span class="c-comment"># 查看特定设备的 probe 失败信息</span>
+<span class="c-prompt">$ </span><span class="c-cmd">dmesg | grep 73-0070</span>
+<span class="c-out">pca954x 73-0070: probe failed
+pca954x 73-0070: probe failed</span>
+
+<span class="c-comment"># 实时监控内核日志（追踪 I2C 传输错误）</span>
+<span class="c-prompt">$ </span><span class="c-cmd">dmesg -w | grep -i i2c</span>
+
+<span class="c-comment"># 查看传输超时类错误</span>
+<span class="c-prompt">$ </span><span class="c-cmd">dmesg | grep -i "i2c.*timeout\|i2c.*error\|i2c.*fail"</span></code></pre>
+
+  <h3>其他调试手段</h3>
+  <div class="tbl-wrap">
+    <table>
+      <tr><th>手段</th><th>路径/命令</th><th>用途</th></tr>
+      <tr>
+        <td><strong>动态调试</strong></td>
+        <td><code>echo "module i2c-core +p" > /sys/kernel/debug/dynamic_debug/control</code></td>
+        <td>开启 i2c-core 的动态调试输出（pr_debug/dev_dbg）</td>
+      </tr>
+      <tr>
+        <td><strong>debugfs</strong></td>
+        <td><code>/sys/kernel/debug/i2c-*</code></td>
+        <td>某些适配器驱动在此输出统计信息</td>
+      </tr>
+      <tr>
+        <td><strong>功能查询</strong></td>
+        <td><code>i2cdetect -F &lt;bus&gt;</code></td>
+        <td>查看适配器支持的 I2C_FUNC_* 功能</td>
+      </tr>
+      <tr>
+        <td><strong>用户空间实例化</strong></td>
+        <td><code>echo "eeprom 0x50" > /sys/bus/i2c/devices/i2c-1/new_device</code></td>
+        <td>在不修改 DTS 的情况下从用户空间添加设备</td>
+      </tr>
+      <tr>
+        <td><strong>用户空间删除设备</strong></td>
+        <td><code>echo "0x50" > /sys/bus/i2c/devices/i2c-1/delete_device</code></td>
+        <td>从用户空间删除已实例化的设备</td>
+      </tr>
+      <tr>
+        <td><strong>查看 MUX 拓扑</strong></td>
+        <td><code>i2cdetect -l | sort -V</code></td>
+        <td>快速了解所有逻辑总线及其 MUX 关系</td>
+      </tr>
+    </table>
+  </div>
+
+  <h3>典型调试流程</h3>
+  <div class="svg-wrap">
+    <svg viewBox="0 0 640 320" xmlns="http://www.w3.org/2000/svg" style="max-width:100%; width:600px;">
+      <defs>
+        <marker id="flow-arr" markerWidth="8" markerHeight="6" refX="8" refY="3" orient="auto">
+          <polygon points="0 0, 8 3, 0 6" fill="#4f8ef7"/>
+        </marker>
+      </defs>
+
+      <!-- Step boxes -->
+      <rect x="220" y="10" width="200" height="38" rx="7" fill="#1a2040" stroke="#4f8ef7" stroke-width="1.5"/>
+      <text x="320" y="28" text-anchor="middle" font-size="11" fill="#4f8ef7" font-weight="700">问题：I2C 设备无法访问</text>
+      <text x="320" y="42" text-anchor="middle" font-size="9" fill="#94a3b8">比如 probe 失败 / 读写出错</text>
+
+      <line x1="320" y1="48" x2="320" y2="64" stroke="#4f8ef7" stroke-width="1.5" marker-end="url(#flow-arr)"/>
+
+      <rect x="180" y="66" width="280" height="38" rx="7" fill="#1a2040" stroke="#27ae8f" stroke-width="1.5"/>
+      <text x="320" y="84" text-anchor="middle" font-size="11" fill="#27ae8f" font-weight="600">Step 1：列出所有总线</text>
+      <text x="320" y="98" text-anchor="middle" font-size="9" fill="#94a3b8">i2cdetect -l | sort -V</text>
+
+      <line x1="320" y1="104" x2="320" y2="120" stroke="#27ae8f" stroke-width="1.5" marker-end="url(#flow-arr)"/>
+
+      <rect x="180" y="122" width="280" height="38" rx="7" fill="#1a2040" stroke="#27ae8f" stroke-width="1.5"/>
+      <text x="320" y="140" text-anchor="middle" font-size="11" fill="#27ae8f" font-weight="600">Step 2：确认设备可见</text>
+      <text x="320" y="154" text-anchor="middle" font-size="9" fill="#94a3b8">i2cdetect -y &lt;bus&gt;</text>
+
+      <line x1="320" y1="160" x2="320" y2="176" stroke="#27ae8f" stroke-width="1.5" marker-end="url(#flow-arr)"/>
+
+      <rect x="180" y="178" width="280" height="38" rx="7" fill="#1a2040" stroke="#f59e0b" stroke-width="1.5"/>
+      <text x="320" y="196" text-anchor="middle" font-size="11" fill="#f59e0b" font-weight="600">Step 3：检查 sysfs 和 dmesg</text>
+      <text x="320" y="210" text-anchor="middle" font-size="9" fill="#94a3b8">ls /sys/bus/i2c/devices/N-XXXX/driver  +  dmesg | grep</text>
+
+      <line x1="320" y1="216" x2="320" y2="232" stroke="#f59e0b" stroke-width="1.5" marker-end="url(#flow-arr)"/>
+
+      <rect x="180" y="234" width="280" height="38" rx="7" fill="#1a2040" stroke="#7c5cbf" stroke-width="1.5"/>
+      <text x="320" y="252" text-anchor="middle" font-size="11" fill="#7c5cbf" font-weight="600">Step 4：寄存器读写验证</text>
+      <text x="320" y="266" text-anchor="middle" font-size="9" fill="#94a3b8">i2cdump / i2cget / i2ctransfer</text>
+
+      <line x1="320" y1="272" x2="320" y2="288" stroke="#7c5cbf" stroke-width="1.5" marker-end="url(#flow-arr)"/>
+
+      <rect x="180" y="290" width="280" height="24" rx="7" fill="#1a2040" stroke="#10b981" stroke-width="1.5"/>
+      <text x="320" y="306" text-anchor="middle" font-size="11" fill="#10b981" font-weight="600">定位根因并修复</text>
+
+      <!-- Side notes -->
+      <rect x="0" y="66" width="165" height="80" rx="6" fill="rgba(39,174,143,0.05)" stroke="#27ae8f" stroke-width="1" stroke-dasharray="3,2"/>
+      <text x="82" y="82" text-anchor="middle" font-size="9" fill="#27ae8f">确认总线编号及</text>
+      <text x="82" y="95" text-anchor="middle" font-size="9" fill="#64748b">MUX 逻辑映射关系</text>
+      <text x="82" y="110" text-anchor="middle" font-size="9" fill="#27ae8f">注意动态分配的</text>
+      <text x="82" y="123" text-anchor="middle" font-size="9" fill="#64748b">逻辑总线号可能变化</text>
+      <line x1="165" y1="106" x2="180" y2="106" stroke="#27ae8f" stroke-width="1" stroke-dasharray="2,2"/>
+
+      <rect x="476" y="178" width="160" height="70" rx="6" fill="rgba(245,158,11,0.05)" stroke="#f59e0b" stroke-width="1" stroke-dasharray="3,2"/>
+      <text x="556" y="196" text-anchor="middle" font-size="9" fill="#f59e0b">driver 链接缺失 →</text>
+      <text x="556" y="209" text-anchor="middle" font-size="9" fill="#64748b">probe 失败，查 dmesg</text>
+      <text x="556" y="224" text-anchor="middle" font-size="9" fill="#f59e0b">driver 存在但异常 →</text>
+      <text x="556" y="237" text-anchor="middle" font-size="9" fill="#64748b">驱动 bug 或配置错误</text>
+      <line x1="460" y1="213" x2="476" y2="213" stroke="#f59e0b" stroke-width="1" stroke-dasharray="2,2"/>
+    </svg>
+    <p class="svg-caption">图5：I2C 问题典型调试流程</p>
+  </div>
+
+  <div class="summary-box">
+    <h3>📝 本章总结</h3>
+    <ul>
+      <li><code>dmesg | grep i2c</code> 是排查 I2C probe 失败、总线错误的第一手资料。</li>
+      <li>动态调试（<code>dynamic_debug</code>）可在不重编内核的情况下开启 i2c-core 的详细日志。</li>
+      <li>通过 <code>new_device</code> / <code>delete_device</code> 可在运行时动态测试设备实例化，无需重启。</li>
+      <li>完整调试流程：列总线 → 扫设备 → 查 sysfs/dmesg → 寄存器读写验证。</li>
+    </ul>
+  </div>
+</section>
+
+<!-- ==================== SECTION 9 ==================== -->
+<section class="section" id="sec-final">
+  <div class="section-tag">第九章</div>
+  <h2 class="sec-title">综合总结</h2>
+
+  <div class="svg-wrap">
+    <svg viewBox="0 0 700 500" xmlns="http://www.w3.org/2000/svg" style="max-width:100%; width:660px;">
+      <defs>
+        <marker id="f-arr" markerWidth="8" markerHeight="6" refX="8" refY="3" orient="auto">
+          <polygon points="0 0, 8 3, 0 6" fill="#4f8ef7"/>
+        </marker>
+      </defs>
+
+      <!-- Title -->
+      <text x="350" y="20" text-anchor="middle" font-size="13" fill="#94a3b8" font-weight="700">Linux I2C 子系统 — 完整知识地图</text>
+
+      <!-- Hardware Layer -->
+      <rect x="10" y="440" width="680" height="50" rx="8" fill="rgba(100,116,139,0.08)" stroke="#2e3352" stroke-width="1.5"/>
+      <text x="350" y="462" text-anchor="middle" font-size="11" fill="#64748b" font-weight="700">硬件层</text>
+      <text x="175" y="480" text-anchor="middle" font-size="10" fill="#64748b">SoC I2C 控制器</text>
+      <text x="350" y="480" text-anchor="middle" font-size="10" fill="#64748b">I2C MUX (PCA954x)</text>
+      <text x="530" y="480" text-anchor="middle" font-size="10" fill="#64748b">I2C 设备 (EEPROM/传感器/IO扩展器)</text>
+
+      <!-- Bus Driver Layer -->
+      <rect x="10" y="360" width="250" height="68" rx="8" fill="rgba(79,142,247,0.06)" stroke="#4f8ef7" stroke-width="1.5"/>
+      <text x="135" y="378" text-anchor="middle" font-size="11" fill="#4f8ef7" font-weight="700">适配器/总线驱动层</text>
+      <text x="135" y="394" text-anchor="middle" font-size="9" fill="#64748b">drivers/i2c/busses/</text>
+      <text x="135" y="408" text-anchor="middle" font-size="9" fill="#64748b">struct i2c_adapter</text>
+      <text x="135" y="422" text-anchor="middle" font-size="9" fill="#64748b">struct i2c_algorithm (xfer回调)</text>
+
+      <!-- Client Driver Layer -->
+      <rect x="280" y="360" width="250" height="68" rx="8" fill="rgba(245,158,11,0.06)" stroke="#f59e0b" stroke-width="1.5"/>
+      <text x="405" y="378" text-anchor="middle" font-size="11" fill="#f59e0b" font-weight="700">客户端/设备驱动层</text>
+      <text x="405" y="394" text-anchor="middle" font-size="9" fill="#64748b">drivers/hwmon/ drivers/media/i2c/</text>
+      <text x="405" y="408" text-anchor="middle" font-size="9" fill="#64748b">struct i2c_client (addr, name)</text>
+      <text x="405" y="422" text-anchor="middle" font-size="9" fill="#64ташб">struct i2c_driver (probe/remove)</text>
+
+      <!-- i2c-core -->
+      <rect x="100" y="270" width="450" height="70" rx="8" fill="rgba(39,174,143,0.07)" stroke="#27ae8f" stroke-width="2"/>
+      <text x="325" y="290" text-anchor="middle" font-size="12" fill="#27ae8f" font-weight="700">I2C Core (i2c-core.c)</text>
+      <text x="325" y="306" text-anchor="middle" font-size="9" fill="#64748b">i2c_transfer() · i2c_smbus_xfer() · 设备枚举/匹配 · 总线管理</text>
+      <text x="325" y="320" text-anchor="middle" font-size="9" fill="#64748b">MUX 透明切换 · 动态调试支持 · debugfs 集成</text>
+      <text x="325" y="334" text-anchor="middle" font-size="9" fill="#64748b">i2c_add_adapter() · i2c_new_client_device() · i2c_register_driver()</text>
+
+      <!-- Sysfs -->
+      <rect x="10" y="170" width="220" height="80" rx="8" fill="rgba(124,92,191,0.07)" stroke="#7c5cbf" stroke-width="1.5"/>
+      <text x="120" y="190" text-anchor="middle" font-size="11" fill="#7c5cbf" font-weight="700">/sys/bus/i2c/</text>
+      <text x="120" y="206" text-anchor="middle" font-size="9" fill="#64748b">devices/i2c-N/</text>
+      <text x="120" y="220" text-anchor="middle" font-size="9" fill="#64748b">devices/N-XXXX/</text>
+      <text x="120" y="234" text-anchor="middle" font-size="9" fill="#64748b">new_device · delete_device</text>
+      <text x="120" y="248" text-anchor="middle" font-size="9" fill="#64748b">drivers/ · class/i2c-dev/</text>
+
+      <!-- /dev -->
+      <rect x="250" y="170" width="200" height="80" rx="8" fill="rgba(79,142,247,0.07)" stroke="#4f8ef7" stroke-width="1.5"/>
+      <text x="350" y="190" text-anchor="middle" font-size="11" fill="#4f8ef7" font-weight="700">/dev/i2c-N</text>
+      <text x="350" y="206" text-anchor="middle" font-size="9" fill="#64748b">字符设备 Major=89</text>
+      <text x="350" y="220" text-anchor="middle" font-size="9" fill="#64748b">i2c-dev 内核模块</text>
+      <text x="350" y="234" text-anchor="middle" font-size="9" fill="#64748b">ioctl(I2C_SLAVE/I2C_RDWR)</text>
+      <text x="350" y="248" text-anchor="middle" font-size="9" fill="#64748b">open → ioctl → read/write</text>
+
+      <!-- i2c-tools -->
+      <rect x="470" y="170" width="220" height="80" rx="8" fill="rgba(16,185,129,0.07)" stroke="#10b981" stroke-width="1.5"/>
+      <text x="580" y="190" text-anchor="middle" font-size="11" fill="#10b981" font-weight="700">i2c-tools</text>
+      <text x="580" y="206" text-anchor="middle" font-size="9" fill="#64748b">i2cdetect -l / -y &lt;bus&gt;</text>
+      <text x="580" y="220" text-anchor="middle" font-size="9" fill="#64748b">i2cdump / i2cget / i2cset</text>
+      <text x="580" y="234" text-anchor="middle" font-size="9" fill="#64748b">i2ctransfer</text>
+      <text x="580" y="248" text-anchor="middle" font-size="9" fill="#64748b">git.kernel.org/i2c-tools</text>
+
+      <!-- User Space -->
+      <rect x="10" y="30" width="680" height="120" rx="8" fill="rgba(15,17,23,0.5)" stroke="#2e3352" stroke-width="1"/>
+      <text x="350" y="52" text-anchor="middle" font-size="10" fill="#2e3352" font-weight="700">──────── 用户空间 ────────</text>
+      <rect x="30" y="60" width="150" height="30" rx="5" fill="#1a2040" stroke="#7c5cbf" stroke-width="1"/>
+      <text x="105" y="79" text-anchor="middle" font-size="10" fill="#7c5cbf">Sysfs 导航/配置</text>
+      <rect x="210" y="60" width="150" height="30" rx="5" fill="#1a2040" stroke="#4f8ef7" stroke-width="1"/>
+      <text x="285" y="79" text-anchor="middle" font-size="10" fill="#4f8ef7">C/Python 程序</text>
+      <rect x="390" y="60" width="150" height="30" rx="5" fill="#1a2040" stroke="#10b981" stroke-width="1"/>
+      <text x="465" y="79" text-anchor="middle" font-size="10" fill="#10b981">调试工具</text>
+      <rect x="560" y="60" width="120" height="30" rx="5" fill="#1a2040" stroke="#f59e0b" stroke-width="1"/>
+      <text x="620" y="79" text-anchor="middle" font-size="10" fill="#f59e0b">dmesg / dynamic_debug</text>
+
+      <!-- Arrows down from user space -->
+      <line x1="120" y1="90" x2="120" y2="168" stroke="#7c5cbf" stroke-width="1.2" stroke-dasharray="3,2" marker-end="url(#f-arr)"/>
+      <line x1="285" y1="90" x2="350" y2="168" stroke="#4f8ef7" stroke-width="1.2" stroke-dasharray="3,2" marker-end="url(#f-arr)"/>
+      <line x1="465" y1="90" x2="580" y2="168" stroke="#10b981" stroke-width="1.2" stroke-dasharray="3,2" marker-end="url(#f-arr)"/>
+
+      <!-- Arrows to core -->
+      <line x1="120" y1="250" x2="200" y2="268" stroke="#7c5cbf" stroke-width="1.2" marker-end="url(#f-arr)"/>
+      <line x1="350" y1="250" x2="325" y2="268" stroke="#4f8ef7" stroke-width="1.2" marker-end="url(#f-arr)"/>
+      <line x1="580" y1="250" x2="450" y2="268" stroke="#10b981" stroke-width="1.2" marker-end="url(#f-arr)"/>
+
+      <!-- Core to bus/client -->
+      <line x1="200" y1="340" x2="170" y2="358" stroke="#27ae8f" stroke-width="1.2" marker-end="url(#f-arr)"/>
+      <line x1="450" y1="340" x2="405" y2="358" stroke="#27ae8f" stroke-width="1.2" marker-end="url(#f-arr)"/>
+
+      <!-- Bus/Client to hardware -->
+      <line x1="135" y1="428" x2="200" y2="438" stroke="#4f8ef7" stroke-width="1.2" marker-end="url(#f-arr)"/>
+      <line x1="405" y1="428" x2="400" y2="438" stroke="#f59e0b" stroke-width="1.2" marker-end="url(#f-arr)"/>
+    </svg>
+    <p class="svg-caption">图6：Linux I2C 子系统完整知识地图</p>
+  </div>
+
+  <hr class="divider">
+
+  <h3>各章节核心要点回顾</h3>
+
+  <div class="tbl-wrap">
+    <table>
+      <tr><th>章节</th><th>核心结论</th><th>参考来源</th></tr>
+      <tr>
+        <td><strong>I2C 协议</strong></td>
+        <td>两线（SDA/SCL）、多主机、漏极开路；Linux 中 Master=Adapter，Slave=Client</td>
+        <td><a href="https://docs.kernel.org/5.15/i2c/summary.html" style="color:var(--accent3)" target="_blank">docs.kernel.org</a></td>
+      </tr>
+      <tr>
+        <td><strong>内核层级架构</strong></td>
+        <td>用户空间 → i2c-dev → Core → 客户端驱动 + 总线驱动 → 硬件；两种正交抽象</td>
+        <td><a href="https://docs.kernel.org/driver-api/i2c.html" style="color:var(--accent3)" target="_blank">docs.kernel.org</a></td>
+      </tr>
+      <tr>
+        <td><strong>/sys/bus/i2c</strong></td>
+        <td><code>i2c-N</code> = 总线，<code>N-XXXX</code> = 设备；<code>new_device</code>/<code>delete_device</code> 动态实例化</td>
+        <td><a href="https://docs.kernel.org/i2c/i2c-sysfs.html" style="color:var(--accent3)" target="_blank">docs.kernel.org</a></td>
+      </tr>
+      <tr>
+        <td><strong>逻辑总线/MUX</strong></td>
+        <td>MUX 通道抽象为逻辑总线；<code>device</code> 链接区分物理/逻辑；<code>channel-*</code> 链接追踪拓扑</td>
+        <td><a href="https://docs.kernel.org/i2c/i2c-sysfs.html" style="color:var(--accent3)" target="_blank">docs.kernel.org</a></td>
+      </tr>
+      <tr>
+        <td><strong>设备目录</strong></td>
+        <td><code>name</code>/driver/modalias；driver 缺失 → probe 失败；hwmon 子目录</td>
+        <td><a href="https://docs.kernel.org/i2c/i2c-sysfs.html" style="color:var(--accent3)" target="_blank">docs.kernel.org</a></td>
+      </tr>
+      <tr>
+        <td><strong>/dev/i2c-N</strong></td>
+        <td>字符设备 Major=89；i2c-dev 模块；open+ioctl+read/write</td>
+        <td><a href="https://docs.kernel.org/i2c/dev-interface.html" style="color:var(--accent3)" target="_blank">docs.kernel.org</a></td>
+      </tr>
+      <tr>
+        <td><strong>i2c-tools</strong></td>
+        <td>detect/dump/get/set/transfer；kernel.org 官方工具包</td>
+        <td><a href="https://i2c.wiki.kernel.org/index.php/I2C_Tools" style="color:var(--accent3)" target="_blank">i2c.wiki.kernel.org</a></td>
+      </tr>
+    </table>
+  </div>
+
+  <div class="principle-box">
+    <h3>🔬 总体第一性原理</h3>
+    <p>Linux I2C 子系统的整体设计遵循一条核心原则：<strong>「每一层只解决一个问题，通过接口契约与其他层解耦」</strong>。</p>
+    <ul style="margin-top:10px;">
+      <li><strong>硬件差异</strong>由适配器驱动（<code>struct i2c_algorithm</code>）屏蔽 → 上层代码不关心是哪款 SoC 的 I2C 控制器。</li>
+      <li><strong>设备差异</strong>由客户端驱动屏蔽 → 上层代码不关心是温度传感器还是 EEPROM。</li>
+      <li><strong>MUX 复杂性</strong>由 Core 的逻辑总线抽象屏蔽 → 用户代码访问 <code>i2c-81</code> 和 <code>i2c-7</code> 完全等价。</li>
+      <li><strong>内核/用户边界</strong>由 i2c-dev 模块和 sysfs 屏蔽 → 用户空间工具（i2c-tools）无需了解内核内部结构。</li>
+    </ul>
+    <p style="margin-top:10px;">这种分层解耦策略使得任意硬件组合（SoC × MUX × 设备）都能被统一的 Linux I2C 框架支持，而无需改动上层代码。</p>
+  </div>
+
+  <hr class="divider">
+
+  <h3>原文参考链接汇总</h3>
+  <ul style="list-style:none; padding:0;">
+    <li style="margin-bottom:8px;">
+      <a href="https://docs.kernel.org/5.15/i2c/summary.html" class="source-link" target="_blank" style="display:inline-flex">
+        🔗 Introduction to I2C and SMBus — The Linux Kernel documentation
+      </a>
+    </li>
+    <li style="margin-bottom:8px;">
+      <a href="https://docs.kernel.org/driver-api/i2c.html" class="source-link" target="_blank" style="display:inline-flex">
+        🔗 I2C and SMBus Subsystem — The Linux Kernel documentation
+      </a>
+    </li>
+    <li style="margin-bottom:8px;">
+      <a href="https://docs.kernel.org/i2c/i2c-sysfs.html" class="source-link" target="_blank" style="display:inline-flex">
+        🔗 Linux I2C Sysfs — The Linux Kernel documentation
+      </a>
+    </li>
+    <li style="margin-bottom:8px;">
+      <a href="https://www.kernel.org/doc/html/v6.11/i2c/instantiating-devices.html" class="source-link" target="_blank" style="display:inline-flex">
+        🔗 How to instantiate I2C devices — The Linux Kernel documentation
+      </a>
+    </li>
+    <li style="margin-bottom:8px;">
+      <a href="https://docs.kernel.org/i2c/dev-interface.html" class="source-link" target="_blank" style="display:inline-flex">
+        🔗 Implementing I2C device drivers in userspace — The Linux Kernel documentation
+      </a>
+    </li>
+    <li style="margin-bottom:8px;">
+      <a href="https://i2c.wiki.kernel.org/index.php/I2C_Tools" class="source-link" target="_blank" style="display:inline-flex">
+        🔗 I2C Tools for Linux — Linux i2c Wiki (kernel.org)
+      </a>
+    </li>
+    <li style="margin-bottom:8px;">
+      <a href="https://git.kernel.org/pub/scm/utils/i2c-tools/i2c-tools.git/" class="source-link" target="_blank" style="display:inline-flex">
+        🔗 i2c-tools Git Repository — kernel.org
+      </a>
+    </li>
+  </ul>
+
+</section>
+
+</div><!-- content-wrap -->
+</main>
+
+<script>
+// ===== SECTIONS & NAVIGATION =====
+const SECTIONS = [
+  'sec-intro','sec-arch','sec-sysfs','sec-logical','sec-devices',
+  'sec-devinterface','sec-tools','sec-i2cdetect','sec-i2cdump',
+  'sec-i2cget','sec-i2cset','sec-i2ctransfer','sec-dmesg','sec-final'
+];
+
+let currentSection = 0;
+
+function scrollToSection(id) {
+  const el = document.getElementById(id);
+  if (el) {
+    el.scrollIntoView({ behavior: 'smooth', block: 'start' });
+    // Close sidebar on mobile
+    if (window.innerWidth <= 768) toggleSidebar(false);
+  }
+}
+
+function navigateChapter(dir) {
+  currentSection = Math.max(0, Math.min(SECTIONS.length - 1, currentSection + dir));
+  scrollToSection(SECTIONS[currentSection]);
+}
+
+// ===== SIDEBAR =====
+let sidebarOpen = false;
+function toggleSidebar(force) {
+  sidebarOpen = force !== undefined ? force : !sidebarOpen;
+  const sidebar = document.getElementById('sidebar');
+  const overlay = document.getElementById('overlay');
+  const hamburger = document.getElementById('hamburger');
+  sidebar.classList.toggle('open', sidebarOpen);
+  overlay.classList.toggle('open', sidebarOpen);
+  hamburger.classList.toggle('open', sidebarOpen);
+}
+
+// ===== NAV GROUP TOGGLE =====
+function toggleGroup(header) {
+  header.classList.toggle('collapsed');
+  const items = header.nextElementSibling;
+  if (header.classList.contains('collapsed')) {
+    items.style.maxHeight = '0px';
+    items.classList.add('collapsed');
+  } else {
+    items.style.maxHeight = items.scrollHeight + 'px';
+    items.classList.remove('collapsed');
+  }
+}
+
+// Initialize group max-heights
+document.querySelectorAll('.nav-group-items').forEach(grp => {
+  grp.style.maxHeight = grp.scrollHeight + 'px';
+});
+
+// ===== SCROLL TRACKING =====
+function updateScroll() {
+  const docH = document.documentElement.scrollHeight - window.innerHeight;
+  const prog = docH > 0 ? (window.scrollY / docH) * 100 : 0;
+  document.getElementById('progress-bar').style.width = prog.toFixed(1) + '%';
+  document.getElementById('progress-text').textContent = Math.round(prog) + '%';
+
+  // Active nav item
+  let active = 0;
+  SECTIONS.forEach((id, i) => {
+    const el = document.getElementById(id);
+    if (el) {
+      const rect = el.getBoundingClientRect();
+      if (rect.top <= 80) active = i;
+    }
+  });
+  currentSection = active;
+
+  document.querySelectorAll('.nav-item').forEach(item => item.classList.remove('active'));
+  const navItems = document.querySelectorAll('.nav-item');
+  if (navItems[active]) navItems[active].classList.add('active');
+
+  document.getElementById('btn-prev').disabled = active === 0;
+  document.getElementById('btn-next').disabled = active === SECTIONS.length - 1;
+}
+
+window.addEventListener('scroll', updateScroll, { passive: true });
+updateScroll();
+
+// ===== KEYBOARD NAVIGATION =====
+document.addEventListener('keydown', e => {
+  if (e.target.tagName === 'INPUT' || e.target.tagName === 'TEXTAREA') return;
+  if (e.key === 'ArrowRight') navigateChapter(1);
+  if (e.key === 'ArrowLeft') navigateChapter(-1);
+});
+</script>
+</body>
+</html>

@@ -1,0 +1,1982 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Linux DNS 解析机制与缓存原理</title>
+<style>
+  :root {
+    --bg: #0f1117;
+    --bg2: #161b22;
+    --bg3: #1c2128;
+    --bg4: #21262d;
+    --border: #30363d;
+    --text: #e6edf3;
+    --text2: #8b949e;
+    --text3: #6e7681;
+    --accent: #58a6ff;
+    --accent2: #79c0ff;
+    --green: #3fb950;
+    --orange: #d29922;
+    --purple: #bc8cff;
+    --red: #f85149;
+    --teal: #39d353;
+    --nav-w: 280px;
+  }
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  html { scroll-behavior: smooth; }
+  body {
+    font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', 'Noto Sans SC', sans-serif;
+    background: var(--bg);
+    color: var(--text);
+    line-height: 1.7;
+    overflow-x: hidden;
+  }
+
+  /* Progress bar */
+  #progress-bar {
+    position: fixed;
+    top: 0; left: 0;
+    height: 3px;
+    background: linear-gradient(90deg, var(--accent), var(--purple));
+    z-index: 9999;
+    width: 0%;
+    transition: width 0.1s;
+  }
+
+  /* Top nav */
+  #topbar {
+    position: fixed;
+    top: 0; left: 0; right: 0;
+    height: 52px;
+    background: rgba(15,17,23,0.92);
+    backdrop-filter: blur(12px);
+    border-bottom: 1px solid var(--border);
+    display: flex;
+    align-items: center;
+    padding: 0 16px;
+    z-index: 1000;
+    gap: 12px;
+  }
+  #topbar .logo {
+    font-weight: 700;
+    font-size: 15px;
+    color: var(--accent2);
+    white-space: nowrap;
+    flex-shrink: 0;
+  }
+  #topbar .logo span { color: var(--text2); font-weight: 400; font-size: 13px; margin-left: 6px; }
+  #hamburger {
+    display: none;
+    background: none;
+    border: 1px solid var(--border);
+    border-radius: 6px;
+    color: var(--text);
+    padding: 6px 10px;
+    cursor: pointer;
+    font-size: 18px;
+    margin-left: auto;
+  }
+
+  /* Layout */
+  #layout {
+    display: flex;
+    padding-top: 52px;
+    min-height: 100vh;
+  }
+
+  /* Sidebar */
+  #sidebar {
+    position: fixed;
+    top: 52px;
+    left: 0;
+    bottom: 0;
+    width: var(--nav-w);
+    background: var(--bg2);
+    border-right: 1px solid var(--border);
+    overflow-y: auto;
+    z-index: 900;
+    transition: transform 0.3s ease;
+  }
+  #sidebar::-webkit-scrollbar { width: 4px; }
+  #sidebar::-webkit-scrollbar-thumb { background: var(--border); border-radius: 2px; }
+
+  .nav-group { border-bottom: 1px solid var(--border); }
+  .nav-group-header {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    padding: 10px 16px;
+    cursor: pointer;
+    user-select: none;
+    font-size: 11px;
+    font-weight: 700;
+    text-transform: uppercase;
+    letter-spacing: 0.08em;
+    color: var(--text2);
+    transition: background 0.15s;
+  }
+  .nav-group-header:hover { background: var(--bg3); }
+  .nav-group-header .chevron {
+    transition: transform 0.2s;
+    font-size: 10px;
+    opacity: 0.6;
+  }
+  .nav-group-header.collapsed .chevron { transform: rotate(-90deg); }
+  .nav-group-body { overflow: hidden; transition: max-height 0.3s ease; }
+  .nav-group-body.closed { max-height: 0 !important; }
+
+  .nav-item {
+    display: block;
+    padding: 7px 16px 7px 28px;
+    font-size: 13px;
+    color: var(--text2);
+    text-decoration: none;
+    transition: background 0.12s, color 0.12s;
+    border-left: 3px solid transparent;
+    line-height: 1.4;
+  }
+  .nav-item:hover { background: var(--bg3); color: var(--text); }
+  .nav-item.active { color: var(--accent); border-left-color: var(--accent); background: rgba(88,166,255,0.07); }
+
+  /* Main content */
+  #main {
+    margin-left: var(--nav-w);
+    flex: 1;
+    max-width: 900px;
+    padding: 40px 48px 80px;
+  }
+
+  /* Sections */
+  .section {
+    margin-bottom: 80px;
+    scroll-margin-top: 72px;
+  }
+  .chapter-badge {
+    display: inline-flex;
+    align-items: center;
+    gap: 8px;
+    background: rgba(88,166,255,0.1);
+    border: 1px solid rgba(88,166,255,0.25);
+    border-radius: 20px;
+    padding: 4px 14px;
+    font-size: 12px;
+    color: var(--accent);
+    font-weight: 600;
+    margin-bottom: 12px;
+  }
+  h1.section-title {
+    font-size: 28px;
+    font-weight: 700;
+    color: var(--text);
+    margin-bottom: 8px;
+    line-height: 1.3;
+  }
+  .section-subtitle {
+    color: var(--text2);
+    font-size: 15px;
+    margin-bottom: 28px;
+    border-bottom: 1px solid var(--border);
+    padding-bottom: 20px;
+  }
+  h2 {
+    font-size: 20px;
+    font-weight: 600;
+    color: var(--text);
+    margin: 32px 0 14px;
+    display: flex;
+    align-items: center;
+    gap: 10px;
+  }
+  h2::before {
+    content: '';
+    display: inline-block;
+    width: 4px;
+    height: 20px;
+    background: var(--accent);
+    border-radius: 2px;
+    flex-shrink: 0;
+  }
+  h3 {
+    font-size: 16px;
+    font-weight: 600;
+    color: var(--accent2);
+    margin: 24px 0 10px;
+  }
+  p { margin-bottom: 14px; color: var(--text); font-size: 14.5px; }
+
+  /* Info boxes */
+  .info-box {
+    border-radius: 8px;
+    padding: 16px 20px;
+    margin: 20px 0;
+    border-left: 4px solid;
+    font-size: 14px;
+  }
+  .info-box.blue { background: rgba(88,166,255,0.06); border-color: var(--accent); }
+  .info-box.green { background: rgba(63,185,80,0.06); border-color: var(--green); }
+  .info-box.orange { background: rgba(210,153,34,0.08); border-color: var(--orange); }
+  .info-box.purple { background: rgba(188,140,255,0.06); border-color: var(--purple); }
+  .info-box.red { background: rgba(248,81,73,0.06); border-color: var(--red); }
+  .info-box .label {
+    font-weight: 700;
+    font-size: 12px;
+    text-transform: uppercase;
+    letter-spacing: 0.06em;
+    margin-bottom: 6px;
+  }
+  .info-box.blue .label { color: var(--accent); }
+  .info-box.green .label { color: var(--green); }
+  .info-box.orange .label { color: var(--orange); }
+  .info-box.purple .label { color: var(--purple); }
+  .info-box.red .label { color: var(--red); }
+
+  /* Code blocks */
+  pre {
+    background: var(--bg3);
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    padding: 16px 20px;
+    overflow-x: auto;
+    margin: 16px 0;
+    font-size: 13px;
+    line-height: 1.6;
+  }
+  code {
+    font-family: 'JetBrains Mono', 'Fira Code', 'Cascadia Code', monospace;
+    color: var(--green);
+  }
+  pre code { color: var(--text2); }
+  .kw { color: var(--accent); }
+  .val { color: var(--green); }
+  .cmt { color: var(--text3); font-style: italic; }
+  .str { color: var(--orange); }
+
+  /* Tables */
+  table {
+    width: 100%;
+    border-collapse: collapse;
+    margin: 20px 0;
+    font-size: 13.5px;
+  }
+  th {
+    background: var(--bg3);
+    padding: 10px 14px;
+    text-align: left;
+    font-weight: 600;
+    color: var(--text2);
+    border: 1px solid var(--border);
+    font-size: 12px;
+    text-transform: uppercase;
+    letter-spacing: 0.05em;
+  }
+  td {
+    padding: 10px 14px;
+    border: 1px solid var(--border);
+    color: var(--text);
+    vertical-align: top;
+  }
+  tr:hover td { background: rgba(255,255,255,0.02); }
+
+  /* SVG diagrams */
+  .diagram-wrap {
+    background: var(--bg3);
+    border: 1px solid var(--border);
+    border-radius: 10px;
+    padding: 24px;
+    margin: 24px 0;
+    overflow-x: auto;
+  }
+  .diagram-wrap svg { display: block; margin: 0 auto; }
+  .diagram-caption {
+    text-align: center;
+    font-size: 12px;
+    color: var(--text3);
+    margin-top: 12px;
+    font-style: italic;
+  }
+
+  /* Summary box */
+  .summary-box {
+    background: linear-gradient(135deg, rgba(88,166,255,0.05), rgba(188,140,255,0.05));
+    border: 1px solid rgba(88,166,255,0.2);
+    border-radius: 10px;
+    padding: 24px;
+    margin-top: 40px;
+  }
+  .summary-box h3 {
+    color: var(--accent2);
+    margin-top: 0;
+    margin-bottom: 14px;
+    font-size: 15px;
+    display: flex;
+    align-items: center;
+    gap: 8px;
+  }
+  .summary-box ul { padding-left: 20px; }
+  .summary-box li { margin-bottom: 8px; font-size: 14px; color: var(--text2); }
+  .summary-box li strong { color: var(--text); }
+
+  /* Source link */
+  .src-link {
+    display: inline-flex;
+    align-items: center;
+    gap: 5px;
+    font-size: 12px;
+    color: var(--accent);
+    text-decoration: none;
+    opacity: 0.7;
+    transition: opacity 0.15s;
+  }
+  .src-link:hover { opacity: 1; text-decoration: underline; }
+
+  /* Tags */
+  .tag {
+    display: inline-block;
+    padding: 2px 10px;
+    border-radius: 12px;
+    font-size: 12px;
+    font-weight: 600;
+    margin: 2px;
+  }
+  .tag-blue { background: rgba(88,166,255,0.12); color: var(--accent); border: 1px solid rgba(88,166,255,0.2); }
+  .tag-green { background: rgba(63,185,80,0.12); color: var(--green); border: 1px solid rgba(63,185,80,0.2); }
+  .tag-orange { background: rgba(210,153,34,0.12); color: var(--orange); border: 1px solid rgba(210,153,34,0.2); }
+  .tag-purple { background: rgba(188,140,255,0.12); color: var(--purple); border: 1px solid rgba(188,140,255,0.2); }
+
+  /* Keyboard nav hint */
+  .kbd-hint {
+    position: fixed;
+    bottom: 20px;
+    right: 20px;
+    background: var(--bg3);
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    padding: 8px 14px;
+    font-size: 12px;
+    color: var(--text3);
+    z-index: 500;
+  }
+  .kbd-hint kbd {
+    background: var(--bg4);
+    border: 1px solid var(--border);
+    border-radius: 4px;
+    padding: 1px 6px;
+    font-size: 11px;
+    color: var(--text2);
+  }
+
+  /* Responsive */
+  @media (max-width: 900px) {
+    #hamburger { display: flex; align-items: center; }
+    #sidebar {
+      transform: translateX(-100%);
+    }
+    #sidebar.open {
+      transform: translateX(0);
+      box-shadow: 4px 0 20px rgba(0,0,0,0.5);
+    }
+    #main {
+      margin-left: 0;
+      padding: 24px 20px 80px;
+      max-width: 100%;
+    }
+    .kbd-hint { display: none; }
+    h1.section-title { font-size: 22px; }
+  }
+  @media (max-width: 600px) {
+    #main { padding: 16px 14px 80px; }
+    .diagram-wrap { padding: 12px; }
+  }
+
+  /* Overlay for mobile */
+  #overlay {
+    display: none;
+    position: fixed;
+    inset: 0;
+    background: rgba(0,0,0,0.5);
+    z-index: 850;
+  }
+  #overlay.show { display: block; }
+
+  hr.section-divider {
+    border: none;
+    border-top: 1px solid var(--border);
+    margin: 28px 0;
+  }
+
+  .flow-step {
+    display: flex;
+    gap: 14px;
+    margin-bottom: 16px;
+    align-items: flex-start;
+  }
+  .flow-num {
+    flex-shrink: 0;
+    width: 28px;
+    height: 28px;
+    border-radius: 50%;
+    background: var(--accent);
+    color: #000;
+    font-weight: 700;
+    font-size: 13px;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    margin-top: 2px;
+  }
+  .flow-content { flex: 1; }
+  .flow-content strong { color: var(--accent2); }
+</style>
+</head>
+<body>
+
+<div id="progress-bar"></div>
+
+<header id="topbar">
+  <div class="logo">Linux DNS 解析 <span>glibc · NSS · 缓存机制</span></div>
+  <button id="hamburger" onclick="toggleSidebar()">☰</button>
+</header>
+
+<div id="overlay" onclick="closeSidebar()"></div>
+
+<div id="layout">
+  <!-- Sidebar Navigation -->
+  <nav id="sidebar">
+    <div class="nav-group" id="ng0">
+      <div class="nav-group-header" onclick="toggleGroup(0)">
+        <span>概述</span><span class="chevron">▾</span>
+      </div>
+      <div class="nav-group-body" style="max-height:300px">
+        <a class="nav-item" href="#intro" data-section="intro">引言与总览</a>
+      </div>
+    </div>
+    <div class="nav-group" id="ng1">
+      <div class="nav-group-header" onclick="toggleGroup(1)">
+        <span>解析方式</span><span class="chevron">▾</span>
+      </div>
+      <div class="nav-group-body" style="max-height:500px">
+        <a class="nav-item" href="#nss" data-section="nss">NSS 框架</a>
+        <a class="nav-item" href="#hosts" data-section="hosts">/etc/hosts 文件</a>
+        <a class="nav-item" href="#resolver" data-section="resolver">glibc Stub Resolver</a>
+        <a class="nav-item" href="#nss-dns" data-section="nss-dns">nss-dns 模块</a>
+        <a class="nav-item" href="#systemd-resolve" data-section="systemd-resolve">nss-resolve / systemd-resolved</a>
+      </div>
+    </div>
+    <div class="nav-group" id="ng2">
+      <div class="nav-group-header" onclick="toggleGroup(2)">
+        <span>缓存机制</span><span class="chevron">▾</span>
+      </div>
+      <div class="nav-group-body" style="max-height:500px">
+        <a class="nav-item" href="#glibc-nocache" data-section="glibc-nocache">glibc 无内置缓存</a>
+        <a class="nav-item" href="#nscd" data-section="nscd">NSCD 缓存守护进程</a>
+        <a class="nav-item" href="#resolved-cache" data-section="resolved-cache">systemd-resolved 缓存</a>
+        <a class="nav-item" href="#local-caching" data-section="local-caching">本地缓存 DNS 服务器</a>
+      </div>
+    </div>
+    <div class="nav-group" id="ng3">
+      <div class="nav-group-header" onclick="toggleGroup(3)">
+        <span>深入专题</span><span class="chevron">▾</span>
+      </div>
+      <div class="nav-group-body" style="max-height:400px">
+        <a class="nav-item" href="#resolv-conf" data-section="resolv-conf">resolv.conf 详解</a>
+        <a class="nav-item" href="#compare" data-section="compare">机制对比</a>
+      </div>
+    </div>
+    <div class="nav-group" id="ng4">
+      <div class="nav-group-header" onclick="toggleGroup(4)">
+        <span>总结</span><span class="chevron">▾</span>
+      </div>
+      <div class="nav-group-body" style="max-height:200px">
+        <a class="nav-item" href="#conclusion" data-section="conclusion">第一性原理总结</a>
+      </div>
+    </div>
+  </nav>
+
+  <!-- Main Content -->
+  <main id="main">
+
+    <!-- ===== SECTION: INTRO ===== -->
+    <section class="section" id="intro">
+      <div class="chapter-badge">第 0 章 · 概述</div>
+      <h1 class="section-title">Linux DNS 解析机制与缓存原理</h1>
+      <p class="section-subtitle">以 glibc 为核心，系统梳理 Linux 下域名解析的完整流程与缓存体系</p>
+
+      <p>在 Linux 系统中，DNS 解析不是单一过程，而是由多个层次的组件协同完成。理解这一体系对于排查网络问题、优化服务性能至关重要。本文以 <strong>glibc（GNU C Library）</strong> 的实现为核心，深入解析各种域名解析方式的原理流程与缓存机制。</p>
+
+      <h2>整体架构纵览</h2>
+      <div class="diagram-wrap">
+        <svg width="700" height="400" viewBox="0 0 700 400" xmlns="http://www.w3.org/2000/svg" style="max-width:100%">
+          <defs>
+            <marker id="arr" markerWidth="8" markerHeight="8" refX="6" refY="3" orient="auto">
+              <path d="M0,0 L0,6 L8,3 z" fill="#58a6ff"/>
+            </marker>
+            <marker id="arr2" markerWidth="8" markerHeight="8" refX="6" refY="3" orient="auto">
+              <path d="M0,0 L0,6 L8,3 z" fill="#8b949e"/>
+            </marker>
+          </defs>
+
+          <!-- App box -->
+          <rect x="250" y="10" width="200" height="46" rx="8" fill="#1c2128" stroke="#58a6ff" stroke-width="1.5"/>
+          <text x="350" y="29" text-anchor="middle" fill="#58a6ff" font-size="12" font-weight="700">应用程序</text>
+          <text x="350" y="48" text-anchor="middle" fill="#8b949e" font-size="11">getaddrinfo() / gethostbyname()</text>
+
+          <!-- glibc NSS -->
+          <rect x="150" y="100" width="400" height="54" rx="8" fill="#1c2128" stroke="#bc8cff" stroke-width="1.5"/>
+          <text x="350" y="122" text-anchor="middle" fill="#bc8cff" font-size="12" font-weight="700">glibc NSS 框架</text>
+          <text x="350" y="143" text-anchor="middle" fill="#8b949e" font-size="11">/etc/nsswitch.conf → hosts: files dns myhostname</text>
+
+          <!-- Arrow app to nss -->
+          <line x1="350" y1="56" x2="350" y2="96" stroke="#58a6ff" stroke-width="1.5" marker-end="url(#arr)"/>
+
+          <!-- Three NSS modules -->
+          <rect x="30" y="210" width="150" height="54" rx="8" fill="#1c2128" stroke="#3fb950" stroke-width="1.5"/>
+          <text x="105" y="232" text-anchor="middle" fill="#3fb950" font-size="12" font-weight="700">nss-files</text>
+          <text x="105" y="252" text-anchor="middle" fill="#8b949e" font-size="11">/etc/hosts</text>
+
+          <rect x="210" y="210" width="160" height="54" rx="8" fill="#1c2128" stroke="#d29922" stroke-width="1.5"/>
+          <text x="290" y="232" text-anchor="middle" fill="#d29922" font-size="12" font-weight="700">nss-dns</text>
+          <text x="290" y="252" text-anchor="middle" fill="#8b949e" font-size="11">glibc stub resolver</text>
+
+          <rect x="400" y="210" width="165" height="54" rx="8" fill="#1c2128" stroke="#79c0ff" stroke-width="1.5"/>
+          <text x="482" y="232" text-anchor="middle" fill="#79c0ff" font-size="12" font-weight="700">nss-resolve</text>
+          <text x="482" y="252" text-anchor="middle" fill="#8b949e" font-size="11">systemd-resolved</text>
+
+          <!-- Arrows nss to modules -->
+          <line x1="260" y1="154" x2="140" y2="206" stroke="#bc8cff" stroke-width="1.2" marker-end="url(#arr)"/>
+          <line x1="330" y1="154" x2="300" y2="206" stroke="#bc8cff" stroke-width="1.2" marker-end="url(#arr)"/>
+          <line x1="420" y1="154" x2="465" y2="206" stroke="#bc8cff" stroke-width="1.2" marker-end="url(#arr)"/>
+
+          <!-- NSCD socket -->
+          <rect x="550" y="100" width="135" height="46" rx="8" fill="#21262d" stroke="#30363d" stroke-width="1.2" stroke-dasharray="5,3"/>
+          <text x="617" y="120" text-anchor="middle" fill="#6e7681" font-size="11" font-weight="700">NSCD 缓存</text>
+          <text x="617" y="137" text-anchor="middle" fill="#6e7681" font-size="10">/var/run/nscd/socket</text>
+          <line x1="350" y1="100" x2="550" y2="123" stroke="#30363d" stroke-width="1.2" stroke-dasharray="4,3" marker-end="url(#arr2)"/>
+
+          <!-- DNS server box -->
+          <rect x="180" y="330" width="220" height="46" rx="8" fill="#21262d" stroke="#30363d" stroke-width="1.5"/>
+          <text x="290" y="352" text-anchor="middle" fill="#8b949e" font-size="12" font-weight="700">上游 DNS 服务器</text>
+          <text x="290" y="368" text-anchor="middle" fill="#6e7681" font-size="11">/etc/resolv.conf nameserver</text>
+
+          <!-- Arrow nss-dns to dns server -->
+          <line x1="290" y1="264" x2="290" y2="326" stroke="#d29922" stroke-width="1.2" marker-end="url(#arr)"/>
+
+          <!-- systemd-resolved to DNS server -->
+          <line x1="450" y1="264" x2="350" y2="326" stroke="#79c0ff" stroke-width="1.2" marker-end="url(#arr)"/>
+
+          <!-- Labels -->
+          <text x="350" y="390" text-anchor="middle" fill="#6e7681" font-size="11">① 首先尝试连接 NSCD Unix Socket &nbsp;② 读取 nsswitch.conf &nbsp;③ 按序调用模块</text>
+        </svg>
+        <p class="diagram-caption">图 1 — glibc DNS 解析整体架构图（基于 biriukov.dev 及 ArchWiki 文档）</p>
+      </div>
+
+      <div class="info-box blue">
+        <div class="label">📖 权威参考来源</div>
+        本文内容严格基于以下官方/权威文档：
+        <a class="src-link" href="https://biriukov.dev/docs/resolver-dual-stack-application/4-getaddrinfo-from-glibc/" target="_blank">↗ biriukov.dev — getaddrinfo() from glibc</a> ·
+        <a class="src-link" href="https://wiki.archlinux.org/title/Domain_name_resolution" target="_blank">↗ ArchWiki — Domain name resolution</a> ·
+        <a class="src-link" href="https://man7.org/linux/man-pages/man5/resolv.conf.5.html" target="_blank">↗ man5 resolv.conf</a> ·
+        <a class="src-link" href="https://man7.org/linux/man-pages/man8/systemd-resolved.service.8.html" target="_blank">↗ man8 systemd-resolved</a> ·
+        <a class="src-link" href="https://man7.org/linux/man-pages/man5/nscd.conf.5.html" target="_blank">↗ man5 nscd.conf</a>
+      </div>
+    </section>
+
+    <!-- ===== SECTION: NSS ===== -->
+    <section class="section" id="nss">
+      <div class="chapter-badge">第 1 章 · 解析方式</div>
+      <h1 class="section-title">NSS（Name Service Switch）框架</h1>
+      <p class="section-subtitle">glibc 域名解析的核心调度引擎</p>
+
+      <p><strong>Name Service Switch (NSS)</strong> 是 GNU C Library (glibc) 的一部分，是支撑 <code>getaddrinfo(3)</code> API 的核心框架，用于解析域名。NSS 允许系统数据库由独立的服务提供，管理员可以在 <code>nsswitch.conf(5)</code> 中配置查询顺序。</p>
+
+      <div class="info-box blue">
+        <div class="label">权威原文</div>
+        "The Name Service Switch (NSS) facility is part of the GNU C Library (glibc) and backs the getaddrinfo(3) API, used to resolve domain names. NSS allows system databases to be provided by separate services, whose search order can be configured by the administrator in nsswitch.conf(5)."
+        <br><a class="src-link" href="https://wiki.archlinux.org/title/Domain_name_resolution" target="_blank">— ArchWiki, Domain name resolution</a>
+      </div>
+
+      <h2>NSS 工作原理</h2>
+      <p>负责域名解析的数据库是 <strong>hosts 数据库</strong>。每次调用 <code>getaddrinfo()</code>，glibc 会按以下流程工作：</p>
+
+      <div class="flow-step">
+        <div class="flow-num">①</div>
+        <div class="flow-content"><strong>尝试连接 NSCD Unix Socket</strong><br>getaddrinfo() 首先尝试连接 <code>/var/run/nscd/socket</code> 这个 Unix socket。这一步是固定写死（hardcoded）的，每次调用都会执行。若 NSCD 未运行，连接失败后继续后续步骤。</div>
+      </div>
+      <div class="flow-step">
+        <div class="flow-num">②</div>
+        <div class="flow-content"><strong>读取 /etc/nsswitch.conf</strong><br>读取 NSS 配置文件，找到 <code>hosts:</code> 行，从左到右依次列出各个 NSS 模块（数据源）。</div>
+      </div>
+      <div class="flow-step">
+        <div class="flow-num">③</div>
+        <div class="flow-content"><strong>按序调用 NSS 模块</strong><br>NSS 模块是以 <code>/lib/libnss_&lt;name&gt;.so.2</code> 命名的共享库，遵循 <a class="src-link" href="https://www.gnu.org/software/libc/manual/html_node/NSS-Modules-Interface.html" target="_blank">NSS Modules Interface</a>。glibc 从左到右依次加载并调用每个模块，直到查询成功或所有模块用尽。</div>
+      </div>
+      <div class="flow-step">
+        <div class="flow-num">④</div>
+        <div class="flow-content"><strong>排序返回地址</strong><br>依照 RFC 6724 的 10 条规则对返回的目标地址进行排序，优先选择最优路径。</div>
+      </div>
+
+      <div class="info-box blue">
+        <div class="label">权威原文（biriukov.dev）</div>
+        "① The first step in the process might come as a surprise: getaddrinfo() attempts to connect to a hardcoded path of a Unix socket each time it is called. ② The next step involves reading the Name Service Switch configuration file, /etc/nsswitch.conf. ③ NSS modules are shared libraries that adhere to the NSS Modules Interface and are named accordingly to a template. ④ The final step is sorting destination addresses according to ten rules from RFC 6724."
+        <br><a class="src-link" href="https://biriukov.dev/docs/resolver-dual-stack-application/4-getaddrinfo-from-glibc/#41-internals-and-design" target="_blank">— biriukov.dev §4.1 Internals and design</a>
+      </div>
+
+      <h2>nsswitch.conf 配置格式</h2>
+      <pre><code><span class="cmt"># /etc/nsswitch.conf (节选)</span>
+<span class="cmt"># hosts 行控制主机名解析的顺序</span>
+hosts:      <span class="val">files</span>  <span class="val">dns</span>  <span class="val">myhostname</span>
+
+<span class="cmt"># 错误处理动作示例：</span>
+<span class="cmt"># [NOTFOUND=return]  当前模块返回未找到时，立即终止（不继续下一个模块）</span>
+<span class="cmt"># [SUCCESS=return]   成功时终止</span>
+hosts:      <span class="val">mymachines</span>  <span class="val">resolve</span> [!UNAVAIL=return]  <span class="val">files</span>  <span class="val">dns</span>  <span class="val">myhostname</span></code></pre>
+
+      <h2>glibc 内置的 NSS 模块（hosts 数据库）</h2>
+      <table>
+        <thead><tr><th>模块名</th><th>对应 .so 文件</th><th>数据来源</th><th>说明</th></tr></thead>
+        <tbody>
+          <tr><td><code>files</code></td><td>libnss_files.so.2</td><td>/etc/hosts</td><td>读取静态本地主机映射文件</td></tr>
+          <tr><td><code>dns</code></td><td>libnss_dns.so.2</td><td>/etc/resolv.conf 指定的 DNS 服务器</td><td>glibc 内置 stub resolver，发出 DNS UDP 查询</td></tr>
+          <tr><td><code>myhostname</code></td><td>libnss_myhostname.so.2</td><td>本地主机名</td><td>systemd 提供，无需修改 /etc/hosts 即可解析本地主机名</td></tr>
+          <tr><td><code>resolve</code></td><td>libnss_resolve.so.2</td><td>systemd-resolved（D-Bus/Unix socket）</td><td>systemd 提供，带缓存的 stub resolver</td></tr>
+          <tr><td><code>mymachines</code></td><td>libnss_mymachines.so.2</td><td>systemd-machined 容器</td><td>systemd 提供，用于解析本地容器主机名</td></tr>
+        </tbody>
+      </table>
+      <p><a class="src-link" href="https://wiki.archlinux.org/title/Domain_name_resolution#Name_Service_Switch" target="_blank">↗ ArchWiki — Name Service Switch</a></p>
+
+      <div class="diagram-wrap">
+        <svg width="660" height="260" viewBox="0 0 660 260" xmlns="http://www.w3.org/2000/svg" style="max-width:100%">
+          <defs>
+            <marker id="a1" markerWidth="8" markerHeight="8" refX="6" refY="3" orient="auto">
+              <path d="M0,0 L0,6 L8,3 z" fill="#58a6ff"/>
+            </marker>
+            <marker id="a2" markerWidth="8" markerHeight="8" refX="6" refY="3" orient="auto">
+              <path d="M0,0 L0,6 L8,3 z" fill="#3fb950"/>
+            </marker>
+            <marker id="a3" markerWidth="8" markerHeight="8" refX="6" refY="3" orient="auto">
+              <path d="M0,0 L0,6 L8,3 z" fill="#f85149"/>
+            </marker>
+          </defs>
+          <!-- nsswitch.conf box -->
+          <rect x="220" y="10" width="220" height="44" rx="7" fill="#1c2128" stroke="#bc8cff" stroke-width="1.5"/>
+          <text x="330" y="28" text-anchor="middle" fill="#bc8cff" font-size="12" font-weight="700">/etc/nsswitch.conf</text>
+          <text x="330" y="46" text-anchor="middle" fill="#8b949e" font-size="11">hosts: files dns myhostname</text>
+
+          <!-- Module 1 -->
+          <rect x="30" y="120" width="140" height="44" rx="7" fill="#1c2128" stroke="#3fb950" stroke-width="1.5"/>
+          <text x="100" y="138" text-anchor="middle" fill="#3fb950" font-size="12" font-weight="700">①  nss-files</text>
+          <text x="100" y="156" text-anchor="middle" fill="#8b949e" font-size="11">/etc/hosts</text>
+
+          <!-- Module 2 -->
+          <rect x="210" y="120" width="140" height="44" rx="7" fill="#1c2128" stroke="#d29922" stroke-width="1.5"/>
+          <text x="280" y="138" text-anchor="middle" fill="#d29922" font-size="12" font-weight="700">②  nss-dns</text>
+          <text x="280" y="156" text-anchor="middle" fill="#8b949e" font-size="11">resolv.conf / DNS</text>
+
+          <!-- Module 3 -->
+          <rect x="390" y="120" width="160" height="44" rx="7" fill="#1c2128" stroke="#79c0ff" stroke-width="1.5"/>
+          <text x="470" y="138" text-anchor="middle" fill="#79c0ff" font-size="12" font-weight="700">③  nss-myhostname</text>
+          <text x="470" y="156" text-anchor="middle" fill="#8b949e" font-size="11">本地主机名</text>
+
+          <!-- Arrows -->
+          <line x1="280" y1="54" x2="120" y2="116" stroke="#58a6ff" stroke-width="1.3" marker-end="url(#a1)"/>
+          <line x1="330" y1="54" x2="290" y2="116" stroke="#58a6ff" stroke-width="1.3" marker-end="url(#a1)"/>
+          <line x1="380" y1="54" x2="460" y2="116" stroke="#58a6ff" stroke-width="1.3" marker-end="url(#a1)"/>
+
+          <!-- Success path -->
+          <rect x="100" y="210" width="460" height="36" rx="7" fill="#21262d" stroke="#3fb950" stroke-width="1.2"/>
+          <text x="330" y="230" text-anchor="middle" fill="#3fb950" font-size="12" font-weight="600">任意模块返回 SUCCESS → 排序地址 → 返回给应用</text>
+
+          <line x1="100" y1="164" x2="200" y2="208" stroke="#3fb950" stroke-width="1.2" stroke-dasharray="4,3" marker-end="url(#a2)"/>
+          <line x1="280" y1="164" x2="300" y2="208" stroke="#3fb950" stroke-width="1.2" stroke-dasharray="4,3" marker-end="url(#a2)"/>
+          <line x1="460" y1="164" x2="420" y2="208" stroke="#3fb950" stroke-width="1.2" stroke-dasharray="4,3" marker-end="url(#a2)"/>
+
+          <!-- Not found arrows -->
+          <line x1="170" y1="142" x2="206" y2="142" stroke="#f85149" stroke-width="1.2" marker-end="url(#a3)"/>
+          <line x1="350" y1="142" x2="386" y2="142" stroke="#f85149" stroke-width="1.2" marker-end="url(#a3)"/>
+          <text x="187" y="137" text-anchor="middle" fill="#f85149" font-size="10">NOTFOUND</text>
+          <text x="367" y="137" text-anchor="middle" fill="#f85149" font-size="10">NOTFOUND</text>
+        </svg>
+        <p class="diagram-caption">图 2 — NSS 模块按序查询流程（左向右，NOTFOUND 则继续，SUCCESS 则返回）</p>
+      </div>
+
+      <div class="summary-box">
+        <h3>🧩 本章总结</h3>
+        <ul>
+          <li><strong>NSS 是 glibc 的调度中间层</strong>，通过 /etc/nsswitch.conf 配置查询顺序，实现多数据源的统一调度。</li>
+          <li><strong>从第一性原理看</strong>：NSS 的本质是"策略与机制分离"——策略（顺序）由配置文件决定，机制（查询方式）由各模块（.so 动态库）实现，系统因此具备极高的可扩展性。</li>
+          <li><strong>getaddrinfo() 每次调用都会重新读取 nsswitch.conf</strong>，无内置配置缓存（但 /etc/hosts 变更可由 NSCD 监测）。</li>
+          <li><strong>NSCD Unix socket 尝试是 getaddrinfo() 内固定行为</strong>，即使不使用 NSCD 也会执行此连接尝试（约耗时 0.00005 秒）。</li>
+        </ul>
+      </div>
+    </section>
+
+    <!-- ===== SECTION: /etc/hosts ===== -->
+    <section class="section" id="hosts">
+      <div class="chapter-badge">第 2 章 · 解析方式</div>
+      <h1 class="section-title">/etc/hosts 静态解析（nss-files）</h1>
+      <p class="section-subtitle">最古老、优先级最高的本地域名映射方式</p>
+
+      <p><code>/etc/hosts</code> 是操作系统用于将主机名映射到 IP 地址的纯文本文件。通过 NSS 的 <code>files</code> 模块（<code>libnss_files.so.2</code>）提供服务。</p>
+
+      <div class="info-box blue">
+        <div class="label">权威原文</div>
+        "The well-known /etc/hosts (man 5 hosts) is a plain text file used by operating systems to map hostnames to IP addresses."
+        <br><a class="src-link" href="https://biriukov.dev/docs/resolver-dual-stack-application/4-getaddrinfo-from-glibc/#46-etchosts" target="_blank">— biriukov.dev §4.6 /etc/hosts</a>
+      </div>
+
+      <h2>文件格式</h2>
+      <pre><code><span class="cmt"># /etc/hosts 格式：</span>
+<span class="cmt"># IP地址  规范主机名  [别名...]</span>
+<span class="val">127.0.0.1</span>   localhost
+<span class="val">127.0.1.1</span>   myhost.example.com   myhost
+<span class="val">::1</span>         localhost   ip6-localhost   ip6-loopback
+<span class="val">192.168.1.10</span>  internal-server   server</code></pre>
+
+      <div class="info-box green">
+        <div class="label">注意：规范主机名</div>
+        行中<strong>第一个主机名</strong>是 canonical_hostname（规范主机名），这会包含在 getaddrinfo() 的返回结果中；其余的是别名（aliases）。
+        <br><a class="src-link" href="https://biriukov.dev/docs/resolver-dual-stack-application/4-getaddrinfo-from-glibc/#46-etchosts" target="_blank">— biriukov.dev §4.6</a>
+      </div>
+
+      <h2>查询流程</h2>
+      <div class="diagram-wrap">
+        <svg width="560" height="220" viewBox="0 0 560 220" xmlns="http://www.w3.org/2000/svg" style="max-width:100%">
+          <defs>
+            <marker id="ah" markerWidth="8" markerHeight="8" refX="6" refY="3" orient="auto">
+              <path d="M0,0 L0,6 L8,3 z" fill="#3fb950"/>
+            </marker>
+            <marker id="ah2" markerWidth="8" markerHeight="8" refX="6" refY="3" orient="auto">
+              <path d="M0,0 L0,6 L8,3 z" fill="#f85149"/>
+            </marker>
+          </defs>
+          <rect x="10" y="10" width="130" height="40" rx="7" fill="#1c2128" stroke="#3fb950" stroke-width="1.5"/>
+          <text x="75" y="26" text-anchor="middle" fill="#3fb950" font-size="12" font-weight="700">nss-files 调用</text>
+          <text x="75" y="42" text-anchor="middle" fill="#8b949e" font-size="11">getaddrinfo()</text>
+
+          <rect x="180" y="10" width="150" height="40" rx="7" fill="#1c2128" stroke="#3fb950" stroke-width="1.5"/>
+          <text x="255" y="26" text-anchor="middle" fill="#3fb950" font-size="12" font-weight="700">打开 /etc/hosts</text>
+          <text x="255" y="42" text-anchor="middle" fill="#8b949e" font-size="11">顺序扫描每一行</text>
+
+          <rect x="380" y="10" width="160" height="40" rx="7" fill="#1c2128" stroke="#3fb950" stroke-width="1.5"/>
+          <text x="460" y="26" text-anchor="middle" fill="#3fb950" font-size="12" font-weight="700">匹配主机名</text>
+          <text x="460" y="42" text-anchor="middle" fill="#8b949e" font-size="11">逐行比较</text>
+
+          <line x1="140" y1="30" x2="176" y2="30" stroke="#3fb950" stroke-width="1.3" marker-end="url(#ah)"/>
+          <line x1="330" y1="30" x2="376" y2="30" stroke="#3fb950" stroke-width="1.3" marker-end="url(#ah)"/>
+
+          <!-- Match success -->
+          <rect x="330" y="120" width="200" height="40" rx="7" fill="#1c2128" stroke="#3fb950" stroke-width="1.5"/>
+          <text x="430" y="138" text-anchor="middle" fill="#3fb950" font-size="12" font-weight="700">返回 IP 地址</text>
+          <text x="430" y="154" text-anchor="middle" fill="#8b949e" font-size="11">NSS_STATUS_SUCCESS</text>
+
+          <!-- Match fail -->
+          <rect x="30" y="120" width="200" height="40" rx="7" fill="#1c2128" stroke="#f85149" stroke-width="1.5"/>
+          <text x="130" y="138" text-anchor="middle" fill="#f85149" font-size="12" font-weight="700">返回 NOTFOUND</text>
+          <text x="130" y="154" text-anchor="middle" fill="#8b949e" font-size="11">继续下一个 NSS 模块</text>
+
+          <line x1="460" y1="50" x2="460" y2="116" stroke="#3fb950" stroke-width="1.3" marker-end="url(#ah)"/>
+          <line x1="300" y1="50" x2="180" y2="116" stroke="#f85149" stroke-width="1.3" stroke-dasharray="4,3" marker-end="url(#ah2)"/>
+
+          <text x="290" y="90" text-anchor="middle" fill="#3fb950" font-size="11">匹配</text>
+          <text x="200" y="82" text-anchor="middle" fill="#f85149" font-size="11">未匹配</text>
+
+          <text x="280" y="200" text-anchor="middle" fill="#6e7681" font-size="11">注意：/etc/hosts 更改实时生效（无需重启），NSCD 可通过 inotify 监测文件变化</text>
+        </svg>
+        <p class="diagram-caption">图 3 — nss-files（/etc/hosts）查询流程</p>
+      </div>
+
+      <h2>关键特性</h2>
+      <table>
+        <thead><tr><th>特性</th><th>说明</th></tr></thead>
+        <tbody>
+          <tr><td>查找方式</td><td>顺序扫描（linear scan）文件每一行</td></tr>
+          <tr><td>优先级</td><td>由 nsswitch.conf 中顺序决定，通常配置为最优先（在 dns 之前）</td></tr>
+          <tr><td>缓存</td><td>无内置缓存；NSCD 可监测文件变化（通过 inotify）并刷新缓存</td></tr>
+          <tr><td>IPv6 支持</td><td>支持，可直接写 IPv6 地址</td></tr>
+          <tr><td>systemd-resolved</td><td>直接读取并缓存 /etc/hosts 内容（原文："This resolver reads and caches /etc/hosts internally."）</td></tr>
+        </tbody>
+      </table>
+
+      <div class="summary-box">
+        <h3>🧩 本章总结</h3>
+        <ul>
+          <li><strong>/etc/hosts 是最基础的本地 DNS 覆盖机制</strong>，优先级由 nsswitch.conf 配置，通常最高。</li>
+          <li><strong>从第一性原理看</strong>：它是最简单的"键值对映射"——以文本文件存储 hostname→IP 的静态绑定，无需网络，无需守护进程，是 DNS 存在之前的历史遗留，至今仍不可或缺（尤其在容器、开发环境中）。</li>
+          <li><strong>无缓存开销</strong>：每次 nss-files 查询都直接读文件，依赖操作系统的 Page Cache 加速。</li>
+        </ul>
+      </div>
+    </section>
+
+    <!-- ===== SECTION: glibc Resolver ===== -->
+    <section class="section" id="resolver">
+      <div class="chapter-badge">第 3 章 · 解析方式</div>
+      <h1 class="section-title">glibc Stub Resolver（存根解析器）</h1>
+      <p class="section-subtitle">glibc 的核心 DNS 查询引擎，基于 /etc/resolv.conf 配置</p>
+
+      <p>glibc resolver（存根解析器）是一组低级别的 DNS 查询函数库，构成 <code>nss-dns</code> 模块的内核。它通过 <code>/etc/resolv.conf</code> 获取 DNS 服务器地址和配置，向上游递归 DNS 服务器发出 UDP/TCP 查询。</p>
+
+      <div class="info-box blue">
+        <div class="label">权威原文（ArchWiki）</div>
+        "The glibc resolver reads /etc/resolv.conf for every resolution to determine the nameservers and options to use."
+        <br>"The glibc resolver does not cache queries."
+        <br><a class="src-link" href="https://wiki.archlinux.org/title/Domain_name_resolution#Glibc_resolver" target="_blank">— ArchWiki, Glibc resolver</a>
+      </div>
+
+      <h2>核心 API：getaddrinfo()</h2>
+      <pre><code><span class="cmt">/* POSIX 标准接口，glibc 实现 */</span>
+<span class="kw">int</span> getaddrinfo(
+    <span class="kw">const char</span> *node,          <span class="cmt">/* 主机名或 IP 字符串 */</span>
+    <span class="kw">const char</span> *service,       <span class="cmt">/* 服务名或端口字符串 */</span>
+    <span class="kw">const struct</span> addrinfo *hints, <span class="cmt">/* 查询条件（协议族、socket类型等）*/</span>
+    <span class="kw">struct</span> addrinfo **res      <span class="cmt">/* 返回：addrinfo 链表 */</span>
+);</code></pre>
+
+      <div class="info-box orange">
+        <div class="label">⚠️ 线程安全警告</div>
+        <code>getaddrinfo()</code> 内部调用 <code>getenv()</code>（用于读取 <code>LOCALDOMAIN</code>、<code>RES_OPTIONS</code> 环境变量），而 <code>setenv()</code> 是 MT-Unsafe 的。若多线程中同时调用 <code>setenv()</code> 和 <code>getaddrinfo()</code>，可能导致段错误（segfault）。
+        <br><a class="src-link" href="https://biriukov.dev/docs/resolver-dual-stack-application/4-getaddrinfo-from-glibc/#44-thread-safety-issues-with-getaddrinfo" target="_blank">— biriukov.dev §4.4 Thread safety issues</a>
+      </div>
+
+      <h2>glibc Stub Resolver 查询流程</h2>
+      <div class="diagram-wrap">
+        <svg width="640" height="380" viewBox="0 0 640 380" xmlns="http://www.w3.org/2000/svg" style="max-width:100%">
+          <defs>
+            <marker id="ar" markerWidth="8" markerHeight="8" refX="6" refY="3" orient="auto">
+              <path d="M0,0 L0,6 L8,3 z" fill="#d29922"/>
+            </marker>
+            <marker id="ar2" markerWidth="8" markerHeight="8" refX="6" refY="3" orient="auto">
+              <path d="M0,0 L0,6 L8,3 z" fill="#3fb950"/>
+            </marker>
+            <marker id="ar3" markerWidth="8" markerHeight="8" refX="6" refY="3" orient="auto">
+              <path d="M0,0 L0,6 L8,3 z" fill="#f85149"/>
+            </marker>
+          </defs>
+
+          <!-- Step 1: Read resolv.conf -->
+          <rect x="180" y="10" width="280" height="44" rx="7" fill="#1c2128" stroke="#d29922" stroke-width="1.5"/>
+          <text x="320" y="28" text-anchor="middle" fill="#d29922" font-size="12" font-weight="700">读取 /etc/resolv.conf</text>
+          <text x="320" y="46" text-anchor="middle" fill="#8b949e" font-size="11">nameserver, search, ndots, timeout, attempts</text>
+
+          <!-- Step 2: search domain -->
+          <rect x="60" y="100" width="250" height="44" rx="7" fill="#1c2128" stroke="#d29922" stroke-width="1.5"/>
+          <text x="185" y="118" text-anchor="middle" fill="#d29922" font-size="12" font-weight="700">处理 search / ndots</text>
+          <text x="185" y="136" text-anchor="middle" fill="#8b949e" font-size="11">若名称点数 &lt; ndots，追加搜索域后缀</text>
+
+          <!-- Step 3: parallel A/AAAA -->
+          <rect x="340" y="100" width="280" height="44" rx="7" fill="#1c2128" stroke="#d29922" stroke-width="1.5"/>
+          <text x="480" y="118" text-anchor="middle" fill="#d29922" font-size="12" font-weight="700">并行发出 A + AAAA 查询</text>
+          <text x="480" y="136" text-anchor="middle" fill="#8b949e" font-size="11">自 glibc 2.9 起默认并行（single-request 可禁用）</text>
+
+          <!-- Arrows -->
+          <line x1="320" y1="54" x2="220" y2="96" stroke="#d29922" stroke-width="1.3" marker-end="url(#ar)"/>
+          <line x1="320" y1="54" x2="450" y2="96" stroke="#d29922" stroke-width="1.3" marker-end="url(#ar)"/>
+
+          <!-- DNS Server -->
+          <rect x="200" y="200" width="240" height="44" rx="7" fill="#21262d" stroke="#8b949e" stroke-width="1.5"/>
+          <text x="320" y="218" text-anchor="middle" fill="#8b949e" font-size="12" font-weight="700">上游 DNS 服务器（UDP 53）</text>
+          <text x="320" y="236" text-anchor="middle" fill="#6e7681" font-size="11">最多 3 个 nameserver，顺序重试</text>
+
+          <line x1="185" y1="144" x2="270" y2="196" stroke="#d29922" stroke-width="1.3" marker-end="url(#ar)"/>
+          <line x1="450" y1="144" x2="380" y2="196" stroke="#d29922" stroke-width="1.3" marker-end="url(#ar)"/>
+
+          <!-- Retry logic -->
+          <rect x="440" y="200" width="185" height="44" rx="7" fill="#21262d" stroke="#f85149" stroke-width="1.2" stroke-dasharray="5,3"/>
+          <text x="532" y="218" text-anchor="middle" fill="#f85149" font-size="11" font-weight="700">超时重试逻辑</text>
+          <text x="532" y="234" text-anchor="middle" fill="#6e7681" font-size="10">timeout:5s, attempts:2</text>
+
+          <line x1="440" y1="222" x2="444" y2="222" stroke="#f85149" stroke-width="1.2" stroke-dasharray="4,3"/>
+
+          <!-- Result -->
+          <rect x="130" y="300" width="220" height="44" rx="7" fill="#1c2128" stroke="#3fb950" stroke-width="1.5"/>
+          <text x="240" y="318" text-anchor="middle" fill="#3fb950" font-size="12" font-weight="700">返回 IP 列表</text>
+          <text x="240" y="336" text-anchor="middle" fill="#8b949e" font-size="11">按 RFC 6724 排序后返回</text>
+
+          <rect x="380" y="300" width="220" height="44" rx="7" fill="#1c2128" stroke="#f85149" stroke-width="1.5"/>
+          <text x="490" y="318" text-anchor="middle" fill="#f85149" font-size="12" font-weight="700">返回错误</text>
+          <text x="490" y="336" text-anchor="middle" fill="#8b949e" font-size="11">EAI_NONAME / SERVFAIL</text>
+
+          <line x1="320" y1="244" x2="260" y2="296" stroke="#3fb950" stroke-width="1.3" marker-end="url(#ar2)"/>
+          <line x1="380" y1="244" x2="450" y2="296" stroke="#f85149" stroke-width="1.3" stroke-dasharray="4,3" marker-end="url(#ar3)"/>
+          <text x="248" y="278" text-anchor="middle" fill="#3fb950" font-size="10">成功</text>
+          <text x="415" y="278" text-anchor="middle" fill="#f85149" font-size="10">全部失败</text>
+        </svg>
+        <p class="diagram-caption">图 4 — glibc Stub Resolver (nss-dns) 完整查询流程</p>
+      </div>
+
+      <h2>底层 Resolver API</h2>
+      <p>glibc resolver 库（<code>libresolv</code>）提供了更底层的 DNS 函数，<code>nss-dns</code> 模块在其上构建：</p>
+      <table>
+        <thead><tr><th>函数</th><th>说明</th></tr></thead>
+        <tbody>
+          <tr><td><code>res_ninit()</code></td><td>初始化 resolver 状态（线程安全版本），读取 /etc/resolv.conf</td></tr>
+          <tr><td><code>res_nquery()</code></td><td>向 nameserver 发起单个 DNS 查询，等待响应</td></tr>
+          <tr><td><code>res_nsearch()</code></td><td>在 res_nquery 基础上，实现 search/ndots 搜索域逻辑</td></tr>
+          <tr><td><code>res_nsend()</code></td><td>发送预构造的 DNS 消息，返回响应</td></tr>
+          <tr><td><code>res_nmkquery()</code></td><td>构造 DNS 查询消息</td></tr>
+        </tbody>
+      </table>
+      <a class="src-link" href="https://man7.org/linux/man-pages/man3/resolver.3.html" target="_blank">↗ man3 resolver — Linux manual page</a>
+
+      <div class="summary-box">
+        <h3>🧩 本章总结</h3>
+        <ul>
+          <li><strong>glibc stub resolver 是纯粹的"中转站"</strong>：自身不做递归解析，只是将查询转发给 /etc/resolv.conf 中配置的递归 DNS 服务器。</li>
+          <li><strong>从第一性原理看</strong>：stub resolver 的本质是 DNS 协议的最小客户端实现——构造 DNS 请求报文、通过 UDP（默认）发送、解析响应报文，不存储任何状态（无缓存）。</li>
+          <li><strong>关键限制</strong>：glibc resolver 无内置缓存（ArchWiki 明确指出），每次 getaddrinfo() 调用都会重新读取 resolv.conf 并发出 DNS 查询。</li>
+          <li><strong>glibc 2.9+ 默认并行发出 A 和 AAAA 查询</strong>，可通过 <code>single-request</code> 选项改为串行，以兼容问题 DNS 服务器。</li>
+        </ul>
+      </div>
+    </section>
+
+    <!-- ===== SECTION: nss-dns ===== -->
+    <section class="section" id="nss-dns">
+      <div class="chapter-badge">第 4 章 · 解析方式</div>
+      <h1 class="section-title">nss-dns 模块详解</h1>
+      <p class="section-subtitle">NSS DNS 模块的内部机制与 /etc/resolv.conf 配置项</p>
+
+      <p><code>nss-dns</code>（<code>libnss_dns.so.2</code>）是 glibc 实现的 NSS hosts 模块，内部调用 glibc resolver 库（libresolv）进行 DNS 查询。它是在 <code>nsswitch.conf</code> 中写 <code>dns</code> 时实际加载的模块。</p>
+
+      <div class="info-box blue">
+        <div class="label">权威原文（ArchWiki）</div>
+        "dns: the glibc resolver which reads /etc/resolv.conf, see resolv.conf(5)"
+        <br><a class="src-link" href="https://wiki.archlinux.org/title/Domain_name_resolution" target="_blank">— ArchWiki, Domain name resolution</a>
+      </div>
+
+      <h2>/etc/resolv.conf 关键配置项详解</h2>
+      <pre><code><span class="cmt"># /etc/resolv.conf — glibc resolver 配置文件</span>
+
+<span class="cmt"># 指定 DNS 服务器（最多 3 个，按序尝试）</span>
+<span class="kw">nameserver</span>   <span class="val">8.8.8.8</span>
+<span class="kw">nameserver</span>   <span class="val">8.8.4.4</span>
+
+<span class="cmt"># 搜索域：查询少于 ndots 个点的名称时，追加此域名后重试</span>
+<span class="kw">search</span>       <span class="val">example.com</span>
+
+<span class="cmt"># ndots：触发搜索域追加的最小点数阈值，默认 1</span>
+<span class="cmt"># ndots:5 是 Kubernetes 中的常见配置</span>
+<span class="kw">options</span>      <span class="val">ndots:1</span>
+
+<span class="cmt"># 等待响应超时（秒），默认 5，上限 30</span>
+<span class="kw">options</span>      <span class="val">timeout:5</span>
+
+<span class="cmt"># 每个 nameserver 的重试次数，默认 2，上限 5</span>
+<span class="kw">options</span>      <span class="val">attempts:2</span>
+
+<span class="cmt"># 对 nameserver 列表做轮询（round-robin），分散负载</span>
+<span class="kw">options</span>      <span class="val">rotate</span>
+
+<span class="cmt"># glibc 2.9+: 并行发 A+AAAA；此选项改为串行（避免某些 DNS 兼容问题）</span>
+<span class="kw">options</span>      <span class="val">single-request</span>
+
+<span class="cmt"># 启用 EDNS0 扩展（RFC 2671），自 glibc 2.6</span>
+<span class="kw">options</span>      <span class="val">edns0</span>
+
+<span class="cmt"># glibc 2.36+: 抑制 AAAA 查询（仅保留 A 查询，用于诊断）</span>
+<span class="kw">options</span>      <span class="val">no-aaaa</span></code></pre>
+      <a class="src-link" href="https://man7.org/linux/man-pages/man5/resolv.conf.5.html" target="_blank">↗ man5 resolv.conf — Linux manual page</a>
+
+      <h2>ndots 与搜索域的工作原理</h2>
+      <div class="info-box blue">
+        <div class="label">权威原文（biriukov.dev）</div>
+        "Resolver queries having fewer than ndots dots (default is 1) in them will be attempted using each component of the search path in turn until a match is found. This means that if the domain name used in getaddrinfo() contains fewer than the specified ndots, the resolver will append the search domain from the list and attempt to resolve it first."
+        <br><a class="src-link" href="https://biriukov.dev/docs/resolver-dual-stack-application/4-getaddrinfo-from-glibc/#45-etcresolvconf" target="_blank">— biriukov.dev §4.5 /etc/resolv.conf</a>
+      </div>
+
+      <div class="diagram-wrap">
+        <svg width="620" height="280" viewBox="0 0 620 280" xmlns="http://www.w3.org/2000/svg" style="max-width:100%">
+          <defs>
+            <marker id="an" markerWidth="8" markerHeight="8" refX="6" refY="3" orient="auto">
+              <path d="M0,0 L0,6 L8,3 z" fill="#d29922"/>
+            </marker>
+          </defs>
+          <!-- Title -->
+          <text x="310" y="22" text-anchor="middle" fill="#8b949e" font-size="13" font-weight="700">search mydomain.com, ndots:1 时解析 "resolve-me" 的查询顺序</text>
+
+          <rect x="10" y="40" width="590" height="40" rx="7" fill="#1c2128" stroke="#d29922" stroke-width="1.5"/>
+          <text x="305" y="57" text-anchor="middle" fill="#d29922" font-size="12" font-weight="700">getaddrinfo("resolve-me", ...)</text>
+          <text x="305" y="73" text-anchor="middle" fill="#8b949e" font-size="11">点数 0 &lt; ndots(1) → 触发搜索域追加</text>
+
+          <!-- Query 1 -->
+          <rect x="20" y="120" width="260" height="36" rx="6" fill="#21262d" stroke="#d29922" stroke-width="1.2"/>
+          <text x="150" y="137" text-anchor="middle" fill="#d29922" font-size="11" font-weight="700">① A? resolve-me.mydomain.com</text>
+          <text x="150" y="151" text-anchor="middle" fill="#6e7681" font-size="10">并行发出 AAAA? 查询</text>
+
+          <!-- Query 2 -->
+          <rect x="300" y="120" width="290" height="36" rx="6" fill="#21262d" stroke="#8b949e" stroke-width="1.2"/>
+          <text x="445" y="137" text-anchor="middle" fill="#8b949e" font-size="11" font-weight="700">② A? resolve-me.（无域名追加）</text>
+          <text x="445" y="151" text-anchor="middle" fill="#6e7681" font-size="10">搜索域用尽后，尝试原始名称</text>
+
+          <line x1="305" y1="80" x2="150" y2="116" stroke="#d29922" stroke-width="1.3" marker-end="url(#an)"/>
+          <line x1="305" y1="80" x2="430" y2="116" stroke="#8b949e" stroke-width="1.3" marker-end="url(#an)"/>
+
+          <!-- Kubernetes warning -->
+          <rect x="10" y="200" width="590" height="66" rx="7" fill="#21262d" stroke="#f85149" stroke-width="1.2"/>
+          <text x="305" y="218" text-anchor="middle" fill="#f85149" font-size="12" font-weight="700">⚠️ Kubernetes 中的 ndots:5 问题</text>
+          <text x="305" y="236" text-anchor="middle" fill="#8b949e" font-size="11">search ns.svc.cluster.local svc.cluster.local cluster.local</text>
+          <text x="305" y="252" text-anchor="middle" fill="#8b949e" font-size="11">解析 "example.com"（2个点 &lt; 5）→ 先产生 6 次额外无效查询（A+AAAA × 3个搜索域）</text>
+        </svg>
+        <p class="diagram-caption">图 5 — search / ndots 触发搜索域的查询展开过程</p>
+      </div>
+
+      <h2>nameserver 重试算法</h2>
+      <div class="info-box blue">
+        <div class="label">权威原文（resolv.conf man page）</div>
+        "The algorithm used is to try a name server, and if the query times out, try the next, until out of name servers, then repeat trying all the name servers until a maximum number of retries are made."
+        <br>"glibc uses up to 3 nameserver entries; additional entries are ignored."
+        <br><a class="src-link" href="https://man7.org/linux/man-pages/man5/resolv.conf.5.html" target="_blank">— man5 resolv.conf</a>
+      </div>
+
+      <div class="summary-box">
+        <h3>🧩 本章总结</h3>
+        <ul>
+          <li><strong>nss-dns 是 glibc resolver 的 NSS 适配器</strong>，将 DNS 查询能力暴露给 NSS 框架。</li>
+          <li><strong>从第一性原理看</strong>：resolv.conf 是 glibc resolver 的"运行时参数"——nameserver 决定"问谁"，search/ndots 决定"怎么问"，timeout/attempts 决定"失败容忍度"。</li>
+          <li><strong>注意 glibc 每次解析都重新读取 resolv.conf</strong>，这意味着配置文件的变化会立即对新的 DNS 查询生效，但也带来额外的文件 I/O。</li>
+          <li><strong>glibc 2.9+ 默认并行 A+AAAA 查询</strong>，提升 IPv6 性能；但某些有缺陷的 DNS 服务器（如部分家用路由器）可能只回复一个，导致超时，可用 <code>single-request</code> 解决。</li>
+        </ul>
+      </div>
+    </section>
+
+    <!-- ===== SECTION: systemd-resolved ===== -->
+    <section class="section" id="systemd-resolve">
+      <div class="chapter-badge">第 5 章 · 解析方式</div>
+      <h1 class="section-title">nss-resolve 与 systemd-resolved</h1>
+      <p class="section-subtitle">现代 Linux 的带缓存缓存存根解析器</p>
+
+      <p><code>systemd-resolved</code> 是一个实现了缓存和 DNSSEC 验证的 DNS/DNSSEC 存根解析器，同时支持 LLMNR 和 MulticastDNS 协议。本地应用程序可通过三种接口访问它。</p>
+
+      <div class="info-box blue">
+        <div class="label">权威原文（man8 systemd-resolved）</div>
+        "systemd-resolved is a system service that provides network name resolution to local applications. It implements a caching and validating DNS/DNSSEC stub resolver, as well as an LLMNR and MulticastDNS resolver and responder."
+        <br><a class="src-link" href="https://man7.org/linux/man-pages/man8/systemd-resolved.service.8.html" target="_blank">— man8 systemd-resolved.service</a>
+      </div>
+
+      <h2>三种接入接口</h2>
+      <table>
+        <thead><tr><th>接口</th><th>协议</th><th>适用场景</th></tr></thead>
+        <tbody>
+          <tr>
+            <td><span class="tag tag-blue">D-Bus API</span></td>
+            <td>D-Bus IPC</td>
+            <td>推荐接口，异步、功能完整（含 DNSSEC 验证状态），<code>org.freedesktop.resolve1</code></td>
+          </tr>
+          <tr>
+            <td><span class="tag tag-purple">Varlink API</span></td>
+            <td>AF_UNIX socket</td>
+            <td><code>/run/systemd/resolve/io.systemd.Resolve</code>，无需 D-Bus broker 即可使用</td>
+          </tr>
+          <tr>
+            <td><span class="tag tag-orange">glibc NSS (nss-resolve)</span></td>
+            <td>Unix socket → D-Bus</td>
+            <td>兼容 <code>getaddrinfo()</code>，同步，通过 NSS 模块 <code>libnss_resolve.so.2</code> 接入</td>
+          </tr>
+          <tr>
+            <td><span class="tag tag-green">本地 DNS Stub</span></td>
+            <td>DNS over UDP/TCP</td>
+            <td>监听 <code>127.0.0.53:53</code>（完整功能）和 <code>127.0.0.54:53</code>（代理模式）</td>
+          </tr>
+        </tbody>
+      </table>
+      <a class="src-link" href="https://man7.org/linux/man-pages/man8/systemd-resolved.service.8.html#DESCRIPTION" target="_blank">↗ man8 systemd-resolved — DESCRIPTION</a>
+
+      <h2>systemd-resolved 解析流程</h2>
+      <div class="diagram-wrap">
+        <svg width="680" height="400" viewBox="0 0 680 400" xmlns="http://www.w3.org/2000/svg" style="max-width:100%">
+          <defs>
+            <marker id="as" markerWidth="8" markerHeight="8" refX="6" refY="3" orient="auto">
+              <path d="M0,0 L0,6 L8,3 z" fill="#79c0ff"/>
+            </marker>
+            <marker id="as2" markerWidth="8" markerHeight="8" refX="6" refY="3" orient="auto">
+              <path d="M0,0 L0,6 L8,3 z" fill="#3fb950"/>
+            </marker>
+          </defs>
+
+          <!-- App -->
+          <rect x="240" y="10" width="200" height="40" rx="7" fill="#1c2128" stroke="#79c0ff" stroke-width="1.5"/>
+          <text x="340" y="26" text-anchor="middle" fill="#79c0ff" font-size="12" font-weight="700">应用程序</text>
+          <text x="340" y="42" text-anchor="middle" fill="#8b949e" font-size="11">getaddrinfo() via nss-resolve</text>
+
+          <!-- systemd-resolved service -->
+          <rect x="140" y="100" width="400" height="80" rx="8" fill="#1c2128" stroke="#79c0ff" stroke-width="2"/>
+          <text x="340" y="120" text-anchor="middle" fill="#79c0ff" font-size="13" font-weight="700">systemd-resolved 服务</text>
+
+          <!-- Internal cache -->
+          <rect x="160" y="134" width="120" height="32" rx="5" fill="#21262d" stroke="#3fb950" stroke-width="1.2"/>
+          <text x="220" y="149" text-anchor="middle" fill="#3fb950" font-size="11" font-weight="700">内置 DNS 缓存</text>
+          <text x="220" y="162" text-anchor="middle" fill="#6e7681" font-size="10">TTL-based</text>
+
+          <!-- /etc/hosts cache -->
+          <rect x="300" y="134" width="120" height="32" rx="5" fill="#21262d" stroke="#d29922" stroke-width="1.2"/>
+          <text x="360" y="149" text-anchor="middle" fill="#d29922" font-size="11" font-weight="700">/etc/hosts 缓存</text>
+          <text x="360" y="162" text-anchor="middle" fill="#6e7681" font-size="10">内部读取</text>
+
+          <!-- Synthetic records -->
+          <rect x="440" y="134" width="85" height="32" rx="5" fill="#21262d" stroke="#bc8cff" stroke-width="1.2"/>
+          <text x="482" y="149" text-anchor="middle" fill="#bc8cff" font-size="10" font-weight="700">合成记录</text>
+          <text x="482" y="162" text-anchor="middle" fill="#6e7681" font-size="10">localhost 等</text>
+
+          <line x1="340" y1="50" x2="340" y2="96" stroke="#79c0ff" stroke-width="1.3" marker-end="url(#as)"/>
+
+          <!-- Query routing -->
+          <rect x="70" y="230" width="540" height="44" rx="7" fill="#21262d" stroke="#8b949e" stroke-width="1.2"/>
+          <text x="340" y="248" text-anchor="middle" fill="#8b949e" font-size="12" font-weight="700">查询路由（按 routing domains 匹配）</text>
+          <text x="340" y="264" text-anchor="middle" fill="#6e7681" font-size="11">维护服务器状态，连续使用同一服务器直到出错再切换</text>
+
+          <line x1="340" y1="180" x2="340" y2="226" stroke="#79c0ff" stroke-width="1.3" marker-end="url(#as)"/>
+
+          <!-- Protocols -->
+          <rect x="80" y="320" width="120" height="36" rx="6" fill="#1c2128" stroke="#3fb950" stroke-width="1.2"/>
+          <text x="140" y="337" text-anchor="middle" fill="#3fb950" font-size="11" font-weight="700">DNS over UDP/TCP</text>
+          <text x="140" y="351" text-anchor="middle" fill="#6e7681" font-size="10">传统 DNS</text>
+
+          <rect x="230" y="320" width="120" height="36" rx="6" fill="#1c2128" stroke="#d29922" stroke-width="1.2"/>
+          <text x="290" y="337" text-anchor="middle" fill="#d29922" font-size="11" font-weight="700">DNS over TLS</text>
+          <text x="290" y="351" text-anchor="middle" fill="#6e7681" font-size="10">DoT / opportunistic</text>
+
+          <rect x="380" y="320" width="100" height="36" rx="6" fill="#1c2128" stroke="#bc8cff" stroke-width="1.2"/>
+          <text x="430" y="337" text-anchor="middle" fill="#bc8cff" font-size="11" font-weight="700">LLMNR</text>
+          <text x="430" y="351" text-anchor="middle" fill="#6e7681" font-size="10">单标签名称</text>
+
+          <rect x="500" y="320" width="120" height="36" rx="6" fill="#1c2128" stroke="#79c0ff" stroke-width="1.2"/>
+          <text x="560" y="337" text-anchor="middle" fill="#79c0ff" font-size="11" font-weight="700">MulticastDNS</text>
+          <text x="560" y="351" text-anchor="middle" fill="#6e7681" font-size="10">.local 域</text>
+
+          <line x1="250" y1="274" x2="140" y2="316" stroke="#8b949e" stroke-width="1.2" marker-end="url(#as)"/>
+          <line x1="310" y1="274" x2="290" y2="316" stroke="#8b949e" stroke-width="1.2" marker-end="url(#as)"/>
+          <line x1="380" y1="274" x2="420" y2="316" stroke="#8b949e" stroke-width="1.2" marker-end="url(#as)"/>
+          <line x1="430" y1="274" x2="540" y2="316" stroke="#8b949e" stroke-width="1.2" marker-end="url(#as)"/>
+        </svg>
+        <p class="diagram-caption">图 6 — systemd-resolved 内部架构与查询流程</p>
+      </div>
+
+      <h2>与传统 glibc stub resolver 的关键差异</h2>
+      <div class="info-box blue">
+        <div class="label">权威原文（man8 systemd-resolved）</div>
+        "The nss-dns resolver maintains little state between subsequent DNS queries, and for each query always talks to the first listed DNS server from /etc/resolv.conf first... The resolver in systemd-resolved however maintains state, and will continuously talk to the same server for all queries in a particular lookup scope until some form of error is seen at which point it will switch to the next server..."
+        <br><a class="src-link" href="https://man7.org/linux/man-pages/man8/systemd-resolved.service.8.html#COMPATIBILITY_WITH_THE_TRADITIONAL_GLIBC_STUB_RESOLVER" target="_blank">— man8 systemd-resolved, Compatibility section</a>
+      </div>
+
+      <table>
+        <thead><tr><th>特性</th><th>glibc nss-dns</th><th>systemd-resolved</th></tr></thead>
+        <tbody>
+          <tr><td>内置缓存</td><td>❌ 无</td><td>✅ 有（基于 DNS TTL）</td></tr>
+          <tr><td>DNSSEC 验证</td><td>❌ 无</td><td>✅ 支持（实验性）</td></tr>
+          <tr><td>DNS over TLS</td><td>❌ 无</td><td>✅ 支持</td></tr>
+          <tr><td>LLMNR / mDNS</td><td>❌ 无</td><td>✅ 支持</td></tr>
+          <tr><td>服务器状态维护</td><td>❌ 无状态，每次从第一个开始</td><td>✅ 有状态，连续使用同一服务器</td></tr>
+          <tr><td>/etc/hosts</td><td>nss-files 模块处理</td><td>内部直接读取并缓存</td></tr>
+          <tr><td>search 域/ndots</td><td>支持（multi-label 名称也会追加）</td><td>multi-label 名称仅作 FQDN 解析</td></tr>
+        </tbody>
+      </table>
+
+      <h2>/etc/resolv.conf 的四种集成模式</h2>
+      <div class="info-box purple">
+        <div class="label">权威原文（man8 systemd-resolved）</div>
+        "Four modes of handling /etc/resolv.conf are supported..."
+        <br><a class="src-link" href="https://man7.org/linux/man-pages/man8/systemd-resolved.service.8.html#/ETC/RESOLV.CONF" target="_blank">— man8 systemd-resolved, /ETC/RESOLV.CONF section</a>
+      </div>
+      <table>
+        <thead><tr><th>模式</th><th>resolv.conf 内容/指向</th><th>说明</th></tr></thead>
+        <tbody>
+          <tr><td>推荐模式</td><td>symlink → /run/systemd/resolve/stub-resolv.conf</td><td>指向 127.0.0.53，所有程序都经过 systemd-resolved</td></tr>
+          <tr><td>直接模式</td><td>symlink → /run/systemd/resolve/resolv.conf</td><td>写入所有已知 DNS 服务器，程序绕过 systemd-resolved 直连</td></tr>
+          <tr><td>静态存根</td><td>symlink → /usr/lib/systemd/resolv.conf</td><td>仅含 127.0.0.53，无搜索域</td></tr>
+          <tr><td>兼容模式</td><td>其他程序管理</td><td>systemd-resolved 读取之，作为消费者而非提供者</td></tr>
+        </tbody>
+      </table>
+
+      <div class="summary-box">
+        <h3>🧩 本章总结</h3>
+        <ul>
+          <li><strong>systemd-resolved 是现代 Linux 的"智能 DNS 中间层"</strong>，解决了 glibc resolver 无缓存、无状态、无加密的三大短板。</li>
+          <li><strong>从第一性原理看</strong>：systemd-resolved 将"DNS 解析"从一个无状态的函数调用升级为一个有状态的系统服务——维护服务器健康状态、缓存响应、支持多协议（DoT、LLMNR、mDNS），是解析能力的质变。</li>
+          <li><strong>nss-resolve 模块是 glibc NSS 与 systemd-resolved 之间的桥梁</strong>，使 getaddrinfo() 调用透明地受益于 systemd-resolved 的缓存和功能。</li>
+          <li><strong>multi-label 名称不追加 search 域</strong>（与 nss-dns 的重要区别），避免了因搜索域导致的额外无效查询。</li>
+        </ul>
+      </div>
+    </section>
+
+    <!-- ===== SECTION: glibc no cache ===== -->
+    <section class="section" id="glibc-nocache">
+      <div class="chapter-badge">第 6 章 · 缓存机制</div>
+      <h1 class="section-title">glibc 无内置缓存</h1>
+      <p class="section-subtitle">理解 glibc resolver 缓存缺失的本质与影响</p>
+
+      <p>glibc resolver 自身<strong>不缓存任何 DNS 查询结果</strong>。每次调用 <code>getaddrinfo()</code>，如果需要通过 <code>nss-dns</code> 解析，都会重新读取 <code>/etc/resolv.conf</code>，并向 DNS 服务器发起新的网络查询。</p>
+
+      <div class="info-box orange">
+        <div class="label">权威原文（ArchWiki）</div>
+        "The glibc resolver does not cache queries. To improve query lookup time you can set up a caching resolver."
+        <br><a class="src-link" href="https://wiki.archlinux.org/title/Domain_name_resolution#Glibc_resolver" target="_blank">— ArchWiki, Glibc resolver</a>
+      </div>
+
+      <h2>为什么 glibc 不缓存？</h2>
+      <p>从设计哲学上看，glibc 的 NSS 框架遵循"机制与策略分离"原则。glibc 只负责"如何查询"（机制），不负责"何时缓存"（策略）。缓存这一策略交由专门的守护进程（NSCD、systemd-resolved）或本地缓存 DNS 服务器（Unbound、dnsmasq）来实现。</p>
+
+      <h2>无缓存的实际影响</h2>
+      <div class="diagram-wrap">
+        <svg width="600" height="200" viewBox="0 0 600 200" xmlns="http://www.w3.org/2000/svg" style="max-width:100%">
+          <defs>
+            <marker id="ac" markerWidth="8" markerHeight="8" refX="6" refY="3" orient="auto">
+              <path d="M0,0 L0,6 L8,3 z" fill="#f85149"/>
+            </marker>
+          </defs>
+          <!-- Timeline -->
+          <text x="10" y="30" fill="#8b949e" font-size="12" font-weight="700">glibc resolver（无缓存）：每次查询都走网络</text>
+          <line x1="10" y1="60" x2="590" y2="60" stroke="#30363d" stroke-width="1.5"/>
+
+          <!-- Requests -->
+          <rect x="10" y="68" width="90" height="30" rx="5" fill="#1c2128" stroke="#f85149" stroke-width="1.2"/>
+          <text x="55" y="85" text-anchor="middle" fill="#f85149" font-size="11">请求1 →DNS</text>
+
+          <rect x="120" y="68" width="90" height="30" rx="5" fill="#1c2128" stroke="#f85149" stroke-width="1.2"/>
+          <text x="165" y="85" text-anchor="middle" fill="#f85149" font-size="11">请求2 →DNS</text>
+
+          <rect x="230" y="68" width="90" height="30" rx="5" fill="#1c2128" stroke="#f85149" stroke-width="1.2"/>
+          <text x="275" y="85" text-anchor="middle" fill="#f85149" font-size="11">请求3 →DNS</text>
+
+          <rect x="340" y="68" width="90" height="30" rx="5" fill="#1c2128" stroke="#f85149" stroke-width="1.2"/>
+          <text x="385" y="85" text-anchor="middle" fill="#f85149" font-size="11">请求N →DNS</text>
+
+          <text x="460" y="85" fill="#6e7681" font-size="20">···</text>
+
+          <text x="300" y="140" text-anchor="middle" fill="#f85149" font-size="12">每次都有网络往返延迟（RTT），DNS 服务器承受重复查询压力</text>
+          <text x="300" y="165" text-anchor="middle" fill="#8b949e" font-size="12">glibc 2.9+ 默认并行 A+AAAA：每次 getaddrinfo 实际发出 2 个 DNS 包</text>
+        </svg>
+        <p class="diagram-caption">图 7 — glibc resolver 无缓存时的重复 DNS 查询示意</p>
+      </div>
+
+      <h2>strace 观察到的 NSCD 连接尝试</h2>
+      <div class="info-box blue">
+        <div class="label">权威原文（biriukov.dev strace 输出）</div>
+        "There are multiple attempts to connect over the UNIX socket to the /var/run/nscd/socket path, which usually doesn't exist by default. The output shows that, on average, each call took 0.000050 seconds."
+        <br><a class="src-link" href="https://biriukov.dev/docs/resolver-dual-stack-application/4-getaddrinfo-from-glibc/#43-name-service-cache-daemon-nscd" target="_blank">— biriukov.dev §4.3 NSCD</a>
+      </div>
+      <pre><code><span class="cmt"># strace 观察到的 getaddrinfo() NSCD 连接尝试</span>
+$ sudo strace -T -tt ./getaddrinfo microsoft.com 2>&1 | grep nscd
+
+<span class="str">21:03:57.515650</span> connect(3, {sa_family=AF_UNIX, sun_path=<span class="val">"/var/run/nscd/socket"</span>}, 110)
+    = -1 ENOENT (No such file or directory) &lt;0.000102&gt;
+<span class="str">21:03:57.516376</span> connect(3, {sa_family=AF_UNIX, sun_path=<span class="val">"/var/run/nscd/socket"</span>}, 110)
+    = -1 ENOENT (No such file or directory) &lt;0.000053&gt;
+<span class="str">21:03:57.521218</span> connect(3, {sa_family=AF_UNIX, sun_path=<span class="val">"/var/run/nscd/socket"</span>}, 110)
+    = -1 ENOENT (No such file or directory) &lt;0.000053&gt;
+<span class="cmt"># 每次 getaddrinfo() 调用会产生多次 NSCD socket 连接尝试</span></code></pre>
+
+      <div class="summary-box">
+        <h3>🧩 本章总结</h3>
+        <ul>
+          <li><strong>glibc resolver 无缓存是设计决策，不是缺陷</strong>——缓存职责由外部组件承担。</li>
+          <li><strong>从第一性原理看</strong>：缓存引入了一致性问题（stale data），glibc 选择把这个权衡交给明确的缓存层（NSCD/systemd-resolved）来管理，而不是在低层库中隐式决策。</li>
+          <li><strong>实际后果</strong>：高频 DNS 解析的程序（如微服务）在无外部缓存时，会对上游 DNS 服务器造成显著压力，并增加应用延迟。</li>
+        </ul>
+      </div>
+    </section>
+
+    <!-- ===== SECTION: NSCD ===== -->
+    <section class="section" id="nscd">
+      <div class="chapter-badge">第 7 章 · 缓存机制</div>
+      <h1 class="section-title">NSCD（Name Service Cache Daemon）</h1>
+      <p class="section-subtitle">glibc 配套的名称服务缓存守护进程</p>
+
+      <p><code>nscd</code> 是一个守护进程，为最常见的名称服务请求（passwd、group、hosts、services、netgroup）提供缓存。它通过 Unix socket（<code>/var/run/nscd/socket</code>）与 glibc 的 getaddrinfo() 等函数交互。</p>
+
+      <div class="info-box blue">
+        <div class="label">权威原文（man8 nscd）</div>
+        "nscd provides caching for accesses of the passwd(5), group(5), hosts(5) services(5) and netgroup databases through standard libc interfaces, such as getpwnam(3), getpwuid(3), getgrnam(3), getgrgid(3), gethostbyname(3), and others. There are two caches for each database: a positive one for items found, and a negative one for items not found. Each cache has a separate TTL (time-to-live) period for its data."
+        <br><a class="src-link" href="https://man7.org/linux/man-pages/man5/nscd.conf.5.html" target="_blank">— man5 nscd.conf</a>
+      </div>
+
+      <h2>NSCD 缓存架构</h2>
+      <div class="diagram-wrap">
+        <svg width="640" height="340" viewBox="0 0 640 340" xmlns="http://www.w3.org/2000/svg" style="max-width:100%">
+          <defs>
+            <marker id="anc" markerWidth="8" markerHeight="8" refX="6" refY="3" orient="auto">
+              <path d="M0,0 L0,6 L8,3 z" fill="#58a6ff"/>
+            </marker>
+            <marker id="anc2" markerWidth="8" markerHeight="8" refX="6" refY="3" orient="auto">
+              <path d="M0,0 L0,6 L8,3 z" fill="#3fb950"/>
+            </marker>
+            <marker id="anc3" markerWidth="8" markerHeight="8" refX="6" refY="3" orient="auto">
+              <path d="M0,0 L0,6 L8,3 z" fill="#f85149"/>
+            </marker>
+          </defs>
+
+          <!-- App -->
+          <rect x="220" y="10" width="200" height="40" rx="7" fill="#1c2128" stroke="#58a6ff" stroke-width="1.5"/>
+          <text x="320" y="26" text-anchor="middle" fill="#58a6ff" font-size="12" font-weight="700">应用程序</text>
+          <text x="320" y="42" text-anchor="middle" fill="#8b949e" font-size="11">getaddrinfo() / gethostbyname()</text>
+
+          <!-- NSCD service -->
+          <rect x="80" y="100" width="480" height="100" rx="8" fill="#1c2128" stroke="#58a6ff" stroke-width="2"/>
+          <text x="320" y="120" text-anchor="middle" fill="#58a6ff" font-size="13" font-weight="700">NSCD 守护进程</text>
+          <text x="320" y="136" text-anchor="middle" fill="#6e7681" font-size="11">/var/run/nscd/socket (Unix Domain Socket)</text>
+
+          <!-- Positive cache -->
+          <rect x="100" y="148" width="180" height="40" rx="6" fill="#21262d" stroke="#3fb950" stroke-width="1.2"/>
+          <text x="190" y="164" text-anchor="middle" fill="#3fb950" font-size="11" font-weight="700">正向缓存（Positive）</text>
+          <text x="190" y="180" text-anchor="middle" fill="#6e7681" font-size="10">查询成功的记录 (TTL: 默认 600s)</text>
+
+          <!-- Negative cache -->
+          <rect x="360" y="148" width="180" height="40" rx="6" fill="#21262d" stroke="#f85149" stroke-width="1.2"/>
+          <text x="450" y="164" text-anchor="middle" fill="#f85149" font-size="11" font-weight="700">负向缓存（Negative）</text>
+          <text x="450" y="180" text-anchor="middle" fill="#6e7681" font-size="10">查询失败的记录 (TTL: 默认 20s)</text>
+
+          <!-- Hash table -->
+          <text x="320" y="216" text-anchor="middle" fill="#6e7681" font-size="11">内部哈希表（default size: 211，推荐为质数）</text>
+
+          <!-- Arrow App to NSCD -->
+          <line x1="320" y1="50" x2="320" y2="96" stroke="#58a6ff" stroke-width="1.3" marker-end="url(#anc)"/>
+          <text x="340" y="78" fill="#8b949e" font-size="10">Unix socket 连接</text>
+
+          <!-- Cache hit -->
+          <rect x="80" y="260" width="200" height="40" rx="7" fill="#1c2128" stroke="#3fb950" stroke-width="1.5"/>
+          <text x="180" y="278" text-anchor="middle" fill="#3fb950" font-size="12" font-weight="700">缓存命中 → 直接返回</text>
+          <text x="180" y="294" text-anchor="middle" fill="#8b949e" font-size="11">无需 DNS 查询</text>
+
+          <!-- Cache miss -->
+          <rect x="360" y="260" width="200" height="40" rx="7" fill="#1c2128" stroke="#f85149" stroke-width="1.5"/>
+          <text x="460" y="278" text-anchor="middle" fill="#f85149" font-size="12" font-weight="700">缓存未命中 → 查 NSS</text>
+          <text x="460" y="294" text-anchor="middle" fill="#8b949e" font-size="11">NSS模块 → DNS → 写缓存</text>
+
+          <line x1="200" y1="200" x2="170" y2="256" stroke="#3fb950" stroke-width="1.3" marker-end="url(#anc2)"/>
+          <line x1="440" y1="200" x2="460" y2="256" stroke="#f85149" stroke-width="1.3" marker-end="url(#anc3)"/>
+          <text x="145" y="242" fill="#3fb950" font-size="10">命中</text>
+          <text x="440" y="242" fill="#f85149" font-size="10">未命中</text>
+        </svg>
+        <p class="diagram-caption">图 8 — NSCD 缓存架构：正向缓存与负向缓存</p>
+      </div>
+
+      <h2>/etc/nscd.conf 关键配置</h2>
+      <pre><code><span class="cmt"># /etc/nscd.conf (hosts 数据库配置)</span>
+
+<span class="cmt"># 启用 hosts 缓存</span>
+<span class="kw">enable-cache</span>            <span class="val">hosts</span>   <span class="val">yes</span>
+
+<span class="cmt"># 正向缓存 TTL（成功查询，秒）</span>
+<span class="cmt"># 注：对于 DNS，nscd 会优先使用 DNS 响应中的 TTL 值，此配置被忽略</span>
+<span class="kw">positive-time-to-live</span>   <span class="val">hosts</span>   <span class="val">3600</span>
+
+<span class="cmt"># 负向缓存 TTL（失败查询，秒）</span>
+<span class="kw">negative-time-to-live</span>   <span class="val">hosts</span>   <span class="val">20</span>
+
+<span class="cmt"># 内部哈希表大小（推荐质数）</span>
+<span class="kw">suggested-size</span>          <span class="val">hosts</span>   <span class="val">211</span>
+
+<span class="cmt"># 监测 /etc/hosts 和 /etc/resolv.conf 文件变化，自动刷新</span>
+<span class="kw">check-files</span>             <span class="val">hosts</span>   <span class="val">yes</span>
+
+<span class="cmt"># 跨重启持久化缓存</span>
+<span class="kw">persistent</span>              <span class="val">hosts</span>   <span class="val">yes</span>
+
+<span class="cmt"># 共享内存映射（客户端直接查缓存，无需经过 socket）</span>
+<span class="kw">shared</span>                  <span class="val">hosts</span>   <span class="val">yes</span>
+
+<span class="cmt"># 数据库文件最大字节数</span>
+<span class="kw">max-db-size</span>             <span class="val">hosts</span>   <span class="val">33554432</span></code></pre>
+      <a class="src-link" href="https://man7.org/linux/man-pages/man5/nscd.conf.5.html" target="_blank">↗ man5 nscd.conf — Linux manual page</a>
+
+      <h2>NSCD 缓存流程详解</h2>
+
+      <div class="info-box green">
+        <div class="label">正向缓存（Positive Cache）</div>
+        存储查询成功的结果。TTL 较大（默认 3600 秒），提升缓存命中率。<strong>注意</strong>：man5 nscd.conf 明确指出，对于某些名称服务（包括特别是 DNS），nscd 会使用 DNS 响应中的 TTL 值而忽略 positive-time-to-live 配置。
+        <br><a class="src-link" href="https://man7.org/linux/man-pages/man5/nscd.conf.5.html" target="_blank">— man5 nscd.conf: "Note that for some name services (including specifically DNS) the TTL returned from the name service is used and this attribute is ignored."</a>
+      </div>
+
+      <div class="info-box red">
+        <div class="label">负向缓存（Negative Cache）</div>
+        存储查询失败的结果（NXDOMAIN 等）。TTL 较小（默认 20 秒），避免因长时间缓存失败结果而导致实际上已存在的记录无法解析。
+      </div>
+
+      <div class="info-box purple">
+        <div class="label">文件变化监测（check-files）</div>
+        "The daemon will try to watch for changes in configuration files appropriate for each database (e.g., /etc/passwd for the passwd database or /etc/hosts and /etc/resolv.conf for the hosts database), and flush the cache when these are changed. However, this will happen only after a short delay (unless the inotify(7) mechanism is available and glibc 2.9 or later is available)..."
+        <br><a class="src-link" href="https://manpages.courier-mta.org/htmlman8/nscd.8.html" target="_blank">— man8 nscd</a>
+      </div>
+
+      <h2>NSCD 的 shared 模式（共享内存）</h2>
+      <p>当 <code>shared hosts yes</code> 时，NSCD 的缓存数据库通过内存映射（mmap）与客户端共享。客户端进程可直接在共享内存中查找缓存条目，<strong>无需通过 Unix socket 与 NSCD 通信</strong>，仅在缓存未命中时才向 NSCD 发送请求。</p>
+
+      <div class="info-box blue">
+        <div class="label">权威原文（man5 nscd.conf）</div>
+        "The memory mapping of the nscd databases for service is shared with the clients so that they can directly search in them instead of having to ask the daemon over the socket each time a lookup is performed. The default is no. Note that a cache miss will still result in asking the daemon over the socket."
+        <br><a class="src-link" href="https://man7.org/linux/man-pages/man5/nscd.conf.5.html" target="_blank">— man5 nscd.conf</a>
+      </div>
+
+      <h2>NSCD 操作命令</h2>
+      <pre><code><span class="cmt"># 使 hosts 缓存失效（强制清空）</span>
+$ nscd -i hosts
+
+<span class="cmt"># 查看缓存统计信息</span>
+$ nscd -g
+
+<span class="cmt"># 重启 NSCD 服务</span>
+$ systemctl restart nscd
+
+<span class="cmt"># 关闭 NSCD</span>
+$ nscd -K</code></pre>
+
+      <div class="info-box red">
+        <div class="label">⚠️ NSCD 已知问题</div>
+        "The UNIX socket at /var/run/nscd/socket is part of glibc and the Name Service Cache Daemon (nscd), which is known for its instability and frequent bugs. As a result, it is often avoided."
+        <br><a class="src-link" href="https://biriukov.dev/docs/resolver-dual-stack-application/4-getaddrinfo-from-glibc/#43-name-service-cache-daemon-nscd" target="_blank">— biriukov.dev §4.3 NSCD</a>
+      </div>
+
+      <div class="summary-box">
+        <h3>🧩 本章总结</h3>
+        <ul>
+          <li><strong>NSCD 是 glibc 的配套缓存方案</strong>，通过 Unix socket 拦截 NSS 查询，避免重复的 DNS 网络请求。</li>
+          <li><strong>正向/负向双缓存设计</strong>：分别处理"命中"和"未命中"两种场景，各有独立 TTL，是 DNS 缓存设计的普遍模式。</li>
+          <li><strong>shared 模式的性能优化</strong>：通过 mmap 共享内存让客户端直接读缓存，消除了 socket 通信的 IPC 开销，但代价是缓存命中率统计不准确。</li>
+          <li><strong>从第一性原理看</strong>：NSCD 是"进程外缓存代理"模式——将缓存逻辑与查询逻辑隔离到独立进程，通过 IPC 协作。这种模式的优势是缓存跨进程共享，劣势是引入进程通信开销和稳定性风险（NSCD 因历史上的不稳定性而常被禁用）。</li>
+        </ul>
+      </div>
+    </section>
+
+    <!-- ===== SECTION: systemd-resolved cache ===== -->
+    <section class="section" id="resolved-cache">
+      <div class="chapter-badge">第 8 章 · 缓存机制</div>
+      <h1 class="section-title">systemd-resolved 内置 DNS 缓存</h1>
+      <p class="section-subtitle">现代 Linux 的推荐缓存解决方案</p>
+
+      <p>systemd-resolved 内置基于 DNS TTL 的缓存机制，是当前 Ubuntu 17.10+、Fedora 33+ 等现代 Linux 发行版的默认 DNS 缓存方案。</p>
+
+      <div class="info-box blue">
+        <div class="label">权威原文（man8 systemd-resolved）</div>
+        "systemd-resolved is a system service that provides network name resolution to local applications. It implements a caching and validating DNS/DNSSEC stub resolver..."
+        <br><a class="src-link" href="https://man7.org/linux/man-pages/man8/systemd-resolved.service.8.html" target="_blank">— man8 systemd-resolved.service</a>
+      </div>
+
+      <h2>缓存工作流程</h2>
+      <div class="diagram-wrap">
+        <svg width="640" height="320" viewBox="0 0 640 320" xmlns="http://www.w3.org/2000/svg" style="max-width:100%">
+          <defs>
+            <marker id="asc" markerWidth="8" markerHeight="8" refX="6" refY="3" orient="auto">
+              <path d="M0,0 L0,6 L8,3 z" fill="#79c0ff"/>
+            </marker>
+            <marker id="asc2" markerWidth="8" markerHeight="8" refX="6" refY="3" orient="auto">
+              <path d="M0,0 L0,6 L8,3 z" fill="#3fb950"/>
+            </marker>
+            <marker id="asc3" markerWidth="8" markerHeight="8" refX="6" refY="3" orient="auto">
+              <path d="M0,0 L0,6 L8,3 z" fill="#f85149"/>
+            </marker>
+          </defs>
+
+          <!-- App -->
+          <rect x="220" y="10" width="200" height="40" rx="7" fill="#1c2128" stroke="#79c0ff" stroke-width="1.5"/>
+          <text x="320" y="26" text-anchor="middle" fill="#79c0ff" font-size="12" font-weight="700">DNS 查询请求</text>
+          <text x="320" y="42" text-anchor="middle" fill="#8b949e" font-size="11">via nss-resolve 或 127.0.0.53</text>
+
+          <!-- Cache lookup -->
+          <rect x="160" y="100" width="320" height="40" rx="7" fill="#1c2128" stroke="#79c0ff" stroke-width="1.5"/>
+          <text x="320" y="118" text-anchor="middle" fill="#79c0ff" font-size="12" font-weight="700">查询内部缓存</text>
+          <text x="320" y="134" text-anchor="middle" fill="#8b949e" font-size="11">检查 TTL 是否仍有效</text>
+
+          <line x1="320" y1="50" x2="320" y2="96" stroke="#79c0ff" stroke-width="1.3" marker-end="url(#asc)"/>
+
+          <!-- Hit -->
+          <rect x="60" y="190" width="200" height="40" rx="7" fill="#1c2128" stroke="#3fb950" stroke-width="1.5"/>
+          <text x="160" y="207" text-anchor="middle" fill="#3fb950" font-size="12" font-weight="700">命中 → 直接返回</text>
+          <text x="160" y="223" text-anchor="middle" fill="#8b949e" font-size="11">无网络开销，极低延迟</text>
+
+          <!-- Miss -->
+          <rect x="380" y="190" width="200" height="40" rx="7" fill="#1c2128" stroke="#f85149" stroke-width="1.5"/>
+          <text x="480" y="207" text-anchor="middle" fill="#f85149" font-size="12" font-weight="700">未命中 → 查询上游 DNS</text>
+          <text x="480" y="223" text-anchor="middle" fill="#8b949e" font-size="11">保持服务器状态连续性</text>
+
+          <line x1="260" y1="140" x2="180" y2="186" stroke="#3fb950" stroke-width="1.3" marker-end="url(#asc2)"/>
+          <line x1="380" y1="140" x2="460" y2="186" stroke="#f85149" stroke-width="1.3" marker-end="url(#asc3)"/>
+          <text x="190" y="172" fill="#3fb950" font-size="10">HIT (TTL 未过期)</text>
+          <text x="370" y="172" fill="#f85149" font-size="10">MISS</text>
+
+          <!-- Store to cache -->
+          <rect x="320" y="280" width="240" height="30" rx="6" fill="#21262d" stroke="#79c0ff" stroke-width="1.2"/>
+          <text x="440" y="299" text-anchor="middle" fill="#79c0ff" font-size="11" font-weight="600">写入缓存，TTL = DNS 响应中的 TTL</text>
+          <line x1="480" y1="230" x2="450" y2="276" stroke="#79c0ff" stroke-width="1.2" stroke-dasharray="4,3" marker-end="url(#asc)"/>
+        </svg>
+        <p class="diagram-caption">图 9 — systemd-resolved 缓存查询流程</p>
+      </div>
+
+      <h2>缓存配置（/etc/systemd/resolved.conf）</h2>
+      <pre><code><span class="cmt"># /etc/systemd/resolved.conf</span>
+[<span class="kw">Resolve</span>]
+<span class="cmt"># 上游 DNS 服务器</span>
+<span class="kw">DNS</span>=<span class="val">1.1.1.1 8.8.8.8</span>
+<span class="kw">FallbackDNS</span>=<span class="val">9.9.9.9 208.67.222.222</span>
+
+<span class="cmt"># 启用 DNS 缓存（默认 yes）</span>
+<span class="kw">Cache</span>=<span class="val">yes</span>
+
+<span class="cmt"># 不缓存来自本地回环地址 DNS 服务器的响应（默认 no）</span>
+<span class="kw">CacheFromLocalhost</span>=<span class="val">no</span>
+
+<span class="cmt"># 过期缓存的保留时间（0 = 不保留过期条目）</span>
+<span class="kw">StaleRetentionSec</span>=<span class="val">0</span>
+
+<span class="cmt"># 启用 DNS stub 监听器（127.0.0.53:53）</span>
+<span class="kw">DNSStubListener</span>=<span class="val">yes</span>
+
+<span class="cmt"># DNS over TLS（opportunistic: 尽量用 TLS）</span>
+<span class="kw">DNSOverTLS</span>=<span class="val">opportunistic</span>
+
+<span class="cmt"># DNSSEC 验证</span>
+<span class="kw">DNSSEC</span>=<span class="val">allow-downgrade</span></code></pre>
+      <a class="src-link" href="https://man7.org/linux/man-pages/man8/systemd-resolved.service.8.html" target="_blank">↗ man8 systemd-resolved</a>
+
+      <h2>缓存管理命令</h2>
+      <pre><code><span class="cmt"># 查看缓存统计</span>
+$ resolvectl statistics
+<span class="cmt"># 输出：</span>
+<span class="cmt">#   Current Cache Size: 42</span>
+<span class="cmt">#   Cache Hits:         1234</span>
+<span class="cmt">#   Cache Misses:       56</span>
+
+<span class="cmt"># 刷新所有缓存（等同于发送 SIGUSR2 信号）</span>
+$ resolvectl flush-caches
+
+<span class="cmt"># 查看当前 DNS 配置和状态</span>
+$ resolvectl status
+
+<span class="cmt"># 手动 DNS 查询（通过 systemd-resolved）</span>
+$ resolvectl query google.com</code></pre>
+
+      <h2>缓存自动失效时机</h2>
+      <div class="info-box green">
+        <div class="label">权威原文（man8 systemd-resolved）</div>
+        "Upon reception of the SIGUSR2 process signal systemd-resolved will flush all caches it maintains. Note that it should normally not be necessary to request this explicitly – except for debugging purposes – as systemd-resolved flushes the caches automatically anyway any time the host's network configuration changes."
+        <br><a class="src-link" href="https://man7.org/linux/man-pages/man8/systemd-resolved.service.8.html#SIGNALS" target="_blank">— man8 systemd-resolved, SIGNALS section</a>
+      </div>
+
+      <p>systemd-resolved 会在以下情况下自动刷新缓存：</p>
+      <ul style="padding-left:20px;color:var(--text2);font-size:14px;line-height:2">
+        <li>DNS 响应的 TTL 到期</li>
+        <li>主机网络配置发生变化（如切换网络接口）</li>
+        <li>接收到 SIGUSR2 信号（等同于 <code>resolvectl flush-caches</code>）</li>
+        <li>接收到 SIGHUP 信号（同时重载配置并关闭 TCP 连接）</li>
+      </ul>
+
+      <div class="summary-box">
+        <h3>🧩 本章总结</h3>
+        <ul>
+          <li><strong>systemd-resolved 的缓存是 TTL-based</strong>：严格遵循 DNS 响应中的 TTL 值，保证缓存数据与 DNS 权威数据的一致性。</li>
+          <li><strong>自动感知网络变化</strong>：当网络接口切换时自动刷新缓存，避免旧缓存在新网络环境中造成错误解析。</li>
+          <li><strong>从第一性原理看</strong>：systemd-resolved 的缓存是"进程内缓存"模式——缓存在服务进程内存中，通过 IPC 为所有客户端提供服务。与 NSCD 相比，它的设计更现代、更稳定，且天然与网络状态管理集成。</li>
+          <li><strong>Cache 统计监控</strong>：可通过 <code>resolvectl statistics</code> 实时查看缓存命中率，这是调优 DNS 性能的关键工具。</li>
+        </ul>
+      </div>
+    </section>
+
+    <!-- ===== SECTION: local caching DNS ===== -->
+    <section class="section" id="local-caching">
+      <div class="chapter-badge">第 9 章 · 缓存机制</div>
+      <h1 class="section-title">本地缓存 DNS 服务器</h1>
+      <p class="section-subtitle">Unbound、dnsmasq 等独立缓存方案</p>
+
+      <p>除 NSCD 和 systemd-resolved 外，还可以部署专用的本地缓存 DNS 服务器。这类服务器监听本地端口（如 <code>127.0.0.1:53</code>），并在 <code>/etc/resolv.conf</code> 中将其配置为 nameserver，使 glibc resolver 的 DNS 查询先经过本地缓存。</p>
+
+      <div class="info-box blue">
+        <div class="label">权威原文（ArchWiki）</div>
+        "The Glibc resolver does not cache queries. To implement local caching, use systemd-resolved or set up a local caching DNS server and use it as the name server by setting 127.0.0.1 and ::1 as the name servers in /etc/resolv.conf or in /etc/resolvconf.conf if using openresolv."
+        <br><a class="src-link" href="https://wiki.archlinux.org/title/Domain_name_resolution#Resolver_performance" target="_blank">— ArchWiki, Resolver performance</a>
+      </div>
+
+      <h2>常见本地缓存 DNS 服务器对比</h2>
+      <table>
+        <thead><tr><th>软件</th><th>类型</th><th>缓存</th><th>DNSSEC</th><th>DoT/DoH</th><th>适用场景</th></tr></thead>
+        <tbody>
+          <tr><td><strong>Unbound</strong></td><td>递归+缓存</td><td>✅</td><td>✅</td><td>DoT Server</td><td>高安全要求，完整递归解析</td></tr>
+          <tr><td><strong>dnsmasq</strong></td><td>转发+缓存</td><td>✅</td><td>限制</td><td>❌</td><td>小型网络，DHCP+DNS 一体</td></tr>
+          <tr><td><strong>pdnsd</strong></td><td>代理+永久缓存</td><td>✅ 持久化</td><td>❌</td><td>❌</td><td>需要持久化缓存的场景</td></tr>
+          <tr><td><strong>Knot Resolver</strong></td><td>递归+缓存</td><td>✅</td><td>✅</td><td>DoH Server</td><td>高性能，可脚本化</td></tr>
+        </tbody>
+      </table>
+      <a class="src-link" href="https://wiki.archlinux.org/title/Domain_name_resolution#DNS_servers" target="_blank">↗ ArchWiki — DNS servers comparison table</a>
+
+      <h2>集成方式</h2>
+      <pre><code><span class="cmt"># 方式一：直接修改 /etc/resolv.conf 指向本地缓存服务器</span>
+<span class="kw">nameserver</span>  <span class="val">127.0.0.1</span>
+<span class="kw">nameserver</span>  <span class="val">::1</span>
+
+<span class="cmt"># 方式二：通过 openresolv 管理（支持多订阅者）</span>
+<span class="cmt"># /etc/resolvconf.conf</span>
+<span class="kw">name_servers</span>=<span class="val">127.0.0.1</span>
+
+<span class="cmt"># 本地缓存 DNS 服务器（如 unbound）再转发到公共 DNS</span>
+<span class="cmt"># unbound 示例配置（/etc/unbound/unbound.conf）</span>
+<span class="kw">server</span>:
+    <span class="kw">interface</span>: <span class="val">127.0.0.1</span>
+    <span class="kw">cache-min-ttl</span>: <span class="val">60</span>
+    <span class="kw">prefetch</span>: <span class="val">yes</span>   <span class="cmt"># 在 TTL 过期前预取</span></code></pre>
+
+      <div class="summary-box">
+        <h3>🧩 本章总结</h3>
+        <ul>
+          <li><strong>本地缓存 DNS 服务器是"外部缓存代理"模式</strong>：在 glibc resolver 和外部 DNS 之间插入一层，通过标准 DNS 协议（UDP 53）提供缓存，对 glibc 完全透明。</li>
+          <li><strong>适用场景</strong>：需要 DNSSEC 验证、DNS over TLS、细粒度缓存策略（如预取、持久化）时，本地 DNS 服务器比 NSCD/systemd-resolved 提供更强的控制能力。</li>
+          <li><strong>从第一性原理看</strong>：这是最"正交"的缓存方案——glibc 不需要任何改动，只需修改 nameserver 配置，缓存完全由独立进程管理，关注点分离最彻底。</li>
+        </ul>
+      </div>
+    </section>
+
+    <!-- ===== SECTION: resolv.conf ===== -->
+    <section class="section" id="resolv-conf">
+      <div class="chapter-badge">第 10 章 · 深入专题</div>
+      <h1 class="section-title">/etc/resolv.conf 深度解析</h1>
+      <p class="section-subtitle">所有 resolver 共享的核心配置文件</p>
+
+      <div class="info-box blue">
+        <div class="label">权威原文（biriukov.dev）</div>
+        "Technically, /etc/resolv.conf is not part of glibc; it is a system configuration file used by all known resolvers. However, I've chosen to discuss it in the glibc section because it is often challenging to unwind the dependencies and relationships due to the interconnections and interoperability between components."
+        <br><a class="src-link" href="https://biriukov.dev/docs/resolver-dual-stack-application/4-getaddrinfo-from-glibc/#45-etcresolvconf" target="_blank">— biriukov.dev §4.5 /etc/resolv.conf</a>
+      </div>
+
+      <h2>管理方式演变</h2>
+      <div class="diagram-wrap">
+        <svg width="640" height="200" viewBox="0 0 640 200" xmlns="http://www.w3.org/2000/svg" style="max-width:100%">
+          <!-- Traditional -->
+          <rect x="10" y="20" width="180" height="60" rx="7" fill="#1c2128" stroke="#8b949e" stroke-width="1.2"/>
+          <text x="100" y="42" text-anchor="middle" fill="#8b949e" font-size="12" font-weight="700">传统方式</text>
+          <text x="100" y="58" text-anchor="middle" fill="#6e7681" font-size="11">手动编辑</text>
+          <text x="100" y="73" text-anchor="middle" fill="#6e7681" font-size="11">/etc/resolv.conf</text>
+
+          <!-- NetworkManager -->
+          <rect x="210" y="20" width="200" height="60" rx="7" fill="#1c2128" stroke="#d29922" stroke-width="1.2"/>
+          <text x="310" y="42" text-anchor="middle" fill="#d29922" font-size="12" font-weight="700">NetworkManager</text>
+          <text x="310" y="58" text-anchor="middle" fill="#6e7681" font-size="11">自动覆写</text>
+          <text x="310" y="73" text-anchor="middle" fill="#6e7681" font-size="11">resolv.conf（DHCP获取）</text>
+
+          <!-- systemd-resolved -->
+          <rect x="430" y="20" width="200" height="60" rx="7" fill="#1c2128" stroke="#79c0ff" stroke-width="1.5"/>
+          <text x="530" y="42" text-anchor="middle" fill="#79c0ff" font-size="12" font-weight="700">systemd-resolved</text>
+          <text x="530" y="58" text-anchor="middle" fill="#6e7681" font-size="11">symlink 到</text>
+          <text x="530" y="73" text-anchor="middle" fill="#6e7681" font-size="11">/run/systemd/resolve/stub-resolv.conf</text>
+
+          <!-- Arrow -->
+          <line x1="190" y1="50" x2="206" y2="50" stroke="#30363d" stroke-width="1.2" marker-end="url(#arr)"/>
+          <line x1="410" y1="50" x2="426" y2="50" stroke="#30363d" stroke-width="1.2" marker-end="url(#arr)"/>
+
+          <!-- Bottom note -->
+          <rect x="10" y="120" width="620" height="64" rx="7" fill="#21262d" stroke="#30363d" stroke-width="1.2"/>
+          <text x="320" y="140" text-anchor="middle" fill="#8b949e" font-size="12" font-weight="700">保护 /etc/resolv.conf 不被覆写（若需手动管理）</text>
+          <text x="320" y="158" text-anchor="middle" fill="#6e7681" font-size="11"># 设置不可变属性（chattr）</text>
+          <text x="320" y="174" text-anchor="middle" fill="#6e7681" font-size="11">sudo chattr +i /etc/resolv.conf</text>
+        </svg>
+        <p class="diagram-caption">图 10 — /etc/resolv.conf 管理方式演变</p>
+      </div>
+      <a class="src-link" href="https://wiki.archlinux.org/title/Domain_name_resolution#Overwriting_of_/etc/resolv.conf" target="_blank">↗ ArchWiki — Overwriting of /etc/resolv.conf</a>
+
+      <h2>完整选项参考表</h2>
+      <table>
+        <thead><tr><th>选项</th><th>默认值</th><th>说明</th><th>引入版本</th></tr></thead>
+        <tbody>
+          <tr><td><code>nameserver</code></td><td>—</td><td>DNS 服务器 IP，最多 3 个，顺序尝试</td><td>—</td></tr>
+          <tr><td><code>search</code></td><td>—</td><td>搜索域列表，glibc 2.26+ 无数量限制</td><td>—</td></tr>
+          <tr><td><code>domain</code></td><td>—</td><td>search 的废弃别名（仅支持一个域）</td><td>—</td></tr>
+          <tr><td><code>ndots:n</code></td><td>1</td><td>触发 search 域追加的最小点数阈值</td><td>—</td></tr>
+          <tr><td><code>timeout:n</code></td><td>5s</td><td>等待 nameserver 响应的超时时间（上限 30s）</td><td>—</td></tr>
+          <tr><td><code>attempts:n</code></td><td>2</td><td>对每个 nameserver 的最大重试次数（上限 5）</td><td>—</td></tr>
+          <tr><td><code>rotate</code></td><td>off</td><td>对 nameserver 列表做轮询（负载均衡）</td><td>—</td></tr>
+          <tr><td><code>single-request</code></td><td>off</td><td>串行（非并行）发出 A 和 AAAA 查询</td><td>glibc 2.10</td></tr>
+          <tr><td><code>single-request-reopen</code></td><td>off</td><td>A 和 AAAA 使用同一 socket，切换时重新打开</td><td>glibc 2.9</td></tr>
+          <tr><td><code>edns0</code></td><td>off</td><td>启用 EDNS0 扩展（RFC 2671）</td><td>glibc 2.6</td></tr>
+          <tr><td><code>trust-ad</code></td><td>off</td><td>信任 DNSSEC AD 位（需配合 DNSSEC 验证器使用）</td><td>glibc 2.31</td></tr>
+          <tr><td><code>no-aaaa</code></td><td>off</td><td>抑制 AAAA 查询（诊断用途）</td><td>glibc 2.36</td></tr>
+        </tbody>
+      </table>
+      <a class="src-link" href="https://man7.org/linux/man-pages/man5/resolv.conf.5.html" target="_blank">↗ man5 resolv.conf — Linux manual page</a>
+    </section>
+
+    <!-- ===== SECTION: compare ===== -->
+    <section class="section" id="compare">
+      <div class="chapter-badge">第 11 章 · 深入专题</div>
+      <h1 class="section-title">DNS 解析与缓存机制对比</h1>
+      <p class="section-subtitle">各方案综合横向对比</p>
+
+      <h2>解析方式对比</h2>
+      <table>
+        <thead><tr><th>解析方式</th><th>模块/组件</th><th>数据来源</th><th>缓存</th><th>适用场景</th></tr></thead>
+        <tbody>
+          <tr>
+            <td><span class="tag tag-green">nss-files</span></td>
+            <td>libnss_files.so.2</td><td>/etc/hosts</td><td>❌（OS Page Cache）</td>
+            <td>本地覆盖、容器、开发环境</td>
+          </tr>
+          <tr>
+            <td><span class="tag tag-orange">nss-dns</span></td>
+            <td>libnss_dns.so.2 + libresolv</td><td>resolv.conf → 上游 DNS</td><td>❌</td>
+            <td>通用 DNS 解析（默认）</td>
+          </tr>
+          <tr>
+            <td><span class="tag tag-blue">nss-resolve</span></td>
+            <td>libnss_resolve.so.2 → systemd-resolved</td><td>systemd-resolved（含缓存）</td><td>✅</td>
+            <td>现代桌面/服务器系统（Ubuntu 17.10+）</td>
+          </tr>
+          <tr>
+            <td><span class="tag tag-purple">nss-myhostname</span></td>
+            <td>libnss_myhostname.so.2</td><td>内核/配置</td><td>N/A</td>
+            <td>解析本机主机名</td>
+          </tr>
+        </tbody>
+      </table>
+
+      <h2>缓存机制对比</h2>
+      <table>
+        <thead><tr><th>缓存机制</th><th>实现方式</th><th>TTL 来源</th><th>持久化</th><th>刷新方式</th><th>稳定性</th></tr></thead>
+        <tbody>
+          <tr>
+            <td><span class="tag tag-orange">NSCD</span></td>
+            <td>独立守护进程 + Unix socket</td>
+            <td>配置文件（DNS 例外：用 DNS TTL）</td>
+            <td>可选（persistent）</td>
+            <td>nscd -i hosts</td>
+            <td>⚠️ 历史上不稳定</td>
+          </tr>
+          <tr>
+            <td><span class="tag tag-blue">systemd-resolved</span></td>
+            <td>进程内缓存 + D-Bus/Varlink</td>
+            <td>DNS 响应 TTL</td>
+            <td>❌（内存）</td>
+            <td>resolvectl flush-caches</td>
+            <td>✅ 现代推荐</td>
+          </tr>
+          <tr>
+            <td><span class="tag tag-green">Unbound/dnsmasq</span></td>
+            <td>独立 DNS 服务器进程</td>
+            <td>DNS 响应 TTL</td>
+            <td>部分支持</td>
+            <td>服务重启或 SIGHUP</td>
+            <td>✅ 高可控性</td>
+          </tr>
+          <tr>
+            <td>glibc 无缓存</td>
+            <td>N/A</td>
+            <td>N/A</td>
+            <td>N/A</td>
+            <td>N/A</td>
+            <td>✅ 最简单、无一致性问题</td>
+          </tr>
+        </tbody>
+      </table>
+
+      <h2>典型 nsswitch.conf 配置场景</h2>
+      <pre><code><span class="cmt"># 传统服务器（无 systemd-resolved）</span>
+hosts:  <span class="val">files</span>  <span class="val">dns</span>
+
+<span class="cmt"># 现代桌面（使用 systemd-resolved）—— Debian 推荐</span>
+hosts:  <span class="val">mymachines</span>  <span class="val">resolve</span> [!UNAVAIL=return]  <span class="val">files</span>  <span class="val">dns</span>  <span class="val">myhostname</span>
+
+<span class="cmt"># NIS 环境（遗留）</span>
+hosts:  <span class="val">nis</span>  <span class="val">dns</span> [NOTFOUND=return]  <span class="val">files</span>
+
+<span class="cmt"># Kubernetes Pod（自定义）</span>
+hosts:  <span class="val">files</span>  <span class="val">dns</span></code></pre>
+    </section>
+
+    <!-- ===== SECTION: conclusion ===== -->
+    <section class="section" id="conclusion">
+      <div class="chapter-badge">第 12 章 · 总结</div>
+      <h1 class="section-title">第一性原理总结</h1>
+      <p class="section-subtitle">从根本原理理解 Linux DNS 解析体系</p>
+
+      <h2>核心问题的本质</h2>
+      <p>DNS 解析需要回答一个基本问题：<strong>"给定一个人类可读的名称，如何找到对应的网络地址？"</strong> Linux 的答案是构建一个分层、可扩展的解析栈。</p>
+
+      <div class="diagram-wrap">
+        <svg width="640" height="380" viewBox="0 0 640 380" xmlns="http://www.w3.org/2000/svg" style="max-width:100%">
+          <!-- Layer 1: API -->
+          <rect x="160" y="10" width="320" height="50" rx="8" fill="rgba(88,166,255,0.1)" stroke="#58a6ff" stroke-width="2"/>
+          <text x="320" y="31" text-anchor="middle" fill="#58a6ff" font-size="13" font-weight="700">第一层：标准 API</text>
+          <text x="320" y="51" text-anchor="middle" fill="#8b949e" font-size="11">getaddrinfo() — POSIX 接口，应用程序的统一入口</text>
+
+          <!-- Layer 2: NSS -->
+          <rect x="100" y="90" width="440" height="50" rx="8" fill="rgba(188,140,255,0.1)" stroke="#bc8cff" stroke-width="2"/>
+          <text x="320" y="111" text-anchor="middle" fill="#bc8cff" font-size="13" font-weight="700">第二层：策略层（NSS）</text>
+          <text x="320" y="131" text-anchor="middle" fill="#8b949e" font-size="11">/etc/nsswitch.conf — 决定"问谁"和"顺序"</text>
+
+          <!-- Layer 3: Modules -->
+          <rect x="20" y="170" width="600" height="60" rx="8" fill="rgba(63,185,80,0.07)" stroke="#3fb950" stroke-width="1.5"/>
+          <text x="320" y="191" text-anchor="middle" fill="#3fb950" font-size="13" font-weight="700">第三层：机制层（NSS 模块）</text>
+          <text x="130" y="217" text-anchor="middle" fill="#8b949e" font-size="11">nss-files</text>
+          <text x="270" y="217" text-anchor="middle" fill="#8b949e" font-size="11">nss-dns</text>
+          <text x="410" y="217" text-anchor="middle" fill="#8b949e" font-size="11">nss-resolve</text>
+          <text x="545" y="217" text-anchor="middle" fill="#8b949e" font-size="11">nss-myhostname</text>
+
+          <!-- Layer 4: Cache -->
+          <rect x="20" y="260" width="600" height="60" rx="8" fill="rgba(210,153,34,0.07)" stroke="#d29922" stroke-width="1.5"/>
+          <text x="320" y="281" text-anchor="middle" fill="#d29922" font-size="13" font-weight="700">第四层：缓存层（可选）</text>
+          <text x="130" y="307" text-anchor="middle" fill="#8b949e" font-size="11">NSCD</text>
+          <text x="270" y="307" text-anchor="middle" fill="#8b949e" font-size="11">systemd-resolved 缓存</text>
+          <text x="450" y="307" text-anchor="middle" fill="#8b949e" font-size="11">Unbound / dnsmasq</text>
+
+          <!-- Layer 5: Network -->
+          <rect x="160" y="350" width="320" height="24" rx="6" fill="#21262d" stroke="#30363d" stroke-width="1.2"/>
+          <text x="320" y="366" text-anchor="middle" fill="#6e7681" font-size="11" font-weight="700">第五层：网络（上游 DNS 服务器）</text>
+
+          <!-- Arrows -->
+          <line x1="320" y1="60" x2="320" y2="86" stroke="#58a6ff" stroke-width="1.5" marker-end="url(#arr)"/>
+          <line x1="320" y1="140" x2="320" y2="166" stroke="#bc8cff" stroke-width="1.5" marker-end="url(#arr)"/>
+          <line x1="320" y1="230" x2="320" y2="256" stroke="#3fb950" stroke-width="1.5" marker-end="url(#arr)"/>
+          <line x1="320" y1="320" x2="320" y2="346" stroke="#d29922" stroke-width="1.5" marker-end="url(#arr)"/>
+        </svg>
+        <p class="diagram-caption">图 11 — Linux DNS 解析五层架构（从第一性原理推导）</p>
+      </div>
+
+      <h2>六个核心设计原则</h2>
+      <div class="flow-step">
+        <div class="flow-num">①</div>
+        <div class="flow-content"><strong>策略与机制分离</strong><br>NSS 框架是"策略"（配置顺序），各 .so 模块是"机制"（具体查询方式）。这使得系统高度可扩展——任何人都可以编写新的 NSS 模块（如 biriukov.dev 示例中用 Rust 编写的自定义模块）。</div>
+      </div>
+      <div class="flow-step">
+        <div class="flow-num">②</div>
+        <div class="flow-content"><strong>缓存职责外包</strong><br>glibc resolver 无内置缓存，这是有意为之。缓存引入了时效性（TTL）和一致性问题，由专门的外部组件（NSCD、systemd-resolved、Unbound）统一管理，各自在适当的层次处理这一权衡。</div>
+      </div>
+      <div class="flow-step">
+        <div class="flow-num">③</div>
+        <div class="flow-content"><strong>最小化 stub resolver</strong><br>glibc resolver 是"存根"——只负责构造 DNS 请求并转发给递归 DNS 服务器，不做递归解析。这符合"单一职责"原则，将复杂的 DNS 递归留给专业服务器完成。</div>
+      </div>
+      <div class="flow-step">
+        <div class="flow-num">④</div>
+        <div class="flow-content"><strong>正负双缓存模式</strong><br>无论是 NSCD 还是 systemd-resolved，均维护独立的正向缓存（成功查询）和负向缓存（失败查询），各有不同 TTL。负缓存防止对不存在域名的重复查询，但 TTL 较短以保证及时更新。</div>
+      </div>
+      <div class="flow-step">
+        <div class="flow-num">⑤</div>
+        <div class="flow-content"><strong>从无状态到有状态的进化</strong><br>glibc nss-dns 每次查询从第一个 nameserver 开始（无状态）；systemd-resolved 维护服务器状态，持续使用同一服务器直到出错（有状态）。有状态设计减少了协议探测开销（feature negotiation），但要求各 DNS 服务器提供等价服务。</div>
+      </div>
+      <div class="flow-step">
+        <div class="flow-num">⑥</div>
+        <div class="flow-content"><strong>/etc/resolv.conf 的"最大公约数"角色</strong><br>resolv.conf 不属于任何单一组件（glibc 原文：technically not part of glibc），但被所有 resolver 遵循。它是整个 DNS 解析栈的"公共合同"——无论上层策略如何演化（NSCD → systemd-resolved），这份合同始终有效。</div>
+      </div>
+
+      <div class="summary-box">
+        <h3>🏁 全文总结</h3>
+        <ul>
+          <li><strong>NSS (nsswitch.conf)</strong>：解析请求的调度引擎，决定查询顺序（hosts: files dns myhostname）。每次 getaddrinfo() 都会重新读取配置，首先尝试连接 NSCD socket。</li>
+          <li><strong>/etc/hosts (nss-files)</strong>：最简单的静态键值映射，无缓存，通常最高优先级，实时生效。</li>
+          <li><strong>glibc Stub Resolver (nss-dns)</strong>：DNS 协议客户端，每次查询重读 resolv.conf，无内置缓存，默认并行 A+AAAA 查询（glibc 2.9+）。</li>
+          <li><strong>systemd-resolved (nss-resolve)</strong>：现代 Linux 的推荐方案，带 TTL-based 缓存、DNSSEC 验证、DoT 支持和 LLMNR/mDNS，通过 127.0.0.53 提供 DNS stub 接口。</li>
+          <li><strong>NSCD</strong>：glibc 的传统配套缓存守护进程，双缓存（正/负向）设计，支持 mmap 共享内存，但历史上以不稳定著称。</li>
+          <li><strong>本地缓存 DNS 服务器（Unbound/dnsmasq）</strong>：最正交的缓存方案，通过标准 DNS 协议为 glibc 提供缓存，控制能力最强。</li>
+        </ul>
+      </div>
+    </section>
+
+  </main>
+</div>
+
+<div class="kbd-hint">
+  <kbd>←</kbd> <kbd>→</kbd> 键盘导航章节
+</div>
+
+<script>
+// ===================== Progress Bar =====================
+function updateProgress() {
+  const scrollTop = window.scrollY;
+  const docHeight = document.documentElement.scrollHeight - window.innerHeight;
+  const pct = docHeight > 0 ? (scrollTop / docHeight) * 100 : 0;
+  document.getElementById('progress-bar').style.width = pct + '%';
+}
+
+// ===================== Active Nav Highlight =====================
+const sections = Array.from(document.querySelectorAll('.section'));
+const navItems = Array.from(document.querySelectorAll('.nav-item'));
+
+function updateActiveNav() {
+  let current = '';
+  const scrollY = window.scrollY + 80;
+  for (const sec of sections) {
+    if (sec.offsetTop <= scrollY) {
+      current = sec.id;
+    }
+  }
+  navItems.forEach(item => {
+    const href = item.getAttribute('href').replace('#', '');
+    item.classList.toggle('active', href === current);
+  });
+}
+
+window.addEventListener('scroll', () => {
+  updateProgress();
+  updateActiveNav();
+}, { passive: true });
+
+// ===================== Sidebar Toggle Groups =====================
+const groupBodies = [];
+document.querySelectorAll('.nav-group').forEach((group, i) => {
+  const body = group.querySelector('.nav-group-body');
+  const header = group.querySelector('.nav-group-header');
+  const maxH = body.scrollHeight + 'px';
+  body.setAttribute('data-max', maxH);
+  groupBodies.push({ body, header, open: true });
+});
+
+function toggleGroup(i) {
+  const g = groupBodies[i];
+  g.open = !g.open;
+  g.header.classList.toggle('collapsed', !g.open);
+  if (g.open) {
+    g.body.style.maxHeight = g.body.getAttribute('data-max');
+    g.body.classList.remove('closed');
+  } else {
+    g.body.style.maxHeight = '0';
+    g.body.classList.add('closed');
+  }
+}
+
+// ===================== Mobile Sidebar =====================
+function toggleSidebar() {
+  const sidebar = document.getElementById('sidebar');
+  const overlay = document.getElementById('overlay');
+  sidebar.classList.toggle('open');
+  overlay.classList.toggle('show');
+}
+function closeSidebar() {
+  document.getElementById('sidebar').classList.remove('open');
+  document.getElementById('overlay').classList.remove('show');
+}
+
+// Close sidebar on nav click (mobile)
+navItems.forEach(item => {
+  item.addEventListener('click', () => {
+    if (window.innerWidth <= 900) closeSidebar();
+  });
+});
+
+// ===================== Keyboard Navigation =====================
+const sectionIds = sections.map(s => s.id);
+
+document.addEventListener('keydown', (e) => {
+  if (e.target.tagName === 'INPUT' || e.target.tagName === 'TEXTAREA') return;
+  const scrollY = window.scrollY + 80;
+  let currentIdx = 0;
+  for (let i = 0; i < sections.length; i++) {
+    if (sections[i].offsetTop <= scrollY) currentIdx = i;
+  }
+
+  if (e.key === 'ArrowRight' || e.key === 'ArrowDown') {
+    const next = sections[Math.min(currentIdx + 1, sections.length - 1)];
+    if (next) next.scrollIntoView({ behavior: 'smooth' });
+    e.preventDefault();
+  } else if (e.key === 'ArrowLeft' || e.key === 'ArrowUp') {
+    const prev = sections[Math.max(currentIdx - 1, 0)];
+    if (prev) prev.scrollIntoView({ behavior: 'smooth' });
+    e.preventDefault();
+  }
+});
+
+// ===================== Init =====================
+updateProgress();
+updateActiveNav();
+
+// Set correct max-heights after load
+window.addEventListener('load', () => {
+  groupBodies.forEach(g => {
+    if (g.open) {
+      g.body.style.maxHeight = g.body.scrollHeight + 'px';
+      g.body.setAttribute('data-max', g.body.scrollHeight + 'px');
+    }
+  });
+});
+</script>
+</body>
+</html>

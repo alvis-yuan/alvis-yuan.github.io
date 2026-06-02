@@ -1,16 +1,26 @@
 #!/usr/bin/env python3
 """
-Scan the repository for directories containing HTML files, create/update index.html
-for each directory, and fix broken relative links by searching for matching filenames
-in the repo.
+更新站点内所有目录的 index.html，并清理 HTML 中失效的本地引用链接。
 
-Each index.html contains:
-  - 模块说明：目录用途简介
-  - 功能模块索引：按主题分组的可读链接（使用页面 <title> 作为链接文字）
-  - 目录索引：完整文件/子目录列表（保留原有行为）
+功能：
+  1. 为每个含 HTML 的目录（及上级目录）生成/更新 index.html
+     - 模块说明、功能模块索引、目录索引
+     2. 子目录链接指向 xxx/index.html
+  3. 扫描 HTML 中的 href/src：
+     - 唯一匹配 → 修正为正确相对路径
+     - 无法解析 → 删除引用（<a> 保留文字；link/script/img 移除标签）
+  4. 跳过构建产物、模板噪声链接（如 minified JS 中的 +n+）
 
-Usage: python3 tools/update_indices.py
+用法:
+  python3 tools/update_indices.py
+  python3 tools/update_indices.py --dry-run
+  ./tools/update_site.sh
+
+可选维护: 编辑本文件中的 DIR_INTROS、MODULE_GROUPS；未配置分组的目录将自动按文件名归类。
 """
+from __future__ import annotations
+
+import argparse
 import fnmatch
 import os
 import re
@@ -21,9 +31,30 @@ ROOT = Path(__file__).resolve().parent.parent
 
 HTML_EXTS = {'.html', '.htm'}
 
-TITLE_RE = re.compile(r'<title[^>]*>(.*?)</title>', re.IGNORECASE | re.DOTALL)
+# 不参与索引/链接扫描的路径片段
+EXCLUDE_DIR_NAMES = {
+    '__pycache__', 'node_modules', '.git', 'network_packet_loss_guide_src',
+    'assets', 'tmp', 'dist',
+}
+EXCLUDE_FILE_NAMES = {'.DS_Store'}
 
-# 目录简介（相对 ROOT 的路径；空字符串表示站点根目录）
+TITLE_RE = re.compile(r'<title[^>]*>(.*?)</title>', re.IGNORECASE | re.DOTALL)
+LINK_RE = re.compile(r'(href|src)=("|\')(?P<url>.*?)(\2)', re.IGNORECASE)
+A_TAG_RE = re.compile(
+    r'<a(\s+[^>]*?\bhref\s*=\s*["\'])(?P<url>[^"\']+)(["\'][^>]*?)>(?P<text>.*?)</a>',
+    re.IGNORECASE | re.DOTALL,
+)
+VOID_TAG_RE = re.compile(
+    r'<(link|script|img|source|video|audio)\b[^>]*\b(href|src)\s*=\s*["\'](?P<url>[^"\']+)["\'][^>]*/?>',
+    re.IGNORECASE,
+)
+
+# 明显不是文件路径的 href（minified 模板、占位符等）
+SKIP_URL_RE = re.compile(
+    r'^(\+|\.{0,2}/?$|javascript:|data:|mailto:|#|/favicon|irc:|\{|\$\()',
+    re.IGNORECASE,
+)
+
 DIR_INTROS = {
     '': '嵌入式与网络协议技术笔记库：蓝牙、WiFi、TLS、网络协议、程序设计、总线、驱动、Buildroot、工具等专题。',
     'program': 'C 语言标准、Linux 系统编程、并发与设计模式等程序设计笔记。',
@@ -34,39 +65,33 @@ DIR_INTROS = {
     'bt/principle': '从第一性原理理解蓝牙底层架构与 LMP 信令。',
     'bt/profile': '经典蓝牙应用层 Profile：RFCOMM、SPP 等。',
     'bt/signaling': 'HCI / LMP / LL / L2CAP / ATT 各层信令与 PDU 参考索引表。',
-    'buildroot': 'Buildroot 嵌入式根文件系统：配置、编译框架、U-Boot 与 GNU Make。',
-    'bus': '硬件总线与接口：USB 专题、串口等。',
+    'buildroot': 'Buildroot 嵌入式根文件系统：配置、编译框架、U-Boot、包编译与 GNU Make。',
+    'bus': '硬件总线与接口：USB、串口、UART 调试等。',
     'bus/usb': 'USB 2.0 / Type-C 规范、描述符、事务、Linux Gadget 与调试。',
     'driver': 'Linux 内核设备模型与常见外设驱动（GPIO、UART、I2C、以太网、IRQ）。',
-    'protocol': '应用层网络协议：MQTT、TCP、DHCP 等专题。',
+    'protocol': '应用层网络协议：MQTT、TCP、DHCP、DNS 等专题。',
     'protocol/dhcp': 'DHCP（RFC 2131）图解导读与规范原文。',
+    'protocol/dns': 'DNS 域名解析流程与实现要点。',
     'protocol/mqtt': 'MQTT v3.1 / v5.0 图解导读、抓包实战与 OASIS 规范原文。',
-    'protocol/tcp': 'TCP 可靠传输、Wireshark 分析与 Linux 内核 IP/邻居/路由子系统。',
+    'protocol/tcp': 'TCP 可靠传输、握手异常分析、Wireshark 与 Linux 网络子系统。',
     'tls': 'TLS/SSL 协议、密码学基础、PKI、证书与握手抓包。',
     'tls/packet': 'TLS 1.2 / 1.3 解密抓包逐包分析。',
     'tls/rfc': 'TLS 相关 RFC 图解导读与规范原文存档。',
-    'tools': '开发工具：Git、抓包（tcpdump/TShark）、网络配置（ip 命令）等。',
-    'wifi': 'IEEE 802.11 标准导读、协议栈、关联/认证、调制技术与跨协议对比。',
+    'tools': '开发工具：Git、Shell 工具链、抓包、网络诊断与 ELF 等。',
+    'wifi': 'IEEE 802.11 标准导读、无线组网、协议栈、关联/认证、调制技术。',
 }
 
-# 功能分组：(分组标题, 分组说明, 文件名/目录名 glob 列表，* 匹配任意)
-# 路径为相对 ROOT；未匹配项归入「其他」
 MODULE_GROUPS = {
-    'protocol': [
-        ('MQTT', 'v3.1 / v5.0 导读与抓包', ['mqtt/']),
-        ('TCP', '可靠传输与 Wireshark 分析', ['tcp/']),
-        ('DHCP', 'RFC 2131 导读', ['dhcp/']),
-    ],
     '': [
         ('蓝牙', 'Core 规范、信令、抓包与专题', ['bt/']),
         ('WiFi / 802.11', '标准、协议栈、认证与调制', ['wifi/']),
         ('TLS / 密码学', '协议演化、RFC、抓包与 PKI', ['tls/']),
-        ('网络协议', 'MQTT、TCP、DHCP', ['protocol/']),
+        ('网络协议', 'MQTT、TCP、DHCP、DNS', ['protocol/']),
         ('程序设计', 'C 语言、系统编程、并发与设计模式', ['program/']),
-        ('总线与接口', 'USB、串口等', ['bus/']),
+        ('总线与接口', 'USB、串口、UART', ['bus/']),
         ('Linux 驱动', '设备模型与外设子系统', ['driver/']),
         ('Buildroot', '嵌入式构建系统', ['buildroot/']),
-        ('工具', 'Git、抓包与网络命令', ['tools/']),
+        ('工具', 'Git、命令行、抓包与诊断', ['tools/']),
     ],
     'program': [
         ('C 语言标准与安全', 'C89/C99/C11 与头文件安全分析', [
@@ -150,7 +175,8 @@ MODULE_GROUPS = {
         ('底层架构', '从第一性原理到 LMP 信令', ['bt_base_architecture_principle.html']),
     ],
     'wifi': [
-        ('802.11 标准导读', '各代 PHY/MAC 标准精读', ['80211*.html']),
+        ('802.11 标准导读', '各代 PHY/MAC 标准精读', ['80211*_spec_overview.html', '80211*_guide.html']),
+        ('无线组网', '802.11 无线网络架构', ['80211_wireless_networks_guide.html']),
         ('协议栈与连接', '栈结构、关联、发现', [
             'wifi_stack_guide.html', 'wifi_association_guide.html',
             'wifi_and_bluetooth_discovery_mechanism_comparison.html',
@@ -189,13 +215,21 @@ MODULE_GROUPS = {
         ('TLS 1.2', 'tls12_decode 抓包分析', ['tls12_decode_analysis.html']),
         ('TLS 1.3', 'tls13_decode 抓包分析', ['tls13_decode_analysis.html']),
     ],
+    'protocol': [
+        ('MQTT', 'v3.1 / v5.0 导读与抓包', ['mqtt/']),
+        ('TCP / IP', '可靠传输、内核子系统、抓包', ['tcp/']),
+        ('DHCP', 'RFC 2131 导读', ['dhcp/']),
+        ('DNS', '域名解析', ['dns/']),
+    ],
     'protocol/mqtt': [
         ('图解导读', 'MQTT v3.1 / v5.0 协议导读', ['mqtt_v*_guide.html']),
         ('抓包实战', '全流程 pcap 分析', ['mqtt_full_flow.html']),
         ('规范原文', 'OASIS / 历史规范 HTML', ['mqtt-v*.html']),
     ],
     'protocol/tcp': [
-        ('协议原理', '可靠传输机制', ['tcp_transmission.html']),
+        ('协议原理', '可靠传输、握手异常', [
+            'tcp_transmission.html', 'tcp_handshake_error_analysis.html',
+        ]),
         ('抓包分析', 'Wireshark 实战', ['wireshark_*.html']),
         ('Linux 网络子系统', 'IP、邻居、路由内核实现', ['*_subsystem_guide.html']),
     ],
@@ -203,9 +237,13 @@ MODULE_GROUPS = {
         ('图解导读', 'RFC 2131 DHCP 导读', ['dhcp_rfc2131_guide.html']),
         ('规范原文', 'RFC 2131 HTML', ['rfc2131.html']),
     ],
+    'protocol/dns': [
+        ('DNS 解析', '域名解析流程与实现', ['dns_resolution_guide.html']),
+    ],
     'bus': [
         ('USB', 'USB 2.0 / Type-C 等专题', ['usb/']),
         ('串口', 'Serial Port Complete 笔记', ['serial_port_complete.html']),
+        ('UART 调试', '串口调试概览', ['uart_debug_overview.html']),
     ],
     'bus/usb': [
         ('规范与接口', 'USB 2.0、Type-C、Micro-USB、接口类型', [
@@ -223,7 +261,10 @@ MODULE_GROUPS = {
     'driver': [
         ('设备模型', 'Linux 设备模型', ['device_model_guide.html']),
         ('GPIO / 中断', '通用 IO 与 IRQ 子系统', ['gpio_guide.html', 'irq_guide.html']),
-        ('串行总线', 'UART、I2C', ['uart_guide.html', 'i2c_guide.html']),
+        ('串行总线', 'UART 子系统、I2C', [
+            'uart_guide.html', 'uart_subsystem_guide.html', 'i2c_guide.html',
+        ]),
+        ('调试专题', 'I2C 等外设调试', ['i2c_debug_overview.html']),
         ('网络', '以太网 MAC/PHY', ['eth_guide.html']),
     ],
     'buildroot': [
@@ -231,15 +272,29 @@ MODULE_GROUPS = {
         ('编译系统', '框架与官方手册笔记', [
             'buildroot_build_frame.html', 'buildroot_build_system.html',
         ]),
+        ('包编译', '单包编译流程分析', ['buildroot_package_compilation_analysis.html']),
         ('Bootloader', 'U-Boot 编译集成', ['buildroot_uboot_build.html']),
         ('构建工具', 'GNU Make 内部流程', ['make_internal.html']),
     ],
     'tools': [
         ('版本控制', 'Git 原理与常用命令', ['git_guide.html']),
         ('抓包与分析', 'tcpdump、TShark', ['tcpdump_guide.html', 'tshark_guide.html']),
-        ('网络配置', 'iproute2 ip 命令', ['ip_command_guide.html']),
+        ('网络诊断', 'ip、ss、curl、丢包排查', [
+            'ip_command_guide.html', 'ss_command_guide.html', 'curl_http_guide.html',
+            'network_packet_loss_guide.html',
+        ]),
+        ('文本与查找', 'grep、sed、awk、find', [
+            'grep_command_guide.html', 'sed_command_guide.html',
+            'awk_command_guide.html', 'find_command_guide.html',
+        ]),
+        ('调试与二进制', 'strace、ELF', ['strace_command_guide.html', 'elf_overview.html']),
     ],
 }
+
+
+def should_skip_path(path: Path) -> bool:
+    parts = path.relative_to(ROOT).parts
+    return any(p in EXCLUDE_DIR_NAMES for p in parts)
 
 
 def is_local_link(href: str) -> bool:
@@ -250,6 +305,8 @@ def is_local_link(href: str) -> bool:
         return False
     if href.startswith('/'):
         return False
+    if SKIP_URL_RE.search(href):
+        return False
     p = urlparse(href)
     if p.scheme and p.scheme not in ('',):
         return False
@@ -258,11 +315,25 @@ def is_local_link(href: str) -> bool:
     return True
 
 
+def looks_like_file_reference(url: str) -> bool:
+    """仅处理像文件/目录路径的引用，忽略 minified 代码里的噪声。"""
+    clean = url.split('?', 1)[0].split('#', 1)[0].strip()
+    if not clean or clean in ('.', '..'):
+        return False
+    if '/' in clean or '.' in clean:
+        return True
+    # 无扩展名的短名可能是目录
+    return len(clean) > 2 and re.match(r'^[\w.\-]+$', clean) is not None
+
+
 def find_all_html_files():
     files = []
     for p in ROOT.rglob('*'):
-        if p.is_file() and p.suffix.lower() in HTML_EXTS:
-            files.append(p)
+        if not p.is_file() or p.suffix.lower() not in HTML_EXTS:
+            continue
+        if should_skip_path(p):
+            continue
+        files.append(p)
     return files
 
 
@@ -273,7 +344,38 @@ def build_name_index(files):
     return by_name
 
 
-LINK_RE = re.compile(r'(href|src)=("|\')(?P<url>.*?)(\2)', re.IGNORECASE)
+def resolve_link_target(src: Path, url: str) -> Path | None:
+    clean = url.split('?', 1)[0].split('#', 1)[0].strip()
+    if not clean:
+        return None
+    candidate = (src.parent / clean).resolve()
+    if candidate.exists():
+        return candidate
+    base = Path(clean).name
+    if base and '.' not in base:
+        for ext in ('.html', '.htm', '.txt'):
+            c = (src.parent / f'{base}{ext}').resolve()
+            if c.exists():
+                return c
+    return None
+
+
+def pick_fix_target(src: Path, url: str, name_index: dict) -> Path | None:
+    resolved = resolve_link_target(src, url)
+    if resolved:
+        return resolved
+    base = os.path.basename(url.split('?', 1)[0].split('#', 1)[0])
+    if not base:
+        return None
+    matches = name_index.get(base, [])
+    if len(matches) == 1:
+        return matches[0]
+    if '.' not in base:
+        for ext in ('.html', '.htm'):
+            matches = name_index.get(f'{base}{ext}', [])
+            if len(matches) == 1:
+                return matches[0]
+    return None
 
 
 def extract_page_title(path: Path) -> str:
@@ -291,12 +393,10 @@ def extract_page_title(path: Path) -> str:
 
 
 def dir_index_href(dirname: str) -> str:
-    """子目录链接显式指向 index.html，便于静态托管与本地打开。"""
     return f'{dirname.rstrip("/")}/index.html'
 
 
 def dir_link_variants(name: str):
-    """目录条目在匹配分组时同时识别 dir/ 与 dir/index.html。"""
     variants = {name}
     if name.endswith('/index.html'):
         variants.add(name[: -len('index.html')] + '/')
@@ -316,10 +416,8 @@ def matches_pattern(name: str, pattern: str) -> bool:
 
 
 def assign_to_groups(items, groups_spec):
-    """Return list of (title, desc, [(href, label, kind), ...])."""
     remaining = list(items)
     result = []
-
     for title, desc, patterns in groups_spec:
         matched = []
         still = []
@@ -332,10 +430,42 @@ def assign_to_groups(items, groups_spec):
         if matched:
             result.append((title, desc, matched))
         remaining = still
-
     if remaining:
         result.append(('其他', '未归入上述分类的条目', remaining))
     return result
+
+
+def auto_module_groups(items):
+    """未在 MODULE_GROUPS 中配置的目录：按文件名启发式分组。"""
+    files = [(t, h, k) for t, h, k in items if k == 'file']
+    dirs = [(t, h, k) for t, h, k in items if k == 'dir']
+    buckets = {
+        '导读 / 指南': [],
+        '概览': [],
+        '抓包 / 流程': [],
+        '规范 / RFC': [],
+        '子目录': dirs,
+    }
+    rest = []
+    for entry in files:
+        name = entry[0].lower()
+        if 'overview' in name or 'architecture' in name:
+            buckets['概览'].append(entry)
+        elif 'flow' in name or 'packet' in name or 'pcap' in name:
+            buckets['抓包 / 流程'].append(entry)
+        elif name.startswith('rfc') or 'rfc' in name:
+            buckets['规范 / RFC'].append(entry)
+        elif 'guide' in name or name.endswith('_guide.html'):
+            buckets['导读 / 指南'].append(entry)
+        else:
+            rest.append(entry)
+    if rest:
+        buckets['其他文档'] = rest
+    groups = []
+    for title, members in buckets.items():
+        if members:
+            groups.append((title, '', members))
+    return groups
 
 
 def dir_rel_path(d: Path) -> str:
@@ -348,7 +478,6 @@ def extract_description(dirpath: Path) -> str:
     rel = dir_rel_path(dirpath)
     if rel in DIR_INTROS:
         return DIR_INTROS[rel]
-
     candidates = []
     for p in dirpath.iterdir():
         if not p.is_file():
@@ -395,8 +524,7 @@ def link_label(d: Path, href: str, kind: str) -> str:
         rel = dir_rel_path(sub)
         intro = DIR_INTROS.get(rel, '')
         if intro:
-            name = sub.name or rel or '/'
-            return f'{name} — {intro}'
+            return f'{sub.name or rel or "/"} — {intro}'
         idx = sub / 'index.html'
         if idx.exists():
             t = extract_page_title(idx)
@@ -412,10 +540,7 @@ def link_label(d: Path, href: str, kind: str) -> str:
 def render_functional_index(d: Path, items):
     rel = dir_rel_path(d)
     groups_spec = MODULE_GROUPS.get(rel)
-    if not groups_spec:
-        return []
-
-    grouped = assign_to_groups(items, groups_spec)
+    grouped = assign_to_groups(items, groups_spec) if groups_spec else auto_module_groups(items)
     lines = ['<section>', '<h2>功能模块索引</h2>']
     for gtitle, gdesc, members in grouped:
         if gtitle == '其他' and len(members) == len(items):
@@ -432,11 +557,13 @@ def render_functional_index(d: Path, items):
     return lines
 
 
-def write_index_for_dir(d: Path):
+def write_index_for_dir(d: Path, dry_run: bool = False) -> bool:
     items = []
-    skip_names = {'__pycache__', 'node_modules'}
+    skip_names = EXCLUDE_DIR_NAMES
     for p in sorted(d.iterdir(), key=lambda x: (x.is_file(), x.name.lower())):
         if p.name.lower().startswith('.') or p.name in skip_names:
+            continue
+        if should_skip_path(p):
             continue
         if p.is_dir():
             if (p / 'index.html').exists():
@@ -456,82 +583,131 @@ def write_index_for_dir(d: Path):
         '<head><meta charset="utf-8"><title>Index of %s</title></head>' % (d.name or '/'),
         '<body>',
         '<h1>Index of %s</h1>' % (d.name or '/'),
+        '<section>',
+        '<h2>模块说明</h2>',
+        f'<p>{desc}</p>' if desc else '<p>（此处为模块说明占位，建议编辑以说明本目录功能/用途）</p>',
+        '</section>',
     ]
-
-    lines.append('<section>')
-    lines.append('<h2>模块说明</h2>')
-    if desc:
-        lines.append(f'<p>{desc}</p>')
-    else:
-        lines.append('<p>（此处为模块说明占位，建议编辑以说明本目录功能/用途）</p>')
-    lines.append('</section>')
-
     if items:
         lines.extend(render_functional_index(d, items))
-
     if items:
-        lines.append('<nav>')
-        lines.append('<h2>目录索引</h2>')
-        lines.append('<ul>')
+        lines.extend([
+            '<nav>',
+            '<h2>目录索引</h2>',
+            '<ul>',
+        ])
         for text, href, kind in items:
             lines.append(f'<li><a href="{href}">{text}</a></li>')
-        lines.append('</ul>')
-        lines.append('</nav>')
-
+        lines.extend(['</ul>', '</nav>'])
     lines += ['</body>', '</html>']
     index_path = d / 'index.html'
-    index_path.write_text('\n'.join(lines), encoding='utf-8')
+    if not dry_run:
+        index_path.write_text('\n'.join(lines), encoding='utf-8')
     return True
 
 
-def scan_and_fix_links(all_files, name_index):
+def classify_url(src: Path, url: str, name_index: dict) -> tuple[str | None, str]:
+    """返回 (新路径或 None, 状态: skip|ok|fix|remove)。"""
+    if not is_local_link(url) or not looks_like_file_reference(url):
+        return None, 'skip'
+    resolved = resolve_link_target(src, url)
+    if resolved:
+        rel = os.path.relpath(resolved, start=src.parent)
+        if rel == url.split('?', 1)[0].split('#', 1)[0]:
+            return None, 'ok'
+        return rel, 'fix'
+    target = pick_fix_target(src, url, name_index)
+    if target:
+        return os.path.relpath(target, start=src.parent), 'fix'
+    return None, 'remove'
+
+
+def repair_html_links(all_files, name_index: dict, dry_run: bool = False):
+    """修复或删除失效本地链接。返回 (fixed, removed, broken)。"""
+    fixed = removed = 0
     broken = []
-    multiple = []
-    fixed_count = 0
+
     for src in all_files:
-        text = src.read_text(encoding='utf-8', errors='ignore')
+        if src.name.lower().startswith('index.'):
+            continue
+        try:
+            text = src.read_text(encoding='utf-8', errors='ignore')
+        except OSError:
+            continue
         changed = False
 
-        def repl(m):
-            nonlocal changed, fixed_count
-            attr = m.group(1)
+        def repl_a(m):
+            nonlocal changed, fixed, removed
             url = m.group('url')
-            if not is_local_link(url):
+            new_path, status = classify_url(src, url, name_index)
+            if status in ('skip', 'ok'):
                 return m.group(0)
-            candidate = (src.parent / url).resolve()
-            if candidate.exists():
-                return m.group(0)
-            url_clean = url.split('?', 1)[0].split('#', 1)[0]
-            base = os.path.basename(url_clean)
-            if not base:
-                broken.append((src, url))
-                return m.group(0)
-            matches = name_index.get(base, [])
-            if len(matches) == 1:
-                target = matches[0]
-                rel = os.path.relpath(target, start=src.parent)
+            if status == 'fix':
                 changed = True
-                fixed_count += 1
-                return f'{attr}={m.group(2)}{rel}{m.group(2)}'
-            if len(matches) > 1:
-                multiple.append((src, url, matches))
-                return m.group(0)
-            broken.append((src, url))
-            return m.group(0)
+                fixed += 1
+                return f'<a{m.group(1)}{new_path}{m.group(3)}>{m.group("text")}</a>'
+            changed = True
+            removed += 1
+            return m.group('text')
 
-        new_text = LINK_RE.sub(repl, text)
-        if changed:
-            src.write_text(new_text, encoding='utf-8')
-    return fixed_count, broken, multiple
+        text = A_TAG_RE.sub(repl_a, text)
+
+        def repl_void(m):
+            nonlocal changed, fixed, removed
+            url = m.group('url')
+            new_path, status = classify_url(src, url, name_index)
+            if status in ('skip', 'ok'):
+                return m.group(0)
+            if status == 'fix':
+                changed = True
+                fixed += 1
+                return re.sub(
+                    r'(href|src)\s*=\s*["\'][^"\']+["\']',
+                    f'{m.group(2)}="{new_path}"',
+                    m.group(0),
+                    count=1,
+                    flags=re.I,
+                )
+            changed = True
+            removed += 1
+            return ''
+
+        text = VOID_TAG_RE.sub(repl_void, text)
+
+        def repl_attr(m):
+            nonlocal changed, fixed, removed
+            attr, url = m.group(1), m.group('url')
+            new_path, status = classify_url(src, url, name_index)
+            if status in ('skip', 'ok'):
+                return m.group(0)
+            if status == 'fix':
+                changed = True
+                fixed += 1
+                return f'{attr}={m.group(2)}{new_path}{m.group(2)}'
+            changed = True
+            removed += 1
+            return ''
+
+        text = LINK_RE.sub(repl_attr, text)
+
+        if changed and not dry_run:
+            src.write_text(text, encoding='utf-8')
+
+    return fixed, removed
 
 
 def collect_index_dirs(all_html):
-    """Directories that need index.html: HTML parents and ancestors up to ROOT."""
-    dirs = set(p.parent for p in all_html)
+    dirs = set()
+    for p in all_html:
+        if should_skip_path(p):
+            continue
+        dirs.add(p.parent)
     extra = set()
     for d in dirs:
         p = d.parent
         while p >= ROOT:
+            if any(part in EXCLUDE_DIR_NAMES for part in p.relative_to(ROOT).parts):
+                break
             extra.add(p)
             if p == ROOT:
                 break
@@ -540,44 +716,37 @@ def collect_index_dirs(all_html):
 
 
 def main():
+    parser = argparse.ArgumentParser(description='更新目录索引并清理失效 HTML 链接')
+    parser.add_argument('--dry-run', action='store_true', help='只报告，不写文件')
+    parser.add_argument('--indices-only', action='store_true', help='仅更新 index.html，不修改正文链接')
+    args = parser.parse_args()
+
     all_html = find_all_html_files()
     name_index = build_name_index(all_html)
 
     dirs = collect_index_dirs(all_html)
-    created = 0
-    updated = 0
+    index_count = 0
     for d in sorted(dirs):
-        p = d / 'index.html'
-        ok = write_index_for_dir(d)
-        if ok:
-            if p.exists():
-                updated += 1
-            else:
-                created += 1
+        if should_skip_path(d) and d != ROOT:
+            continue
+        if write_index_for_dir(d, dry_run=args.dry_run):
+            index_count += 1
 
-    fixed_count, broken, multiple = scan_and_fix_links(all_html, name_index)
-
-    top = ROOT / 'index.htm'
-    if top.exists():
-        fixed2, broken2, multiple2 = scan_and_fix_links([top], name_index)
-        fixed_count += fixed2
-        broken += broken2
-        multiple += multiple2
+    fixed = removed = 0
+    if not args.indices_only:
+        fixed, removed = repair_html_links(
+            all_html, name_index, dry_run=args.dry_run
+        )
 
     print('Summary:')
-    print('  directories processed:', len(dirs))
-    print('  index.html created/updated: created=%d updated=%d' % (created, updated))
-    print('  links fixed:', fixed_count)
-    print('  unresolved broken links:', len(broken))
-    if broken:
-        for src, url in broken[:20]:
-            print('    MISSING in %s -> %s' % (src.relative_to(ROOT), url))
-    if multiple:
-        print('  ambiguous links (multiple candidates):', len(multiple))
-        for src, url, matches in multiple[:20]:
-            print('    AMBIG %s -> %s candidates:' % (src.relative_to(ROOT), url))
-            for m in matches[:5]:
-                print('      - %s' % m.relative_to(ROOT))
+    print('  HTML files scanned:', len(all_html))
+    print('  index.html dirs processed:', index_count)
+    if args.dry_run:
+        print('  (dry-run: no files written)')
+    if not args.indices_only:
+        print('  links fixed (unique filename match):', fixed)
+        print('  links removed (unresolvable):', removed)
+    print('Done.')
 
 
 if __name__ == '__main__':
