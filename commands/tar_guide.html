@@ -1,0 +1,1837 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Linux tar 命令深度解析 — 原理、场景与示例</title>
+<style>
+  :root {
+    --bg: #0f1117;
+    --bg2: #181c27;
+    --bg3: #1e2336;
+    --accent: #4f9eff;
+    --accent2: #7c5cfc;
+    --accent3: #43e97b;
+    --accent4: #f7971e;
+    --text: #e2e8f0;
+    --text2: #94a3b8;
+    --text3: #64748b;
+    --border: #2d3655;
+    --code-bg: #0d1117;
+    --tag-bg: #1a2340;
+    --nav-w: 270px;
+    --header-h: 56px;
+  }
+  *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+
+  html { scroll-behavior: smooth; font-size: 16px; }
+
+  body {
+    background: var(--bg);
+    color: var(--text);
+    font-family: 'Segoe UI', 'PingFang SC', 'Microsoft YaHei', 'Noto Sans SC', sans-serif;
+    line-height: 1.75;
+    overflow-x: hidden;
+  }
+
+  /* ========== PROGRESS BAR ========== */
+  #progress-bar {
+    position: fixed;
+    top: 0; left: 0;
+    height: 3px;
+    width: 0%;
+    background: linear-gradient(90deg, var(--accent), var(--accent2));
+    z-index: 9999;
+    transition: width 0.1s linear;
+  }
+
+  /* ========== TOP HEADER ========== */
+  #top-header {
+    position: fixed;
+    top: 3px; left: 0; right: 0;
+    height: var(--header-h);
+    background: rgba(15,17,23,0.95);
+    backdrop-filter: blur(12px);
+    border-bottom: 1px solid var(--border);
+    display: flex;
+    align-items: center;
+    padding: 0 20px;
+    z-index: 1000;
+    gap: 12px;
+  }
+  #hamburger {
+    display: none;
+    background: none;
+    border: 1px solid var(--border);
+    color: var(--text);
+    padding: 6px 10px;
+    border-radius: 6px;
+    cursor: pointer;
+    font-size: 18px;
+    line-height: 1;
+  }
+  #header-title {
+    font-weight: 700;
+    font-size: 1rem;
+    color: var(--accent);
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+  }
+  #header-chapter {
+    font-size: 0.8rem;
+    color: var(--text2);
+    margin-left: auto;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    max-width: 40%;
+  }
+  #kbd-hint {
+    font-size: 0.72rem;
+    color: var(--text3);
+    white-space: nowrap;
+    display: flex;
+    gap: 4px;
+    align-items: center;
+  }
+  #kbd-hint kbd {
+    background: var(--bg3);
+    border: 1px solid var(--border);
+    border-radius: 4px;
+    padding: 1px 6px;
+    font-size: 0.7rem;
+    color: var(--text2);
+  }
+
+  /* ========== LAYOUT ========== */
+  #layout {
+    display: flex;
+    margin-top: calc(var(--header-h) + 3px);
+    min-height: calc(100vh - var(--header-h) - 3px);
+  }
+
+  /* ========== SIDEBAR NAV ========== */
+  #sidebar {
+    width: var(--nav-w);
+    flex-shrink: 0;
+    position: fixed;
+    top: calc(var(--header-h) + 3px);
+    left: 0;
+    bottom: 0;
+    overflow-y: auto;
+    background: var(--bg2);
+    border-right: 1px solid var(--border);
+    padding: 16px 0 40px;
+    z-index: 800;
+    transition: transform 0.3s ease;
+  }
+  #sidebar::-webkit-scrollbar { width: 4px; }
+  #sidebar::-webkit-scrollbar-thumb { background: var(--border); border-radius: 4px; }
+
+  .nav-section-header {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    padding: 8px 16px 4px;
+    font-size: 0.68rem;
+    font-weight: 700;
+    letter-spacing: 0.12em;
+    text-transform: uppercase;
+    color: var(--text3);
+    cursor: pointer;
+    user-select: none;
+    border-top: 1px solid var(--border);
+    margin-top: 8px;
+  }
+  .nav-section-header:first-child { border-top: none; margin-top: 0; }
+  .nav-toggle-icon { font-size: 0.7rem; transition: transform 0.25s; }
+  .nav-section.collapsed .nav-toggle-icon { transform: rotate(-90deg); }
+  .nav-items { overflow: hidden; transition: max-height 0.3s ease; }
+  .nav-section.collapsed .nav-items { max-height: 0 !important; }
+
+  .nav-link {
+    display: block;
+    padding: 6px 16px 6px 20px;
+    font-size: 0.82rem;
+    color: var(--text2);
+    text-decoration: none;
+    border-left: 3px solid transparent;
+    transition: all 0.2s;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+  }
+  .nav-link:hover { color: var(--text); background: rgba(79,158,255,0.08); }
+  .nav-link.active {
+    color: var(--accent);
+    border-left-color: var(--accent);
+    background: rgba(79,158,255,0.12);
+    font-weight: 600;
+  }
+  .nav-badge {
+    display: inline-block;
+    background: var(--tag-bg);
+    color: var(--accent);
+    border-radius: 10px;
+    font-size: 0.65rem;
+    padding: 1px 6px;
+    margin-left: 4px;
+    font-weight: 700;
+  }
+
+  /* ========== MAIN CONTENT ========== */
+  #main {
+    margin-left: var(--nav-w);
+    flex: 1;
+    min-width: 0;
+    padding: 40px 48px 80px;
+    max-width: 900px;
+  }
+
+  /* ========== SECTIONS ========== */
+  .chapter {
+    margin-bottom: 80px;
+    scroll-margin-top: calc(var(--header-h) + 20px);
+  }
+  .chapter-badge {
+    display: inline-block;
+    background: linear-gradient(135deg, var(--accent), var(--accent2));
+    color: #fff;
+    font-size: 0.7rem;
+    font-weight: 700;
+    padding: 2px 10px;
+    border-radius: 12px;
+    margin-bottom: 8px;
+    letter-spacing: 0.08em;
+  }
+  h1.page-title {
+    font-size: 2rem;
+    font-weight: 800;
+    color: #fff;
+    line-height: 1.3;
+    margin-bottom: 16px;
+  }
+  h2.chap-title {
+    font-size: 1.45rem;
+    font-weight: 700;
+    color: #fff;
+    margin-bottom: 18px;
+    padding-bottom: 10px;
+    border-bottom: 2px solid var(--border);
+    display: flex;
+    align-items: center;
+    gap: 10px;
+  }
+  h2.chap-title .num {
+    background: linear-gradient(135deg, var(--accent), var(--accent2));
+    -webkit-background-clip: text;
+    -webkit-text-fill-color: transparent;
+    font-size: 1.1rem;
+  }
+  h3 {
+    font-size: 1.05rem;
+    font-weight: 700;
+    color: var(--accent);
+    margin: 24px 0 10px;
+  }
+  p { margin-bottom: 14px; color: var(--text); }
+
+  /* ========== SOURCE LINK ========== */
+  .source-link {
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+    font-size: 0.75rem;
+    color: var(--text3);
+    text-decoration: none;
+    border: 1px solid var(--border);
+    padding: 3px 10px;
+    border-radius: 20px;
+    margin-bottom: 20px;
+    transition: all 0.2s;
+  }
+  .source-link:hover { color: var(--accent); border-color: var(--accent); }
+
+  /* ========== CODE ========== */
+  pre {
+    background: var(--code-bg);
+    border: 1px solid var(--border);
+    border-radius: 10px;
+    padding: 18px 20px;
+    overflow-x: auto;
+    margin: 16px 0;
+    position: relative;
+    font-size: 0.875rem;
+    line-height: 1.65;
+  }
+  pre::-webkit-scrollbar { height: 5px; }
+  pre::-webkit-scrollbar-thumb { background: var(--border); border-radius: 4px; }
+  code {
+    font-family: 'JetBrains Mono', 'Fira Code', 'Cascadia Code', 'Consolas', monospace;
+    color: #a8daff;
+  }
+  pre code { color: #cdd6f4; }
+  .cmd-comment { color: var(--text3); }
+  .cmd-flag { color: #f38ba8; }
+  .cmd-path { color: var(--accent3); }
+  .cmd-kw { color: #cba6f7; }
+  .cmd-str { color: #a6e3a1; }
+  .cmd-num { color: #fab387; }
+
+  /* ========== INFO BOXES ========== */
+  .info-box {
+    border-radius: 10px;
+    padding: 16px 18px;
+    margin: 18px 0;
+    border-left: 4px solid;
+    font-size: 0.9rem;
+  }
+  .info-box.tip { border-color: var(--accent3); background: rgba(67,233,123,0.06); }
+  .info-box.warn { border-color: var(--accent4); background: rgba(247,151,30,0.06); }
+  .info-box.note { border-color: var(--accent); background: rgba(79,158,255,0.06); }
+  .info-box.danger { border-color: #f38ba8; background: rgba(243,139,168,0.06); }
+  .info-box strong { font-weight: 700; }
+  .info-box.tip strong { color: var(--accent3); }
+  .info-box.warn strong { color: var(--accent4); }
+  .info-box.note strong { color: var(--accent); }
+  .info-box.danger strong { color: #f38ba8; }
+
+  /* ========== TABLES ========== */
+  .table-wrap { overflow-x: auto; margin: 18px 0; border-radius: 10px; border: 1px solid var(--border); }
+  table { width: 100%; border-collapse: collapse; font-size: 0.875rem; }
+  th { background: var(--bg3); color: var(--accent); font-weight: 700; padding: 10px 14px; text-align: left; white-space: nowrap; }
+  td { padding: 9px 14px; border-top: 1px solid var(--border); vertical-align: top; }
+  tr:hover td { background: rgba(79,158,255,0.04); }
+
+  /* ========== SUMMARY BOX ========== */
+  .summary-box {
+    background: linear-gradient(135deg, rgba(79,158,255,0.07), rgba(124,92,252,0.07));
+    border: 1px solid rgba(79,158,255,0.25);
+    border-radius: 12px;
+    padding: 20px 22px;
+    margin-top: 28px;
+  }
+  .summary-box h4 {
+    font-size: 0.9rem;
+    font-weight: 700;
+    color: var(--accent);
+    margin-bottom: 10px;
+    display: flex;
+    align-items: center;
+    gap: 6px;
+  }
+  .summary-box ul { padding-left: 18px; }
+  .summary-box li { margin-bottom: 5px; font-size: 0.875rem; color: var(--text2); }
+
+  /* ========== TAGS ========== */
+  .tag {
+    display: inline-block;
+    font-size: 0.7rem;
+    font-weight: 700;
+    padding: 2px 8px;
+    border-radius: 6px;
+    margin: 2px;
+  }
+  .tag-blue { background: rgba(79,158,255,0.15); color: var(--accent); }
+  .tag-green { background: rgba(67,233,123,0.15); color: var(--accent3); }
+  .tag-orange { background: rgba(247,151,30,0.15); color: var(--accent4); }
+  .tag-purple { background: rgba(124,92,252,0.15); color: #a78bfa; }
+
+  /* ========== SCENARIO CARD ========== */
+  .scenario-num {
+    display: inline-flex;
+    width: 32px; height: 32px;
+    border-radius: 50%;
+    align-items: center;
+    justify-content: center;
+    font-weight: 800;
+    font-size: 0.85rem;
+    background: linear-gradient(135deg, var(--accent), var(--accent2));
+    color: #fff;
+    flex-shrink: 0;
+  }
+
+  /* ========== SVG DIAGRAMS ========== */
+  .svg-wrap {
+    background: var(--code-bg);
+    border: 1px solid var(--border);
+    border-radius: 10px;
+    padding: 20px;
+    margin: 20px 0;
+    overflow-x: auto;
+    text-align: center;
+  }
+  svg text { font-family: 'Segoe UI', 'PingFang SC', sans-serif; }
+
+  /* ========== OVERLAY ========== */
+  #overlay {
+    display: none;
+    position: fixed;
+    inset: 0;
+    background: rgba(0,0,0,0.6);
+    z-index: 790;
+  }
+
+  /* ========== MOBILE ========== */
+  @media (max-width: 768px) {
+    #hamburger { display: block; }
+    #kbd-hint { display: none; }
+    #sidebar {
+      transform: translateX(calc(-1 * var(--nav-w)));
+    }
+    #sidebar.open {
+      transform: translateX(0);
+      box-shadow: 4px 0 24px rgba(0,0,0,0.5);
+    }
+    #overlay.show { display: block; }
+    #main {
+      margin-left: 0;
+      padding: 24px 16px 60px;
+      max-width: 100%;
+    }
+    h1.page-title { font-size: 1.5rem; }
+    h2.chap-title { font-size: 1.2rem; }
+    #header-chapter { display: none; }
+  }
+  @media (max-width: 1100px) and (min-width: 769px) {
+    #main { padding: 30px 28px 60px; }
+  }
+</style>
+</head>
+<body>
+
+<div id="progress-bar"></div>
+<div id="overlay"></div>
+
+<!-- TOP HEADER -->
+<header id="top-header">
+  <button id="hamburger" aria-label="菜单">☰</button>
+  <div id="header-title">🗃 Linux tar 命令深度解析</div>
+  <div id="header-chapter">原理 · 场景 · 示例</div>
+  <div id="kbd-hint"><kbd>←</kbd><kbd>→</kbd> 章节跳转</div>
+</header>
+
+<!-- SIDEBAR -->
+<nav id="sidebar" aria-label="章节导航">
+
+  <div class="nav-section" id="sec-intro">
+    <div class="nav-section-header" onclick="toggleSection('sec-intro')">
+      <span>📖 概述与原理</span>
+      <span class="nav-toggle-icon">▾</span>
+    </div>
+    <div class="nav-items">
+      <a class="nav-link" href="#ch0">引言 — tar 是什么</a>
+      <a class="nav-link" href="#ch-principle">归档格式底层原理</a>
+      <a class="nav-link" href="#ch-compress">压缩器集成原理</a>
+    </div>
+  </div>
+
+  <div class="nav-section" id="sec-scenarios">
+    <div class="nav-section-header" onclick="toggleSection('sec-scenarios')">
+      <span>🛠 Top 10 使用场景</span>
+      <span class="nav-toggle-icon">▾</span>
+    </div>
+    <div class="nav-items">
+      <a class="nav-link" href="#ch1"><span class="nav-badge">01</span> 创建归档与压缩</a>
+      <a class="nav-link" href="#ch2"><span class="nav-badge">02</span> 解压与提取</a>
+      <a class="nav-link" href="#ch3"><span class="nav-badge">03</span> 查看内容</a>
+      <a class="nav-link" href="#ch4"><span class="nav-badge">04</span> 排除文件/目录</a>
+      <a class="nav-link" href="#ch5"><span class="nav-badge">05</span> 管道流式传输</a>
+      <a class="nav-link" href="#ch6"><span class="nav-badge">06</span> 增量备份</a>
+      <a class="nav-link" href="#ch7"><span class="nav-badge">07</span> 追加与更新</a>
+      <a class="nav-link" href="#ch8"><span class="nav-badge">08</span> 保留权限与属性</a>
+      <a class="nav-link" href="#ch9"><span class="nav-badge">09</span> 路径转换提取</a>
+      <a class="nav-link" href="#ch10"><span class="nav-badge">10</span> 稀疏文件处理</a>
+    </div>
+  </div>
+
+  <div class="nav-section" id="sec-ref">
+    <div class="nav-section-header" onclick="toggleSection('sec-ref')">
+      <span>📋 参考速查</span>
+      <span class="nav-toggle-icon">▾</span>
+    </div>
+    <div class="nav-items">
+      <a class="nav-link" href="#ch-ref">选项速查表</a>
+      <a class="nav-link" href="#ch-first">第一性原理总结</a>
+    </div>
+  </div>
+
+</nav>
+
+<!-- MAIN -->
+<main id="main">
+
+  <!-- ======================== INTRO ======================== -->
+  <section class="chapter" id="ch0">
+    <div class="chapter-badge">INTRODUCTION</div>
+    <h1 class="page-title">Linux tar 命令<br>原理、场景与示例深度解析</h1>
+    <a class="source-link" href="https://man7.org/linux/man-pages/man1/tar.1.html" target="_blank" rel="noopener">
+      📄 原文来源：man7.org — tar(1) Linux Manual Page
+    </a>
+    <a class="source-link" href="https://www.gnu.org/software/tar/manual/" target="_blank" rel="noopener">
+      📄 原文来源：GNU tar 官方手册 1.35
+    </a>
+
+    <p>
+      <code>tar</code>（Tape Archiver）是 GNU/Linux 系统中历史最悠久、使用最广泛的归档工具。根据 GNU tar 官方手册：
+    </p>
+    <blockquote style="border-left:3px solid var(--accent);padding:8px 16px;color:var(--text2);margin:14px 0;font-style:italic;">
+      "GNU tar is an archiving program designed to store multiple files in a single file (an archive), and to manipulate such archives. The archive can be either a regular file or a device (e.g., a tape drive, hence the name of the program, which stands for tape archiver)."
+      <br><small>— man7.org/linux/man-pages/man1/tar.1.html</small>
+    </blockquote>
+
+    <p>
+      tar 本身<strong>不进行压缩</strong>——它是一个纯粹的归档工具，将多个文件打包为单一字节流。压缩功能由外部程序（gzip、bzip2、xz、zstd 等）通过管道实现。这种"单一职责"的设计正是 Unix 哲学的体现。
+    </p>
+
+    <div class="info-box note">
+      <strong>📌 命名溯源：</strong> tar = <strong>T</strong>ape <strong>Ar</strong>chiver，最初专为磁带备份设计。如今更多用于磁盘文件、网络传输，但名称沿用至今。
+    </div>
+
+    <div class="svg-wrap">
+      <!-- tar 概念图 -->
+      <svg width="520" height="180" viewBox="0 0 520 180" xmlns="http://www.w3.org/2000/svg">
+        <!-- 多个输入文件 -->
+        <rect x="10" y="30" width="80" height="36" rx="6" fill="#1e2336" stroke="#4f9eff" stroke-width="1.5"/>
+        <text x="50" y="52" text-anchor="middle" fill="#a8daff" font-size="11">file_a.log</text>
+        <rect x="10" y="76" width="80" height="36" rx="6" fill="#1e2336" stroke="#4f9eff" stroke-width="1.5"/>
+        <text x="50" y="98" text-anchor="middle" fill="#a8daff" font-size="11">image.png</text>
+        <rect x="10" y="122" width="80" height="36" rx="6" fill="#1e2336" stroke="#4f9eff" stroke-width="1.5"/>
+        <text x="50" y="144" text-anchor="middle" fill="#a8daff" font-size="11">config/</text>
+
+        <!-- 箭头到tar -->
+        <line x1="92" y1="48" x2="170" y2="90" stroke="#4f9eff" stroke-width="1.5" marker-end="url(#arr)"/>
+        <line x1="92" y1="94" x2="170" y2="94" stroke="#4f9eff" stroke-width="1.5" marker-end="url(#arr)"/>
+        <line x1="92" y1="140" x2="170" y2="98" stroke="#4f9eff" stroke-width="1.5" marker-end="url(#arr)"/>
+
+        <!-- tar 盒子 -->
+        <rect x="172" y="68" width="90" height="52" rx="8" fill="#7c5cfc" opacity="0.85"/>
+        <text x="217" y="91" text-anchor="middle" fill="#fff" font-size="13" font-weight="bold">tar</text>
+        <text x="217" y="108" text-anchor="middle" fill="#e0d0ff" font-size="10">归档引擎</text>
+
+        <!-- 箭头到output -->
+        <line x1="262" y1="94" x2="330" y2="94" stroke="#43e97b" stroke-width="1.5" marker-end="url(#arr2)"/>
+
+        <!-- tar 输出文件 -->
+        <rect x="332" y="68" width="100" height="52" rx="8" fill="#1e2336" stroke="#43e97b" stroke-width="1.5"/>
+        <text x="382" y="90" text-anchor="middle" fill="#43e97b" font-size="12" font-weight="bold">archive.tar</text>
+        <text x="382" y="108" text-anchor="middle" fill="#64748b" font-size="10">单一字节流</text>
+
+        <!-- 可选压缩 -->
+        <line x1="432" y1="94" x2="460" y2="94" stroke="#f7971e" stroke-width="1.5" stroke-dasharray="4,3" marker-end="url(#arr3)"/>
+        <text x="460" y="72" fill="#f7971e" font-size="10" text-anchor="start">可选</text>
+        <rect x="462" y="68" width="52" height="52" rx="8" fill="#1e2336" stroke="#f7971e" stroke-width="1.5" stroke-dasharray="4,3"/>
+        <text x="488" y="91" text-anchor="middle" fill="#f7971e" font-size="10">gzip/</text>
+        <text x="488" y="107" text-anchor="middle" fill="#f7971e" font-size="10">xz/bz2</text>
+
+        <defs>
+          <marker id="arr" markerWidth="8" markerHeight="8" refX="6" refY="3" orient="auto">
+            <path d="M0,0 L0,6 L8,3 z" fill="#4f9eff"/>
+          </marker>
+          <marker id="arr2" markerWidth="8" markerHeight="8" refX="6" refY="3" orient="auto">
+            <path d="M0,0 L0,6 L8,3 z" fill="#43e97b"/>
+          </marker>
+          <marker id="arr3" markerWidth="8" markerHeight="8" refX="6" refY="3" orient="auto">
+            <path d="M0,0 L0,6 L8,3 z" fill="#f7971e"/>
+          </marker>
+        </defs>
+        <text x="260" y="170" text-anchor="middle" fill="#64748b" font-size="10">tar 流程：归档（必选）+ 压缩（可选，由外部程序完成）</text>
+      </svg>
+    </div>
+
+    <div class="summary-box">
+      <h4>📝 本节小结</h4>
+      <ul>
+        <li>tar 是 Tape Archiver 的缩写，源自磁带备份时代，现广泛用于文件打包</li>
+        <li>tar 核心职责：将多个文件/目录打包为单一归档流</li>
+        <li>压缩是可选的，通过管道委托给外部程序（gzip、bzip2、xz 等）</li>
+        <li>遵循 Unix "单一职责" 哲学</li>
+      </ul>
+    </div>
+  </section>
+
+  <!-- ======================== 归档格式底层原理 ======================== -->
+  <section class="chapter" id="ch-principle">
+    <div class="chapter-badge">PRINCIPLE</div>
+    <h2 class="chap-title">归档格式底层原理</h2>
+    <a class="source-link" href="https://www.gnu.org/software/tar/manual/html_node/Standard.html" target="_blank" rel="noopener">
+      📄 原文来源：GNU tar 1.35 — Basic Tar Format
+    </a>
+
+    <p>根据 GNU tar 官方手册，tar 归档文件由一系列 <strong>512 字节的块（block）</strong>组成：</p>
+    <blockquote style="border-left:3px solid var(--accent2);padding:8px 16px;color:var(--text2);margin:14px 0;font-style:italic;">
+      "A tar archive file contains a series of blocks. Each block contains BLOCKSIZE bytes... Each file archived is represented by a header block which describes the file, followed by zero or more blocks which give the contents of the file. At the end of the archive file there are two 512-byte blocks filled with binary zeros as an end-of-file marker."
+      <br><small>— gnu.org/software/tar/manual/html_node/Standard.html</small>
+    </blockquote>
+
+    <h3>📦 归档文件物理结构</h3>
+
+    <div class="svg-wrap">
+      <svg width="580" height="240" viewBox="0 0 580 240" xmlns="http://www.w3.org/2000/svg">
+        <text x="290" y="22" text-anchor="middle" fill="#94a3b8" font-size="12">tar 归档文件物理结构（每块 512 字节）</text>
+
+        <!-- File 1 header -->
+        <rect x="10" y="36" width="110" height="48" rx="5" fill="#7c5cfc" opacity="0.8"/>
+        <text x="65" y="57" text-anchor="middle" fill="#fff" font-size="11" font-weight="bold">文件头块</text>
+        <text x="65" y="73" text-anchor="middle" fill="#e0d0ff" font-size="10">Header Block</text>
+        <text x="65" y="90" text-anchor="middle" fill="#e0d0ff" font-size="10" opacity="0">512B</text>
+
+        <!-- File 1 data blocks -->
+        <rect x="128" y="36" width="68" height="48" rx="5" fill="#4f9eff" opacity="0.7"/>
+        <text x="162" y="57" text-anchor="middle" fill="#fff" font-size="11" font-weight="bold">数据块</text>
+        <text x="162" y="73" text-anchor="middle" fill="#ddeeff" font-size="10">×N blocks</text>
+
+        <!-- File 2 header -->
+        <rect x="204" y="36" width="110" height="48" rx="5" fill="#7c5cfc" opacity="0.8"/>
+        <text x="259" y="57" text-anchor="middle" fill="#fff" font-size="11" font-weight="bold">文件头块</text>
+        <text x="259" y="73" text-anchor="middle" fill="#e0d0ff" font-size="10">Header Block</text>
+
+        <!-- File 2 data blocks -->
+        <rect x="322" y="36" width="68" height="48" rx="5" fill="#4f9eff" opacity="0.7"/>
+        <text x="356" y="57" text-anchor="middle" fill="#fff" font-size="11" font-weight="bold">数据块</text>
+        <text x="356" y="73" text-anchor="middle" fill="#ddeeff" font-size="10">×M blocks</text>
+
+        <!-- more -->
+        <text x="408" y="64" fill="#64748b" font-size="18">···</text>
+
+        <!-- EOF blocks -->
+        <rect x="432" y="36" width="68" height="48" rx="5" fill="#f38ba8" opacity="0.75"/>
+        <text x="466" y="57" text-anchor="middle" fill="#fff" font-size="11" font-weight="bold">EOF块</text>
+        <text x="466" y="73" text-anchor="middle" fill="#ffe0e0" font-size="10">两个全零块</text>
+
+        <!-- 标注 -->
+        <text x="65" y="102" text-anchor="middle" fill="#64748b" font-size="10">512B</text>
+        <text x="162" y="102" text-anchor="middle" fill="#64748b" font-size="10">512B×N</text>
+        <text x="259" y="102" text-anchor="middle" fill="#64748b" font-size="10">512B</text>
+        <text x="356" y="102" text-anchor="middle" fill="#64748b" font-size="10">512B×M</text>
+        <text x="466" y="102" text-anchor="middle" fill="#64748b" font-size="10">2×512B</text>
+
+        <!-- 文件头字段详情 -->
+        <text x="10" y="130" fill="#94a3b8" font-size="12" font-weight="bold">POSIX Header Block 字段（512 字节，来源：POSIX 1003.1-1990）</text>
+
+        <!-- 字段条 -->
+        <g transform="translate(10,140)">
+          <!-- name -->
+          <rect x="0" y="0" width="100" height="32" rx="3" fill="#1e2336" stroke="#4f9eff" stroke-width="1"/>
+          <text x="50" y="14" text-anchor="middle" fill="#4f9eff" font-size="9" font-weight="bold">name[100]</text>
+          <text x="50" y="26" text-anchor="middle" fill="#64748b" font-size="8">文件名 offset 0</text>
+          <!-- mode -->
+          <rect x="104" y="0" width="50" height="32" rx="3" fill="#1e2336" stroke="#cba6f7" stroke-width="1"/>
+          <text x="129" y="14" text-anchor="middle" fill="#cba6f7" font-size="9">mode[8]</text>
+          <text x="129" y="26" text-anchor="middle" fill="#64748b" font-size="8">权限 100</text>
+          <!-- uid/gid -->
+          <rect x="158" y="0" width="50" height="32" rx="3" fill="#1e2336" stroke="#cba6f7" stroke-width="1"/>
+          <text x="183" y="14" text-anchor="middle" fill="#cba6f7" font-size="9">uid[8]</text>
+          <text x="183" y="26" text-anchor="middle" fill="#64748b" font-size="8">用户ID 108</text>
+          <rect x="212" y="0" width="50" height="32" rx="3" fill="#1e2336" stroke="#cba6f7" stroke-width="1"/>
+          <text x="237" y="14" text-anchor="middle" fill="#cba6f7" font-size="9">gid[8]</text>
+          <text x="237" y="26" text-anchor="middle" fill="#64748b" font-size="8">组ID 116</text>
+          <!-- size -->
+          <rect x="266" y="0" width="54" height="32" rx="3" fill="#1e2336" stroke="#43e97b" stroke-width="1"/>
+          <text x="293" y="14" text-anchor="middle" fill="#43e97b" font-size="9">size[12]</text>
+          <text x="293" y="26" text-anchor="middle" fill="#64748b" font-size="8">大小 124</text>
+          <!-- mtime -->
+          <rect x="324" y="0" width="54" height="32" rx="3" fill="#1e2336" stroke="#f7971e" stroke-width="1"/>
+          <text x="351" y="14" text-anchor="middle" fill="#f7971e" font-size="9">mtime[12]</text>
+          <text x="351" y="26" text-anchor="middle" fill="#64748b" font-size="8">修改时间 136</text>
+          <!-- chksum -->
+          <rect x="382" y="0" width="50" height="32" rx="3" fill="#1e2336" stroke="#f38ba8" stroke-width="1"/>
+          <text x="407" y="14" text-anchor="middle" fill="#f38ba8" font-size="9">chksum</text>
+          <text x="407" y="26" text-anchor="middle" fill="#64748b" font-size="8">校验和 148</text>
+          <!-- typeflag -->
+          <rect x="436" y="0" width="44" height="32" rx="3" fill="#1e2336" stroke="#a8daff" stroke-width="1"/>
+          <text x="458" y="14" text-anchor="middle" fill="#a8daff" font-size="9">typeflag</text>
+          <text x="458" y="26" text-anchor="middle" fill="#64748b" font-size="8">类型 156</text>
+          <!-- linkname -->
+          <rect x="484" y="0" width="66" height="32" rx="3" fill="#1e2336" stroke="#a8daff" stroke-width="1"/>
+          <text x="517" y="14" text-anchor="middle" fill="#a8daff" font-size="9">linkname[100]</text>
+          <text x="517" y="26" text-anchor="middle" fill="#64748b" font-size="8">链接名 157</text>
+        </g>
+
+        <text x="290" y="225" text-anchor="middle" fill="#64748b" font-size="10">完整结构定义于 POSIX 1003.1-1990，GNU tar src/tar.h</text>
+      </svg>
+    </div>
+
+    <h3>🔢 typeflag 文件类型字段</h3>
+    <p>官方源代码 <code>src/tar.h</code> 中定义的文件类型标志：</p>
+    <div class="table-wrap">
+      <table>
+        <thead><tr><th>typeflag 值</th><th>宏定义</th><th>含义</th></tr></thead>
+        <tbody>
+          <tr><td><code>'0'</code></td><td>REGTYPE</td><td>普通文件（regular file）</td></tr>
+          <tr><td><code>'1'</code></td><td>LNKTYPE</td><td>硬链接（hard link）</td></tr>
+          <tr><td><code>'2'</code></td><td>SYMTYPE</td><td>符号链接（symbolic link）</td></tr>
+          <tr><td><code>'3'</code></td><td>CHRTYPE</td><td>字符设备（character special）</td></tr>
+          <tr><td><code>'4'</code></td><td>BLKTYPE</td><td>块设备（block special）</td></tr>
+          <tr><td><code>'5'</code></td><td>DIRTYPE</td><td>目录（directory）</td></tr>
+          <tr><td><code>'6'</code></td><td>FIFOTYPE</td><td>FIFO 特殊文件</td></tr>
+          <tr><td><code>'x'</code></td><td>XHDTYPE</td><td>PAX 扩展头（下一个文件）</td></tr>
+          <tr><td><code>'g'</code></td><td>XGLTYPE</td><td>PAX 全局扩展头</td></tr>
+        </tbody>
+      </table>
+    </div>
+
+    <h3>📐 校验和算法</h3>
+    <p>根据 GNU tar 官方手册：</p>
+    <blockquote style="border-left:3px solid var(--accent2);padding:8px 16px;color:var(--text2);margin:14px 0;font-style:italic;">
+      "The chksum field represents the simple sum of all bytes in the header block. Each 8-bit byte in the header is added to an unsigned integer, initialized to zero, the precision of which shall be no less than seventeen bits. When calculating the checksum, the chksum field is treated as if it were filled with spaces (ASCII 32)."
+      <br><small>— gnu.org/software/tar/manual/html_node/Standard.html</small>
+    </blockquote>
+
+    <h3>🧱 阻塞因子（Blocking Factor）</h3>
+    <p>tar 引入"记录（Record）"的概念以优化磁带 I/O：</p>
+    <blockquote style="border-left:3px solid var(--accent2);padding:8px 16px;color:var(--text2);margin:14px 0;font-style:italic;">
+      "Each record of n blocks (where n is set by the --blocking-factor=512-size (-b 512-size) option to tar) is written with a single write() operation."
+      <br><small>— gnu.org/software/tar/manual/html_node/Standard.html</small>
+    </blockquote>
+    <p>默认阻塞因子为 20，即每次写 20×512 = 10240 字节。</p>
+
+    <h3>🗄 归档格式版本</h3>
+    <p>根据 man7.org tar(1) 手册，GNU tar 支持多种格式：</p>
+    <div class="table-wrap">
+      <table>
+        <thead><tr><th>格式</th><th>选项</th><th>说明</th></tr></thead>
+        <tbody>
+          <tr><td>v7</td><td><code>--format=v7</code></td><td>最古老的 Unix V7 格式</td></tr>
+          <tr><td>ustar</td><td><code>--format=ustar</code></td><td>POSIX 1003.1-1988 标准格式</td></tr>
+          <tr><td>gnu</td><td><code>--format=gnu</code></td><td>GNU tar 1.13.x 扩展格式（默认）</td></tr>
+          <tr><td>pax / posix</td><td><code>--format=pax</code></td><td>POSIX 1003.1-2001，最新标准，支持长文件名、扩展属性</td></tr>
+          <tr><td>oldgnu</td><td><code>--format=oldgnu</code></td><td>tar 1.12 及更早版本的 GNU 格式</td></tr>
+        </tbody>
+      </table>
+    </div>
+
+    <div class="summary-box">
+      <h4>📝 本节小结 — 第一性原理</h4>
+      <ul>
+        <li><strong>一切皆字节流：</strong>tar 的本质是将多个文件的元数据（header）和内容（data）按 512B 块顺序拼接为一条字节流</li>
+        <li><strong>自描述结构：</strong>每个文件的 Header Block 携带文件名、权限、大小、时间戳、checksum，使 tar 无需外部索引</li>
+        <li><strong>校验和保障完整性：</strong>header 级别的 checksum 可检测归档损坏</li>
+        <li><strong>向后兼容：</strong>POSIX ustar → GNU → PAX 逐步演进，GNU tar 可读取所有旧格式</li>
+      </ul>
+    </div>
+  </section>
+
+  <!-- ======================== 压缩器集成原理 ======================== -->
+  <section class="chapter" id="ch-compress">
+    <div class="chapter-badge">COMPRESSION</div>
+    <h2 class="chap-title">压缩器集成原理</h2>
+    <a class="source-link" href="https://man7.org/linux/man-pages/man1/tar.1.html" target="_blank" rel="noopener">
+      📄 原文来源：man7.org — tar(1) Linux Manual Page
+    </a>
+
+    <p>tar 通过 <strong>管道（pipe）</strong> 与外部压缩程序协作，官方手册中描述：</p>
+    <blockquote style="border-left:3px solid var(--accent2);padding:8px 16px;color:var(--text2);margin:14px 0;font-style:italic;">
+      "Use external compression program PROG... when invoked without additional options, it should read data from standard input, compress it and output it on standard output."
+      <br><small>— computerhope.com/unix/utar.htm（-I/--use-compress-program 选项说明）</small>
+    </blockquote>
+
+    <div class="svg-wrap">
+      <svg width="540" height="160" viewBox="0 0 540 160" xmlns="http://www.w3.org/2000/svg">
+        <text x="270" y="20" text-anchor="middle" fill="#94a3b8" font-size="12">tar 压缩管道工作原理</text>
+
+        <!-- 文件系统 -->
+        <rect x="10" y="40" width="90" height="40" rx="6" fill="#1e2336" stroke="#4f9eff" stroke-width="1.5"/>
+        <text x="55" y="62" text-anchor="middle" fill="#4f9eff" font-size="11" font-weight="bold">文件系统</text>
+
+        <!-- tar核心 -->
+        <rect x="150" y="40" width="90" height="40" rx="6" fill="#7c5cfc" opacity="0.85"/>
+        <text x="195" y="58" text-anchor="middle" fill="#fff" font-size="11" font-weight="bold">tar 核心</text>
+        <text x="195" y="72" text-anchor="middle" fill="#e0d0ff" font-size="10">归档字节流</text>
+
+        <!-- 压缩器 -->
+        <rect x="300" y="40" width="90" height="40" rx="6" fill="#f7971e" opacity="0.85"/>
+        <text x="345" y="58" text-anchor="middle" fill="#fff" font-size="11" font-weight="bold">压缩器</text>
+        <text x="345" y="72" text-anchor="middle" fill="#ffe0c0" font-size="10">gzip/bz2/xz/zstd</text>
+
+        <!-- 输出文件 -->
+        <rect x="450" y="40" width="80" height="40" rx="6" fill="#1e2336" stroke="#43e97b" stroke-width="1.5"/>
+        <text x="490" y="58" text-anchor="middle" fill="#43e97b" font-size="11" font-weight="bold">输出文件</text>
+        <text x="490" y="72" text-anchor="middle" fill="#64748b" font-size="10">.tar.gz 等</text>
+
+        <!-- 箭头 -->
+        <line x1="100" y1="60" x2="148" y2="60" stroke="#4f9eff" stroke-width="1.5" marker-end="url(#a1)"/>
+        <line x1="240" y1="60" x2="298" y2="60" stroke="#e0d0ff" stroke-width="1.5" stroke-dasharray="5,3" marker-end="url(#a2)"/>
+        <line x1="390" y1="60" x2="448" y2="60" stroke="#43e97b" stroke-width="1.5" marker-end="url(#a3)"/>
+
+        <!-- 管道标注 -->
+        <text x="269" y="52" text-anchor="middle" fill="#64748b" font-size="10">stdin/stdout</text>
+        <text x="269" y="64" text-anchor="middle" fill="#64748b" font-size="10">pipe 管道</text>
+
+        <!-- 压缩选项映射 -->
+        <text x="10" y="110" fill="#94a3b8" font-size="11" font-weight="bold">压缩选项映射：</text>
+        <rect x="10" y="120" width="42" height="22" rx="4" fill="#1e2336" stroke="#4f9eff" stroke-width="1"/>
+        <text x="31" y="135" text-anchor="middle" fill="#4f9eff" font-size="10">-z</text>
+        <text x="56" y="134" fill="#64748b" font-size="10">gzip</text>
+
+        <rect x="110" y="120" width="42" height="22" rx="4" fill="#1e2336" stroke="#cba6f7" stroke-width="1"/>
+        <text x="131" y="135" text-anchor="middle" fill="#cba6f7" font-size="10">-j</text>
+        <text x="156" y="134" fill="#64748b" font-size="10">bzip2</text>
+
+        <rect x="210" y="120" width="42" height="22" rx="4" fill="#1e2336" stroke="#43e97b" stroke-width="1"/>
+        <text x="231" y="135" text-anchor="middle" fill="#43e97b" font-size="10">-J</text>
+        <text x="256" y="134" fill="#64748b" font-size="10">xz</text>
+
+        <rect x="305" y="120" width="70" height="22" rx="4" fill="#1e2336" stroke="#f7971e" stroke-width="1"/>
+        <text x="340" y="135" text-anchor="middle" fill="#f7971e" font-size="10">--zstd</text>
+        <text x="380" y="134" fill="#64748b" font-size="10">zstd</text>
+
+        <rect x="420" y="120" width="110" height="22" rx="4" fill="#1e2336" stroke="#a8daff" stroke-width="1"/>
+        <text x="475" y="135" text-anchor="middle" fill="#a8daff" font-size="10">-I &lt;prog&gt; 自定义</text>
+
+        <defs>
+          <marker id="a1" markerWidth="7" markerHeight="7" refX="5" refY="3" orient="auto"><path d="M0,0 L0,6 L7,3 z" fill="#4f9eff"/></marker>
+          <marker id="a2" markerWidth="7" markerHeight="7" refX="5" refY="3" orient="auto"><path d="M0,0 L0,6 L7,3 z" fill="#e0d0ff"/></marker>
+          <marker id="a3" markerWidth="7" markerHeight="7" refX="5" refY="3" orient="auto"><path d="M0,0 L0,6 L7,3 z" fill="#43e97b"/></marker>
+        </defs>
+      </svg>
+    </div>
+
+    <h3>压缩算法对比</h3>
+    <div class="table-wrap">
+      <table>
+        <thead><tr><th>算法</th><th>选项</th><th>扩展名</th><th>速度</th><th>压缩率</th><th>特点</th></tr></thead>
+        <tbody>
+          <tr><td>gzip</td><td><code>-z</code></td><td>.tar.gz / .tgz</td><td>⚡⚡⚡</td><td>★★★</td><td>最广泛兼容，速度与压缩率均衡</td></tr>
+          <tr><td>bzip2</td><td><code>-j</code></td><td>.tar.bz2</td><td>⚡⚡</td><td>★★★★</td><td>压缩率优于 gzip，速度稍慢</td></tr>
+          <tr><td>xz</td><td><code>-J</code></td><td>.tar.xz</td><td>⚡</td><td>★★★★★</td><td>最高压缩率，适合发行包分发</td></tr>
+          <tr><td>zstd</td><td><code>--zstd</code></td><td>.tar.zst</td><td>⚡⚡⚡⚡</td><td>★★★★</td><td>高速高压缩率，现代优选</td></tr>
+          <tr><td>自定义</td><td><code>-I prog</code></td><td>任意</td><td>依程序</td><td>依程序</td><td>pigz(多线程gzip)、lz4 等</td></tr>
+        </tbody>
+      </table>
+    </div>
+
+    <div class="summary-box">
+      <h4>📝 本节小结</h4>
+      <ul>
+        <li>tar 通过 stdin/stdout 管道调用外部压缩器，完全解耦归档与压缩两个功能</li>
+        <li>gzip(-z) 速度快兼容好；bzip2(-j) 压缩率更高；xz(-J) 压缩率最佳；zstd 兼顾速度与压缩率</li>
+        <li>-I/--use-compress-program 允许接入任意压缩器（如 pigz 实现多核并行压缩）</li>
+        <li>--auto-compress 或 -a 可根据文件扩展名自动选择压缩器</li>
+      </ul>
+    </div>
+  </section>
+
+  <!-- ======================== SCENARIO 1 ======================== -->
+  <section class="chapter" id="ch1">
+    <div class="chapter-badge">SCENARIO 01</div>
+    <h2 class="chap-title"><span class="num">#01</span> 创建归档与压缩</h2>
+    <a class="source-link" href="https://man7.org/linux/man-pages/man1/tar.1.html" target="_blank" rel="noopener">
+      📄 原文来源：man7.org — tar(1) -c, --create 操作模式
+    </a>
+
+    <p>
+      根据官方手册：<em>"-c, --create: Create a new archive. Arguments supply the names of the files to be archived. Directories are archived recursively, unless the --no-recursion option is given."</em>
+    </p>
+
+    <h3>🔬 底层原理</h3>
+    <p>
+      <code>-c</code> 模式下，tar 遍历所有指定路径，对每个文件/目录：
+      ① 构造 512 字节的 POSIX Header Block（含文件名、权限、大小、时间戳等）
+      ② 将文件内容按 512B 对齐写入数据块
+      ③ 最后写入两个全零 512B 的 EOF 标记
+      若指定压缩选项，整个字节流通过管道传给压缩器。
+    </p>
+
+    <div class="svg-wrap">
+      <svg width="500" height="130" viewBox="0 0 500 130" xmlns="http://www.w3.org/2000/svg">
+        <text x="250" y="18" text-anchor="middle" fill="#94a3b8" font-size="11">-c 创建流程</text>
+        <rect x="10" y="28" width="80" height="35" rx="5" fill="#1e2336" stroke="#4f9eff" stroke-width="1.2"/>
+        <text x="50" y="50" text-anchor="middle" fill="#a8daff" font-size="10">指定路径</text>
+        <line x1="92" y1="45" x2="120" y2="45" stroke="#4f9eff" stroke-width="1.2" marker-end="url(#m1)"/>
+        <rect x="122" y="28" width="90" height="35" rx="5" fill="#7c5cfc" opacity="0.8"/>
+        <text x="167" y="46" text-anchor="middle" fill="#fff" font-size="10" font-weight="bold">递归遍历</text>
+        <text x="167" y="58" text-anchor="middle" fill="#e0d0ff" font-size="9">目录树</text>
+        <line x1="214" y1="45" x2="242" y2="45" stroke="#cba6f7" stroke-width="1.2" marker-end="url(#m2)"/>
+        <rect x="244" y="28" width="90" height="35" rx="5" fill="#7c5cfc" opacity="0.8"/>
+        <text x="289" y="46" text-anchor="middle" fill="#fff" font-size="10" font-weight="bold">写 Header</text>
+        <text x="289" y="58" text-anchor="middle" fill="#e0d0ff" font-size="9">+数据块</text>
+        <line x1="336" y1="45" x2="364" y2="45" stroke="#cba6f7" stroke-width="1.2" marker-end="url(#m3)"/>
+        <rect x="366" y="28" width="80" height="35" rx="5" fill="#1e2336" stroke="#43e97b" stroke-width="1.2"/>
+        <text x="406" y="46" text-anchor="middle" fill="#43e97b" font-size="10">写 EOF</text>
+        <text x="406" y="58" text-anchor="middle" fill="#64748b" font-size="9">两个零块</text>
+        <!-- compress optional -->
+        <text x="250" y="88" text-anchor="middle" fill="#f7971e" font-size="10">⬇ 可选：管道传递给 gzip/bzip2/xz/zstd</text>
+        <rect x="180" y="96" width="140" height="26" rx="5" fill="#1e2336" stroke="#f7971e" stroke-width="1" stroke-dasharray="4,2"/>
+        <text x="250" y="113" text-anchor="middle" fill="#f7971e" font-size="10">压缩输出 → .tar.gz/.tar.xz 等</text>
+        <defs>
+          <marker id="m1" markerWidth="7" markerHeight="7" refX="5" refY="3" orient="auto"><path d="M0,0 L0,6 L7,3 z" fill="#4f9eff"/></marker>
+          <marker id="m2" markerWidth="7" markerHeight="7" refX="5" refY="3" orient="auto"><path d="M0,0 L0,6 L7,3 z" fill="#cba6f7"/></marker>
+          <marker id="m3" markerWidth="7" markerHeight="7" refX="5" refY="3" orient="auto"><path d="M0,0 L0,6 L7,3 z" fill="#cba6f7"/></marker>
+        </defs>
+      </svg>
+    </div>
+
+    <h3>💻 示例</h3>
+    <pre><code><span class="cmd-comment"># 最基础：创建不压缩的 tar 归档（官方示例格式）</span>
+<span class="cmd-kw">tar</span> <span class="cmd-flag">-cf</span> archive.tar foo bar
+<span class="cmd-comment"># GNU 官方示例：归档 /etc 目录，详细输出</span>
+<span class="cmd-kw">tar</span> <span class="cmd-flag">-cvf</span> etc.tar /etc
+
+<span class="cmd-comment"># 使用 gzip 压缩（-z 选项）</span>
+<span class="cmd-kw">tar</span> <span class="cmd-flag">-czvf</span> archive.tar.gz <span class="cmd-path">/path/to/dir</span>
+
+<span class="cmd-comment"># 使用 bzip2 压缩（-j 选项，压缩率更高）</span>
+<span class="cmd-kw">tar</span> <span class="cmd-flag">-cjvf</span> archive.tar.bz2 <span class="cmd-path">/path/to/dir</span>
+
+<span class="cmd-comment"># 使用 xz 压缩（-J 选项，最高压缩率）</span>
+<span class="cmd-kw">tar</span> <span class="cmd-flag">-cJvf</span> archive.tar.xz <span class="cmd-path">/path/to/dir</span>
+
+<span class="cmd-comment"># 使用 zstd（现代高速压缩）</span>
+<span class="cmd-kw">tar</span> <span class="cmd-flag">--zstd</span> <span class="cmd-flag">-cvf</span> archive.tar.zst <span class="cmd-path">/path/to/dir</span>
+
+<span class="cmd-comment"># 使用 pigz 并行压缩（-I 自定义压缩程序）</span>
+<span class="cmd-kw">tar</span> <span class="cmd-flag">--use-compress-program=pigz</span> <span class="cmd-flag">-cf</span> archive.tar.gz <span class="cmd-path">/path/to/dir</span>
+
+<span class="cmd-comment"># 自动根据扩展名选择压缩器（-a / --auto-compress）</span>
+<span class="cmd-kw">tar</span> <span class="cmd-flag">-cavf</span> archive.tar.xz <span class="cmd-path">/path/to/dir</span></code></pre>
+
+    <div class="info-box tip">
+      <strong>💡 选项解释（来自官方手册）：</strong>
+      <code>-c</code> 创建归档 | <code>-v</code> 详细输出（verbose）| <code>-f</code> 指定归档文件名 | <code>-z</code> gzip | <code>-j</code> bzip2 | <code>-J</code> xz
+    </div>
+
+    <div class="summary-box">
+      <h4>📝 本场景小结</h4>
+      <ul>
+        <li>-c（--create）是 tar 的核心操作：顺序写入 header+data 块序列</li>
+        <li>目录默认递归归档，--no-recursion 可关闭</li>
+        <li>压缩选项（-z/-j/-J/--zstd）只是管道过滤器，不改变归档结构</li>
+        <li>-v 增加详细输出，生产脚本中可用 --totals 替代，避免日志冗余</li>
+      </ul>
+    </div>
+  </section>
+
+  <!-- ======================== SCENARIO 2 ======================== -->
+  <section class="chapter" id="ch2">
+    <div class="chapter-badge">SCENARIO 02</div>
+    <h2 class="chap-title"><span class="num">#02</span> 解压与提取文件</h2>
+    <a class="source-link" href="https://man7.org/linux/man-pages/man1/tar.1.html" target="_blank" rel="noopener">
+      📄 原文来源：man7.org — tar(1) -x, --extract
+    </a>
+
+    <p>官方手册：<em>"-x, --extract, --get: Extract files from an archive. Arguments are optional. When given, they specify names of the archive members to be extracted."</em></p>
+
+    <h3>🔬 底层原理</h3>
+    <p>
+      提取时，tar 顺序读取归档字节流，解析每个 Header Block，根据 <code>typeflag</code> 字段恢复文件类型（普通文件、目录、符号链接等），并将数据块内容写入磁盘。若检测到压缩格式（通过文件扩展名或 magic bytes），先通过反向管道解压再归档读取。
+    </p>
+    <p>
+      默认情况下，tar 会将当前工作目录中已存在的文件 <strong>覆盖</strong>；使用 <code>-k</code>（--keep-old-files）可防止覆盖。
+    </p>
+
+    <h3>💻 示例</h3>
+    <pre><code><span class="cmd-comment"># 提取所有文件到当前目录（官方快速参考示例）</span>
+<span class="cmd-kw">tar</span> <span class="cmd-flag">-xf</span> archive.tar
+
+<span class="cmd-comment"># 提取并显示文件列表</span>
+<span class="cmd-kw">tar</span> <span class="cmd-flag">-xvf</span> archive.tar
+
+<span class="cmd-comment"># 提取到指定目录（-C 切换目录）</span>
+<span class="cmd-kw">tar</span> <span class="cmd-flag">-xvf</span> archive.tar <span class="cmd-flag">-C</span> <span class="cmd-path">/path/to/destination</span>
+
+<span class="cmd-comment"># 解压 gzip 压缩的归档</span>
+<span class="cmd-kw">tar</span> <span class="cmd-flag">-xzvf</span> archive.tar.gz
+
+<span class="cmd-comment"># 解压 bzip2 压缩的归档</span>
+<span class="cmd-kw">tar</span> <span class="cmd-flag">-xjvf</span> archive.tar.bz2
+
+<span class="cmd-comment"># 只提取特定文件（指定 archive member 名称）</span>
+<span class="cmd-kw">tar</span> <span class="cmd-flag">-xvf</span> archive.tar <span class="cmd-str">config/settings.conf</span>
+
+<span class="cmd-comment"># 不覆盖已有文件（-k / --keep-old-files）</span>
+<span class="cmd-kw">tar</span> <span class="cmd-flag">-xvf</span> archive.tar <span class="cmd-flag">-k</span>
+
+<span class="cmd-comment"># 自动识别压缩格式提取（无需手动指定 -z/-j 等）</span>
+<span class="cmd-kw">tar</span> <span class="cmd-flag">-xf</span> archive.tar.xz
+
+<span class="cmd-comment"># 提取时不还原文件权限（以当前用户 umask 为准）</span>
+<span class="cmd-kw">tar</span> <span class="cmd-flag">-xf</span> archive.tar <span class="cmd-flag">--no-same-permissions</span></code></pre>
+
+    <div class="info-box warn">
+      <strong>⚠️ 安全注意：</strong>提取前建议先用 <code>-t</code> 列出内容，避免 "tar slip" 攻击（恶意归档文件使用 <code>../</code> 路径逃逸）。
+    </div>
+
+    <div class="summary-box">
+      <h4>📝 本场景小结</h4>
+      <ul>
+        <li>-x 顺序读取归档块，依 header 中的 typeflag 恢复文件类型</li>
+        <li>-C dir 本质是 chdir(dir) 系统调用，在提取前改变工作目录</li>
+        <li>现代 tar 可自动检测压缩格式（通过文件头 magic bytes），无需显式指定 -z/-j/-J</li>
+        <li>-k（--keep-old-files）防止覆盖，适合幂等部署场景</li>
+      </ul>
+    </div>
+  </section>
+
+  <!-- ======================== SCENARIO 3 ======================== -->
+  <section class="chapter" id="ch3">
+    <div class="chapter-badge">SCENARIO 03</div>
+    <h2 class="chap-title"><span class="num">#03</span> 查看归档内容（不解压）</h2>
+    <a class="source-link" href="https://man7.org/linux/man-pages/man1/tar.1.html" target="_blank" rel="noopener">
+      📄 原文来源：man7.org — tar(1) -t, --list
+    </a>
+
+    <p>官方手册：<em>"-t, --list: List the contents of an archive. Arguments are optional. When given, they specify the names of the members to list."</em></p>
+    <p>官方快速参考：<em>"tar -tvf archive.tar # List all files in archive.tar verbosely."</em></p>
+
+    <h3>🔬 底层原理</h3>
+    <p>
+      <code>-t</code> 模式下，tar 仅读取并解析每个文件的 <strong>Header Block</strong>，直接输出元数据，<strong>完全跳过数据块读取</strong>（seek 跳过），因此速度极快，也不消耗额外磁盘空间。
+    </p>
+
+    <h3>💻 示例</h3>
+    <pre><code><span class="cmd-comment"># 快速列出所有成员（官方示例）</span>
+<span class="cmd-kw">tar</span> <span class="cmd-flag">-tvf</span> archive.tar
+
+<span class="cmd-comment"># 列出压缩归档内容（无需解压）</span>
+<span class="cmd-kw">tar</span> <span class="cmd-flag">-tvf</span> archive.tar.gz
+
+<span class="cmd-comment"># 只列出匹配模式的成员</span>
+<span class="cmd-kw">tar</span> <span class="cmd-flag">-tvf</span> archive.tar <span class="cmd-str">'*.conf'</span>
+
+<span class="cmd-comment"># 详细格式输出（类似 ls -l）</span>
+<span class="cmd-kw">tar</span> <span class="cmd-flag">-tvvf</span> archive.tar
+
+<span class="cmd-comment"># 结合 grep 过滤特定文件</span>
+<span class="cmd-kw">tar</span> <span class="cmd-flag">-tvf</span> archive.tar | <span class="cmd-kw">grep</span> <span class="cmd-str">'.conf'</span>
+
+<span class="cmd-comment"># 列出时显示完整时间（--full-time）</span>
+<span class="cmd-kw">tar</span> <span class="cmd-flag">--full-time</span> <span class="cmd-flag">-tvf</span> archive.tar
+
+<span class="cmd-comment"># 验证归档卷标（--test-label）</span>
+<span class="cmd-kw">tar</span> <span class="cmd-flag">--test-label</span> <span class="cmd-flag">-f</span> archive.tar <span class="cmd-flag">-v</span></code></pre>
+
+    <div class="info-box note">
+      <strong>📌 -tvf 输出格式解读：</strong> 每行格式类似 <code>-rw-r--r-- user/group  1234 2024-01-01 12:00 path/to/file</code>，依次为权限、用户/组、大小、时间、路径。
+    </div>
+
+    <div class="summary-box">
+      <h4>📝 本场景小结</h4>
+      <ul>
+        <li>-t 只解析 Header Block，跳过数据块，速度快、安全无副作用</li>
+        <li>是提取操作前的"预检"最佳实践，防止误解压覆盖文件</li>
+        <li>-v 添加详细信息，-vv 输出更完整的元数据（类 ls -l 格式）</li>
+        <li>可配合 grep/awk 做归档内容搜索与统计</li>
+      </ul>
+    </div>
+  </section>
+
+  <!-- ======================== SCENARIO 4 ======================== -->
+  <section class="chapter" id="ch4">
+    <div class="chapter-badge">SCENARIO 04</div>
+    <h2 class="chap-title"><span class="num">#04</span> 排除文件与目录</h2>
+    <a class="source-link" href="https://man7.org/linux/man-pages/man1/tar.1.html" target="_blank" rel="noopener">
+      📄 原文来源：man7.org — tar(1) --exclude, --exclude-from
+    </a>
+
+    <p>官方手册：<em>"--exclude=PATTERN: Exclude files matching PATTERN, a glob(3)-style wildcard pattern."</em></p>
+    <p>以及：<em>"--exclude-vcs: Exclude version control system directories." （包括 .git/, .svn/, .hg/ 等）</em></p>
+
+    <h3>🔬 底层原理</h3>
+    <p>
+      tar 在遍历文件树时，对每个路径应用 glob 风格的匹配规则。匹配成功的路径被跳过，不会写入归档。<code>--exclude-from</code> 本质是批量读取排除规则文件，逐行应用相同的匹配逻辑。
+    </p>
+
+    <h3>💻 示例</h3>
+    <pre><code><span class="cmd-comment"># 排除所有 .log 文件（glob 通配符匹配）</span>
+<span class="cmd-kw">tar</span> <span class="cmd-flag">-czvf</span> archive.tar.gz <span class="cmd-flag">--exclude='*.log'</span> <span class="cmd-path">/path/to/dir</span>
+
+<span class="cmd-comment"># 排除特定目录</span>
+<span class="cmd-kw">tar</span> <span class="cmd-flag">-czvf</span> backup.tar.gz <span class="cmd-flag">--exclude='./tmp'</span> <span class="cmd-flag">--exclude='./cache'</span> <span class="cmd-path">.</span>
+
+<span class="cmd-comment"># 排除版本控制目录（.git/.svn/.hg 等），来自官方 --exclude-vcs</span>
+<span class="cmd-kw">tar</span> <span class="cmd-flag">-czvf</span> project.tar.gz <span class="cmd-flag">--exclude-vcs</span> <span class="cmd-path">/path/to/project</span>
+
+<span class="cmd-comment"># 从排除列表文件读取规则（--exclude-from / -X）</span>
+<span class="cmd-kw">cat</span> exclude_list.txt
+<span class="cmd-comment">## *.log</span>
+<span class="cmd-comment">## tmp/</span>
+<span class="cmd-comment">## *.cache</span>
+<span class="cmd-kw">tar</span> <span class="cmd-flag">-czvf</span> archive.tar.gz <span class="cmd-flag">-X</span> exclude_list.txt <span class="cmd-path">/path/to/dir</span>
+
+<span class="cmd-comment"># 排除备份文件和锁文件（--exclude-backups）</span>
+<span class="cmd-kw">tar</span> <span class="cmd-flag">-czf</span> backup.tar.gz <span class="cmd-flag">--exclude-backups</span> <span class="cmd-path">/path/to/dir</span>
+
+<span class="cmd-comment"># 排除含 CACHEDIR.TAG 的目录（--exclude-caches-all）</span>
+<span class="cmd-kw">tar</span> <span class="cmd-flag">-czf</span> backup.tar.gz <span class="cmd-flag">--exclude-caches-all</span> <span class="cmd-path">/home/user</span>
+
+<span class="cmd-comment"># 排除 node_modules（前端项目常用）</span>
+<span class="cmd-kw">tar</span> <span class="cmd-flag">-czvf</span> webapp.tar.gz <span class="cmd-flag">--exclude='node_modules'</span> <span class="cmd-flag">--exclude='.git'</span> <span class="cmd-path">./webapp</span></code></pre>
+
+    <div class="info-box tip">
+      <strong>💡 路径匹配技巧：</strong>
+      <code>--exclude='./tmp'</code>（相对路径）与 <code>--exclude='tmp'</code>（任意位置）行为不同。建议使用 <code>--exclude='./目录名'</code> 精确匹配顶层目录。
+    </div>
+
+    <div class="summary-box">
+      <h4>📝 本场景小结</h4>
+      <ul>
+        <li>--exclude 使用 glob(3) 通配符模式，默认匹配路径任意位置（--no-anchored 行为）</li>
+        <li>--exclude-vcs 是预置的 VCS 目录排除快捷方式，覆盖 .git/.svn/.hg/.bzr 等</li>
+        <li>--exclude-from 支持规则文件，适合复杂项目的可维护排除配置</li>
+        <li>--exclude-caches-all 识别 CACHEDIR.TAG 标准标记文件，适合系统备份</li>
+      </ul>
+    </div>
+  </section>
+
+  <!-- ======================== SCENARIO 5 ======================== -->
+  <section class="chapter" id="ch5">
+    <div class="chapter-badge">SCENARIO 05</div>
+    <h2 class="chap-title"><span class="num">#05</span> 管道流式传输</h2>
+    <a class="source-link" href="https://man7.org/linux/man-pages/man1/tar.1.html" target="_blank" rel="noopener">
+      📄 原文来源：man7.org — tar(1) -O, --to-stdout; -f - (stdin/stdout)
+    </a>
+
+    <p>
+      tar 支持用 <code>-f -</code> 指定标准输入/输出作为归档设备，实现流式归档传输。官方手册说明 <code>-O, --to-stdout</code>：<em>"Extract files to standard output."</em>
+    </p>
+
+    <h3>🔬 底层原理</h3>
+    <p>
+      Unix 设计哲学：一切皆文件。tar 将归档视为字节流，<code>-f -</code> 使其读写 stdin/stdout，从而可以通过 shell 管道与 ssh、dd、nc 等工具无缝组合，实现零中间文件的流式传输。
+    </p>
+
+    <div class="svg-wrap">
+      <svg width="520" height="120" viewBox="0 0 520 120" xmlns="http://www.w3.org/2000/svg">
+        <text x="260" y="18" text-anchor="middle" fill="#94a3b8" font-size="11">管道流式传输：零中间文件</text>
+        <!-- 本地 tar -->
+        <rect x="10" y="30" width="110" height="40" rx="6" fill="#7c5cfc" opacity="0.8"/>
+        <text x="65" y="48" text-anchor="middle" fill="#fff" font-size="11" font-weight="bold">tar -cf - /dir</text>
+        <text x="65" y="62" text-anchor="middle" fill="#e0d0ff" font-size="9">写出到 stdout</text>
+        <!-- 管道标志 -->
+        <text x="133" y="54" fill="#f7971e" font-size="20" font-weight="bold">|</text>
+        <!-- SSH -->
+        <rect x="150" y="30" width="90" height="40" rx="6" fill="#1e2336" stroke="#4f9eff" stroke-width="1.5"/>
+        <text x="195" y="48" text-anchor="middle" fill="#4f9eff" font-size="11" font-weight="bold">ssh 加密</text>
+        <text x="195" y="62" text-anchor="middle" fill="#64748b" font-size="9">网络传输</text>
+        <!-- 箭头 -->
+        <line x1="242" y1="50" x2="270" y2="50" stroke="#4f9eff" stroke-width="1.5" stroke-dasharray="4,3" marker-end="url(#mstr)"/>
+        <!-- 远端 tar -->
+        <rect x="272" y="30" width="140" height="40" rx="6" fill="#7c5cfc" opacity="0.8"/>
+        <text x="342" y="48" text-anchor="middle" fill="#fff" font-size="11" font-weight="bold">tar -xvf - (远端)</text>
+        <text x="342" y="62" text-anchor="middle" fill="#e0d0ff" font-size="9">从 stdin 提取</text>
+        <!-- 磁盘图标 -->
+        <rect x="430" y="35" width="80" height="30" rx="5" fill="#1e2336" stroke="#43e97b" stroke-width="1.2"/>
+        <text x="470" y="53" text-anchor="middle" fill="#43e97b" font-size="10">远端磁盘</text>
+        <line x1="414" y1="50" x2="428" y2="50" stroke="#43e97b" stroke-width="1.2" marker-end="url(#mstr2)"/>
+        <!-- 注释 -->
+        <text x="260" y="100" text-anchor="middle" fill="#64748b" font-size="10">整个过程无需在任何一端生成临时 .tar 文件</text>
+        <defs>
+          <marker id="mstr" markerWidth="7" markerHeight="7" refX="5" refY="3" orient="auto"><path d="M0,0 L0,6 L7,3 z" fill="#4f9eff"/></marker>
+          <marker id="mstr2" markerWidth="7" markerHeight="7" refX="5" refY="3" orient="auto"><path d="M0,0 L0,6 L7,3 z" fill="#43e97b"/></marker>
+        </defs>
+      </svg>
+    </div>
+
+    <h3>💻 示例</h3>
+    <pre><code><span class="cmd-comment"># 通过 SSH 远程复制目录（无中间文件，官方推荐用法）</span>
+<span class="cmd-kw">tar</span> <span class="cmd-flag">-cf</span> - <span class="cmd-path">/path/to/dir</span> | <span class="cmd-kw">ssh</span> user@remote <span class="cmd-str">'tar -xvf -'</span>
+
+<span class="cmd-comment"># 本地目录复制（比 cp -r 更高效，保留权限）</span>
+<span class="cmd-kw">tar</span> <span class="cmd-flag">-cf</span> - <span class="cmd-path">src_dir/</span> | <span class="cmd-kw">tar</span> <span class="cmd-flag">-xf</span> - <span class="cmd-flag">-C</span> <span class="cmd-path">dst_dir/</span>
+
+<span class="cmd-comment"># 提取文件内容直接输出到 stdout（-O）</span>
+<span class="cmd-kw">tar</span> <span class="cmd-flag">-xOf</span> archive.tar <span class="cmd-str">config.conf</span>
+
+<span class="cmd-comment"># 流式创建 gzip 压缩并写入文件（管道）</span>
+<span class="cmd-kw">tar</span> <span class="cmd-flag">-cvf</span> - <span class="cmd-path">/path/to/dir</span> | <span class="cmd-kw">gzip</span> > archive.tar.gz
+
+<span class="cmd-comment"># 通过 nc（netcat）网络发送归档</span>
+<span class="cmd-comment"># 接收端：</span>
+<span class="cmd-kw">nc</span> <span class="cmd-flag">-l</span> <span class="cmd-num">9999</span> | <span class="cmd-kw">tar</span> <span class="cmd-flag">-xvf</span> -
+<span class="cmd-comment"># 发送端：</span>
+<span class="cmd-kw">tar</span> <span class="cmd-flag">-cf</span> - <span class="cmd-path">/data</span> | <span class="cmd-kw">nc</span> remote-host <span class="cmd-num">9999</span>
+
+<span class="cmd-comment"># 归档同时用 tee 保存副本并计算 md5</span>
+<span class="cmd-kw">tar</span> <span class="cmd-flag">-czf</span> - <span class="cmd-path">/data</span> | <span class="cmd-kw">tee</span> backup.tar.gz | <span class="cmd-kw">md5sum</span></code></pre>
+
+    <div class="summary-box">
+      <h4>📝 本场景小结 — 第一性原理</h4>
+      <ul>
+        <li>tar 字节流本质上是一维序列，完美契合 Unix 管道模型</li>
+        <li>-f - 将归档设备指向 stdin/stdout，零中间文件，节省 I/O 和磁盘空间</li>
+        <li>SSH + tar 管道是系统管理员跨机器迁移数据的经典方案</li>
+        <li>-O（--to-stdout）可用于将归档成员直接"流"给下游命令</li>
+      </ul>
+    </div>
+  </section>
+
+  <!-- ======================== SCENARIO 6 ======================== -->
+  <section class="chapter" id="ch6">
+    <div class="chapter-badge">SCENARIO 06</div>
+    <h2 class="chap-title"><span class="num">#06</span> 增量备份</h2>
+    <a class="source-link" href="https://man7.org/linux/man-pages/man1/tar.1.html" target="_blank" rel="noopener">
+      📄 原文来源：man7.org — tar(1) -g, --listed-incremental
+    </a>
+
+    <p>官方手册：<em>"-g, --listed-incremental=FILE: Handle new GNU-format incremental backups. FILE is the name of a snapshot file, where tar stores additional information which is used to decide which files changed since the previous incremental dump and, consequently, must be dumped again. If FILE does not exist when creating an archive, it will be created and all files will be added to the resulting archive (the level 0 dump)."</em></p>
+
+    <h3>🔬 底层原理</h3>
+    <p>
+      GNU tar 通过 <strong>快照文件（snapshot file）</strong> 实现增量备份。快照文件记录上次备份时每个目录的成员列表和文件 mtime/ctime。下次备份时，tar 比对当前状态与快照，只归档变化的文件，并更新快照。
+    </p>
+
+    <div class="svg-wrap">
+      <svg width="500" height="170" viewBox="0 0 500 170" xmlns="http://www.w3.org/2000/svg">
+        <text x="250" y="18" text-anchor="middle" fill="#94a3b8" font-size="12">增量备份策略示意</text>
+
+        <!-- Level 0 全量 -->
+        <rect x="10" y="30" width="100" height="50" rx="6" fill="#7c5cfc" opacity="0.85"/>
+        <text x="60" y="52" text-anchor="middle" fill="#fff" font-size="11" font-weight="bold">Level 0</text>
+        <text x="60" y="67" text-anchor="middle" fill="#e0d0ff" font-size="10">全量备份</text>
+        <text x="60" y="82" text-anchor="middle" fill="#e0d0ff" font-size="9">生成 snap.snar</text>
+
+        <!-- 箭头 -->
+        <line x1="112" y1="55" x2="150" y2="55" stroke="#f7971e" stroke-width="1.5" marker-end="url(#mi1)"/>
+        <text x="131" y="48" text-anchor="middle" fill="#64748b" font-size="9">快照</text>
+
+        <!-- Level 1 增量1 -->
+        <rect x="152" y="30" width="100" height="50" rx="6" fill="#4f9eff" opacity="0.75"/>
+        <text x="202" y="52" text-anchor="middle" fill="#fff" font-size="11" font-weight="bold">Level 1</text>
+        <text x="202" y="67" text-anchor="middle" fill="#e0f0ff" font-size="10">增量备份 #1</text>
+        <text x="202" y="82" text-anchor="middle" fill="#e0f0ff" font-size="9">只含变更文件</text>
+
+        <!-- 箭头 -->
+        <line x1="254" y1="55" x2="292" y2="55" stroke="#f7971e" stroke-width="1.5" marker-end="url(#mi2)"/>
+        <text x="273" y="48" text-anchor="middle" fill="#64748b" font-size="9">更新快照</text>
+
+        <!-- Level 1 增量2 -->
+        <rect x="294" y="30" width="100" height="50" rx="6" fill="#4f9eff" opacity="0.75"/>
+        <text x="344" y="52" text-anchor="middle" fill="#fff" font-size="11" font-weight="bold">Level 1</text>
+        <text x="344" y="67" text-anchor="middle" fill="#e0f0ff" font-size="10">增量备份 #2</text>
+        <text x="344" y="82" text-anchor="middle" fill="#e0f0ff" font-size="9">只含变更文件</text>
+
+        <!-- 点 -->
+        <text x="415" y="60" fill="#64748b" font-size="16">···</text>
+
+        <!-- 恢复说明 -->
+        <text x="10" y="108" fill="#94a3b8" font-size="11" font-weight="bold">恢复顺序：</text>
+        <rect x="10" y="118" width="80" height="30" rx="5" fill="#1e2336" stroke="#7c5cfc" stroke-width="1.2"/>
+        <text x="50" y="137" text-anchor="middle" fill="#cba6f7" font-size="10">1. Level 0</text>
+        <line x1="92" y1="133" x2="112" y2="133" stroke="#43e97b" stroke-width="1.2" marker-end="url(#mi3)"/>
+        <rect x="114" y="118" width="80" height="30" rx="5" fill="#1e2336" stroke="#4f9eff" stroke-width="1.2"/>
+        <text x="154" y="137" text-anchor="middle" fill="#a8daff" font-size="10">2. 增量 #1</text>
+        <line x1="196" y1="133" x2="216" y2="133" stroke="#43e97b" stroke-width="1.2" marker-end="url(#mi4)"/>
+        <rect x="218" y="118" width="80" height="30" rx="5" fill="#1e2336" stroke="#4f9eff" stroke-width="1.2"/>
+        <text x="258" y="137" text-anchor="middle" fill="#a8daff" font-size="10">3. 增量 #2</text>
+        <text x="340" y="137" fill="#64748b" font-size="10">··· 按顺序依次恢复</text>
+        <defs>
+          <marker id="mi1" markerWidth="7" markerHeight="7" refX="5" refY="3" orient="auto"><path d="M0,0 L0,6 L7,3 z" fill="#f7971e"/></marker>
+          <marker id="mi2" markerWidth="7" markerHeight="7" refX="5" refY="3" orient="auto"><path d="M0,0 L0,6 L7,3 z" fill="#f7971e"/></marker>
+          <marker id="mi3" markerWidth="7" markerHeight="7" refX="5" refY="3" orient="auto"><path d="M0,0 L0,6 L7,3 z" fill="#43e97b"/></marker>
+          <marker id="mi4" markerWidth="7" markerHeight="7" refX="5" refY="3" orient="auto"><path d="M0,0 L0,6 L7,3 z" fill="#43e97b"/></marker>
+        </defs>
+      </svg>
+    </div>
+
+    <h3>💻 示例</h3>
+    <pre><code><span class="cmd-comment"># 第一步：Level 0 全量备份（snap.snar 不存在时自动创建）</span>
+<span class="cmd-kw">tar</span> <span class="cmd-flag">-czf</span> backup-full.tar.gz <span class="cmd-flag">--listed-incremental</span>=snap.snar <span class="cmd-path">/data</span>
+
+<span class="cmd-comment"># 第二步：Level 1 增量备份（使用相同快照文件）</span>
+<span class="cmd-kw">tar</span> <span class="cmd-flag">-czf</span> backup-incr-1.tar.gz <span class="cmd-flag">--listed-incremental</span>=snap.snar <span class="cmd-path">/data</span>
+
+<span class="cmd-comment"># 强制 Level 0（重置快照，--level=0）</span>
+<span class="cmd-kw">tar</span> <span class="cmd-flag">-czf</span> backup-full-new.tar.gz <span class="cmd-flag">--listed-incremental</span>=snap.snar <span class="cmd-flag">--level=0</span> <span class="cmd-path">/data</span>
+
+<span class="cmd-comment"># 恢复：先恢复全量，再按序恢复增量</span>
+<span class="cmd-kw">tar</span> <span class="cmd-flag">-xzf</span> backup-full.tar.gz <span class="cmd-flag">--listed-incremental</span>=/dev/null <span class="cmd-flag">-C</span> <span class="cmd-path">/restore</span>
+<span class="cmd-kw">tar</span> <span class="cmd-flag">-xzf</span> backup-incr-1.tar.gz <span class="cmd-flag">--listed-incremental</span>=/dev/null <span class="cmd-flag">-C</span> <span class="cmd-path">/restore</span>
+
+<span class="cmd-comment"># 实际脚本：每天增量备份</span>
+<span class="cmd-kw">DATE</span>=<span class="cmd-str">$(date +%Y%m%d)</span>
+<span class="cmd-kw">tar</span> <span class="cmd-flag">-czf</span> <span class="cmd-str">"/backup/data-${DATE}.tar.gz"</span> \
+    <span class="cmd-flag">--listed-incremental</span>=<span class="cmd-path">/backup/snap.snar</span> \
+    <span class="cmd-path">/data</span></code></pre>
+
+    <div class="info-box note">
+      <strong>📌 官方说明：</strong>恢复增量备份时，<code>--listed-incremental</code> 的参数通常指定为 <code>/dev/null</code>（因为不需要检查快照内容，仅满足语法要求）。
+    </div>
+
+    <div class="summary-box">
+      <h4>📝 本场景小结</h4>
+      <ul>
+        <li>快照文件（.snar）记录目录结构和 mtime，是增量判断的核心依据</li>
+        <li>Level 0 = 全量备份（快照不存在时默认行为），Level N = 增量备份</li>
+        <li>--level=0 强制重置快照，实现周期性全量备份</li>
+        <li>恢复时必须按备份顺序依次应用：Level 0 → Level 1 → Level 2 → …</li>
+      </ul>
+    </div>
+  </section>
+
+  <!-- ======================== SCENARIO 7 ======================== -->
+  <section class="chapter" id="ch7">
+    <div class="chapter-badge">SCENARIO 07</div>
+    <h2 class="chap-title"><span class="num">#07</span> 追加与更新归档</h2>
+    <a class="source-link" href="https://man7.org/linux/man-pages/man1/tar.1.html" target="_blank" rel="noopener">
+      📄 原文来源：man7.org — tar(1) -r, --append; -u, --update
+    </a>
+
+    <p>官方手册：</p>
+    <blockquote style="border-left:3px solid var(--accent2);padding:8px 16px;color:var(--text2);margin:14px 0;font-style:italic;">
+      "-r, --append: Append files to the end of an archive."<br>
+      "-u, --update: Append files which are newer than the corresponding copy in the archive. Notice, that newer files don't replace their old archive copies, but instead are appended to the end of archive. The resulting archive can thus contain several members of the same name, corresponding to various versions of the same file."
+      <br><small>— man7.org/linux/man-pages/man1/tar.1.html</small>
+    </blockquote>
+
+    <h3>🔬 底层原理</h3>
+    <p>
+      由于 tar 是顺序字节流格式，<strong>无法原地修改</strong>已归档的文件。<code>-r</code> 和 <code>-u</code> 的实现是将新文件<strong>追加到归档末尾</strong>，覆盖原来的 EOF 标记，再写入新的 EOF。因此同名文件可能存在多个版本，提取时取最后一个。
+    </p>
+    <div class="info-box danger">
+      <strong>🚫 重要限制：</strong>官方手册明确指出 <code>--append</code> 和 <code>--update</code> 均 <strong>不支持压缩归档</strong>（compressed archives cannot be concatenated/updated）。这是因为压缩数据是整体流，无法在中间插入。
+    </div>
+
+    <h3>💻 示例</h3>
+    <pre><code><span class="cmd-comment"># 追加新文件到现有归档（-r / --append）</span>
+<span class="cmd-kw">tar</span> <span class="cmd-flag">-rvf</span> archive.tar newfile.txt
+
+<span class="cmd-comment"># 追加整个目录</span>
+<span class="cmd-kw">tar</span> <span class="cmd-flag">-rvf</span> archive.tar <span class="cmd-path">new_directory/</span>
+
+<span class="cmd-comment"># 只追加比归档中版本更新的文件（-u / --update）</span>
+<span class="cmd-kw">tar</span> <span class="cmd-flag">-uvf</span> archive.tar <span class="cmd-path">/path/to/dir</span>
+
+<span class="cmd-comment"># 将两个未压缩 tar 合并（-A / --concatenate）</span>
+<span class="cmd-kw">tar</span> <span class="cmd-flag">-Avf</span> archive1.tar archive2.tar
+<span class="cmd-comment"># 结果：archive2.tar 内容追加到 archive1.tar</span>
+
+<span class="cmd-comment"># 从归档中删除特定文件（--delete，不支持压缩归档）</span>
+<span class="cmd-kw">tar</span> <span class="cmd-flag">--delete</span> <span class="cmd-flag">-f</span> archive.tar <span class="cmd-str">path/to/old_file.txt</span>
+
+<span class="cmd-comment"># 验证归档完整性（-W / --verify）</span>
+<span class="cmd-kw">tar</span> <span class="cmd-flag">-cWf</span> archive.tar <span class="cmd-path">/data</span></code></pre>
+
+    <div class="summary-box">
+      <h4>📝 本场景小结</h4>
+      <ul>
+        <li>-r（追加）直接在 EOF 标记处继续写入，结构上是简单的字节流延伸</li>
+        <li>-u（更新）通过比较 mtime 决定哪些文件需要追加，旧版本不删除而是被压在底层</li>
+        <li>-A（--concatenate）合并两个 tar 文件，是删除第一个的 EOF 标记后追加第二个的内容</li>
+        <li>--delete 需要重写整个归档（内部创建临时文件），对大文件代价较高</li>
+        <li>以上操作均不支持压缩归档（因为压缩格式的整体性约束）</li>
+      </ul>
+    </div>
+  </section>
+
+  <!-- ======================== SCENARIO 8 ======================== -->
+  <section class="chapter" id="ch8">
+    <div class="chapter-badge">SCENARIO 08</div>
+    <h2 class="chap-title"><span class="num">#08</span> 保留权限与文件属性</h2>
+    <a class="source-link" href="https://man7.org/linux/man-pages/man1/tar.1.html" target="_blank" rel="noopener">
+      📄 原文来源：man7.org — tar(1) -p, --preserve-permissions; --atime-preserve
+    </a>
+
+    <p>官方手册：<em>"-p, --preserve-permissions: Extract information about file permissions (default for superuser)."</em></p>
+    <p>以及 <em>"--atime-preserve[=METHOD]: Preserve access times on dumped files, either by restoring the times after reading (METHOD=replace; default) or by not setting the times in the first place (METHOD=system)."</em></p>
+
+    <h3>🔬 底层原理</h3>
+    <p>
+      tar 的 Header Block 存储了 <code>mode</code>（权限）、<code>uid/gid</code>、<code>uname/gname</code>、<code>mtime</code> 等元数据。提取时，tar 通过 <code>chmod()</code>、<code>chown()</code>、<code>utimes()</code> 系统调用还原这些属性。
+      普通用户默认受 umask 影响；超级用户（root）默认启用 <code>-p</code>。
+    </p>
+
+    <h3>💻 示例</h3>
+    <pre><code><span class="cmd-comment"># 创建时保留 atime（--atime-preserve，避免备份改变访问时间）</span>
+<span class="cmd-kw">tar</span> <span class="cmd-flag">--atime-preserve</span> <span class="cmd-flag">-czf</span> backup.tar.gz <span class="cmd-path">/home/user</span>
+
+<span class="cmd-comment"># 提取时强制保留原始权限（-p，非 root 用户需显式指定）</span>
+<span class="cmd-kw">tar</span> <span class="cmd-flag">-xpvf</span> archive.tar <span class="cmd-flag">-C</span> <span class="cmd-path">/restore</span>
+
+<span class="cmd-comment"># 创建时强制指定属主（--owner 和 --group）</span>
+<span class="cmd-kw">tar</span> <span class="cmd-flag">--owner=deploy</span> <span class="cmd-flag">--group=www-data</span> <span class="cmd-flag">-czf</span> app.tar.gz <span class="cmd-path">./app</span>
+
+<span class="cmd-comment"># 提取时不还原属主（--no-same-owner，容器/CI 常用）</span>
+<span class="cmd-kw">tar</span> <span class="cmd-flag">-xf</span> archive.tar <span class="cmd-flag">--no-same-owner</span>
+
+<span class="cmd-comment"># 跟随符号链接（-h / --dereference，归档实际文件内容而非链接本身）</span>
+<span class="cmd-kw">tar</span> <span class="cmd-flag">-chvf</span> archive.tar <span class="cmd-path">/path/with/symlinks</span>
+
+<span class="cmd-comment"># 设置归档时的 mtime（所有文件统一时间戳，可重现构建）</span>
+<span class="cmd-kw">tar</span> <span class="cmd-flag">--mtime='2024-01-01 00:00:00'</span> <span class="cmd-flag">-czf</span> reproducible.tar.gz <span class="cmd-path">./dist</span>
+
+<span class="cmd-comment"># PAX 格式保留完整时间戳精度（纳秒级）</span>
+<span class="cmd-kw">tar</span> <span class="cmd-flag">--format=pax</span> <span class="cmd-flag">-czf</span> archive.tar.gz <span class="cmd-path">/data</span></code></pre>
+
+    <div class="info-box tip">
+      <strong>💡 可重现构建：</strong>使用 <code>--mtime</code> 固定时间戳 + <code>--sort=name</code> 固定文件顺序，可生成内容完全一致的归档，适合软件发布包的哈希验证。
+    </div>
+
+    <div class="summary-box">
+      <h4>📝 本场景小结</h4>
+      <ul>
+        <li>tar Header Block 的 mode/uid/gid/mtime 字段是权限与属性保留的数据载体</li>
+        <li>-p（--preserve-permissions）让 tar 在提取时调用 chmod/chown 还原权限，root 默认开启</li>
+        <li>--atime-preserve 避免备份读取文件时污染 atime，对监控系统透明</li>
+        <li>--mtime + --sort=name 是实现 "可重现归档"（reproducible builds）的关键</li>
+      </ul>
+    </div>
+  </section>
+
+  <!-- ======================== SCENARIO 9 ======================== -->
+  <section class="chapter" id="ch9">
+    <div class="chapter-badge">SCENARIO 09</div>
+    <h2 class="chap-title"><span class="num">#09</span> 路径转换与选择性提取</h2>
+    <a class="source-link" href="https://man7.org/linux/man-pages/man1/tar.1.html" target="_blank" rel="noopener">
+      📄 原文来源：man7.org — tar(1) --strip-components; --transform
+    </a>
+
+    <p>官方手册：<em>"--strip-components=NUMBER: Strip NUMBER leading components from file names on extraction."</em></p>
+    <p>以及：<em>"--transform=EXPRESSION, --xform=EXPRESSION: Use sed replace EXPRESSION to transform file names."</em></p>
+
+    <h3>🔬 底层原理</h3>
+    <p>
+      提取时，tar 对从 Header Block 中读到的文件名路径进行字符串变换，然后再实际创建文件。<code>--strip-components=N</code> 移除路径前 N 级前缀；<code>--transform</code> 应用 sed 风格正则替换。这些操作在内存中完成，不影响归档文件本身。
+    </p>
+
+    <h3>💻 示例</h3>
+    <pre><code><span class="cmd-comment"># 去掉最外层目录，直接提取内部内容（--strip-components）</span>
+<span class="cmd-comment"># 例如归档中是 project-v1.0/src/main.c</span>
+<span class="cmd-comment"># 提取后变成 src/main.c（去掉了 project-v1.0/ 前缀）</span>
+<span class="cmd-kw">tar</span> <span class="cmd-flag">--strip-components=1</span> <span class="cmd-flag">-xvf</span> archive.tar
+
+<span class="cmd-comment"># 去掉两级目录前缀</span>
+<span class="cmd-kw">tar</span> <span class="cmd-flag">--strip-components=2</span> <span class="cmd-flag">-xvf</span> archive.tar <span class="cmd-flag">-C</span> <span class="cmd-path">/dest</span>
+
+<span class="cmd-comment"># 用 sed 表达式重命名提取路径（--transform）</span>
+<span class="cmd-comment"># 将路径中的 v1.0 替换为 current</span>
+<span class="cmd-kw">tar</span> <span class="cmd-flag">--transform</span>=<span class="cmd-str">'s/v1\.0/current/'</span> <span class="cmd-flag">-xvf</span> archive.tar
+
+<span class="cmd-comment"># 只提取特定路径下的文件</span>
+<span class="cmd-kw">tar</span> <span class="cmd-flag">-xvf</span> archive.tar <span class="cmd-flag">--wildcards</span> <span class="cmd-str">'*/config/*'</span>
+
+<span class="cmd-comment"># 从文件列表中批量提取（-T / --files-from）</span>
+<span class="cmd-kw">cat</span> extract_list.txt
+<span class="cmd-comment">## data/file1.csv</span>
+<span class="cmd-comment">## data/file2.csv</span>
+<span class="cmd-kw">tar</span> <span class="cmd-flag">-xvf</span> archive.tar <span class="cmd-flag">-T</span> extract_list.txt
+
+<span class="cmd-comment"># 提取时跳过开头的成员（-K / --starting-file）</span>
+<span class="cmd-kw">tar</span> <span class="cmd-flag">-xvf</span> archive.tar <span class="cmd-flag">-K</span> <span class="cmd-str">data/target_start_file.txt</span>
+
+<span class="cmd-comment"># 同一个文件有多个版本时，只提取第 N 次出现（--occurrence）</span>
+<span class="cmd-kw">tar</span> <span class="cmd-flag">-xvf</span> archive.tar <span class="cmd-flag">--occurrence=2</span> <span class="cmd-str">path/to/file.txt</span></code></pre>
+
+    <div class="info-box note">
+      <strong>📌 常见用法：</strong>GitHub/GitLab 下载的源码包通常包含顶层目录（如 <code>repo-main/</code>），使用 <code>--strip-components=1</code> 可直接解压内容到当前目录，无需手动移动文件。
+    </div>
+
+    <div class="summary-box">
+      <h4>📝 本场景小结</h4>
+      <ul>
+        <li>--strip-components=N 在内存中裁剪路径前缀，是 "去顶层目录" 的标准方法</li>
+        <li>--transform 应用 sed 正则，可实现任意路径重命名，支持多个 -s 表达式链</li>
+        <li>-T（--files-from）与 find 命令配合，可实现精细的选择性归档/提取</li>
+        <li>--occurrence 处理同名多版本成员，结合 -u 操作后特别有用</li>
+      </ul>
+    </div>
+  </section>
+
+  <!-- ======================== SCENARIO 10 ======================== -->
+  <section class="chapter" id="ch10">
+    <div class="chapter-badge">SCENARIO 10</div>
+    <h2 class="chap-title"><span class="num">#10</span> 稀疏文件高效处理</h2>
+    <a class="source-link" href="https://www.gnu.org/software/tar/manual/html_node/Standard.html" target="_blank" rel="noopener">
+      📄 原文来源：GNU tar 1.35 — Basic Tar Format（Sparse Files 章节）
+    </a>
+
+    <p>GNU tar 官方手册对稀疏文件的描述：</p>
+    <blockquote style="border-left:3px solid var(--accent2);padding:8px 16px;color:var(--text2);margin:14px 0;font-style:italic;">
+      "Sparse files are often dbm files, or other database-type files which have data at some points and emptiness in the greater part of the file. Such files can appear to be very large when an 'ls -l' is done on them, when in truth, there may be a very small amount of important data contained in the file. It is thus undesirable to have tar think that it must back up this entire file, as great quantities of room are wasted on empty blocks..."
+      <br><small>— gnu.org/software/tar/manual/html_node/Standard.html</small>
+    </blockquote>
+
+    <h3>🔬 底层原理</h3>
+    <p>
+      稀疏文件（Sparse File）在文件系统层面由"数据区段"（extents）和"空洞"（holes，未分配块，读取为零）组成。tar 默认会将这些零字节逐一写入归档，导致归档文件远大于实际数据量。
+    </p>
+    <p>
+      使用 <code>-S</code>（--sparse）时，GNU tar 通过 <strong>lseek/FIEMAP</strong> 系统调用探测文件的 hole 区段，在归档中只记录非零区段的偏移量和长度（struct sparse 描述符），还原时用 lseek 跳过空洞区域创建稀疏文件。
+    </p>
+
+    <div class="svg-wrap">
+      <svg width="500" height="160" viewBox="0 0 500 160" xmlns="http://www.w3.org/2000/svg">
+        <text x="250" y="18" text-anchor="middle" fill="#94a3b8" font-size="11">稀疏文件归档对比</text>
+
+        <!-- 无 -S -->
+        <text x="10" y="36" fill="#f38ba8" font-size="11" font-weight="bold">不使用 -S（默认）：</text>
+        <rect x="10" y="44" width="40" height="30" rx="3" fill="#4f9eff" opacity="0.7"/>
+        <text x="30" y="63" text-anchor="middle" fill="#fff" font-size="9">数据</text>
+        <rect x="54" y="44" width="120" height="30" rx="3" fill="#1e2336" stroke="#64748b" stroke-width="1" stroke-dasharray="3,2"/>
+        <text x="114" y="63" text-anchor="middle" fill="#64748b" font-size="9">全零块（空洞）写入归档</text>
+        <rect x="178" y="44" width="40" height="30" rx="3" fill="#4f9eff" opacity="0.7"/>
+        <text x="198" y="63" text-anchor="middle" fill="#fff" font-size="9">数据</text>
+        <rect x="222" y="44" width="100" height="30" rx="3" fill="#1e2336" stroke="#64748b" stroke-width="1" stroke-dasharray="3,2"/>
+        <text x="272" y="63" text-anchor="middle" fill="#64748b" font-size="9">全零块（空洞）</text>
+        <text x="340" y="63" fill="#f38ba8" font-size="10">→ 归档极大</text>
+
+        <!-- 有 -S -->
+        <text x="10" y="100" fill="#43e97b" font-size="11" font-weight="bold">使用 -S（稀疏处理）：</text>
+        <rect x="10" y="108" width="40" height="30" rx="3" fill="#4f9eff" opacity="0.7"/>
+        <text x="30" y="127" text-anchor="middle" fill="#fff" font-size="9">数据</text>
+        <text x="58" y="127" fill="#43e97b" font-size="9">（空洞：记录 offset+len，跳过）</text>
+        <rect x="200" y="108" width="40" height="30" rx="3" fill="#4f9eff" opacity="0.7"/>
+        <text x="220" y="127" text-anchor="middle" fill="#fff" font-size="9">数据</text>
+        <text x="248" y="127" fill="#43e97b" font-size="9">（空洞描述符）</text>
+        <text x="360" y="127" fill="#43e97b" font-size="10">→ 归档极小</text>
+
+        <text x="250" y="155" text-anchor="middle" fill="#64748b" font-size="10">struct sparse：每段空洞只用 24 字节描述 {offset[12], numbytes[12]}</text>
+      </svg>
+    </div>
+
+    <h3>💻 示例</h3>
+    <pre><code><span class="cmd-comment"># 创建包含稀疏文件的归档（-S / --sparse）</span>
+<span class="cmd-kw">tar</span> <span class="cmd-flag">-Sczf</span> database.tar.gz <span class="cmd-path">/var/lib/database/</span>
+
+<span class="cmd-comment"># 演示：先创建一个 1GB 的稀疏文件</span>
+<span class="cmd-kw">dd</span> if=/dev/zero of=sparse.img bs=1 count=0 seek=1G
+<span class="cmd-kw">ls</span> <span class="cmd-flag">-lsh</span> sparse.img
+<span class="cmd-comment">## 显示：1.0G（逻辑大小）vs 0（实际占用）</span>
+
+<span class="cmd-comment"># 不使用 -S：归档会包含大量零字节（非常大）</span>
+<span class="cmd-kw">tar</span> <span class="cmd-flag">-czf</span> non-sparse.tar.gz sparse.img
+
+<span class="cmd-comment"># 使用 -S：归档极小（只记录描述符）</span>
+<span class="cmd-kw">tar</span> <span class="cmd-flag">-Sczf</span> sparse-efficient.tar.gz sparse.img
+
+<span class="cmd-comment"># 指定探测方法（--hole-detection，默认 seek 方法）</span>
+<span class="cmd-kw">tar</span> <span class="cmd-flag">-S</span> <span class="cmd-flag">--hole-detection=seek</span> <span class="cmd-flag">-czf</span> output.tar.gz <span class="cmd-path">/data</span>
+
+<span class="cmd-comment"># 指定稀疏格式版本（--sparse-version，默认 1.0）</span>
+<span class="cmd-kw">tar</span> <span class="cmd-flag">-S</span> <span class="cmd-flag">--sparse-version=1.0</span> <span class="cmd-flag">-czf</span> output.tar.gz <span class="cmd-path">/data</span></code></pre>
+
+    <div class="info-box tip">
+      <strong>💡 适用场景：</strong>虚拟机磁盘镜像（qcow2/vmdk 原始格式）、数据库文件（SQLite/DBM）、Docker overlay 层等，均是典型稀疏文件，使用 -S 可节省数十倍的归档空间。
+    </div>
+
+    <div class="summary-box">
+      <h4>📝 本场景小结 — 第一性原理</h4>
+      <ul>
+        <li>稀疏文件的本质：文件系统层"空洞"（未分配块），逻辑大小远大于物理占用</li>
+        <li>-S 通过 lseek/FIEMAP 内核接口定位空洞，只归档实际数据区段</li>
+        <li>struct sparse 描述符（offset + numbytes，各 12 字节）记录每段空洞位置，提取时通过 lseek 重建稀疏结构</li>
+        <li>--hole-detection=seek（默认）或 raw（回退），seek 方式更快（内核级探测）</li>
+      </ul>
+    </div>
+  </section>
+
+  <!-- ======================== REF TABLE ======================== -->
+  <section class="chapter" id="ch-ref">
+    <div class="chapter-badge">REFERENCE</div>
+    <h2 class="chap-title">常用选项速查表</h2>
+    <a class="source-link" href="https://man7.org/linux/man-pages/man1/tar.1.html" target="_blank" rel="noopener">
+      📄 原文来源：man7.org — tar(1) Linux Manual Page
+    </a>
+
+    <h3>🔧 主操作模式</h3>
+    <div class="table-wrap">
+      <table>
+        <thead><tr><th>短选项</th><th>长选项</th><th>功能</th></tr></thead>
+        <tbody>
+          <tr><td><code>-c</code></td><td><code>--create</code></td><td>创建新归档</td></tr>
+          <tr><td><code>-x</code></td><td><code>--extract / --get</code></td><td>提取归档</td></tr>
+          <tr><td><code>-t</code></td><td><code>--list</code></td><td>列出归档内容</td></tr>
+          <tr><td><code>-r</code></td><td><code>--append</code></td><td>追加文件到归档末尾</td></tr>
+          <tr><td><code>-u</code></td><td><code>--update</code></td><td>追加比归档中更新的文件</td></tr>
+          <tr><td><code>-A</code></td><td><code>--concatenate</code></td><td>将归档追加到另一归档</td></tr>
+          <tr><td><code>-d</code></td><td><code>--diff / --compare</code></td><td>比较归档与文件系统差异</td></tr>
+          <tr><td>—</td><td><code>--delete</code></td><td>从归档中删除成员</td></tr>
+        </tbody>
+      </table>
+    </div>
+
+    <h3>🗜 压缩选项</h3>
+    <div class="table-wrap">
+      <table>
+        <thead><tr><th>选项</th><th>压缩程序</th><th>扩展名</th></tr></thead>
+        <tbody>
+          <tr><td><code>-z / --gzip</code></td><td>gzip</td><td>.tar.gz / .tgz</td></tr>
+          <tr><td><code>-j / --bzip2</code></td><td>bzip2</td><td>.tar.bz2</td></tr>
+          <tr><td><code>-J / --xz</code></td><td>xz</td><td>.tar.xz</td></tr>
+          <tr><td><code>--zstd</code></td><td>zstd</td><td>.tar.zst</td></tr>
+          <tr><td><code>-Z / --compress</code></td><td>compress</td><td>.tar.Z</td></tr>
+          <tr><td><code>-a / --auto-compress</code></td><td>自动（按扩展名）</td><td>任意</td></tr>
+          <tr><td><code>-I / --use-compress-program</code></td><td>自定义程序</td><td>任意</td></tr>
+        </tbody>
+      </table>
+    </div>
+
+    <h3>⚙️ 通用修饰选项</h3>
+    <div class="table-wrap">
+      <table>
+        <thead><tr><th>选项</th><th>说明</th></tr></thead>
+        <tbody>
+          <tr><td><code>-f ARCHIVE</code></td><td>指定归档文件（或 - 表示 stdin/stdout）</td></tr>
+          <tr><td><code>-v</code></td><td>详细输出（可多次叠加）</td></tr>
+          <tr><td><code>-C DIR</code></td><td>切换到目录 DIR</td></tr>
+          <tr><td><code>-p</code></td><td>提取时还原原始权限</td></tr>
+          <tr><td><code>-k</code></td><td>不覆盖已有文件</td></tr>
+          <tr><td><code>-S</code></td><td>高效处理稀疏文件</td></tr>
+          <tr><td><code>-h</code></td><td>追踪符号链接</td></tr>
+          <tr><td><code>-g FILE</code></td><td>增量备份快照文件</td></tr>
+          <tr><td><code>--exclude=PATTERN</code></td><td>排除匹配模式的文件</td></tr>
+          <tr><td><code>--exclude-vcs</code></td><td>排除版本控制目录</td></tr>
+          <tr><td><code>-X FILE</code></td><td>从文件读取排除规则</td></tr>
+          <tr><td><code>-T FILE</code></td><td>从文件读取归档/提取列表</td></tr>
+          <tr><td><code>--strip-components=N</code></td><td>提取时去掉 N 级路径前缀</td></tr>
+          <tr><td><code>--transform=EXPR</code></td><td>用 sed 表达式转换路径</td></tr>
+          <tr><td><code>-O</code></td><td>提取到 stdout</td></tr>
+          <tr><td><code>--atime-preserve</code></td><td>保留访问时间</td></tr>
+          <tr><td><code>--format=FORMAT</code></td><td>指定归档格式（gnu/pax/ustar/v7）</td></tr>
+        </tbody>
+      </table>
+    </div>
+  </section>
+
+  <!-- ======================== FIRST PRINCIPLE ======================== -->
+  <section class="chapter" id="ch-first">
+    <div class="chapter-badge">FIRST PRINCIPLE</div>
+    <h2 class="chap-title">第一性原理总结</h2>
+
+    <p>从最底层的物理原理出发，理解 tar 命令的全貌：</p>
+
+    <div class="svg-wrap">
+      <svg width="560" height="300" viewBox="0 0 560 300" xmlns="http://www.w3.org/2000/svg">
+        <text x="280" y="22" text-anchor="middle" fill="#94a3b8" font-size="13" font-weight="bold">tar 第一性原理层次图</text>
+
+        <!-- Layer 1 物理层 -->
+        <rect x="60" y="38" width="440" height="42" rx="8" fill="#7c5cfc" opacity="0.3" stroke="#7c5cfc" stroke-width="1.5"/>
+        <text x="280" y="57" text-anchor="middle" fill="#cba6f7" font-size="12" font-weight="bold">物理层：磁盘/磁带字节流</text>
+        <text x="280" y="72" text-anchor="middle" fill="#9d8fff" font-size="10">512B 块序列；阻塞因子（blocking factor）优化 I/O；EOF = 两个全零块</text>
+
+        <!-- Layer 2 结构层 -->
+        <rect x="60" y="92" width="440" height="42" rx="8" fill="#4f9eff" opacity="0.2" stroke="#4f9eff" stroke-width="1.5"/>
+        <text x="280" y="111" text-anchor="middle" fill="#a8daff" font-size="12" font-weight="bold">结构层：POSIX Header Block</text>
+        <text x="280" y="126" text-anchor="middle" fill="#7ab8e8" font-size="10">name/mode/uid/gid/size/mtime/chksum/typeflag — 自描述、无需外部索引</text>
+
+        <!-- Layer 3 操作层 -->
+        <rect x="60" y="146" width="440" height="42" rx="8" fill="#43e97b" opacity="0.15" stroke="#43e97b" stroke-width="1.5"/>
+        <text x="280" y="165" text-anchor="middle" fill="#7be8a8" font-size="12" font-weight="bold">操作层：顺序流模型</text>
+        <text x="280" y="180" text-anchor="middle" fill="#5fc888" font-size="10">只能顺序读写（磁带原点）；-r/-u 追加到末尾；--delete 需整体重写</text>
+
+        <!-- Layer 4 Unix哲学 -->
+        <rect x="60" y="200" width="440" height="42" rx="8" fill="#f7971e" opacity="0.15" stroke="#f7971e" stroke-width="1.5"/>
+        <text x="280" y="219" text-anchor="middle" fill="#f7c26e" font-size="12" font-weight="bold">Unix 哲学层：单一职责 + 管道组合</text>
+        <text x="280" y="234" text-anchor="middle" fill="#c88a3a" font-size="10">tar 只归档；gzip/bzip2/xz 只压缩；-f - 接入管道；与 ssh/nc/dd 任意组合</text>
+
+        <!-- Layer 5 应用层 -->
+        <rect x="60" y="254" width="440" height="38" rx="8" fill="#f38ba8" opacity="0.15" stroke="#f38ba8" stroke-width="1.5"/>
+        <text x="280" y="271" text-anchor="middle" fill="#f0a0b8" font-size="12" font-weight="bold">应用层：备份/分发/传输/部署</text>
+        <text x="280" y="286" text-anchor="middle" fill="#c87888" font-size="10">增量备份(-g) / 稀疏文件(-S) / 权限保留(-p) / 路径变换(--strip/--transform)</text>
+      </svg>
+    </div>
+
+    <h3>🔑 核心第一性原理</h3>
+
+    <div class="info-box note">
+      <strong>原理 1：字节流即归档</strong><br>
+      tar 的本质是将多个文件的元数据（header）和内容拼接为一维有序字节流。这个约束决定了 tar 的所有设计决策：追加是延伸末尾，删除需重建，随机访问受限。
+    </div>
+    <div class="info-box tip">
+      <strong>原理 2：自描述性</strong><br>
+      每个文件的 Header Block 包含还原该文件所需的全部元信息（名称、权限、大小、类型、时间戳、checksum），使 tar 归档在没有外部索引的情况下完全自包含。
+    </div>
+    <div class="info-box note">
+      <strong>原理 3：单一职责与管道组合</strong><br>
+      tar 不压缩，只归档。压缩通过 -z/-j/-J 选项调用外部程序，通过 stdin/stdout 管道传递。这使得任意压缩器都能接入，无需修改 tar 本身。
+    </div>
+    <div class="info-box tip">
+      <strong>原理 4：向后兼容的格式演进</strong><br>
+      v7 → ustar → GNU → PAX 格式逐步扩展，GNU tar 能读取所有旧格式。PAX 扩展头（XHDTYPE 'x'）用于记录旧格式字段容纳不下的扩展信息（长文件名、纳秒时间戳、ACL 等）。
+    </div>
+
+    <h3>📊 Top 10 场景核心原理总览</h3>
+    <div class="table-wrap">
+      <table>
+        <thead><tr><th>#</th><th>场景</th><th>核心机制</th><th>关键选项</th></tr></thead>
+        <tbody>
+          <tr><td>01</td><td>创建压缩归档</td><td>顺序写 Header+Data 块，管道给压缩器</td><td>-czf / -cjf / -cJf</td></tr>
+          <tr><td>02</td><td>解压与提取</td><td>顺序读 Header 还原文件，magic bytes 自动识别格式</td><td>-xf / -xvf / -C</td></tr>
+          <tr><td>03</td><td>查看内容</td><td>只读 Header Block，跳过数据块</td><td>-tvf</td></tr>
+          <tr><td>04</td><td>排除文件</td><td>遍历时 glob 匹配过滤</td><td>--exclude / --exclude-vcs / -X</td></tr>
+          <tr><td>05</td><td>管道流式传输</td><td>-f - 将归档设备指向 stdin/stdout</td><td>-f - / -O</td></tr>
+          <tr><td>06</td><td>增量备份</td><td>快照文件记录 mtime/目录结构，比对变化</td><td>-g / --listed-incremental</td></tr>
+          <tr><td>07</td><td>追加与更新</td><td>覆盖 EOF 标记后追加新内容到末尾</td><td>-r / -u / -A</td></tr>
+          <tr><td>08</td><td>保留权限属性</td><td>Header 携带 mode/uid/gid，提取时调用 chmod/chown</td><td>-p / --atime-preserve / --owner</td></tr>
+          <tr><td>09</td><td>路径转换提取</td><td>内存中字符串处理 Header 路径字段</td><td>--strip-components / --transform / -T</td></tr>
+          <tr><td>10</td><td>稀疏文件处理</td><td>lseek/FIEMAP 探测 hole，struct sparse 描述符记录偏移</td><td>-S / --hole-detection</td></tr>
+        </tbody>
+      </table>
+    </div>
+
+    <div class="summary-box">
+      <h4>📝 最终总结</h4>
+      <ul>
+        <li><strong>tar = Tape Archiver</strong>：从磁带时代走来的顺序字节流工具，核心不变，应用场景从未停止扩展</li>
+        <li><strong>一切皆字节流</strong>：理解了这个约束，tar 的所有行为（追加、更新、管道传输、不能随机修改压缩归档）都能从第一性原理推导</li>
+        <li><strong>组合而非集成</strong>：与外部压缩器、SSH、netcat 的管道组合，是 tar 强大生命力的根源</li>
+        <li><strong>官方文档是权威</strong>：man7.org tar(1) 和 GNU tar 1.35 手册是一切行为的最终定义来源</li>
+      </ul>
+    </div>
+
+    <div style="margin-top:40px;padding-top:20px;border-top:1px solid var(--border);color:var(--text3);font-size:0.8rem;">
+      <p>📚 参考文档：</p>
+      <p>• <a href="https://man7.org/linux/man-pages/man1/tar.1.html" target="_blank" style="color:var(--accent);">man7.org — tar(1) Linux Manual Page</a>（Copyright © 2013–2026 Free Software Foundation）</p>
+      <p>• <a href="https://www.gnu.org/software/tar/manual/" target="_blank" style="color:var(--accent);">GNU tar 1.35 官方手册</a>（Last updated August 23, 2023）</p>
+      <p>• <a href="https://www.gnu.org/software/tar/manual/html_node/Standard.html" target="_blank" style="color:var(--accent);">GNU tar 1.35 — Basic Tar Format（POSIX Header 规范）</a></p>
+    </div>
+  </section>
+
+</main>
+</div>
+
+<script>
+// ========== NAVIGATION SECTION TOGGLE ==========
+function toggleSection(id) {
+  const sec = document.getElementById(id);
+  sec.classList.toggle('collapsed');
+  // Save state
+  const state = {};
+  document.querySelectorAll('.nav-section').forEach(s => {
+    state[s.id] = s.classList.contains('collapsed');
+  });
+  try { localStorage.setItem('navState', JSON.stringify(state)); } catch(e){}
+}
+
+// Restore nav state
+try {
+  const saved = JSON.parse(localStorage.getItem('navState') || '{}');
+  Object.entries(saved).forEach(([id, collapsed]) => {
+    const el = document.getElementById(id);
+    if (el && collapsed) el.classList.add('collapsed');
+  });
+} catch(e){}
+
+// Set initial nav-items max-height
+document.querySelectorAll('.nav-items').forEach(el => {
+  if (!el.parentElement.classList.contains('collapsed')) {
+    el.style.maxHeight = el.scrollHeight + 'px';
+  } else {
+    el.style.maxHeight = '0';
+  }
+});
+
+// Re-set max-height after toggle
+const origToggle = window.toggleSection;
+window.toggleSection = function(id) {
+  origToggle(id);
+  document.querySelectorAll('.nav-section').forEach(sec => {
+    const items = sec.querySelector('.nav-items');
+    if (sec.classList.contains('collapsed')) {
+      items.style.maxHeight = '0';
+    } else {
+      items.style.maxHeight = items.scrollHeight + 'px';
+    }
+  });
+};
+// Init properly
+document.querySelectorAll('.nav-section').forEach(sec => {
+  const items = sec.querySelector('.nav-items');
+  if (sec.classList.contains('collapsed')) {
+    items.style.maxHeight = '0';
+  } else {
+    items.style.maxHeight = items.scrollHeight + 200 + 'px';
+  }
+});
+
+// ========== MOBILE HAMBURGER ==========
+const hamburger = document.getElementById('hamburger');
+const sidebar = document.getElementById('sidebar');
+const overlay = document.getElementById('overlay');
+
+hamburger.addEventListener('click', () => {
+  sidebar.classList.toggle('open');
+  overlay.classList.toggle('show');
+});
+overlay.addEventListener('click', () => {
+  sidebar.classList.remove('open');
+  overlay.classList.remove('show');
+});
+
+// ========== PROGRESS BAR ==========
+const progressBar = document.getElementById('progress-bar');
+function updateProgress() {
+  const scrollTop = window.scrollY || document.documentElement.scrollTop;
+  const docHeight = document.documentElement.scrollHeight - window.innerHeight;
+  const pct = docHeight > 0 ? Math.min(100, (scrollTop / docHeight) * 100) : 0;
+  progressBar.style.width = pct + '%';
+}
+
+// ========== ACTIVE NAV LINK ==========
+const chapters = Array.from(document.querySelectorAll('.chapter'));
+const navLinks = Array.from(document.querySelectorAll('.nav-link'));
+const headerHeight = 60 + 20;
+
+function updateActiveNav() {
+  let currentId = '';
+  chapters.forEach(ch => {
+    const rect = ch.getBoundingClientRect();
+    if (rect.top <= headerHeight + 10) {
+      currentId = ch.id;
+    }
+  });
+
+  navLinks.forEach(link => {
+    const href = link.getAttribute('href');
+    if (href === '#' + currentId) {
+      link.classList.add('active');
+      // Update header chapter
+      document.getElementById('header-chapter').textContent = link.textContent.trim();
+    } else {
+      link.classList.remove('active');
+    }
+  });
+}
+
+// Smooth close sidebar on nav click (mobile)
+navLinks.forEach(link => {
+  link.addEventListener('click', () => {
+    sidebar.classList.remove('open');
+    overlay.classList.remove('show');
+  });
+});
+
+window.addEventListener('scroll', () => {
+  updateProgress();
+  updateActiveNav();
+}, { passive: true });
+
+updateProgress();
+updateActiveNav();
+
+// ========== KEYBOARD NAVIGATION ==========
+const chapterIds = chapters.map(c => c.id);
+
+document.addEventListener('keydown', e => {
+  // Only navigate if not focused on input
+  if (document.activeElement.tagName === 'INPUT' || document.activeElement.tagName === 'TEXTAREA') return;
+
+  let currentIdx = -1;
+  chapters.forEach((ch, i) => {
+    const rect = ch.getBoundingClientRect();
+    if (rect.top <= headerHeight + 40) currentIdx = i;
+  });
+
+  if (e.key === 'ArrowRight' || e.key === 'ArrowDown') {
+    e.preventDefault();
+    const next = chapters[Math.min(currentIdx + 1, chapters.length - 1)];
+    if (next) next.scrollIntoView({ behavior: 'smooth', block: 'start' });
+  } else if (e.key === 'ArrowLeft' || e.key === 'ArrowUp') {
+    e.preventDefault();
+    const prev = chapters[Math.max(currentIdx - 1, 0)];
+    if (prev) prev.scrollIntoView({ behavior: 'smooth', block: 'start' });
+  }
+});
+
+// ========== INIT ==========
+// Make nav-items fit content (expand all initially)
+document.querySelectorAll('.nav-items').forEach(el => {
+  const sec = el.parentElement;
+  if (!sec.classList.contains('collapsed')) {
+    el.style.maxHeight = '9999px';
+  }
+});
+</script>
+</body>
+</html>

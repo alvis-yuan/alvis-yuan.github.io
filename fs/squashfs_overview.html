@@ -1,0 +1,1863 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>SquashFS 深度解析</title>
+<style>
+  :root {
+    --bg: #0f1117;
+    --bg2: #161b27;
+    --bg3: #1e2536;
+    --accent: #4f8ef7;
+    --accent2: #6ee7b7;
+    --accent3: #f59e0b;
+    --text: #e2e8f0;
+    --text2: #94a3b8;
+    --border: #2d3748;
+    --nav-w: 280px;
+    --sidebar-bg: #111827;
+  }
+
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+
+  html { scroll-behavior: smooth; }
+
+  body {
+    background: var(--bg);
+    color: var(--text);
+    font-family: 'Segoe UI', system-ui, -apple-system, sans-serif;
+    line-height: 1.7;
+    overflow-x: hidden;
+  }
+
+  /* Progress bar */
+  #progress-bar {
+    position: fixed;
+    top: 0; left: 0;
+    height: 3px;
+    background: linear-gradient(90deg, var(--accent), var(--accent2));
+    width: 0%;
+    z-index: 9999;
+    transition: width 0.1s linear;
+  }
+
+  /* Top navbar for mobile */
+  #topbar {
+    display: none;
+    position: fixed;
+    top: 3px; left: 0; right: 0;
+    height: 54px;
+    background: var(--sidebar-bg);
+    border-bottom: 1px solid var(--border);
+    align-items: center;
+    padding: 0 16px;
+    z-index: 1000;
+    gap: 12px;
+  }
+
+  #hamburger {
+    background: none; border: none;
+    cursor: pointer;
+    display: flex; flex-direction: column; gap: 5px;
+    padding: 4px;
+  }
+  #hamburger span {
+    display: block; width: 22px; height: 2px;
+    background: var(--text); border-radius: 2px;
+    transition: all 0.3s;
+  }
+  #hamburger.open span:nth-child(1) { transform: rotate(45deg) translate(5px, 5px); }
+  #hamburger.open span:nth-child(2) { opacity: 0; }
+  #hamburger.open span:nth-child(3) { transform: rotate(-45deg) translate(5px, -5px); }
+
+  #topbar-title {
+    font-size: 15px;
+    font-weight: 600;
+    color: var(--accent);
+    flex: 1;
+  }
+
+  /* Sidebar */
+  #sidebar {
+    position: fixed;
+    top: 0; left: 0;
+    width: var(--nav-w);
+    height: 100vh;
+    background: var(--sidebar-bg);
+    border-right: 1px solid var(--border);
+    overflow-y: auto;
+    z-index: 500;
+    padding-bottom: 40px;
+    transition: transform 0.3s ease;
+  }
+
+  #sidebar-header {
+    padding: 24px 20px 16px;
+    border-bottom: 1px solid var(--border);
+    position: sticky;
+    top: 0;
+    background: var(--sidebar-bg);
+    z-index: 10;
+  }
+
+  #sidebar-header h1 {
+    font-size: 16px;
+    font-weight: 700;
+    color: var(--accent);
+    letter-spacing: 0.02em;
+  }
+
+  #sidebar-header p {
+    font-size: 11px;
+    color: var(--text2);
+    margin-top: 4px;
+  }
+
+  .nav-group { margin-top: 8px; }
+
+  .nav-group-header {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    padding: 8px 20px 6px;
+    cursor: pointer;
+    user-select: none;
+    font-size: 10px;
+    font-weight: 700;
+    letter-spacing: 0.12em;
+    text-transform: uppercase;
+    color: var(--text2);
+    transition: color 0.2s;
+  }
+  .nav-group-header:hover { color: var(--accent); }
+
+  .nav-group-arrow {
+    font-size: 10px;
+    transition: transform 0.25s;
+  }
+  .nav-group.collapsed .nav-group-arrow { transform: rotate(-90deg); }
+
+  .nav-group-items {
+    overflow: hidden;
+    transition: max-height 0.3s ease;
+    max-height: 600px;
+  }
+  .nav-group.collapsed .nav-group-items { max-height: 0; }
+
+  .nav-item {
+    display: block;
+    padding: 6px 20px 6px 28px;
+    font-size: 13px;
+    color: var(--text2);
+    text-decoration: none;
+    border-left: 2px solid transparent;
+    transition: all 0.15s;
+    cursor: pointer;
+  }
+  .nav-item:hover {
+    color: var(--text);
+    background: rgba(79,142,247,0.06);
+    border-left-color: var(--accent);
+  }
+  .nav-item.active {
+    color: var(--accent);
+    background: rgba(79,142,247,0.1);
+    border-left-color: var(--accent);
+    font-weight: 600;
+  }
+
+  /* Main content */
+  #main {
+    margin-left: var(--nav-w);
+    padding: 40px 48px 80px 56px;
+    max-width: calc(900px + var(--nav-w));
+    min-height: 100vh;
+  }
+
+  /* Sections */
+  .section { margin-bottom: 72px; scroll-margin-top: 24px; }
+
+  h2.section-title {
+    font-size: 26px;
+    font-weight: 700;
+    color: var(--text);
+    margin-bottom: 8px;
+    display: flex;
+    align-items: center;
+    gap: 12px;
+  }
+  h2.section-title .icon {
+    width: 36px; height: 36px;
+    border-radius: 8px;
+    display: flex; align-items: center; justify-content: center;
+    font-size: 18px;
+    flex-shrink: 0;
+  }
+
+  .section-divider {
+    height: 2px;
+    background: linear-gradient(90deg, var(--accent), transparent);
+    margin-bottom: 28px;
+    border-radius: 1px;
+  }
+
+  h3 {
+    font-size: 17px;
+    font-weight: 600;
+    color: var(--accent2);
+    margin: 28px 0 12px;
+  }
+
+  h4 {
+    font-size: 14px;
+    font-weight: 600;
+    color: var(--accent3);
+    margin: 18px 0 8px;
+  }
+
+  p { margin-bottom: 14px; color: var(--text); font-size: 15px; }
+
+  a { color: var(--accent); text-decoration: none; }
+  a:hover { text-decoration: underline; }
+
+  /* Info boxes */
+  .info-box {
+    background: var(--bg2);
+    border: 1px solid var(--border);
+    border-radius: 10px;
+    padding: 18px 22px;
+    margin: 16px 0;
+  }
+  .info-box.accent { border-left: 3px solid var(--accent); }
+  .info-box.green { border-left: 3px solid var(--accent2); }
+  .info-box.yellow { border-left: 3px solid var(--accent3); }
+  .info-box.red { border-left: 3px solid #f87171; }
+
+  /* Code */
+  code {
+    background: var(--bg3);
+    border: 1px solid var(--border);
+    border-radius: 4px;
+    padding: 2px 6px;
+    font-family: 'Fira Mono', 'Consolas', monospace;
+    font-size: 13px;
+    color: #fbbf24;
+  }
+
+  pre {
+    background: var(--bg3);
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    padding: 16px 18px;
+    overflow-x: auto;
+    margin: 16px 0;
+    font-family: 'Fira Mono', 'Consolas', monospace;
+    font-size: 13px;
+    color: #a5f3fc;
+    line-height: 1.6;
+  }
+
+  /* Table */
+  .table-wrap { overflow-x: auto; margin: 16px 0; border-radius: 8px; border: 1px solid var(--border); }
+  table { width: 100%; border-collapse: collapse; font-size: 13.5px; }
+  thead { background: var(--bg3); }
+  th { padding: 10px 14px; text-align: left; font-weight: 600; color: var(--accent2); border-bottom: 1px solid var(--border); white-space: nowrap; }
+  td { padding: 9px 14px; border-bottom: 1px solid rgba(45,55,72,0.5); color: var(--text); }
+  tr:last-child td { border-bottom: none; }
+  tr:hover td { background: rgba(79,142,247,0.04); }
+  td.yes { color: #4ade80; font-weight: 600; }
+  td.no { color: #f87171; }
+
+  /* Cards grid */
+  .cards { display: grid; grid-template-columns: repeat(auto-fill, minmax(220px, 1fr)); gap: 14px; margin: 16px 0; }
+  .card {
+    background: var(--bg2);
+    border: 1px solid var(--border);
+    border-radius: 10px;
+    padding: 16px;
+    transition: border-color 0.2s, transform 0.15s;
+  }
+  .card:hover { border-color: var(--accent); transform: translateY(-2px); }
+  .card-icon { font-size: 24px; margin-bottom: 10px; }
+  .card-title { font-size: 14px; font-weight: 600; margin-bottom: 6px; color: var(--accent2); }
+  .card-body { font-size: 13px; color: var(--text2); line-height: 1.5; }
+
+  /* Summary box */
+  .summary {
+    background: linear-gradient(135deg, rgba(79,142,247,0.08), rgba(110,231,183,0.06));
+    border: 1px solid rgba(79,142,247,0.3);
+    border-radius: 12px;
+    padding: 20px 24px;
+    margin: 28px 0 0;
+  }
+  .summary-title {
+    font-size: 13px;
+    font-weight: 700;
+    letter-spacing: 0.08em;
+    text-transform: uppercase;
+    color: var(--accent);
+    margin-bottom: 10px;
+    display: flex;
+    align-items: center;
+    gap: 6px;
+  }
+  .summary p { font-size: 14px; margin-bottom: 8px; }
+  .summary p:last-child { margin-bottom: 0; }
+
+  /* Pro/Con list */
+  .pro-con { display: grid; grid-template-columns: 1fr 1fr; gap: 16px; margin: 16px 0; }
+  .pro-list, .con-list { background: var(--bg2); border-radius: 10px; padding: 16px 18px; border: 1px solid var(--border); }
+  .pro-list { border-top: 2px solid #4ade80; }
+  .con-list { border-top: 2px solid #f87171; }
+  .list-title { font-size: 13px; font-weight: 700; margin-bottom: 10px; }
+  .pro-list .list-title { color: #4ade80; }
+  .con-list .list-title { color: #f87171; }
+  ul.items { list-style: none; }
+  ul.items li { font-size: 13.5px; color: var(--text2); padding: 4px 0; display: flex; align-items: flex-start; gap: 8px; }
+  ul.items li::before { content: '•'; flex-shrink: 0; }
+  .pro-list ul.items li::before { color: #4ade80; }
+  .con-list ul.items li::before { color: #f87171; }
+
+  /* Tag badges */
+  .tags { display: flex; flex-wrap: wrap; gap: 8px; margin: 12px 0; }
+  .tag {
+    font-size: 12px;
+    padding: 3px 10px;
+    border-radius: 20px;
+    border: 1px solid;
+    font-weight: 500;
+  }
+  .tag.blue { color: var(--accent); border-color: rgba(79,142,247,0.4); background: rgba(79,142,247,0.1); }
+  .tag.green { color: var(--accent2); border-color: rgba(110,231,183,0.4); background: rgba(110,231,183,0.08); }
+  .tag.orange { color: var(--accent3); border-color: rgba(245,158,11,0.4); background: rgba(245,158,11,0.08); }
+
+  /* SVG diagrams */
+  .svg-wrap {
+    background: var(--bg2);
+    border: 1px solid var(--border);
+    border-radius: 12px;
+    padding: 20px;
+    margin: 20px 0;
+    overflow-x: auto;
+    display: flex;
+    justify-content: center;
+  }
+  svg text { font-family: 'Segoe UI', system-ui, sans-serif; }
+
+  /* Footnote/source */
+  .source-note {
+    font-size: 12px;
+    color: var(--text2);
+    margin-top: 6px;
+    font-style: italic;
+  }
+
+  /* Keyboard hint */
+  .kb-hint {
+    position: fixed;
+    bottom: 20px;
+    right: 20px;
+    background: var(--bg3);
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    padding: 8px 14px;
+    font-size: 12px;
+    color: var(--text2);
+    z-index: 100;
+    display: flex;
+    align-items: center;
+    gap: 8px;
+  }
+  .key {
+    background: var(--bg2);
+    border: 1px solid var(--border);
+    border-radius: 4px;
+    padding: 2px 7px;
+    font-size: 11px;
+    color: var(--text);
+    font-weight: 600;
+  }
+
+  /* Overlay for mobile sidebar */
+  #overlay {
+    display: none;
+    position: fixed;
+    inset: 0;
+    background: rgba(0,0,0,0.6);
+    z-index: 499;
+  }
+
+  /* Responsive */
+  @media (max-width: 768px) {
+    #topbar { display: flex; }
+    #sidebar {
+      top: 57px;
+      transform: translateX(-100%);
+      height: calc(100vh - 57px);
+    }
+    #sidebar.open { transform: translateX(0); }
+    #overlay.open { display: block; }
+    #main {
+      margin-left: 0;
+      padding: 24px 16px 60px;
+      padding-top: 74px;
+      max-width: 100%;
+    }
+    .pro-con { grid-template-columns: 1fr; }
+    .cards { grid-template-columns: 1fr 1fr; }
+    h2.section-title { font-size: 20px; }
+    .kb-hint { display: none; }
+  }
+
+  @media (max-width: 480px) {
+    .cards { grid-template-columns: 1fr; }
+    #main { padding: 70px 14px 60px; }
+  }
+</style>
+</head>
+<body>
+
+<div id="progress-bar"></div>
+
+<!-- Mobile topbar -->
+<div id="topbar">
+  <button id="hamburger" aria-label="菜单">
+    <span></span><span></span><span></span>
+  </button>
+  <div id="topbar-title">SquashFS 深度解析</div>
+</div>
+
+<div id="overlay"></div>
+
+<!-- Sidebar Navigation -->
+<nav id="sidebar">
+  <div id="sidebar-header">
+    <h1>SquashFS 深度解析</h1>
+    <p>压缩只读文件系统权威指南</p>
+  </div>
+
+  <div class="nav-group" id="grp-intro">
+    <div class="nav-group-header" onclick="toggleGroup('grp-intro')">
+      <span>引言</span>
+      <span class="nav-group-arrow">▾</span>
+    </div>
+    <div class="nav-group-items">
+      <a class="nav-item" onclick="gotoSection('intro')">概述与历史</a>
+    </div>
+  </div>
+
+  <div class="nav-group" id="grp-struct">
+    <div class="nav-group-header" onclick="toggleGroup('grp-struct')">
+      <span>文件系统结构</span>
+      <span class="nav-group-arrow">▾</span>
+    </div>
+    <div class="nav-group-items">
+      <a class="nav-item" onclick="gotoSection('struct-overview')">整体布局</a>
+      <a class="nav-item" onclick="gotoSection('struct-superblock')">超级块</a>
+      <a class="nav-item" onclick="gotoSection('struct-data')">数据块与碎片</a>
+      <a class="nav-item" onclick="gotoSection('struct-inode')">Inode 表</a>
+      <a class="nav-item" onclick="gotoSection('struct-dir')">目录表</a>
+      <a class="nav-item" onclick="gotoSection('struct-tables')">查找表体系</a>
+    </div>
+  </div>
+
+  <div class="nav-group" id="grp-principle">
+    <div class="nav-group-header" onclick="toggleGroup('grp-principle')">
+      <span>工作原理</span>
+      <span class="nav-group-arrow">▾</span>
+    </div>
+    <div class="nav-group-items">
+      <a class="nav-item" onclick="gotoSection('principle-compress')">压缩机制</a>
+      <a class="nav-item" onclick="gotoSection('principle-meta')">元数据压缩</a>
+      <a class="nav-item" onclick="gotoSection('principle-cache')">内部缓存</a>
+      <a class="nav-item" onclick="gotoSection('principle-dedup')">去重与稀疏</a>
+    </div>
+  </div>
+
+  <div class="nav-group" id="grp-adv">
+    <div class="nav-group-header" onclick="toggleGroup('grp-adv')">
+      <span>优势</span>
+      <span class="nav-group-arrow">▾</span>
+    </div>
+    <div class="nav-group-items">
+      <a class="nav-item" onclick="gotoSection('advantages')">核心优势</a>
+    </div>
+  </div>
+
+  <div class="nav-group" id="grp-dis">
+    <div class="nav-group-header" onclick="toggleGroup('grp-dis')">
+      <span>劣势</span>
+      <span class="nav-group-arrow">▾</span>
+    </div>
+    <div class="nav-group-items">
+      <a class="nav-item" onclick="gotoSection('disadvantages')">局限性与不足</a>
+    </div>
+  </div>
+
+  <div class="nav-group" id="grp-use">
+    <div class="nav-group-header" onclick="toggleGroup('grp-use')">
+      <span>适用场景</span>
+      <span class="nav-group-arrow">▾</span>
+    </div>
+    <div class="nav-group-items">
+      <a class="nav-item" onclick="gotoSection('usecases')">典型应用场景</a>
+      <a class="nav-item" onclick="gotoSection('comparison')">与其他方案对比</a>
+    </div>
+  </div>
+
+  <div class="nav-group" id="grp-tools">
+    <div class="nav-group-header" onclick="toggleGroup('grp-tools')">
+      <span>工具与参考</span>
+      <span class="nav-group-arrow">▾</span>
+    </div>
+    <div class="nav-group-items">
+      <a class="nav-item" onclick="gotoSection('tools')">工具链</a>
+      <a class="nav-item" onclick="gotoSection('refs')">参考资料</a>
+    </div>
+  </div>
+</nav>
+
+<!-- Main Content -->
+<main id="main">
+
+  <!-- ===== INTRO ===== -->
+  <section class="section" id="intro">
+    <h2 class="section-title">
+      <span class="icon" style="background:rgba(79,142,247,0.15)">📦</span>
+      概述与历史
+    </h2>
+    <div class="section-divider"></div>
+
+    <p>
+      <strong>SquashFS</strong> 是一种面向 Linux 的高度压缩、只读文件系统。它能对文件、Inode 和目录进行压缩，支持最大 1 MiB 的数据块（默认 128 KiB），同时将 Inode 及目录数据紧密打包以最小化磁盘开销。
+    </p>
+
+    <div class="info-box accent">
+      <p style="margin:0;font-size:14px;">
+        <strong>来自 Linux 内核官方文档的定义：</strong><br>
+        "Squashfs is intended for general read-only filesystem use, for archival use (i.e. in cases where a .tar.gz file may be used), and in constrained block device/memory systems (e.g. embedded systems) where low overhead is needed."
+        <br><span style="color:var(--text2);font-style:italic;">— <a href="https://docs.kernel.org/filesystems/squashfs.html" target="_blank">Linux Kernel Documentation: Squashfs 4.0 Filesystem</a></span>
+      </p>
+    </div>
+
+    <h3>📅 发展历程</h3>
+
+    <div class="table-wrap">
+      <table>
+        <thead><tr><th>时间</th><th>里程碑</th></tr></thead>
+        <tbody>
+          <tr><td>2002-10-23</td><td>Phillip Lougher 发布版本 1.0，最初仅支持 gzip 压缩，块大小上限 8 KiB，文件系统限 4 GB</td></tr>
+          <tr><td>2006</td><td>版本 3.0 发布，引入更大块大小支持</td></tr>
+          <tr><td>2008</td><td>代码完全重写并提交 Linux 主线，支持 64 位大小与小端存储</td></tr>
+          <tr><td>2009 (Linux 2.6.29)</td><td>正式合并进 Linux 主线内核，成为内核原生组件</td></tr>
+          <tr><td>2009 至今</td><td>陆续新增 LZO、XZ、LZ4、Zstd 等压缩算法支持</td></tr>
+          <tr><td>2025-11</td><td>squashfs-tools 最新版 4.7.4 发布</td></tr>
+        </tbody>
+      </table>
+    </div>
+    <p class="source-note">来源：<a href="https://en.wikipedia.org/wiki/SquashFS" target="_blank">Wikipedia: SquashFS</a>；<a href="https://github.com/plougher/squashfs-tools" target="_blank">github.com/plougher/squashfs-tools</a></p>
+
+    <h3>🔤 名称含义</h3>
+    <p>"Squash"（压榨）形象地体现了这种文件系统的核心特征：将文件系统内容极度压缩打包成紧凑的只读镜像，就像将内容"榨干"一样。</p>
+
+    <div class="summary">
+      <div class="summary-title">💡 章节总结</div>
+      <p>SquashFS 由 Phillip Lougher 于 2002 年创建，2009 年并入 Linux 2.6.29 主线，是目前 Linux 下最主流的压缩只读文件系统。其核心定位是：在存储/内存受限环境中，以只读方式高效存取大量文件，兼顾归档与系统镜像用途。</p>
+      <p><strong>第一性原理：</strong>文件系统的本质是组织和索引数据。SquashFS 的设计哲学是"写入时一次性最优压缩，读取时按需解压"，以牺牲写能力换取极致的空间效率和挂载后的快速只读访问。</p>
+    </div>
+  </section>
+
+  <!-- ===== STRUCTURE OVERVIEW ===== -->
+  <section class="section" id="struct-overview">
+    <h2 class="section-title">
+      <span class="icon" style="background:rgba(110,231,183,0.15)">🗂️</span>
+      整体布局
+    </h2>
+    <div class="section-divider"></div>
+
+    <p>
+      根据 <a href="https://docs.kernel.org/filesystems/squashfs.html" target="_blank">Linux 内核官方文档</a>及 <a href="https://dr-emann.github.io/squashfs/squashfs.html" target="_blank">SquashFS Binary Format 规范</a>，一个 SquashFS 归档由最多九个部分组成，按字节对齐紧密排列：
+    </p>
+
+    <!-- SVG Layout Diagram -->
+    <div class="svg-wrap">
+      <svg width="580" height="520" viewBox="0 0 580 520" xmlns="http://www.w3.org/2000/svg">
+        <defs>
+          <linearGradient id="g1" x1="0" y1="0" x2="1" y2="0">
+            <stop offset="0%" stop-color="#4f8ef7" stop-opacity="0.7"/>
+            <stop offset="100%" stop-color="#6ee7b7" stop-opacity="0.5"/>
+          </linearGradient>
+          <linearGradient id="g2" x1="0" y1="0" x2="1" y2="0">
+            <stop offset="0%" stop-color="#6ee7b7" stop-opacity="0.4"/>
+            <stop offset="100%" stop-color="#4f8ef7" stop-opacity="0.3"/>
+          </linearGradient>
+          <linearGradient id="g3" x1="0" y1="0" x2="1" y2="0">
+            <stop offset="0%" stop-color="#f59e0b" stop-opacity="0.5"/>
+            <stop offset="100%" stop-color="#f87171" stop-opacity="0.3"/>
+          </linearGradient>
+        </defs>
+
+        <!-- Title -->
+        <text x="290" y="22" text-anchor="middle" fill="#e2e8f0" font-size="14" font-weight="700">SquashFS 归档整体布局</text>
+
+        <!-- Block diagram -->
+        <!-- Superblock -->
+        <rect x="80" y="36" width="300" height="40" rx="6" fill="url(#g1)" stroke="#4f8ef7" stroke-width="1.5"/>
+        <text x="230" y="61" text-anchor="middle" fill="#e2e8f0" font-size="13" font-weight="600">Superblock（超级块）</text>
+        <text x="390" y="55" fill="#94a3b8" font-size="11">96 字节，固定，必须首位</text>
+        <text x="390" y="69" fill="#94a3b8" font-size="11">包含所有其他区段的偏移地址</text>
+
+        <!-- Compression options -->
+        <rect x="80" y="82" width="300" height="36" rx="6" fill="rgba(79,142,247,0.15)" stroke="#4f8ef7" stroke-width="1" stroke-dasharray="5,3"/>
+        <text x="230" y="104" text-anchor="middle" fill="#94a3b8" font-size="12">压缩选项（可选）</text>
+        <text x="390" y="100" fill="#94a3b8" font-size="11">仅在非默认压缩参数时存在</text>
+
+        <!-- Data blocks & fragments -->
+        <rect x="80" y="124" width="300" height="56" rx="6" fill="url(#g2)" stroke="#6ee7b7" stroke-width="1.5"/>
+        <text x="230" y="148" text-anchor="middle" fill="#e2e8f0" font-size="13" font-weight="600">数据块 &amp; 碎片块</text>
+        <text x="230" y="167" text-anchor="middle" fill="#94a3b8" font-size="11">（Datablocks &amp; Fragments）</text>
+        <text x="390" y="142" fill="#94a3b8" font-size="11">文件内容，分块独立压缩</text>
+        <text x="390" y="157" fill="#94a3b8" font-size="11">块大小 4K–1M（默认 128K）</text>
+        <text x="390" y="171" fill="#94a3b8" font-size="11">小文件尾部合并为碎片块</text>
+
+        <!-- Inode table -->
+        <rect x="80" y="186" width="300" height="40" rx="6" fill="rgba(245,158,11,0.15)" stroke="#f59e0b" stroke-width="1.5"/>
+        <text x="230" y="210" text-anchor="middle" fill="#e2e8f0" font-size="13" font-weight="600">Inode 表</text>
+        <text x="390" y="205" fill="#94a3b8" font-size="11">元数据：权限、所有者、大小等</text>
+        <text x="390" y="219" fill="#94a3b8" font-size="11">8 KiB 块压缩，平均 8 字节/inode</text>
+
+        <!-- Directory table -->
+        <rect x="80" y="232" width="300" height="40" rx="6" fill="rgba(245,158,11,0.15)" stroke="#f59e0b" stroke-width="1.5"/>
+        <text x="230" y="256" text-anchor="middle" fill="#e2e8f0" font-size="13" font-weight="600">目录表</text>
+        <text x="390" y="251" fill="#94a3b8" font-size="11">目录列表，含文件名与 inode 引用</text>
+        <text x="390" y="265" fill="#94a3b8" font-size="11">支持目录索引加速查找</text>
+
+        <!-- Fragment table -->
+        <rect x="80" y="278" width="300" height="36" rx="6" fill="rgba(79,142,247,0.1)" stroke="#4f8ef7" stroke-width="1" stroke-dasharray="5,3"/>
+        <text x="230" y="300" text-anchor="middle" fill="#94a3b8" font-size="12">碎片块索引表（可选）</text>
+        <text x="390" y="295" fill="#94a3b8" font-size="11">碎片块的位置与大小映射</text>
+        <text x="390" y="309" fill="#94a3b8" font-size="11">挂载时缓存入内存</text>
+
+        <!-- Export table -->
+        <rect x="80" y="320" width="300" height="36" rx="6" fill="rgba(79,142,247,0.1)" stroke="#4f8ef7" stroke-width="1" stroke-dasharray="5,3"/>
+        <text x="230" y="342" text-anchor="middle" fill="#94a3b8" font-size="12">Export 表（可选）</text>
+        <text x="390" y="337" fill="#94a3b8" font-size="11">inode 号到磁盘位置的映射</text>
+        <text x="390" y="351" fill="#94a3b8" font-size="11">用于 NFS 导出支持</text>
+
+        <!-- UID/GID table -->
+        <rect x="80" y="362" width="300" height="36" rx="6" fill="rgba(110,231,183,0.12)" stroke="#6ee7b7" stroke-width="1"/>
+        <text x="230" y="384" text-anchor="middle" fill="#e2e8f0" font-size="12">UID/GID 查找表</text>
+        <text x="390" y="379" fill="#94a3b8" font-size="11">去重 UID/GID，inode 中存索引</text>
+        <text x="390" y="393" fill="#94a3b8" font-size="11">节省 Inode 空间</text>
+
+        <!-- Xattr table -->
+        <rect x="80" y="404" width="300" height="36" rx="6" fill="rgba(110,231,183,0.12)" stroke="#6ee7b7" stroke-width="1" stroke-dasharray="5,3"/>
+        <text x="230" y="426" text-anchor="middle" fill="#94a3b8" font-size="12">扩展属性表 Xattr（可选）</text>
+        <text x="390" y="421" fill="#94a3b8" font-size="11">键值对，支持值去重</text>
+        <text x="390" y="435" fill="#94a3b8" font-size="11">inline 或 out-of-line 存储</text>
+
+        <!-- Arrow on left -->
+        <line x1="72" y1="56" x2="72" y2="430" stroke="#4f8ef7" stroke-width="2" stroke-dasharray="4,2"/>
+        <polygon points="68,430 72,440 76,430" fill="#4f8ef7"/>
+        <text x="60" y="250" text-anchor="middle" fill="#4f8ef7" font-size="11" transform="rotate(-90,60,250)">地址增长方向 →</text>
+
+        <!-- Legend -->
+        <rect x="80" y="460" width="14" height="10" rx="2" fill="url(#g1)" stroke="#4f8ef7" stroke-width="1.5"/>
+        <text x="100" y="470" fill="#94a3b8" font-size="11">必选区段</text>
+        <rect x="170" y="460" width="14" height="10" rx="2" fill="rgba(79,142,247,0.1)" stroke="#4f8ef7" stroke-width="1" stroke-dasharray="3,2"/>
+        <text x="190" y="470" fill="#94a3b8" font-size="11">可选区段</text>
+        <rect x="260" y="460" width="14" height="10" rx="2" fill="rgba(245,158,11,0.15)" stroke="#f59e0b" stroke-width="1.5"/>
+        <text x="280" y="470" fill="#94a3b8" font-size="11">元数据区段</text>
+      </svg>
+    </div>
+
+    <p class="source-note">来源：<a href="https://docs.kernel.org/filesystems/squashfs.html#squashfs-filesystem-design" target="_blank">Linux Kernel Docs: Squashfs Filesystem Design</a>；<a href="https://dr-emann.github.io/squashfs/squashfs.html" target="_blank">SquashFS Binary Format Specification</a></p>
+
+    <div class="info-box accent">
+      <p style="margin:0;font-size:14px;">所有整数以<strong>小端序（little-endian）</strong>存储，确保跨架构兼容。归档本身必须填充至底层设备块大小（1K 或 4K）的倍数。尽管超级块记录了各区段的精确位置，Linux 内核实现仍<strong>要求上述顺序严格不变</strong>。</p>
+    </div>
+
+    <div class="summary">
+      <div class="summary-title">💡 章节总结</div>
+      <p>SquashFS 的整体布局遵循"头部先行，数据居中，元数据索引居后"的原则。超级块是整个归档的唯一入口点；数据块存放实际文件内容；各类查找表在挂载时被部分加载入内存，实现 O(1) 或 O(log n) 级别的快速检索。这种布局使得顺序构建、随机读取两种操作模式都能高效运作。</p>
+    </div>
+  </section>
+
+  <!-- ===== SUPERBLOCK ===== -->
+  <section class="section" id="struct-superblock">
+    <h2 class="section-title">
+      <span class="icon" style="background:rgba(79,142,247,0.15)">🔑</span>
+      超级块（Superblock）
+    </h2>
+    <div class="section-divider"></div>
+
+    <p>超级块是 SquashFS 归档的第一个区段，<strong>固定 96 字节</strong>，包含归档的关键元信息及其他所有区段的位置信息。</p>
+
+    <div class="table-wrap">
+      <table>
+        <thead>
+          <tr><th>字段</th><th>类型</th><th>说明</th></tr>
+        </thead>
+        <tbody>
+          <tr><td><code>magic</code></td><td>u32</td><td>魔数，固定为 <code>0x73717368</code>（磁盘上为 "hsqs"）</td></tr>
+          <tr><td><code>inode_count</code></td><td>u32</td><td>归档中存储的 inode 总数</td></tr>
+          <tr><td><code>mod_time</code></td><td>u32</td><td>归档最后修改时间（Unix 时间戳，无符号，可用到 2106 年）</td></tr>
+          <tr><td><code>block_size</code></td><td>u32</td><td>数据块大小（字节），必须是 4096 到 1048576 之间的 2 的幂</td></tr>
+          <tr><td><code>frag_count</code></td><td>u32</td><td>碎片表中的条目数</td></tr>
+          <tr><td><code>compressor</code></td><td>u16</td><td>压缩算法 ID（1=GZIP, 2=LZMA, 3=LZO, 4=XZ, 5=LZ4, 6=ZSTD）</td></tr>
+          <tr><td><code>block_log</code></td><td>u16</td><td>块大小的 log2 值，与 block_size 不符则视为损坏</td></tr>
+          <tr><td><code>flags</code></td><td>u16</td><td>标志位（见下表），控制压缩选项、导出表等</td></tr>
+          <tr><td><code>id_count</code></td><td>u16</td><td>UID/GID 查找表条目数</td></tr>
+          <tr><td><code>version_major</code></td><td>u16</td><td>格式主版本，必须为 4</td></tr>
+          <tr><td><code>version_minor</code></td><td>u16</td><td>格式次版本，必须为 0</td></tr>
+          <tr><td><code>root_inode</code></td><td>u64</td><td>根目录 inode 的引用（48 位块地址 + 16 位偏移）</td></tr>
+          <tr><td><code>bytes_used</code></td><td>u64</td><td>归档实际使用字节数（可小于文件大小，因填充对齐）</td></tr>
+          <tr><td><code>id_table / xattr_table / inode_table / dir_table / frag_table / export_table</code></td><td>u64 × 6</td><td>各区段在归档中的字节偏移地址</td></tr>
+        </tbody>
+      </table>
+    </div>
+
+    <h3>🚩 标志位（Flags）</h3>
+    <div class="table-wrap">
+      <table>
+        <thead><tr><th>值</th><th>含义</th></tr></thead>
+        <tbody>
+          <tr><td><code>0x0001</code></td><td>Inode 以未压缩方式存储</td></tr>
+          <tr><td><code>0x0002</code></td><td>数据块以未压缩方式存储</td></tr>
+          <tr><td><code>0x0008</code></td><td>碎片块以未压缩方式存储</td></tr>
+          <tr><td><code>0x0010</code></td><td>不使用碎片块</td></tr>
+          <tr><td><code>0x0040</code></td><td>数据已去重处理</td></tr>
+          <tr><td><code>0x0080</code></td><td>存在 NFS Export 表</td></tr>
+          <tr><td><code>0x0200</code></td><td>无扩展属性（Xattr）</td></tr>
+          <tr><td><code>0x0400</code></td><td>存在压缩选项区段（Linux 内核唯一实际检测的标志位）</td></tr>
+        </tbody>
+      </table>
+    </div>
+    <p class="source-note">来源：<a href="https://dr-emann.github.io/squashfs/squashfs.html#_the_superblock" target="_blank">SquashFS Binary Format: The Superblock</a></p>
+
+    <div class="summary">
+      <div class="summary-title">💡 章节总结</div>
+      <p>超级块是整个文件系统的"目录页"，96 字节固定大小使其解析极为高效。魔数校验、版本检查和 block_size/block_log 双重冗余验证共同保障归档完整性。所有区段地址均存于此，实现了文件系统元数据的中心化管理。</p>
+    </div>
+  </section>
+
+  <!-- ===== DATA BLOCKS ===== -->
+  <section class="section" id="struct-data">
+    <h2 class="section-title">
+      <span class="icon" style="background:rgba(110,231,183,0.15)">💾</span>
+      数据块与碎片块
+    </h2>
+    <div class="section-divider"></div>
+
+    <p>
+      文件内容被分割为固定大小的<strong>数据块（Datablocks）</strong>，每个块独立压缩后顺序写入归档。若压缩后块大小反而超过原始大小，则直接存储未压缩数据，保证压缩不会带来额外膨胀。
+    </p>
+
+    <div class="svg-wrap">
+      <svg width="520" height="260" viewBox="0 0 520 260" xmlns="http://www.w3.org/2000/svg">
+        <text x="260" y="22" text-anchor="middle" fill="#e2e8f0" font-size="13" font-weight="700">文件数据存储方式</text>
+
+        <!-- Large file -->
+        <text x="20" y="50" fill="#6ee7b7" font-size="12" font-weight="600">大文件（> block_size）</text>
+        <rect x="20" y="58" width="80" height="30" rx="4" fill="rgba(79,142,247,0.3)" stroke="#4f8ef7" stroke-width="1.5"/>
+        <text x="60" y="77" text-anchor="middle" fill="#e2e8f0" font-size="11">数据块 0</text>
+        <rect x="108" y="58" width="80" height="30" rx="4" fill="rgba(79,142,247,0.3)" stroke="#4f8ef7" stroke-width="1.5"/>
+        <text x="148" y="77" text-anchor="middle" fill="#e2e8f0" font-size="11">数据块 1</text>
+        <rect x="196" y="58" width="80" height="30" rx="4" fill="rgba(79,142,247,0.3)" stroke="#4f8ef7" stroke-width="1.5"/>
+        <text x="236" y="77" text-anchor="middle" fill="#e2e8f0" font-size="11">数据块 2</text>
+        <text x="290" y="77" fill="#94a3b8" font-size="11">…</text>
+        <rect x="305" y="58" width="60" height="30" rx="4" fill="rgba(110,231,183,0.25)" stroke="#6ee7b7" stroke-width="1.5" stroke-dasharray="4,2"/>
+        <text x="335" y="73" text-anchor="middle" fill="#6ee7b7" font-size="10">碎片</text>
+        <text x="335" y="84" text-anchor="middle" fill="#6ee7b7" font-size="10">（尾部）</text>
+
+        <!-- Fragment block -->
+        <text x="20" y="130" fill="#f59e0b" font-size="12" font-weight="600">小文件 / 碎片块（Fragment Block）合并</text>
+        <rect x="20" y="140" width="380" height="50" rx="6" fill="rgba(245,158,11,0.1)" stroke="#f59e0b" stroke-width="1.5"/>
+        <rect x="28" y="148" width="60" height="34" rx="3" fill="rgba(245,158,11,0.3)" stroke="#f59e0b" stroke-width="1"/>
+        <text x="58" y="168" text-anchor="middle" fill="#e2e8f0" font-size="10">文件A尾</text>
+        <rect x="96" y="148" width="80" height="34" rx="3" fill="rgba(245,158,11,0.25)" stroke="#f59e0b" stroke-width="1"/>
+        <text x="136" y="168" text-anchor="middle" fill="#e2e8f0" font-size="10">小文件B</text>
+        <rect x="184" y="148" width="50" height="34" rx="3" fill="rgba(245,158,11,0.3)" stroke="#f59e0b" stroke-width="1"/>
+        <text x="209" y="168" text-anchor="middle" fill="#e2e8f0" font-size="10">文件C尾</text>
+        <rect x="242" y="148" width="70" height="34" rx="3" fill="rgba(245,158,11,0.2)" stroke="#f59e0b" stroke-width="1"/>
+        <text x="277" y="168" text-anchor="middle" fill="#e2e8f0" font-size="10">小文件D</text>
+        <text x="370" y="170" text-anchor="middle" fill="#94a3b8" font-size="10">…</text>
+        <text x="30" y="208" fill="#94a3b8" font-size="11">多个小文件/文件尾部合并压缩成单个碎片块，减少空间浪费</text>
+
+        <!-- Block size hint -->
+        <rect x="20" y="222" width="160" height="28" rx="4" fill="rgba(79,142,247,0.1)" stroke="var(--border)" stroke-width="1"/>
+        <text x="100" y="240" text-anchor="middle" fill="#94a3b8" font-size="11">块大小：4K ~ 1M（默认128K）</text>
+
+        <rect x="190" y="222" width="210" height="28" rx="4" fill="rgba(79,142,247,0.1)" stroke="var(--border)" stroke-width="1"/>
+        <text x="295" y="240" text-anchor="middle" fill="#94a3b8" font-size="11">压缩失败时直接存储原始数据</text>
+      </svg>
+    </div>
+
+    <h3>碎片块（Fragment Blocks）</h3>
+    <p>
+      文件的"尾端"（不足一个完整块大小的部分）可以与其他文件的尾端打包进一个<strong>碎片块（Fragment Block）</strong>，大小不超过 block_size。小于一个块的文件同样按此处理。这种机制显著减少了对小文件的空间浪费。
+    </p>
+    <p class="source-note">来源：<a href="https://dr-emann.github.io/squashfs/squashfs.html#_packing_file_data" target="_blank">SquashFS Binary Format: Packing File Data</a>；<a href="https://docs.kernel.org/filesystems/squashfs.html#file-data" target="_blank">Linux Kernel Docs: File Data</a></p>
+
+    <div class="info-box yellow">
+      <p style="margin:0;font-size:14px;">
+        <strong>大文件加速机制：</strong>对于 256 MiB 以上的"大文件"，SquashFS 实现了一个<strong>块索引缓存（index cache）</strong>，缓存从块索引到磁盘位置的映射，最多可处理 1.75 TiB 的文件（使用 128 KiB 块时）。缓存默认仅使用 16 KiB 内存，极为节省。
+      </p>
+    </div>
+
+    <div class="summary">
+      <div class="summary-title">💡 章节总结</div>
+      <p>数据块机制是 SquashFS 支持"随机访问"的关键：每块独立压缩，读取任意文件只需解压对应块，无需解压整个归档。碎片块机制则解决了大量小文件导致的空间浪费问题。块大小的可调性（4K–1M）允许在压缩率与随机访问性能之间灵活权衡：块越大压缩率越高，但随机访问需解压更多数据。</p>
+    </div>
+  </section>
+
+  <!-- ===== INODE TABLE ===== -->
+  <section class="section" id="struct-inode">
+    <h2 class="section-title">
+      <span class="icon" style="background:rgba(245,158,11,0.15)">🔖</span>
+      Inode 表
+    </h2>
+    <div class="section-divider"></div>
+
+    <p>
+      元数据（inode 和目录）被压缩进 <strong>8 KiB 的元数据块</strong>。每个压缩块以一个 2 字节的长度头为前缀，最高位置 1 表示未压缩存储。Inode 紧密打包，不按块边界对齐，因此一个 inode 可以跨越两个压缩块。
+    </p>
+
+    <div class="info-box accent">
+      <p style="margin:0;font-size:14px;">Inode 由 <strong>48 位编码的引用地址</strong>标识：高 48 位为包含该 inode 的压缩元数据块的起始位置，低 16 位为块内字节偏移（&lt;block, offset&gt; 对）。这是 SquashFS 高效寻址的核心机制。</p>
+    </div>
+
+    <h3>Inode 类型</h3>
+    <p>为了<strong>最大化压缩效率</strong>，SquashFS 针对不同文件类型定义了不同的 inode 结构，每种类型的长度和内容各异：</p>
+
+    <div class="cards">
+      <div class="card">
+        <div class="card-icon">📄</div>
+        <div class="card-title">普通文件 Inode</div>
+        <div class="card-body">包含数据块列表、碎片索引、文件大小。分基础型（常见文件）和扩展型（含稀疏文件支持）两种。</div>
+      </div>
+      <div class="card">
+        <div class="card-icon">📁</div>
+        <div class="card-title">目录 Inode</div>
+        <div class="card-body">含目录表的块地址与偏移、硬链接数、父目录 inode 编号。扩展型含目录索引。</div>
+      </div>
+      <div class="card">
+        <div class="card-icon">🔗</div>
+        <div class="card-title">符号链接 Inode</div>
+        <div class="card-body">存储目标路径（非 null 结尾字节串），硬链接计数器（符号链接也支持硬链接）。</div>
+      </div>
+      <div class="card">
+        <div class="card-icon">💽</div>
+        <div class="card-title">设备文件 Inode</div>
+        <div class="card-body">块设备/字符设备，含设备号（major/minor）。IPC（FIFO、Socket）类似，仅存硬链接数。</div>
+      </div>
+    </div>
+
+    <h3>UID/GID 压缩策略</h3>
+    <p>
+      为节省 inode 空间，UID 和 GID 并不直接存入 inode，而是存储为一个 <strong>16 位的 ID 查找表索引</strong>。查找表集中存储所有唯一的 32 位 UID/GID 值，每个 inode 仅引用其索引。这将每个 inode 中 UID/GID 的存储从 8 字节降至 4 字节。
+    </p>
+    <p class="source-note">来源：<a href="https://docs.kernel.org/filesystems/squashfs.html#inodes" target="_blank">Linux Kernel Docs: Inodes</a>；<a href="https://dr-emann.github.io/squashfs/squashfs.html#_inodes" target="_blank">SquashFS Binary Format: Inodes</a></p>
+
+    <div class="summary">
+      <div class="summary-title">💡 章节总结</div>
+      <p>Inode 设计遵循"按类型特化，按需打包"原则：不同文件类型用不同 inode 结构，避免通用结构导致的浪费；Inode 不按块对齐、可跨块存储，实现最紧密打包。平均每个 inode 仅 8 字节，是 ext4 等通用文件系统的几分之一。UID/GID 去重进一步节省了空间。</p>
+    </div>
+  </section>
+
+  <!-- ===== DIRECTORY TABLE ===== -->
+  <section class="section" id="struct-dir">
+    <h2 class="section-title">
+      <span class="icon" style="background:rgba(245,158,11,0.15)">📂</span>
+      目录表
+    </h2>
+    <div class="section-divider"></div>
+
+    <p>目录条目按字典序（ASCIIbetically）排序，打包进压缩的 8 KiB 元数据块，存储于目录表区段。每个目录的访问通过 &lt;block 地址, 偏移&gt; 对定位。</p>
+
+    <h3>两级列表结构</h3>
+    <p>
+      目录并非简单的文件名列表，而采用一种精巧的<strong>两级结构</strong>：一个<strong>目录头（Directory Header）</strong>存储共享的 inode 块起始地址，后跟多个<strong>目录条目（Directory Entry）</strong>，每个条目仅存储相对该共享块地址的偏移量和 inode 编号差值。
+    </p>
+
+    <div class="svg-wrap">
+      <svg width="500" height="260" viewBox="0 0 500 260" xmlns="http://www.w3.org/2000/svg">
+        <text x="250" y="22" text-anchor="middle" fill="#e2e8f0" font-size="13" font-weight="700">目录表两级结构</text>
+
+        <!-- Header 1 -->
+        <rect x="20" y="36" width="460" height="36" rx="5" fill="rgba(245,158,11,0.2)" stroke="#f59e0b" stroke-width="1.5"/>
+        <text x="30" y="58" fill="#f59e0b" font-size="12" font-weight="700">目录头 1</text>
+        <text x="120" y="52" fill="#94a3b8" font-size="11">共享 inode_block = 0x1A00</text>
+        <text x="120" y="66" fill="#94a3b8" font-size="11">参考 inode_number = 100</text>
+        <text x="300" y="52" fill="#94a3b8" font-size="11">count = 3（后跟 3 条目）</text>
+
+        <!-- Entries under header 1 -->
+        <rect x="36" y="78" width="134" height="28" rx="4" fill="rgba(79,142,247,0.2)" stroke="#4f8ef7" stroke-width="1"/>
+        <text x="103" y="96" text-anchor="middle" fill="#e2e8f0" font-size="11">file_a  Δinode=0  off=0x10</text>
+        <rect x="178" y="78" width="134" height="28" rx="4" fill="rgba(79,142,247,0.2)" stroke="#4f8ef7" stroke-width="1"/>
+        <text x="245" y="96" text-anchor="middle" fill="#e2e8f0" font-size="11">file_b  Δinode=1  off=0x28</text>
+        <rect x="320" y="78" width="134" height="28" rx="4" fill="rgba(79,142,247,0.2)" stroke="#4f8ef7" stroke-width="1"/>
+        <text x="387" y="96" text-anchor="middle" fill="#e2e8f0" font-size="11">file_c  Δinode=2  off=0x3C</text>
+
+        <!-- Header 2 (new inode block) -->
+        <rect x="20" y="118" width="460" height="36" rx="5" fill="rgba(245,158,11,0.2)" stroke="#f59e0b" stroke-width="1.5"/>
+        <text x="30" y="140" fill="#f59e0b" font-size="12" font-weight="700">目录头 2</text>
+        <text x="120" y="134" fill="#94a3b8" font-size="11">共享 inode_block = 0x1C00（新块）</text>
+        <text x="120" y="148" fill="#94a3b8" font-size="11">参考 inode_number = 150</text>
+        <text x="340" y="134" fill="#94a3b8" font-size="11">count = 2</text>
+
+        <rect x="36" y="160" width="134" height="28" rx="4" fill="rgba(79,142,247,0.2)" stroke="#4f8ef7" stroke-width="1"/>
+        <text x="103" y="178" text-anchor="middle" fill="#e2e8f0" font-size="11">dir_x  Δinode=0  off=0x00</text>
+        <rect x="178" y="160" width="134" height="28" rx="4" fill="rgba(79,142,247,0.2)" stroke="#4f8ef7" stroke-width="1"/>
+        <text x="245" y="178" text-anchor="middle" fill="#e2e8f0" font-size="11">dir_y  Δinode=5  off=0x48</text>
+
+        <!-- Annotation -->
+        <text x="20" y="210" fill="#94a3b8" font-size="11">✦ 仅当 inode 所在元数据块变化，或 inode 编号差超过 ±32K 时才发出新头部</text>
+        <text x="20" y="228" fill="#94a3b8" font-size="11">✦ 文件名按字典序排序，最大 256 字符</text>
+        <text x="20" y="246" fill="#94a3b8" font-size="11">✦ 每个头部后最多 256 条目；条目名长度以 off-by-one 编码（0 代表长度 1）</text>
+      </svg>
+    </div>
+
+    <h3>目录索引（Directory Index）</h3>
+    <p>
+      对于含有大量条目的目录，扩展目录 inode 可以携带一个<strong>目录索引</strong>：每个元数据块存储一条索引记录（块地址 + 该块第一个条目的文件名），查找时先线性扫描索引找到目标所在块，再只解压那一个元数据块即可完成查找。
+    </p>
+    <div class="info-box green">
+      <p style="margin:0;font-size:14px;">
+        <strong>核心设计思想（来自内核文档）：</strong>"The general idea of the index is to ensure only one metadata block needs to be decompressed to do a lookup irrespective of the length of the directory."<br>
+        无论目录有多大，查找一个文件名最多只需解压<strong>一个</strong>元数据块。
+      </p>
+    </div>
+    <p class="source-note">来源：<a href="https://docs.kernel.org/filesystems/squashfs.html#directories" target="_blank">Linux Kernel Docs: Directories</a>；<a href="https://dr-emann.github.io/squashfs/squashfs.html#_directory_table" target="_blank">SquashFS Binary Format: Directory Table</a></p>
+
+    <div class="summary">
+      <div class="summary-title">💡 章节总结</div>
+      <p>目录表的两级结构充分利用了"同目录下 inode 往往在同一元数据块"这一局部性特征，通过共享块地址大幅压缩目录条目体积。字典序排序配合目录索引，将任意大小目录的文件名查找代价限定为"最多一次元数据块读取"，兼顾紧凑性与查找性能。</p>
+    </div>
+  </section>
+
+  <!-- ===== LOOKUP TABLES ===== -->
+  <section class="section" id="struct-tables">
+    <h2 class="section-title">
+      <span class="icon" style="background:rgba(110,231,183,0.15)">📋</span>
+      查找表体系
+    </h2>
+    <div class="section-divider"></div>
+
+    <p>SquashFS 设计了统一的<strong>查找表（Lookup Table）存储模式</strong>，适用于碎片表、Export 表、UID/GID 表和 Xattr 表：</p>
+
+    <div class="svg-wrap">
+      <svg width="480" height="200" viewBox="0 0 480 200" xmlns="http://www.w3.org/2000/svg">
+        <text x="240" y="20" text-anchor="middle" fill="#e2e8f0" font-size="13" font-weight="700">查找表两级索引结构</text>
+
+        <!-- Location list (uncompressed) -->
+        <rect x="20" y="36" width="200" height="40" rx="5" fill="rgba(79,142,247,0.15)" stroke="#4f8ef7" stroke-width="1.5"/>
+        <text x="120" y="52" text-anchor="middle" fill="#4f8ef7" font-size="12" font-weight="600">位置列表（未压缩）</text>
+        <text x="120" y="68" text-anchor="middle" fill="#94a3b8" font-size="11">u64[] → 各元数据块的磁盘位置</text>
+
+        <!-- Arrow -->
+        <line x1="220" y1="56" x2="260" y2="56" stroke="#6ee7b7" stroke-width="1.5" marker-end="url(#arr)"/>
+
+        <!-- Metadata blocks (compressed) -->
+        <rect x="260" y="36" width="100" height="40" rx="5" fill="rgba(110,231,183,0.15)" stroke="#6ee7b7" stroke-width="1.5"/>
+        <text x="310" y="52" text-anchor="middle" fill="#6ee7b7" font-size="12" font-weight="600">元数据块 0</text>
+        <text x="310" y="68" text-anchor="middle" fill="#94a3b8" font-size="11">已压缩，≤8KiB</text>
+
+        <rect x="370" y="36" width="90" height="40" rx="5" fill="rgba(110,231,183,0.15)" stroke="#6ee7b7" stroke-width="1.5"/>
+        <text x="415" y="52" text-anchor="middle" fill="#6ee7b7" font-size="12" font-weight="600">元数据块 1</text>
+        <text x="415" y="68" text-anchor="middle" fill="#94a3b8" font-size="11">…</text>
+
+        <!-- Formula -->
+        <rect x="20" y="100" width="440" height="80" rx="8" fill="rgba(30,37,54,0.8)" stroke="var(--border)" stroke-width="1"/>
+        <text x="40" y="122" fill="#94a3b8" font-size="12">查找过程（O(1) 常数时间）：</text>
+        <text x="40" y="142" fill="#a5f3fc" font-size="12" font-family="monospace">meta_index = floor(index × entry_size / 8192)</text>
+        <text x="40" y="158" fill="#a5f3fc" font-size="12" font-family="monospace">offset     = (index × entry_size) % 8192</text>
+        <text x="40" y="174" fill="#94a3b8" font-size="11">位置列表在挂载时缓存入内存 → 每次查找最多一次元数据块读取</text>
+
+        <defs>
+          <marker id="arr" markerWidth="8" markerHeight="8" refX="6" refY="3" orient="auto">
+            <path d="M0,0 L0,6 L8,3 z" fill="#6ee7b7"/>
+          </marker>
+        </defs>
+      </svg>
+    </div>
+
+    <div class="cards">
+      <div class="card">
+        <div class="card-icon">🧩</div>
+        <div class="card-title">碎片表（Fragment Table）</div>
+        <div class="card-body">记录每个碎片块的磁盘偏移（u64）、磁盘大小（u32），每块可存 512 条记录（8192/16字节）。</div>
+      </div>
+      <div class="card">
+        <div class="card-icon">📤</div>
+        <div class="card-title">Export 表</div>
+        <div class="card-body">inode 编号到 inode 引用的平坦数组（64位），支持 NFS 文件句柄到磁盘 inode 的重建。每块可存 1024 条。</div>
+      </div>
+      <div class="card">
+        <div class="card-icon">👤</div>
+        <div class="card-title">UID/GID 查找表（ID Table）</div>
+        <div class="card-body">存储所有唯一 32 位 UID/GID，每块可存 2048 个 ID（8192/4字节）。inode 中存 16 位索引。</div>
+      </div>
+      <div class="card">
+        <div class="card-icon">🏷️</div>
+        <div class="card-title">Xattr 表</div>
+        <div class="card-body">键值对打包入压缩元数据块，支持值去重（out-of-line 引用），inode 存 32 位 xattr_id 索引，每块 512 条目。</div>
+      </div>
+    </div>
+    <p class="source-note">来源：<a href="https://dr-emann.github.io/squashfs/squashfs.html#_storing_lookup_tables" target="_blank">SquashFS Binary Format: Storing Lookup Tables</a>；<a href="https://docs.kernel.org/filesystems/squashfs.html#fragment-lookup-table" target="_blank">Linux Kernel Docs: Fragment/Export/UID/Xattr Tables</a></p>
+
+    <div class="summary">
+      <div class="summary-title">💡 章节总结</div>
+      <p>查找表体系是 SquashFS 在"压缩存储"与"高效随机访问"之间求得平衡的核心设计：两级索引（位置列表 + 压缩元数据块）让每次查找的 I/O 代价恒为常数，小型位置列表在挂载时整体载入内存，进一步消除了磁盘寻道开销。这是以少量（通常仅数KB）内存换取常数时间随机查找的经典工程权衡。</p>
+    </div>
+  </section>
+
+  <!-- ===== COMPRESSION PRINCIPLES ===== -->
+  <section class="section" id="principle-compress">
+    <h2 class="section-title">
+      <span class="icon" style="background:rgba(79,142,247,0.15)">🗜️</span>
+      压缩机制
+    </h2>
+    <div class="section-divider"></div>
+
+    <p>
+      SquashFS 支持六种压缩算法，整个归档只能使用一种（由超级块中的 <code>compressor</code> 字段指定），数据块和元数据块共用同一算法。
+    </p>
+
+    <div class="table-wrap">
+      <table>
+        <thead>
+          <tr><th>算法</th><th>ID</th><th>特点</th><th>适用场景</th></tr>
+        </thead>
+        <tbody>
+          <tr>
+            <td><strong>gzip (zlib)</strong></td><td>1</td>
+            <td>经典，压缩率适中，兼容性最好（注：使用原始 zlib 流，无 gzip 文件头）</td>
+            <td>通用场景，工具链广泛支持</td>
+          </tr>
+          <tr>
+            <td><strong>LZMA</strong></td><td>2</td>
+            <td>高压缩率，已废弃</td>
+            <td>已由 XZ 取代</td>
+          </tr>
+          <tr>
+            <td><strong>LZO</strong></td><td>3</td>
+            <td>极快解压，压缩率较低</td>
+            <td>嵌入式设备、CPU 弱的场景</td>
+          </tr>
+          <tr>
+            <td><strong>XZ (LZMA2)</strong></td><td>4</td>
+            <td>最高压缩率，解压慢，内存消耗大；必须使用 CRC32 校验</td>
+            <td>空间极度受限、网络分发</td>
+          </tr>
+          <tr>
+            <td><strong>LZ4</strong></td><td>5</td>
+            <td>最快解压速度，压缩率低，适合内存带宽受限场景</td>
+            <td>高速读取优先、RAM 容量小</td>
+          </tr>
+          <tr>
+            <td><strong>Zstd</strong></td><td>6</td>
+            <td>现代算法，在压缩率和速度之间取得良好平衡，推荐用于新项目</td>
+            <td>Snap、容器、现代 Linux 发行版</td>
+          </tr>
+        </tbody>
+      </table>
+    </div>
+
+    <div class="svg-wrap">
+      <svg width="500" height="190" viewBox="0 0 500 190" xmlns="http://www.w3.org/2000/svg">
+        <text x="250" y="20" text-anchor="middle" fill="#e2e8f0" font-size="13" font-weight="700">压缩算法：速度 vs 压缩率权衡</text>
+
+        <!-- Axes -->
+        <line x1="60" y1="160" x2="460" y2="160" stroke="#4a5568" stroke-width="1.5"/>
+        <line x1="60" y1="40" x2="60" y2="160" stroke="#4a5568" stroke-width="1.5"/>
+
+        <!-- Axis labels -->
+        <text x="260" y="180" text-anchor="middle" fill="#94a3b8" font-size="11">解压速度 →（快）</text>
+        <text x="20" y="100" text-anchor="middle" fill="#94a3b8" font-size="11" transform="rotate(-90,20,100)">压缩率 →（高）</text>
+
+        <!-- Algo points -->
+        <!-- XZ: high compress, slow speed -->
+        <circle cx="100" cy="52" r="8" fill="#f59e0b" opacity="0.85"/>
+        <text x="100" y="38" text-anchor="middle" fill="#f59e0b" font-size="11" font-weight="600">XZ</text>
+
+        <!-- gzip: medium -->
+        <circle cx="210" cy="82" r="8" fill="#4f8ef7" opacity="0.85"/>
+        <text x="210" y="68" text-anchor="middle" fill="#4f8ef7" font-size="11" font-weight="600">gzip</text>
+
+        <!-- Zstd: balanced -->
+        <circle cx="300" cy="72" r="9" fill="#6ee7b7" opacity="0.9"/>
+        <text x="300" y="58" text-anchor="middle" fill="#6ee7b7" font-size="11" font-weight="600">Zstd</text>
+        <text x="300" y="110" text-anchor="middle" fill="#6ee7b7" font-size="10">推荐</text>
+
+        <!-- LZO: fast, low compress -->
+        <circle cx="380" cy="116" r="8" fill="#f87171" opacity="0.85"/>
+        <text x="380" y="102" text-anchor="middle" fill="#f87171" font-size="11" font-weight="600">LZO</text>
+
+        <!-- LZ4: fastest -->
+        <circle cx="430" cy="128" r="8" fill="#c084fc" opacity="0.85"/>
+        <text x="430" y="114" text-anchor="middle" fill="#c084fc" font-size="11" font-weight="600">LZ4</text>
+
+        <!-- LZMA -->
+        <circle cx="80" cy="44" r="6" fill="#94a3b8" opacity="0.7"/>
+        <text x="80" y="32" text-anchor="middle" fill="#94a3b8" font-size="10">LZMA(旧)</text>
+
+        <!-- Trend arrow -->
+        <path d="M 430 130 Q 290 95 100 55" stroke="#4a5568" stroke-width="1" fill="none" stroke-dasharray="4,3"/>
+      </svg>
+    </div>
+
+    <h3>关键压缩行为</h3>
+    <div class="info-box green">
+      <p style="margin:0;font-size:14px;">
+        <strong>压缩失败回退：</strong>若压缩后大小超过原始数据，SquashFS 自动以<strong>未压缩方式</strong>存储该块，确保块的存储大小绝不超过其原始输入大小。这一机制对已压缩的媒体文件（JPEG、MP4 等）尤为重要。
+      </p>
+    </div>
+    <p class="source-note">来源：<a href="https://dr-emann.github.io/squashfs/squashfs.html#_supported_compressors" target="_blank">SquashFS Binary Format: Supported Compressors</a>；<a href="https://docs.kernel.org/filesystems/squashfs.html" target="_blank">Linux Kernel Docs: Squashfs 4.0</a></p>
+
+    <div class="summary">
+      <div class="summary-title">💡 章节总结</div>
+      <p>SquashFS 的压缩机制遵循"写时最优、读时按需"原则：构建时对每个块独立尝试压缩，失败则存原文；运行时仅按需解压被访问的块。算法选择上，Zstd 是现代场景的最佳默认选择；XZ 适合极致存储优化；LZ4/LZO 适合 CPU 弱或解压延迟敏感的嵌入式场景。</p>
+    </div>
+  </section>
+
+  <!-- ===== METADATA COMPRESSION ===== -->
+  <section class="section" id="principle-meta">
+    <h2 class="section-title">
+      <span class="icon" style="background:rgba(110,231,183,0.15)">📐</span>
+      元数据压缩
+    </h2>
+    <div class="section-divider"></div>
+
+    <p>
+      元数据（inode、目录条目等）以<strong>连续流的形式</strong>切成 8 KiB 块后独立压缩，并在每个压缩块前加 16 位头部（包含大小和压缩标志）。条目可以跨越块边界，此时需要读取并解压两个相邻块。
+    </p>
+
+    <div class="svg-wrap">
+      <svg width="480" height="180" viewBox="0 0 480 180" xmlns="http://www.w3.org/2000/svg">
+        <text x="240" y="20" text-anchor="middle" fill="#e2e8f0" font-size="13" font-weight="700">元数据块编码格式</text>
+
+        <!-- Block structure -->
+        <rect x="20" y="36" width="60" height="40" rx="4" fill="rgba(245,158,11,0.2)" stroke="#f59e0b" stroke-width="1.5"/>
+        <text x="50" y="52" text-anchor="middle" fill="#f59e0b" font-size="11" font-weight="600">u16 头</text>
+        <text x="50" y="67" text-anchor="middle" fill="#94a3b8" font-size="10">2 字节</text>
+
+        <rect x="88" y="36" width="200" height="40" rx="4" fill="rgba(79,142,247,0.2)" stroke="#4f8ef7" stroke-width="1.5"/>
+        <text x="188" y="57" text-anchor="middle" fill="#e2e8f0" font-size="12">压缩后数据（≤ 8192 字节）</text>
+
+        <!-- Bit breakdown of u16 header -->
+        <rect x="20" y="90" width="440" height="70" rx="6" fill="rgba(30,37,54,0.8)" stroke="var(--border)" stroke-width="1"/>
+        <text x="40" y="112" fill="#94a3b8" font-size="12">u16 头部解析：</text>
+        <rect x="40" y="120" width="30" height="20" rx="2" fill="rgba(245,158,11,0.4)" stroke="#f59e0b" stroke-width="1"/>
+        <text x="55" y="134" text-anchor="middle" fill="#f59e0b" font-size="10">Bit15</text>
+        <text x="80" y="134" fill="#94a3b8" font-size="11">= 1 → 未压缩存储；= 0 → 已压缩</text>
+
+        <rect x="40" y="148" width="60" height="20" rx="2" fill="rgba(79,142,247,0.4)" stroke="#4f8ef7" stroke-width="1"/>
+        <text x="70" y="162" text-anchor="middle" fill="#4f8ef7" font-size="10">Bit14~0</text>
+        <text x="110" y="162" fill="#94a3b8" font-size="11">= 块数据在磁盘上的实际大小（恒 ≤ 8192 字节）</text>
+      </svg>
+    </div>
+
+    <div class="info-box accent">
+      <p style="margin:0;font-size:14px;">
+        <strong>元数据压缩的高效性（来自 squashfs-tools 维护者回复）：</strong>元数据具有极高的冗余性和重复性，压缩通常可以将信息密度提升 4 到 8 倍——即一次磁盘 I/O（读取一个元数据块）可获取原本需要 4~8 次 I/O 才能取得的信息量。元数据压缩的解压开销相对于 I/O 节省而言微乎其微。
+      </p>
+    </div>
+
+    <div class="summary">
+      <div class="summary-title">💡 章节总结</div>
+      <p>元数据压缩以固定 8 KiB 输入块（独立于数据块大小）统一处理 inode、目录等高重复性数据，通常实现 4–8 倍信息密度提升。这是 SquashFS 能够在 inode 平均仅 8 字节的同时维持完整 POSIX 语义的根本原因。元数据块的头部双编码（大小 + 压缩标志），也是流式解析时的自描述容错设计。</p>
+    </div>
+  </section>
+
+  <!-- ===== CACHE ===== -->
+  <section class="section" id="principle-cache">
+    <h2 class="section-title">
+      <span class="icon" style="background:rgba(79,142,247,0.15)">⚡</span>
+      内部缓存机制
+    </h2>
+    <div class="section-divider"></div>
+
+    <p>
+      压缩块的重复解压会造成性能损耗。SquashFS 为此实现了两层缓存策略：
+    </p>
+
+    <div class="cards">
+      <div class="card">
+        <div class="card-icon">🗃️</div>
+        <div class="card-title">页面缓存（Page Cache）</div>
+        <div class="card-body">文件数据块直接解压后进入 Linux 内核页面缓存，由 VFS 统一管理，与其他文件系统共享缓存基础设施，无需 SquashFS 自行维护。</div>
+      </div>
+      <div class="card">
+        <div class="card-icon">🔬</div>
+        <div class="card-title">内部元数据/碎片缓存</div>
+        <div class="card-body">元数据块和碎片块不经过页面缓存，SquashFS 维护专用的小型缓存（两个），用于临时缓存最近读取的元数据和碎片块，利用局部性原理避免重复读取和解压。</div>
+      </div>
+      <div class="card">
+        <div class="card-icon">📌</div>
+        <div class="card-title">块索引缓存（Index Cache）</div>
+        <div class="card-body">针对 256 MiB 以上的大文件，缓存块索引到磁盘位置的映射，默认 16 KiB，最多支持 1.75 TiB 文件（8个槽位）。</div>
+      </div>
+      <div class="card">
+        <div class="card-icon">🧠</div>
+        <div class="card-title">挂载时内存缓存</div>
+        <div class="card-body">碎片表、Export 表和 UID/GID 表的索引列表在挂载时整体加载入内存，消除这些小型查找表的磁盘 I/O 延迟。</div>
+      </div>
+    </div>
+
+    <h3>多线程解压（Mount 选项）</h3>
+    <div class="table-wrap">
+      <table>
+        <thead><tr><th>模式</th><th>说明</th></tr></thead>
+        <tbody>
+          <tr><td><code>threads=single</code></td><td>默认单线程，内存和 CPU 占用最低，但多核并行 I/O 时性能受限</td></tr>
+          <tr><td><code>threads=multi</code></td><td>每核最多 2 个并行解压器，按需动态分配，适合并行 I/O 负载</td></tr>
+          <tr><td><code>threads=percpu</code></td><td>每核 1 个解压器，使用 percpu 变量确保解压负载在核心间均衡</td></tr>
+          <tr><td><code>threads=N</code></td><td>指定线程数，上限为 <code>num_online_cpus() × 2</code></td></tr>
+        </tbody>
+      </table>
+    </div>
+    <p class="source-note">来源：<a href="https://docs.kernel.org/filesystems/squashfs.html#squashfs-internal-cache" target="_blank">Linux Kernel Docs: Squashfs Internal Cache</a>；<a href="https://docs.kernel.org/filesystems/squashfs.html#mount-options" target="_blank">Linux Kernel Docs: Mount Options</a></p>
+
+    <div class="summary">
+      <div class="summary-title">💡 章节总结</div>
+      <p>SquashFS 的缓存策略遵循分层原则：热数据（文件内容）交由 VFS 页面缓存统一管理；冷数据（元数据、碎片）由专用内部缓存处理，利用局部性降低重复 I/O；大文件块索引以极低内存（16 KiB）换取对 TiB 级别文件的快速定位。多线程解压选项允许在 CPU 资源充足时突破单核解压瓶颈。</p>
+    </div>
+  </section>
+
+  <!-- ===== DEDUP & SPARSE ===== -->
+  <section class="section" id="principle-dedup">
+    <h2 class="section-title">
+      <span class="icon" style="background:rgba(110,231,183,0.15)">♻️</span>
+      去重与稀疏文件
+    </h2>
+    <div class="section-divider"></div>
+
+    <h3>数据去重（Deduplication）</h3>
+    <p>
+      mksquashfs 在构建时会<strong>检测重复的数据块</strong>。若两个文件含有相同内容的块，这些块在归档中只存储一份，其他文件的 inode 引用同一磁盘位置。超级块标志位 <code>0x0040</code> 标记数据已去重。
+    </p>
+    <div class="info-box green">
+      <p style="margin:0;font-size:14px;">利用追加模式的去重能力，SquashFS 可实现<strong>简单的版本化归档</strong>：将 linux-2.4.19 源代码创建成镜像，再追加 linux-2.4.20 源代码时，只有真正变更的文件才会占用额外空间，未变更文件被识别为重复块而共享存储。</p>
+    </div>
+
+    <h3>稀疏文件（Sparse Files）</h3>
+    <p>
+      SquashFS 支持稀疏文件——文件中的"空洞"（全零区域）不会实际写入磁盘。与 CramFS 相比，这是 SquashFS 的重要改进之一（见下方特性对比表）。
+    </p>
+
+    <h3>Xattr 值去重</h3>
+    <p>
+      在 Xattr 表中，若多个 inode 拥有相同的 Xattr 值，该值只存储一次，其他引用通过 out-of-line 指针共享，进一步节省空间。
+    </p>
+
+    <div class="summary">
+      <div class="summary-title">💡 章节总结</div>
+      <p>去重与稀疏文件是 SquashFS 在算法压缩之外的两个正交节省空间的机制。数据块去重消除文件间的冗余（对软件仓库、OS 镜像等效果显著）；稀疏文件支持消除文件内的冗余（对数据库文件、虚拟磁盘镜像等效果显著）；Xattr 值去重消除元数据层面的冗余。三者相互独立、叠加增益，使得实际压缩效果往往超出单纯算法压缩所能达到的水平。</p>
+    </div>
+  </section>
+
+  <!-- ===== ADVANTAGES ===== -->
+  <section class="section" id="advantages">
+    <h2 class="section-title">
+      <span class="icon" style="background:rgba(74,222,128,0.15)">✅</span>
+      核心优势
+    </h2>
+    <div class="section-divider"></div>
+
+    <div class="cards">
+      <div class="card">
+        <div class="card-icon">🗜️</div>
+        <div class="card-title">极高压缩效率</div>
+        <div class="card-body">同等数据与 ext3 文件系统相比，大小约为 1/3。支持 gzip、XZ、LZ4、LZO、Zstd 多种算法，适应不同压缩率与速度需求。</div>
+      </div>
+      <div class="card">
+        <div class="card-icon">🔀</div>
+        <div class="card-title">随机访问支持</div>
+        <div class="card-body">数据块独立压缩，无需解压整个归档即可访问任意文件，与 .tar.gz 等纯流式归档有本质区别。</div>
+      </div>
+      <div class="card">
+        <div class="card-icon">🐧</div>
+        <div class="card-title">内核原生支持</div>
+        <div class="card-body">自 Linux 2.6.29（2009年）起并入主线，无需 FUSE，在内核态运行，syscall 开销小，可用于 initramfs 早期启动阶段。</div>
+      </div>
+      <div class="card">
+        <div class="card-icon">📏</div>
+        <div class="card-title">支持超大规模</div>
+        <div class="card-body">最大文件系统 2^64 字节（约 16 EiB），最大单文件约 1.75 TiB，文件/目录数量不限，远超 CramFS（256 MiB / 16 MiB）。</div>
+      </div>
+      <div class="card">
+        <div class="card-icon">🔒</div>
+        <div class="card-title">只读安全保证</div>
+        <div class="card-body">只读属于数据格式本身特性，而非挂载选项——即使获得 root，也无法 remount 为读写，为系统提供强不可篡改性保证。</div>
+      </div>
+      <div class="card">
+        <div class="card-icon">🧮</div>
+        <div class="card-title">完整 POSIX 语义</div>
+        <div class="card-body">支持真实 inode 编号、硬链接、32位 UID/GID、文件创建时间、稀疏文件、扩展属性（Xattr）、NFS 导出，优于 CramFS 的简陋实现。</div>
+      </div>
+      <div class="card">
+        <div class="card-icon">🏎️</div>
+        <div class="card-title">读取性能优于直觉</div>
+        <div class="card-body">压缩减少了实际 I/O 量，在慢速存储（NOR Flash、机械硬盘、网络）上，解压 CPU 开销往往小于节省的 I/O 等待，总体读速反而更快。</div>
+      </div>
+      <div class="card">
+        <div class="card-icon">💡</div>
+        <div class="card-title">极低内存开销</div>
+        <div class="card-body">设计理念是最小化内存使用：块索引缓存默认 16 KiB，位置列表通常仅数 KB，元数据/碎片缓存极小，适合内存受限的嵌入式设备。</div>
+      </div>
+    </div>
+
+    <h3>与 CramFS 的特性对比</h3>
+    <p class="source-note">数据来源：<a href="https://docs.kernel.org/filesystems/squashfs.html#filesystem-features" target="_blank">Linux Kernel Docs: Filesystem Features</a></p>
+    <div class="table-wrap">
+      <table>
+        <thead>
+          <tr><th>特性</th><th>SquashFS</th><th>CramFS（已废弃）</th></tr>
+        </thead>
+        <tbody>
+          <tr><td>最大文件系统大小</td><td class="yes">2^64 (16 EiB)</td><td class="no">256 MiB</td></tr>
+          <tr><td>最大文件大小</td><td class="yes">~2 TiB</td><td class="no">16 MiB</td></tr>
+          <tr><td>最大块大小</td><td class="yes">1 MiB</td><td class="no">4 KiB</td></tr>
+          <tr><td>元数据压缩</td><td class="yes">✔</td><td class="no">✘</td></tr>
+          <tr><td>目录索引</td><td class="yes">✔</td><td class="no">✘</td></tr>
+          <tr><td>稀疏文件支持</td><td class="yes">✔</td><td class="no">✘</td></tr>
+          <tr><td>碎片尾端打包</td><td class="yes">✔</td><td class="no">✘</td></tr>
+          <tr><td>NFS 导出</td><td class="yes">✔</td><td class="no">✘</td></tr>
+          <tr><td>硬链接支持</td><td class="yes">✔</td><td class="no">✘</td></tr>
+          <tr><td>真实 inode 编号</td><td class="yes">✔</td><td class="no">✘</td></tr>
+          <tr><td>32 位 UID/GID</td><td class="yes">✔</td><td class="no">✘</td></tr>
+          <tr><td>Xattr 支持</td><td class="yes">✔</td><td class="no">✘</td></tr>
+          <tr><td>文件创建时间</td><td class="yes">✔</td><td class="no">✘</td></tr>
+          <tr><td>ACL 支持</td><td class="no">✘（待实现）</td><td class="no">✘</td></tr>
+        </tbody>
+      </table>
+    </div>
+
+    <div class="summary">
+      <div class="summary-title">💡 章节总结</div>
+      <p>SquashFS 的优势可以从第一性原理归结为：它将"写入"操作的所有代价（压缩计算、去重检测、布局优化）集中在镜像构建阶段，而"读取"路径则因数据已经最优化存储而变得极为高效。内核原生实现消除了 FUSE 的用户态切换开销，只读格式约束消除了写入同步、日志、崩溃恢复等复杂性，使实现保持简洁。</p>
+    </div>
+  </section>
+
+  <!-- ===== DISADVANTAGES ===== -->
+  <section class="section" id="disadvantages">
+    <h2 class="section-title">
+      <span class="icon" style="background:rgba(248,113,113,0.15)">⚠️</span>
+      局限性与不足
+    </h2>
+    <div class="section-divider"></div>
+
+    <div class="pro-con">
+      <div class="con-list">
+        <div class="list-title">❌ 核心限制</div>
+        <ul class="items">
+          <li>格式层面只读，无法运行时写入，remount 为读写不可能</li>
+          <li>修改任何文件须重建整个镜像，成本极高</li>
+          <li>不支持 ACL（访问控制列表），内核文档列为 TODO</li>
+          <li>单一压缩算法约束：数据块和元数据必须用同一算法</li>
+          <li>单线程解压默认配置在多核并行 I/O 时性能受限</li>
+          <li>大块大小（如 1 MiB）时随机访问需解压更多无关数据</li>
+        </ul>
+      </div>
+      <div class="con-list">
+        <div class="list-title">⚡ 性能权衡</div>
+        <ul class="items">
+          <li>每次读取需解压，CPU 存在一定开销（XZ 尤甚）</li>
+          <li>首次访问延迟高于直接读取（特别是 XZ 压缩时）</li>
+          <li>压缩文件（JPEG/MP4）几乎无压缩收益，徒增 CPU 开销</li>
+          <li>不适合写入密集型工作负载（日志、数据库）</li>
+          <li>仅限 Linux 内核原生支持，其他平台需 FUSE 或专用工具</li>
+        </ul>
+      </div>
+    </div>
+
+    <div class="info-box red">
+      <p style="margin:0;font-size:14px;">
+        <strong>只读的根本原因（来自 Stack Overflow 的技术解释）：</strong>"Because the entire filesystem is compressed and zipped, before it is written to the storage media. And so making any changes to any files, it will have to be zipped and rewritten to the entire partition again — which is a great waste of effort if done repeatedly."<br>
+        压缩存储的本质决定了就地修改的不可行性：任何修改都破坏了原有压缩上下文，必须重压整个受影响区域。
+        <br><span style="color:var(--text2);font-style:italic;">— <a href="https://stackoverflow.com/questions/33996635/how-to-make-squash-file-system-read-write" target="_blank">Stack Overflow: How to make squash file system read-write</a></span>
+      </p>
+    </div>
+
+    <h3>与现代替代方案的局限对比</h3>
+    <div class="table-wrap">
+      <table>
+        <thead>
+          <tr><th>方面</th><th>SquashFS 局限</th><th>替代/解决方案</th></tr>
+        </thead>
+        <tbody>
+          <tr>
+            <td>写入需求</td>
+            <td>完全不支持</td>
+            <td>OverlayFS / tmpfs 覆盖层</td>
+          </tr>
+          <tr>
+            <td>更好的压缩率</td>
+            <td>无跨块去重</td>
+            <td>DwarFS（用户态 FUSE，更高压缩率）</td>
+          </tr>
+          <tr>
+            <td>ACL 支持</td>
+            <td>未实现</td>
+            <td>ext4 / btrfs 等读写文件系统</td>
+          </tr>
+          <tr>
+            <td>并发写更新</td>
+            <td>不支持</td>
+            <td>EROFS（面向 Android 的只读文件系统）</td>
+          </tr>
+          <tr>
+            <td>NOR Flash 以外的 Flash</td>
+            <td>不感知坏块</td>
+            <td>UBIFS（配合 UBI 层使用）</td>
+          </tr>
+        </tbody>
+      </table>
+    </div>
+
+    <div class="summary">
+      <div class="summary-title">💡 章节总结</div>
+      <p>SquashFS 的所有局限几乎都可以归因于其核心设计决策：<strong>写时全局压缩优化</strong>。这个决策使读路径极度高效，却使写路径完全不可能。这是一个清醒的工程取舍，而非设计缺陷。在实践中，通过 OverlayFS 叠加可写层的方式，已经优雅地解决了绝大多数"既要压缩又要可写"的需求（Live CD、容器、Snap 均采用此方案）。</p>
+    </div>
+  </section>
+
+  <!-- ===== USE CASES ===== -->
+  <section class="section" id="usecases">
+    <h2 class="section-title">
+      <span class="icon" style="background:rgba(245,158,11,0.15)">🎯</span>
+      典型应用场景
+    </h2>
+    <div class="section-divider"></div>
+
+    <h3>🖥️ Live CD / Live USB</h3>
+    <p>
+      SquashFS 被 Ubuntu、Debian Live、Fedora、Arch Linux、Kali Linux、Linux Mint、Gentoo、openSUSE 等几乎所有主流 Linux 发行版用于 Live 媒体的根文件系统存储。整个操作系统压缩为一个 <code>.squashfs</code> 镜像，启动时挂载该镜像作为只读底层，再通过 OverlayFS / aufs / UnionFS 叠加一个可写的 tmpfs 层，提供完整的读写体验。
+    </p>
+    <div class="tags">
+      <span class="tag blue">Ubuntu</span><span class="tag blue">Debian Live</span><span class="tag blue">Fedora</span>
+      <span class="tag blue">Kali Linux</span><span class="tag blue">Arch Linux</span><span class="tag blue">Puppy Linux</span>
+    </div>
+
+    <h3>📱 嵌入式设备 / 路由器固件</h3>
+    <p>
+      OpenWrt、DD-WRT 等路由器固件广泛使用 SquashFS 作为根文件系统，存储于 NOR Flash（因为 SquashFS 不感知坏块，NOR Flash 的高可靠性是前提；在 NAND Flash 上需配合 UBI 层）。Chromecast、部分 Android 版本（Android 7.0 Nougat 起的系统分区）也采用 SquashFS。
+    </p>
+    <div class="tags">
+      <span class="tag green">OpenWrt</span><span class="tag green">DD-WRT</span><span class="tag green">Chromecast</span>
+      <span class="tag green">Android Nougat+</span>
+    </div>
+
+    <h3>📦 应用打包格式</h3>
+    <p>
+      <strong>AppImage</strong> 项目使用 SquashFS 作为便携式 Linux 应用的容器格式，整个应用及其依赖被压缩为一个单文件，运行时自动挂载。<strong>Snap</strong>（Canonical 的软件包系统）同样使用 SquashFS 作为其包格式（<code>.snap</code> 文件本质是 SquashFS 镜像），提供原子更新和强隔离。
+    </p>
+    <div class="tags">
+      <span class="tag orange">AppImage</span><span class="tag orange">Snap</span><span class="tag orange">Tiny Core Linux 扩展</span>
+    </div>
+
+    <h3>🐳 容器与不可变基础设施</h3>
+    <p>
+      Talos Linux 使用 SquashFS 作为整个操作系统的根文件系统，容器节点 OS 镜像以 SquashFS 形式分发，配合安全启动（Secure Boot）和镜像完整性校验（checksum 验证），提供强安全保证。SquashFS 不可变的格式特性使得镜像完整性验证极为简单——对单个文件算哈希即可。
+    </p>
+    <div class="tags">
+      <span class="tag blue">Talos Linux</span><span class="tag blue">NixOS</span>
+    </div>
+
+    <h3>🗄️ 归档与软件分发</h3>
+    <p>
+      SquashFS 可作为 .tar.gz 的替代方案用于归档——在提供相近压缩率的同时，挂载后可像普通文件系统一样随机访问，无需先完整解压。这对大型软件包（Linux 内核源码、大型 SDK 等）尤为便利。Linux Terminal Server Project（LTSP）和 Splashtop 也使用 SquashFS 进行网络根文件系统分发。
+    </p>
+
+    <!-- Usage map SVG -->
+    <div class="svg-wrap">
+      <svg width="500" height="280" viewBox="0 0 500 280" xmlns="http://www.w3.org/2000/svg">
+        <text x="250" y="22" text-anchor="middle" fill="#e2e8f0" font-size="13" font-weight="700">SquashFS 应用场景全景</text>
+
+        <!-- Center -->
+        <circle cx="250" cy="148" r="44" fill="rgba(79,142,247,0.2)" stroke="#4f8ef7" stroke-width="2"/>
+        <text x="250" y="143" text-anchor="middle" fill="#4f8ef7" font-size="13" font-weight="700">SquashFS</text>
+        <text x="250" y="158" text-anchor="middle" fill="#94a3b8" font-size="10">只读 · 压缩 · 内核原生</text>
+
+        <!-- Live CD -->
+        <ellipse cx="100" cy="80" rx="60" ry="28" fill="rgba(110,231,183,0.15)" stroke="#6ee7b7" stroke-width="1.5"/>
+        <text x="100" y="76" text-anchor="middle" fill="#6ee7b7" font-size="11" font-weight="600">Live CD/USB</text>
+        <text x="100" y="90" text-anchor="middle" fill="#94a3b8" font-size="10">+ OverlayFS</text>
+        <line x1="158" y1="95" x2="208" y2="122" stroke="#4a5568" stroke-width="1" stroke-dasharray="3,2"/>
+
+        <!-- Embedded -->
+        <ellipse cx="100" cy="210" rx="60" ry="28" fill="rgba(245,158,11,0.15)" stroke="#f59e0b" stroke-width="1.5"/>
+        <text x="100" y="206" text-anchor="middle" fill="#f59e0b" font-size="11" font-weight="600">嵌入式设备</text>
+        <text x="100" y="220" text-anchor="middle" fill="#94a3b8" font-size="10">路由器/IoT</text>
+        <line x1="158" y1="198" x2="208" y2="175" stroke="#4a5568" stroke-width="1" stroke-dasharray="3,2"/>
+
+        <!-- App packaging -->
+        <ellipse cx="400" cy="80" rx="70" ry="28" fill="rgba(192,132,252,0.15)" stroke="#c084fc" stroke-width="1.5"/>
+        <text x="400" y="76" text-anchor="middle" fill="#c084fc" font-size="11" font-weight="600">应用打包</text>
+        <text x="400" y="90" text-anchor="middle" fill="#94a3b8" font-size="10">AppImage · Snap</text>
+        <line x1="332" y1="95" x2="290" y2="122" stroke="#4a5568" stroke-width="1" stroke-dasharray="3,2"/>
+
+        <!-- Container -->
+        <ellipse cx="400" cy="210" rx="70" ry="28" fill="rgba(248,113,113,0.15)" stroke="#f87171" stroke-width="1.5"/>
+        <text x="400" y="206" text-anchor="middle" fill="#f87171" font-size="11" font-weight="600">不可变基础设施</text>
+        <text x="400" y="220" text-anchor="middle" fill="#94a3b8" font-size="10">Talos · NixOS</text>
+        <line x1="332" y1="198" x2="290" y2="175" stroke="#4a5568" stroke-width="1" stroke-dasharray="3,2"/>
+
+        <!-- Archive -->
+        <ellipse cx="250" cy="265" rx="65" ry="22" fill="rgba(79,142,247,0.1)" stroke="#4f8ef7" stroke-width="1.5" stroke-dasharray="4,2"/>
+        <text x="250" y="261" text-anchor="middle" fill="#4f8ef7" font-size="11">归档 / 软件分发</text>
+        <text x="250" y="276" text-anchor="middle" fill="#94a3b8" font-size="10">LTSP · Splashtop</text>
+        <line x1="250" y1="243" x2="250" y2="193" stroke="#4a5568" stroke-width="1" stroke-dasharray="3,2"/>
+      </svg>
+    </div>
+
+    <p class="source-note">来源：<a href="https://en.wikipedia.org/wiki/SquashFS" target="_blank">Wikipedia: SquashFS</a>；<a href="https://www.wikiwand.com/en/articles/SquashFS" target="_blank">Wikiwand: SquashFS</a>；<a href="https://linuxcommandlibrary.com/man/mksquashfs" target="_blank">mksquashfs man page</a></p>
+
+    <div class="summary">
+      <div class="summary-title">💡 章节总结</div>
+      <p>SquashFS 的适用场景有一个共同特征：<strong>写入操作极少或不存在，而读取操作频繁</strong>。从 Live CD 到路由器固件、从 Snap 包到容器节点 OS，SquashFS 都扮演着"一次写入，多次读取"的角色。与 OverlayFS 的组合则优雅地解决了"需要写入"的少数场景，使 SquashFS 能够覆盖从嵌入式到云原生的广泛应用。</p>
+    </div>
+  </section>
+
+  <!-- ===== COMPARISON ===== -->
+  <section class="section" id="comparison">
+    <h2 class="section-title">
+      <span class="icon" style="background:rgba(79,142,247,0.15)">⚖️</span>
+      与其他方案对比
+    </h2>
+    <div class="section-divider"></div>
+
+    <div class="table-wrap">
+      <table>
+        <thead>
+          <tr>
+            <th>方案</th>
+            <th>类型</th>
+            <th>压缩率</th>
+            <th>随机读</th>
+            <th>写入</th>
+            <th>内核原生</th>
+            <th>适用场景</th>
+          </tr>
+        </thead>
+        <tbody>
+          <tr>
+            <td><strong>SquashFS</strong></td>
+            <td>压缩只读 FS</td>
+            <td>高</td>
+            <td>良好</td>
+            <td class="no">✘</td>
+            <td class="yes">✔ (Linux)</td>
+            <td>Live CD、嵌入式、容器</td>
+          </tr>
+          <tr>
+            <td>CramFS</td>
+            <td>压缩只读 FS</td>
+            <td>中</td>
+            <td>差</td>
+            <td class="no">✘</td>
+            <td class="yes">✔</td>
+            <td>已废弃，被 SquashFS 取代</td>
+          </tr>
+          <tr>
+            <td>EROFS</td>
+            <td>压缩只读 FS</td>
+            <td>高</td>
+            <td>优秀</td>
+            <td class="no">✘</td>
+            <td class="yes">✔</td>
+            <td>Android 系统分区（新世代）</td>
+          </tr>
+          <tr>
+            <td>DwarFS</td>
+            <td>压缩只读 FS (FUSE)</td>
+            <td>极高</td>
+            <td>优秀</td>
+            <td class="no">✘</td>
+            <td class="no">✘（FUSE）</td>
+            <td>归档数据集、桌面/服务器</td>
+          </tr>
+          <tr>
+            <td>ext4</td>
+            <td>通用读写 FS</td>
+            <td>无</td>
+            <td>优秀</td>
+            <td class="yes">✔</td>
+            <td class="yes">✔</td>
+            <td>通用场景，日志、数据库</td>
+          </tr>
+          <tr>
+            <td>UBIFS</td>
+            <td>Flash 读写 FS</td>
+            <td>有（LZO/zlib）</td>
+            <td>良好</td>
+            <td class="yes">✔</td>
+            <td class="yes">✔</td>
+            <td>NAND Flash 嵌入式设备</td>
+          </tr>
+          <tr>
+            <td>.tar.gz</td>
+            <td>流式归档</td>
+            <td>高</td>
+            <td class="no">✘（需全解压）</td>
+            <td class="no">✘</td>
+            <td class="no">✘</td>
+            <td>文件备份传输</td>
+          </tr>
+        </tbody>
+      </table>
+    </div>
+
+    <div class="info-box accent">
+      <p style="margin:0;font-size:14px;">
+        <strong>SquashFS vs DwarFS（来自实际用户讨论）：</strong>SquashFS 适合运行时加载压缩应用（AppImage、系统库等），因为其内核态实现 syscall 开销低，应用启动快；DwarFS 适合归档大型数据集（ML 数据、备份），提供更高压缩率和值去重，但 FUSE 层带来的 syscall 延迟不适合频繁小文件读取场景。
+        <br><span style="color:var(--text2);font-style:italic;">— <a href="https://forum.porteus.org/viewtopic.php?t=11718" target="_blank">Porteus Forum: DwarFS vs SquashFS</a></span>
+      </p>
+    </div>
+
+    <div class="summary">
+      <div class="summary-title">💡 章节总结</div>
+      <p>在压缩只读文件系统赛道上，SquashFS 的核心竞争力在于：<strong>内核原生 + 成熟稳定 + 生态广泛</strong>。EROFS 代表下一代（主攻 Android），DwarFS 代表用户态高压缩方向，但都无法完全取代 SquashFS 在引导环境（initramfs）、路由器固件等对内核原生支持有强依赖的场景中的地位。选择 SquashFS 通常是在"需要在 Linux 内核环境下高效挂载压缩只读文件系统"时的最优解。</p>
+    </div>
+  </section>
+
+  <!-- ===== TOOLS ===== -->
+  <section class="section" id="tools">
+    <h2 class="section-title">
+      <span class="icon" style="background:rgba(110,231,183,0.15)">🛠️</span>
+      工具链
+    </h2>
+    <div class="section-divider"></div>
+
+    <div class="cards">
+      <div class="card">
+        <div class="card-icon">🔨</div>
+        <div class="card-title">mksquashfs</div>
+        <div class="card-body">创建 SquashFS 镜像。支持指定压缩算法、块大小、去重、伪文件定义、追加模式等。squashfs-tools 4.7.4 (2025-11)。</div>
+      </div>
+      <div class="card">
+        <div class="card-icon">📂</div>
+        <div class="card-title">unsquashfs</div>
+        <div class="card-body">从 SquashFS 镜像中提取文件，或列出内容。支持正则过滤、并发解压。</div>
+      </div>
+      <div class="card">
+        <div class="card-icon">🔌</div>
+        <div class="card-title">squashfuse</div>
+        <div class="card-body">用户态 FUSE 驱动，可在无内核模块的环境（如 macOS、非特权容器）中挂载 SquashFS 镜像。</div>
+      </div>
+      <div class="card">
+        <div class="card-icon">📦</div>
+        <div class="card-title">7-Zip</div>
+        <div class="card-body">7-Zip 支持读取（解压）SquashFS 归档，已移植至 Windows NT – Windows 8.1。</div>
+      </div>
+    </div>
+
+    <h3>常用命令速查</h3>
+    <pre># 创建镜像（默认 gzip）
+mksquashfs /path/to/dir image.sqsh
+
+# 使用 Zstd 压缩，块大小 256K
+mksquashfs /path/to/dir image.sqsh -comp zstd -b 256K
+
+# 使用 XZ 最高压缩
+mksquashfs /path/to/dir image.sqsh -comp xz
+
+# 挂载镜像（需 squashfs 内核模块）
+sudo mount -t squashfs -o loop image.sqsh /mnt/target
+
+# 挂载并叠加可写层（OverlayFS）
+sudo mount -t overlay overlay \
+  -o lowerdir=/mnt/target,upperdir=/tmp/upper,workdir=/tmp/work \
+  /tmp/rw_view
+
+# 解压镜像内容
+unsquashfs image.sqsh
+
+# 列出内容不解压
+unsquashfs -l image.sqsh</pre>
+
+    <div class="summary">
+      <div class="summary-title">💡 章节总结</div>
+      <p>SquashFS 工具链简洁而完整：mksquashfs 负责构建（一次性写入），unsquashfs 负责提取，mount 命令配合内核模块负责透明挂载。squashfuse 则将适用范围延伸至非 Linux 环境。配合 OverlayFS，只需五行命令即可构建一个"SquashFS 只读底层 + 可写覆盖层"的完整可写环境。</p>
+    </div>
+  </section>
+
+  <!-- ===== REFERENCES ===== -->
+  <section class="section" id="refs">
+    <h2 class="section-title">
+      <span class="icon" style="background:rgba(79,142,247,0.15)">📚</span>
+      参考资料
+    </h2>
+    <div class="section-divider"></div>
+
+    <div class="info-box accent">
+      <p style="font-weight:700;margin-bottom:12px;color:var(--accent2);">官方权威文档</p>
+      <ul style="list-style:none;">
+        <li style="padding:6px 0;font-size:14px;">
+          📄 <a href="https://docs.kernel.org/filesystems/squashfs.html" target="_blank">Linux Kernel Documentation: Squashfs 4.0 Filesystem</a>
+          — Linux 内核官方 SquashFS 文档，涵盖设计、特性、挂载选项
+        </li>
+        <li style="padding:6px 0;font-size:14px;">
+          📄 <a href="https://dr-emann.github.io/squashfs/squashfs.html" target="_blank">SquashFS Binary Format Specification</a>
+          — 详细的二进制格式规范，含所有字段定义和编码细节
+        </li>
+        <li style="padding:6px 0;font-size:14px;">
+          📄 <a href="https://github.com/torvalds/linux/blob/master/Documentation/filesystems/squashfs.rst" target="_blank">Linux 内核源码树: Documentation/filesystems/squashfs.rst</a>
+          — 内核文档原始 RST 源文件（Linus Torvalds 的 GitHub 镜像）
+        </li>
+        <li style="padding:6px 0;font-size:14px;">
+          🔧 <a href="https://github.com/plougher/squashfs-tools" target="_blank">squashfs-tools 官方 GitHub（Phillip Lougher）</a>
+          — mksquashfs / unsquashfs 工具链源码与文档
+        </li>
+      </ul>
+    </div>
+
+    <div class="info-box green">
+      <p style="font-weight:700;margin-bottom:12px;color:var(--accent2);">参考文章与资源</p>
+      <ul style="list-style:none;">
+        <li style="padding:6px 0;font-size:14px;">
+          📰 <a href="https://en.wikipedia.org/wiki/SquashFS" target="_blank">Wikipedia: SquashFS</a>
+          — 历史沿革、应用场景综述
+        </li>
+        <li style="padding:6px 0;font-size:14px;">
+          📰 <a href="https://lwn.net/Articles/305083/" target="_blank">LWN.net: Squashfs submitted for the mainline (2008)</a>
+          — SquashFS 进入 Linux 主线的历史背景与技术讨论
+        </li>
+        <li style="padding:6px 0;font-size:14px;">
+          📰 <a href="https://medium.com/@akashsainisaini37/how-overlayfs-and-squashfs-power-embedded-linux-storage-75273028ef20" target="_blank">How OverlayFS and SquashFS Power Embedded Linux Storage</a>
+          — SquashFS + OverlayFS 在嵌入式场景的结合方式
+        </li>
+        <li style="padding:6px 0;font-size:14px;">
+          📰 <a href="https://oneuptime.com/blog/post/2026-03-03-understand-talos-linux-squashfs-root-filesystem/view" target="_blank">Understanding Talos Linux SquashFS Root Filesystem (2026)</a>
+          — SquashFS 在不可变基础设施/Kubernetes 节点中的现代应用
+        </li>
+        <li style="padding:6px 0;font-size:14px;">
+          📰 <a href="https://www.baeldung.com/linux/squashfs-filesystem-mount" target="_blank">Baeldung: Understanding SquashFS and How to Mount</a>
+          — 挂载操作与 OverlayFS 组合实践
+        </li>
+      </ul>
+    </div>
+  </section>
+
+</main>
+
+<!-- Keyboard hint -->
+<div class="kb-hint">
+  <span class="key">←</span>
+  <span class="key">→</span>
+  键盘翻章
+</div>
+
+<script>
+// ===== Section order for keyboard nav =====
+const SECTIONS = [
+  'intro','struct-overview','struct-superblock','struct-data',
+  'struct-inode','struct-dir','struct-tables',
+  'principle-compress','principle-meta','principle-cache','principle-dedup',
+  'advantages','disadvantages','usecases','comparison','tools','refs'
+];
+
+// ===== Progress bar =====
+const progressBar = document.getElementById('progress-bar');
+function updateProgress() {
+  const doc = document.documentElement;
+  const scrollTop = doc.scrollTop || document.body.scrollTop;
+  const scrollHeight = doc.scrollHeight - doc.clientHeight;
+  const pct = scrollHeight > 0 ? (scrollTop / scrollHeight * 100) : 0;
+  progressBar.style.width = pct + '%';
+}
+
+// ===== Active nav highlight =====
+const allNavItems = document.querySelectorAll('.nav-item');
+function updateActiveNav() {
+  let current = SECTIONS[0];
+  for (const id of SECTIONS) {
+    const el = document.getElementById(id);
+    if (!el) continue;
+    const rect = el.getBoundingClientRect();
+    if (rect.top <= 120) current = id;
+  }
+  allNavItems.forEach(item => {
+    const fn = item.getAttribute('onclick') || '';
+    const match = fn.match(/gotoSection\('([^']+)'\)/);
+    if (match) {
+      item.classList.toggle('active', match[1] === current);
+    }
+  });
+}
+
+window.addEventListener('scroll', () => {
+  updateProgress();
+  updateActiveNav();
+}, { passive: true });
+
+// ===== Nav group toggle =====
+function toggleGroup(id) {
+  const grp = document.getElementById(id);
+  grp.classList.toggle('collapsed');
+}
+
+// ===== Goto section =====
+function gotoSection(id) {
+  const el = document.getElementById(id);
+  if (el) {
+    el.scrollIntoView({ behavior: 'smooth', block: 'start' });
+    // Close sidebar on mobile
+    if (window.innerWidth <= 768) closeSidebar();
+  }
+}
+
+// ===== Mobile sidebar =====
+const sidebar = document.getElementById('sidebar');
+const overlay = document.getElementById('overlay');
+const hamburger = document.getElementById('hamburger');
+
+function openSidebar() {
+  sidebar.classList.add('open');
+  overlay.classList.add('open');
+  hamburger.classList.add('open');
+}
+function closeSidebar() {
+  sidebar.classList.remove('open');
+  overlay.classList.remove('open');
+  hamburger.classList.remove('open');
+}
+
+hamburger.addEventListener('click', () => {
+  if (sidebar.classList.contains('open')) closeSidebar();
+  else openSidebar();
+});
+overlay.addEventListener('click', closeSidebar);
+
+// ===== Keyboard navigation =====
+document.addEventListener('keydown', (e) => {
+  if (e.target.tagName === 'INPUT' || e.target.tagName === 'TEXTAREA') return;
+  if (e.key !== 'ArrowLeft' && e.key !== 'ArrowRight') return;
+
+  // Find current section
+  let current = 0;
+  for (let i = 0; i < SECTIONS.length; i++) {
+    const el = document.getElementById(SECTIONS[i]);
+    if (!el) continue;
+    if (el.getBoundingClientRect().top <= 150) current = i;
+  }
+
+  let next = current;
+  if (e.key === 'ArrowRight') next = Math.min(current + 1, SECTIONS.length - 1);
+  if (e.key === 'ArrowLeft') next = Math.max(current - 1, 0);
+
+  if (next !== current) {
+    const el = document.getElementById(SECTIONS[next]);
+    if (el) el.scrollIntoView({ behavior: 'smooth', block: 'start' });
+    e.preventDefault();
+  }
+});
+
+// ===== Init =====
+updateProgress();
+updateActiveNav();
+</script>
+
+</body>
+</html>

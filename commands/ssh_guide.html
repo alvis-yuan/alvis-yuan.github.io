@@ -1,0 +1,1930 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Linux SSH 命令原理与使用场景详解</title>
+<style>
+  :root {
+    --primary: #0f766e;
+    --primary-light: #14b8a6;
+    --primary-dark: #0d5752;
+    --accent: #f59e0b;
+    --bg: #0f172a;
+    --bg2: #1e293b;
+    --bg3: #263348;
+    --text: #e2e8f0;
+    --text-muted: #94a3b8;
+    --text-dim: #64748b;
+    --border: #334155;
+    --code-bg: #0d1117;
+    --highlight: #1e3a5f;
+    --sidebar-width: 280px;
+    --header-height: 56px;
+  }
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  html { scroll-behavior: smooth; }
+  body {
+    font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', 'PingFang SC', 'Hiragino Sans GB', 'Microsoft YaHei', sans-serif;
+    background: var(--bg);
+    color: var(--text);
+    line-height: 1.7;
+    overflow-x: hidden;
+  }
+
+  /* ===== PROGRESS BAR ===== */
+  #progress-bar {
+    position: fixed; top: 0; left: 0; height: 3px;
+    background: linear-gradient(90deg, var(--primary-light), var(--accent));
+    z-index: 9999; width: 0%; transition: width 0.1s;
+  }
+
+  /* ===== HEADER ===== */
+  header {
+    position: fixed; top: 0; left: 0; right: 0;
+    height: var(--header-height);
+    background: rgba(15,23,42,0.95);
+    backdrop-filter: blur(12px);
+    border-bottom: 1px solid var(--border);
+    display: flex; align-items: center; justify-content: space-between;
+    padding: 0 20px; z-index: 1000;
+  }
+  .logo {
+    display: flex; align-items: center; gap: 10px;
+    font-weight: 700; font-size: 1.05rem; color: var(--primary-light);
+  }
+  .logo svg { flex-shrink: 0; }
+  .hamburger {
+    display: none; flex-direction: column; gap: 5px;
+    cursor: pointer; padding: 4px; background: none; border: none;
+  }
+  .hamburger span {
+    display: block; width: 24px; height: 2px;
+    background: var(--text); border-radius: 2px;
+    transition: all 0.3s;
+  }
+  .hamburger.open span:nth-child(1) { transform: rotate(45deg) translate(5px,5px); }
+  .hamburger.open span:nth-child(2) { opacity: 0; }
+  .hamburger.open span:nth-child(3) { transform: rotate(-45deg) translate(5px,-5px); }
+  .nav-hint {
+    font-size: 0.75rem; color: var(--text-dim);
+    display: flex; align-items: center; gap: 6px;
+  }
+  kbd {
+    background: var(--bg3); border: 1px solid var(--border);
+    border-radius: 4px; padding: 1px 6px; font-size: 0.7rem;
+    font-family: monospace; color: var(--text-muted);
+  }
+
+  /* ===== SIDEBAR ===== */
+  #sidebar-overlay {
+    display: none; position: fixed; inset: 0;
+    background: rgba(0,0,0,0.5); z-index: 900;
+  }
+  #sidebar {
+    position: fixed; top: var(--header-height); left: 0; bottom: 0;
+    width: var(--sidebar-width);
+    background: var(--bg2);
+    border-right: 1px solid var(--border);
+    overflow-y: auto; z-index: 950;
+    transition: transform 0.3s ease;
+    scrollbar-width: thin; scrollbar-color: var(--border) transparent;
+  }
+  #sidebar::-webkit-scrollbar { width: 4px; }
+  #sidebar::-webkit-scrollbar-thumb { background: var(--border); border-radius: 2px; }
+  .nav-section { border-bottom: 1px solid var(--border); }
+  .nav-group-header {
+    display: flex; align-items: center; justify-content: space-between;
+    padding: 12px 16px; cursor: pointer;
+    font-size: 0.7rem; font-weight: 700; letter-spacing: 0.08em;
+    text-transform: uppercase; color: var(--primary-light);
+    user-select: none;
+    transition: background 0.2s;
+  }
+  .nav-group-header:hover { background: var(--bg3); }
+  .nav-group-header .chevron {
+    transition: transform 0.3s;
+    font-size: 0.8rem; color: var(--text-dim);
+  }
+  .nav-group-header.collapsed .chevron { transform: rotate(-90deg); }
+  .nav-items { overflow: hidden; transition: max-height 0.35s ease; }
+  .nav-items.collapsed { max-height: 0 !important; }
+  .nav-item {
+    display: block; padding: 8px 16px 8px 28px;
+    font-size: 0.82rem; color: var(--text-muted);
+    text-decoration: none; cursor: pointer;
+    transition: all 0.2s; border-left: 3px solid transparent;
+    line-height: 1.4;
+  }
+  .nav-item:hover { color: var(--text); background: var(--bg3); }
+  .nav-item.active {
+    color: var(--primary-light); border-left-color: var(--primary-light);
+    background: rgba(20,184,166,0.08);
+  }
+
+  /* ===== MAIN ===== */
+  #main {
+    margin-left: var(--sidebar-width);
+    padding-top: var(--header-height);
+    min-height: 100vh;
+  }
+  .content-wrap {
+    max-width: 860px;
+    margin: 0 auto;
+    padding: 40px 32px 80px;
+  }
+
+  /* ===== SECTIONS ===== */
+  .section { margin-bottom: 64px; }
+  .section-title {
+    font-size: 1.65rem; font-weight: 800;
+    color: var(--primary-light);
+    border-bottom: 2px solid var(--primary);
+    padding-bottom: 10px; margin-bottom: 28px;
+    display: flex; align-items: center; gap: 12px;
+  }
+  .section-num {
+    display: inline-flex; align-items: center; justify-content: center;
+    width: 36px; height: 36px; border-radius: 8px;
+    background: var(--primary); color: #fff;
+    font-size: 0.95rem; font-weight: 700; flex-shrink: 0;
+  }
+  h3 {
+    font-size: 1.15rem; font-weight: 700;
+    color: var(--accent); margin: 28px 0 12px;
+  }
+  h4 {
+    font-size: 1rem; font-weight: 600;
+    color: #7dd3fc; margin: 20px 0 8px;
+  }
+  p { margin-bottom: 14px; color: var(--text); line-height: 1.8; }
+  ul, ol { margin: 10px 0 14px 20px; }
+  li { margin-bottom: 6px; line-height: 1.7; }
+
+  /* ===== CODE ===== */
+  pre {
+    background: var(--code-bg);
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    padding: 16px 20px;
+    overflow-x: auto;
+    margin: 14px 0;
+    font-size: 0.855rem;
+    line-height: 1.65;
+    scrollbar-width: thin; scrollbar-color: var(--border) transparent;
+    max-width: 100%;
+  }
+  pre::-webkit-scrollbar { height: 4px; }
+  pre::-webkit-scrollbar-thumb { background: var(--border); }
+  code {
+    font-family: 'JetBrains Mono', 'Fira Code', 'Consolas', 'Courier New', monospace;
+    color: #a5f3fc;
+  }
+  pre code { color: #e2e8f0; }
+  .c-comment { color: #64748b; }
+  .c-cmd { color: #86efac; }
+  .c-flag { color: #fbbf24; }
+  .c-val { color: #f9a8d4; }
+  .c-host { color: #a5f3fc; }
+
+  /* ===== INFO BOXES ===== */
+  .info-box {
+    border-radius: 8px; padding: 16px 20px; margin: 16px 0;
+    border-left: 4px solid;
+  }
+  .info-box.note { background: rgba(20,184,166,0.07); border-color: var(--primary-light); }
+  .info-box.warn { background: rgba(245,158,11,0.07); border-color: var(--accent); }
+  .info-box.danger { background: rgba(239,68,68,0.07); border-color: #ef4444; }
+  .info-box .box-title {
+    font-weight: 700; font-size: 0.8rem; text-transform: uppercase;
+    letter-spacing: 0.05em; margin-bottom: 6px;
+  }
+  .info-box.note .box-title { color: var(--primary-light); }
+  .info-box.warn .box-title { color: var(--accent); }
+  .info-box.danger .box-title { color: #ef4444; }
+
+  /* ===== SUMMARY BOX ===== */
+  .summary-box {
+    background: linear-gradient(135deg, rgba(15,118,110,0.15), rgba(30,58,95,0.15));
+    border: 1px solid var(--primary);
+    border-radius: 10px; padding: 20px 24px; margin-top: 32px;
+  }
+  .summary-box h3 {
+    color: var(--primary-light); margin-top: 0; margin-bottom: 12px;
+    font-size: 1rem; display: flex; align-items: center; gap: 8px;
+  }
+
+  /* ===== SVG DIAGRAMS ===== */
+  .diagram-wrap {
+    background: var(--bg2);
+    border: 1px solid var(--border);
+    border-radius: 10px;
+    padding: 20px; margin: 20px 0;
+    overflow-x: auto;
+    text-align: center;
+  }
+  .diagram-wrap svg { max-width: 100%; height: auto; }
+  .diagram-title {
+    font-size: 0.82rem; color: var(--text-dim);
+    text-align: center; margin-top: 10px;
+  }
+
+  /* ===== TABLE ===== */
+  .table-wrap { overflow-x: auto; margin: 16px 0; }
+  table {
+    width: 100%; border-collapse: collapse;
+    font-size: 0.875rem;
+  }
+  th {
+    background: var(--bg3); color: var(--primary-light);
+    padding: 10px 14px; text-align: left; font-weight: 600;
+    border-bottom: 2px solid var(--primary);
+    white-space: nowrap;
+  }
+  td {
+    padding: 9px 14px; border-bottom: 1px solid var(--border);
+    vertical-align: top;
+  }
+  tr:hover td { background: rgba(30,42,64,0.5); }
+  code.inline {
+    background: rgba(20,184,166,0.1);
+    border: 1px solid rgba(20,184,166,0.25);
+    border-radius: 4px; padding: 1px 6px;
+    font-size: 0.82rem; color: #a5f3fc;
+  }
+
+  /* ===== SCENARIO CARD ===== */
+  .scenario-card {
+    background: var(--bg2);
+    border: 1px solid var(--border);
+    border-radius: 10px; margin: 20px 0;
+    overflow: hidden;
+  }
+  .scenario-header {
+    background: var(--bg3);
+    padding: 14px 20px;
+    display: flex; align-items: center; gap: 12px;
+    border-bottom: 1px solid var(--border);
+  }
+  .scenario-badge {
+    background: var(--primary); color: #fff;
+    border-radius: 6px; padding: 2px 10px;
+    font-size: 0.75rem; font-weight: 700;
+    white-space: nowrap;
+  }
+  .scenario-name { font-weight: 700; font-size: 1rem; color: var(--text); }
+  .scenario-body { padding: 16px 20px; }
+
+  /* ===== FIRST PRINCIPLES ===== */
+  .first-principles {
+    background: linear-gradient(135deg, rgba(30,58,95,0.3), rgba(15,23,42,0.3));
+    border: 1px solid #1e3a5f;
+    border-radius: 10px; padding: 20px 24px; margin-top: 24px;
+  }
+  .first-principles h4 {
+    color: #7dd3fc; margin-top: 0;
+    display: flex; align-items: center; gap: 8px;
+  }
+
+  /* ===== SOURCE LINK ===== */
+  .source-link {
+    display: inline-flex; align-items: center; gap: 6px;
+    font-size: 0.78rem; color: var(--text-dim);
+    background: var(--bg3); border: 1px solid var(--border);
+    border-radius: 4px; padding: 3px 10px; margin: 6px 0;
+    text-decoration: none;
+    transition: all 0.2s;
+  }
+  .source-link:hover { color: var(--primary-light); border-color: var(--primary); }
+
+  /* ===== STEP LIST ===== */
+  .step-list { list-style: none; margin: 0; padding: 0; }
+  .step-list li {
+    display: flex; gap: 14px; margin-bottom: 14px;
+    align-items: flex-start;
+  }
+  .step-num {
+    flex-shrink: 0; width: 26px; height: 26px;
+    background: var(--primary); color: #fff;
+    border-radius: 50%; display: flex; align-items: center; justify-content: center;
+    font-size: 0.75rem; font-weight: 700; margin-top: 2px;
+  }
+
+  /* ===== CHIP ===== */
+  .chip {
+    display: inline-block;
+    background: rgba(20,184,166,0.12);
+    border: 1px solid rgba(20,184,166,0.3);
+    color: var(--primary-light);
+    border-radius: 999px; padding: 2px 10px;
+    font-size: 0.78rem; margin: 3px 4px 3px 0;
+  }
+
+  /* ===== RESPONSIVE ===== */
+  @media (max-width: 900px) {
+    #sidebar {
+      transform: translateX(-100%);
+    }
+    #sidebar.open {
+      transform: translateX(0);
+    }
+    #sidebar-overlay.open { display: block; }
+    #main { margin-left: 0; }
+    .hamburger { display: flex; }
+    .nav-hint { display: none; }
+    .content-wrap { padding: 28px 18px 60px; }
+    .section-title { font-size: 1.35rem; }
+  }
+  @media (max-width: 520px) {
+    .content-wrap { padding: 20px 14px 60px; }
+    pre { padding: 12px 14px; font-size: 0.78rem; }
+    .section-title { font-size: 1.2rem; }
+  }
+</style>
+</head>
+<body>
+
+<div id="progress-bar"></div>
+
+<!-- HEADER -->
+<header>
+  <div class="logo">
+    <svg width="28" height="28" viewBox="0 0 28 28" fill="none">
+      <rect width="28" height="28" rx="6" fill="#0f766e"/>
+      <path d="M6 20 L10 8 L14 16 L18 8 L22 20" stroke="#5eead4" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" fill="none"/>
+      <circle cx="14" cy="16" r="2" fill="#fbbf24"/>
+    </svg>
+    <span>Linux SSH 深度解析</span>
+  </div>
+  <div class="nav-hint">
+    <kbd>←</kbd><kbd>→</kbd> 翻章节
+  </div>
+  <button class="hamburger" id="hamburger" aria-label="菜单">
+    <span></span><span></span><span></span>
+  </button>
+</header>
+
+<!-- SIDEBAR OVERLAY -->
+<div id="sidebar-overlay"></div>
+
+<!-- SIDEBAR -->
+<nav id="sidebar">
+  <div class="nav-section">
+    <div class="nav-group-header" data-group="g0">
+      <span>概述</span><span class="chevron">▾</span>
+    </div>
+    <div class="nav-items" data-items="g0">
+      <a class="nav-item" data-section="s0">§0 SSH 是什么</a>
+    </div>
+  </div>
+  <div class="nav-section">
+    <div class="nav-group-header" data-group="g1">
+      <span>核心原理</span><span class="chevron">▾</span>
+    </div>
+    <div class="nav-items" data-items="g1">
+      <a class="nav-item" data-section="s1">§1 协议架构</a>
+      <a class="nav-item" data-section="s2">§2 连接握手与密钥交换</a>
+      <a class="nav-item" data-section="s3">§3 认证方式</a>
+    </div>
+  </div>
+  <div class="nav-section">
+    <div class="nav-group-header" data-group="g2">
+      <span>使用场景</span><span class="chevron">▾</span>
+    </div>
+    <div class="nav-items" data-items="g2">
+      <a class="nav-item" data-section="s4">§4 远程登录</a>
+      <a class="nav-item" data-section="s5">§5 远程执行命令</a>
+      <a class="nav-item" data-section="s6">§6 本地端口转发 (-L)</a>
+      <a class="nav-item" data-section="s7">§7 远程端口转发 (-R)</a>
+      <a class="nav-item" data-section="s8">§8 动态代理 SOCKS (-D)</a>
+      <a class="nav-item" data-section="s9">§9 跳板机 (-J)</a>
+      <a class="nav-item" data-section="s10">§10 文件传输 SCP/SFTP</a>
+      <a class="nav-item" data-section="s11">§11 X11 图形转发</a>
+      <a class="nav-item" data-section="s12">§12 SSH 配置文件</a>
+    </div>
+  </div>
+  <div class="nav-section">
+    <div class="nav-group-header" data-group="g3">
+      <span>高级与汇总</span><span class="chevron">▾</span>
+    </div>
+    <div class="nav-items" data-items="g3">
+      <a class="nav-item" data-section="s13">§13 安全最佳实践</a>
+      <a class="nav-item" data-section="s14">§14 常用参数速查</a>
+    </div>
+  </div>
+</nav>
+
+<!-- MAIN -->
+<main id="main">
+<div class="content-wrap">
+
+<!-- §0 SSH 是什么 -->
+<section class="section" id="s0">
+  <div class="section-title">
+    <span class="section-num">0</span>SSH 是什么
+  </div>
+  <p>
+    <strong>SSH（Secure Shell）</strong> 是一个为在不安全网络上两台不受信任主机之间提供安全加密通信的协议及程序。它是 <code class="inline">rlogin</code>、<code class="inline">rsh</code>、<code class="inline">telnet</code> 等明文协议的安全替代品。
+  </p>
+  <p>
+    根据 <a href="https://man7.org/linux/man-pages/man1/ssh.1.html" class="source-link" target="_blank">ssh(1) Linux man page</a> 的官方描述：
+  </p>
+  <div class="info-box note">
+    <div class="box-title">官方定义</div>
+    <em>"ssh (SSH client) is a program for logging into a remote machine and for executing commands on a remote machine. It is intended to provide secure encrypted communications between two untrusted hosts over an insecure network. X11 connections, arbitrary TCP ports and Unix-domain sockets can also be forwarded over the secure channel."</em>
+  </div>
+  <p>SSH 目前的主流实现是 <strong>OpenSSH</strong>，遵循以下核心 RFC 标准：</p>
+  <div class="table-wrap">
+    <table>
+      <tr><th>RFC</th><th>内容</th></tr>
+      <tr><td><code class="inline">RFC 4251</code></td><td>SSH 协议架构（Architecture）</td></tr>
+      <tr><td><code class="inline">RFC 4252</code></td><td>SSH 认证协议（Authentication Protocol）</td></tr>
+      <tr><td><code class="inline">RFC 4253</code></td><td>SSH 传输层协议（Transport Layer Protocol）</td></tr>
+      <tr><td><code class="inline">RFC 4254</code></td><td>SSH 连接协议（Connection Protocol）</td></tr>
+    </table>
+  </div>
+  <div class="summary-box">
+    <h3>📌 本章小结</h3>
+    <p>SSH 是一套<strong>基于密码学</strong>的安全通信协议族，其核心价值在于：在不受信任的公开网络（如互联网）上，为两端主机间的通信提供机密性（加密）、完整性（MAC）和身份认证三重保障。它不仅仅是"安全的远程登录"，还包含端口转发、文件传输、X11 转发等丰富能力。</p>
+  </div>
+</section>
+
+<!-- §1 协议架构 -->
+<section class="section" id="s1">
+  <div class="section-title">
+    <span class="section-num">1</span>SSH 协议分层架构
+  </div>
+  <p>
+    SSH 协议（SSH-2）由三个独立子协议构成，分层设计，参考 <a href="https://www.rfc-editor.org/rfc/rfc4251" class="source-link" target="_blank">RFC 4251</a>：
+  </p>
+
+  <div class="diagram-wrap">
+    <svg width="700" height="320" viewBox="0 0 700 320">
+      <defs>
+        <linearGradient id="g1a" x1="0" y1="0" x2="1" y2="0">
+          <stop offset="0%" stop-color="#0f766e" stop-opacity="0.7"/>
+          <stop offset="100%" stop-color="#0d5752" stop-opacity="0.7"/>
+        </linearGradient>
+        <linearGradient id="g1b" x1="0" y1="0" x2="1" y2="0">
+          <stop offset="0%" stop-color="#1e3a5f" stop-opacity="0.8"/>
+          <stop offset="100%" stop-color="#1e293b" stop-opacity="0.8"/>
+        </linearGradient>
+        <linearGradient id="g1c" x1="0" y1="0" x2="1" y2="0">
+          <stop offset="0%" stop-color="#4c1d95" stop-opacity="0.7"/>
+          <stop offset="100%" stop-color="#3b0764" stop-opacity="0.7"/>
+        </linearGradient>
+      </defs>
+
+      <!-- Application Layer -->
+      <rect x="30" y="30" width="640" height="64" rx="8" fill="url(#g1c)"/>
+      <text x="350" y="52" text-anchor="middle" fill="#c4b5fd" font-size="11" font-weight="600">应用层（Application）</text>
+      <rect x="50" y="60" width="140" height="24" rx="4" fill="rgba(167,139,250,0.2)" stroke="#a78bfa" stroke-width="1"/>
+      <text x="120" y="77" text-anchor="middle" fill="#c4b5fd" font-size="10">SSH Shell / 终端</text>
+      <rect x="205" y="60" width="140" height="24" rx="4" fill="rgba(167,139,250,0.2)" stroke="#a78bfa" stroke-width="1"/>
+      <text x="275" y="77" text-anchor="middle" fill="#c4b5fd" font-size="10">SCP / SFTP</text>
+      <rect x="360" y="60" width="140" height="24" rx="4" fill="rgba(167,139,250,0.2)" stroke="#a78bfa" stroke-width="1"/>
+      <text x="430" y="77" text-anchor="middle" fill="#c4b5fd" font-size="10">端口转发 / X11</text>
+      <rect x="515" y="60" width="135" height="24" rx="4" fill="rgba(167,139,250,0.2)" stroke="#a78bfa" stroke-width="1"/>
+      <text x="582" y="77" text-anchor="middle" fill="#c4b5fd" font-size="10">隧道 / VPN</text>
+
+      <!-- Arrow -->
+      <path d="M350 94 L350 110" stroke="#64748b" stroke-width="2" marker-end="url(#arr)"/>
+
+      <!-- Connection Layer -->
+      <rect x="30" y="110" width="640" height="60" rx="8" fill="url(#g1b)"/>
+      <text x="350" y="130" text-anchor="middle" fill="#7dd3fc" font-size="11" font-weight="600">SSH 连接协议 SSH-CONN（RFC 4254）</text>
+      <text x="350" y="150" text-anchor="middle" fill="#94a3b8" font-size="10">多路复用 Channel（shell/exec/direct-tcpip/forwarded-tcpip/x11 等）</text>
+
+      <!-- Arrow -->
+      <path d="M350 170 L350 186" stroke="#64748b" stroke-width="2" marker-end="url(#arr)"/>
+
+      <!-- Auth Layer -->
+      <rect x="30" y="186" width="640" height="60" rx="8" fill="rgba(30,58,95,0.6)" stroke="#1e3a5f" stroke-width="1"/>
+      <text x="350" y="206" text-anchor="middle" fill="#7dd3fc" font-size="11" font-weight="600">SSH 认证协议 SSH-AUTH（RFC 4252）</text>
+      <text x="350" y="226" text-anchor="middle" fill="#94a3b8" font-size="10">密码 / 公钥 / GSSAPI / 主机认证</text>
+
+      <!-- Arrow -->
+      <path d="M350 246 L350 262" stroke="#64748b" stroke-width="2" marker-end="url(#arr)"/>
+
+      <!-- Transport Layer -->
+      <rect x="30" y="262" width="640" height="48" rx="8" fill="url(#g1a)"/>
+      <text x="350" y="282" text-anchor="middle" fill="#5eead4" font-size="11" font-weight="600">SSH 传输层协议 SSH-TRANS（RFC 4253）</text>
+      <text x="350" y="300" text-anchor="middle" fill="#a5f3fc" font-size="10">密钥交换（DH/ECDH）· 加密（AES/ChaCha20）· 完整性（HMAC）· 服务器认证</text>
+
+      <!-- TCP/IP -->
+      <text x="350" y="318" text-anchor="middle" fill="#64748b" font-size="9">↓ TCP/IP 网络层</text>
+
+      <!-- Arrow marker -->
+      <defs>
+        <marker id="arr" markerWidth="8" markerHeight="6" refX="8" refY="3" orient="auto">
+          <polygon points="0 0, 8 3, 0 6" fill="#64748b"/>
+        </marker>
+      </defs>
+    </svg>
+    <div class="diagram-title">图1：SSH 协议三层架构（基于 RFC 4251-4254）</div>
+  </div>
+
+  <h3>各层职责</h3>
+  <ul>
+    <li><strong>SSH-TRANS（传输层）</strong>：负责服务器认证、加密、数据完整性保护，及会话密钥协商。所有上层数据都在此层加密传输。</li>
+    <li><strong>SSH-AUTH（认证层）</strong>：在安全传输层之上完成客户端身份认证，支持多种认证方式。</li>
+    <li><strong>SSH-CONN（连接层）</strong>：在单条 SSH 连接上实现多路复用，支持同时打开多个逻辑"通道"（Channel），shell、端口转发、X11 等均在不同通道中传输。</li>
+  </ul>
+
+  <div class="summary-box">
+    <h3>📌 本章小结</h3>
+    <p>SSH 的分层设计是其强大的根本：传输层负责"管道安全"，认证层负责"身份验证"，连接层负责"业务多路复用"。三者解耦，使得 SSH 不仅是远程登录工具，更是一个通用安全隧道框架。</p>
+    <div class="first-principles">
+      <h4>🔬 第一性原理</h4>
+      <p>从密码学基本原理出发：任何安全通信系统都需要解决三个核心问题——<strong>保密性</strong>（别人看不到）、<strong>完整性</strong>（内容没被篡改）、<strong>真实性</strong>（确认是"那个人"）。SSH 的三层协议恰好对应并解决了这三个问题。</p>
+    </div>
+  </div>
+</section>
+
+<!-- §2 连接握手与密钥交换 -->
+<section class="section" id="s2">
+  <div class="section-title">
+    <span class="section-num">2</span>连接握手与密钥交换原理
+  </div>
+  <p>
+    根据 <a href="https://www.rfc-editor.org/rfc/rfc4253" class="source-link" target="_blank">RFC 4253（SSH Transport Layer Protocol）</a>，SSH 连接建立经历以下阶段：
+  </p>
+
+  <!-- 时序图 -->
+  <div class="diagram-wrap">
+    <svg width="680" height="480" viewBox="0 0 680 480">
+      <defs>
+        <marker id="arr2" markerWidth="8" markerHeight="6" refX="8" refY="3" orient="auto">
+          <polygon points="0 0, 8 3, 0 6" fill="#5eead4"/>
+        </marker>
+        <marker id="arr3" markerWidth="8" markerHeight="6" refX="0" refY="3" orient="auto">
+          <polygon points="8 0, 0 3, 8 6" fill="#fbbf24"/>
+        </marker>
+        <marker id="arr4" markerWidth="8" markerHeight="6" refX="8" refY="3" orient="auto">
+          <polygon points="0 0, 8 3, 0 6" fill="#86efac"/>
+        </marker>
+      </defs>
+
+      <!-- Lifelines -->
+      <text x="130" y="28" text-anchor="middle" fill="#5eead4" font-size="12" font-weight="700">客户端 (Client)</text>
+      <line x1="130" y1="36" x2="130" y2="470" stroke="#334155" stroke-width="1" stroke-dasharray="4,3"/>
+      <rect x="115" y="36" width="30" height="430" rx="15" fill="rgba(20,184,166,0.08)"/>
+
+      <text x="550" y="28" text-anchor="middle" fill="#fbbf24" font-size="12" font-weight="700">服务端 (Server)</text>
+      <line x1="550" y1="36" x2="550" y2="470" stroke="#334155" stroke-width="1" stroke-dasharray="4,3"/>
+      <rect x="535" y="36" width="30" height="430" rx="15" fill="rgba(245,158,11,0.08)"/>
+
+      <!-- Step 1: TCP -->
+      <rect x="60" y="46" width="560" height="22" rx="4" fill="rgba(30,42,64,0.6)"/>
+      <text x="340" y="60" text-anchor="middle" fill="#64748b" font-size="10">① TCP 三次握手（底层网络层）</text>
+
+      <!-- Step 2: Version -->
+      <text x="340" y="90" text-anchor="middle" fill="#94a3b8" font-size="10">② 版本协商</text>
+      <line x1="130" y1="96" x2="550" y2="96" stroke="#5eead4" stroke-width="1.5" marker-end="url(#arr2)"/>
+      <text x="340" y="90" text-anchor="middle" fill="#a5f3fc" font-size="9" dy="10">SSH-2.0-OpenSSH_9.x</text>
+      <line x1="550" y1="112" x2="130" y2="112" stroke="#fbbf24" stroke-width="1.5" marker-end="url(#arr3)"/>
+      <text x="340" y="125" text-anchor="middle" fill="#fde68a" font-size="9">SSH-2.0-OpenSSH_8.x</text>
+
+      <!-- Step 3: KEX -->
+      <text x="340" y="145" text-anchor="middle" fill="#94a3b8" font-size="10">③ 算法协商 SSH_MSG_KEXINIT</text>
+      <line x1="130" y1="152" x2="550" y2="152" stroke="#5eead4" stroke-width="1.5" marker-end="url(#arr2)"/>
+      <text x="340" y="150" text-anchor="middle" fill="#a5f3fc" font-size="9" dy="14">支持的 kex/cipher/mac 算法列表</text>
+      <line x1="550" y1="174" x2="130" y2="174" stroke="#fbbf24" stroke-width="1.5" marker-end="url(#arr3)"/>
+      <text x="340" y="185" text-anchor="middle" fill="#fde68a" font-size="9">服务端算法列表 → 双方取交集</text>
+
+      <!-- Step 4: DH -->
+      <rect x="60" y="192" width="560" height="4" rx="2" fill="rgba(20,184,166,0.2)"/>
+      <text x="340" y="208" text-anchor="middle" fill="#94a3b8" font-size="10">④ Diffie-Hellman / ECDH 密钥交换</text>
+      <line x1="130" y1="216" x2="550" y2="216" stroke="#5eead4" stroke-width="1.5" marker-end="url(#arr2)"/>
+      <text x="340" y="214" text-anchor="middle" fill="#a5f3fc" font-size="9" dy="14">SSH_MSG_KEXDH_INIT (e = g^x mod p)</text>
+      <line x1="550" y1="240" x2="130" y2="240" stroke="#fbbf24" stroke-width="1.5" marker-end="url(#arr3)"/>
+      <text x="340" y="254" text-anchor="middle" fill="#fde68a" font-size="9">SSH_MSG_KEXDH_REPLY (K_S, f=g^y mod p, sig_H)</text>
+      <text x="340" y="270" text-anchor="middle" fill="#86efac" font-size="9">双方独立计算共享密钥 K = f^x = e^y mod p</text>
+
+      <!-- Step 5: NEWKEYS -->
+      <line x1="130" y1="282" x2="550" y2="282" stroke="#86efac" stroke-width="1.5" marker-end="url(#arr4)"/>
+      <text x="340" y="280" text-anchor="middle" fill="#86efac" font-size="9" dy="14">SSH_MSG_NEWKEYS → 开始使用会话密钥加密</text>
+      <line x1="550" y1="302" x2="130" y2="302" stroke="#86efac" stroke-width="1.5" marker-end="url(#arr3)"/>
+
+      <!-- Step 6: Auth -->
+      <rect x="60" y="312" width="560" height="4" rx="2" fill="rgba(245,158,11,0.2)"/>
+      <text x="340" y="328" text-anchor="middle" fill="#94a3b8" font-size="10">⑤ 用户认证（SSH-AUTH 层，已加密）</text>
+      <line x1="130" y1="336" x2="550" y2="336" stroke="#5eead4" stroke-width="1.5" marker-end="url(#arr2)"/>
+      <text x="340" y="348" text-anchor="middle" fill="#a5f3fc" font-size="9">SSH_MSG_USERAUTH_REQUEST (密码/公钥/等)</text>
+      <line x1="550" y1="358" x2="130" y2="358" stroke="#fbbf24" stroke-width="1.5" marker-end="url(#arr3)"/>
+      <text x="340" y="368" text-anchor="middle" fill="#86efac" font-size="9">SSH_MSG_USERAUTH_SUCCESS</text>
+
+      <!-- Step 7: Channel -->
+      <rect x="60" y="374" width="560" height="4" rx="2" fill="rgba(134,239,172,0.2)"/>
+      <text x="340" y="390" text-anchor="middle" fill="#94a3b8" font-size="10">⑥ 建立 Channel（SSH-CONN 层）</text>
+      <line x1="130" y1="398" x2="550" y2="398" stroke="#5eead4" stroke-width="1.5" marker-end="url(#arr2)"/>
+      <text x="340" y="410" text-anchor="middle" fill="#a5f3fc" font-size="9">SSH_MSG_CHANNEL_OPEN (session/direct-tcpip...)</text>
+      <line x1="550" y1="420" x2="130" y2="420" stroke="#fbbf24" stroke-width="1.5" marker-end="url(#arr3)"/>
+      <text x="340" y="432" text-anchor="middle" fill="#86efac" font-size="9">SSH_MSG_CHANNEL_OPEN_CONFIRMATION</text>
+
+      <!-- Step 8: Data -->
+      <rect x="80" y="438" width="520" height="28" rx="6" fill="rgba(20,184,166,0.12)" stroke="rgba(20,184,166,0.3)" stroke-width="1"/>
+      <text x="340" y="456" text-anchor="middle" fill="#5eead4" font-size="10" font-weight="600">⑦ 双向加密数据传输（AES/ChaCha20 + HMAC）</text>
+    </svg>
+    <div class="diagram-title">图2：SSH 完整握手时序图（基于 RFC 4253/4254）</div>
+  </div>
+
+  <h3>Diffie-Hellman 密钥交换原理</h3>
+  <p>根据 RFC 4253 §8，DH 密钥交换的数学原理：</p>
+  <div class="diagram-wrap">
+    <svg width="640" height="200" viewBox="0 0 640 200">
+      <rect x="10" y="10" width="280" height="180" rx="10" fill="rgba(20,184,166,0.08)" stroke="rgba(20,184,166,0.3)" stroke-width="1"/>
+      <text x="150" y="36" text-anchor="middle" fill="#5eead4" font-size="12" font-weight="700">客户端</text>
+      <text x="150" y="60" text-anchor="middle" fill="#e2e8f0" font-size="11">选取私钥 x（随机大整数）</text>
+      <text x="150" y="82" text-anchor="middle" fill="#a5f3fc" font-size="11">计算公钥 e = gˣ mod p</text>
+      <text x="150" y="104" text-anchor="middle" fill="#94a3b8" font-size="10">——发送 e 给服务端——→</text>
+      <text x="150" y="132" text-anchor="middle" fill="#e2e8f0" font-size="11">收到 f</text>
+      <text x="150" y="154" text-anchor="middle" fill="#86efac" font-size="11">共享密钥 K = fˣ mod p</text>
+      <text x="150" y="178" text-anchor="middle" fill="#fbbf24" font-size="10">= gˣʸ mod p</text>
+
+      <rect x="350" y="10" width="280" height="180" rx="10" fill="rgba(245,158,11,0.07)" stroke="rgba(245,158,11,0.3)" stroke-width="1"/>
+      <text x="490" y="36" text-anchor="middle" fill="#fbbf24" font-size="12" font-weight="700">服务端</text>
+      <text x="490" y="60" text-anchor="middle" fill="#e2e8f0" font-size="11">选取私钥 y（随机大整数）</text>
+      <text x="490" y="82" text-anchor="middle" fill="#fde68a" font-size="11">计算公钥 f = gʸ mod p</text>
+      <text x="490" y="104" text-anchor="middle" fill="#94a3b8" font-size="10">←—发送 K_S, f, sig(H)——</text>
+      <text x="490" y="132" text-anchor="middle" fill="#e2e8f0" font-size="11">收到 e</text>
+      <text x="490" y="154" text-anchor="middle" fill="#86efac" font-size="11">共享密钥 K = eʸ mod p</text>
+      <text x="490" y="178" text-anchor="middle" fill="#fbbf24" font-size="10">= gˣʸ mod p</text>
+
+      <text x="320" y="100" text-anchor="middle" fill="#64748b" font-size="20">⇄</text>
+      <text x="320" y="120" text-anchor="middle" fill="#64748b" font-size="9">公开参数</text>
+      <text x="320" y="133" text-anchor="middle" fill="#64748b" font-size="9">g, p</text>
+    </svg>
+    <div class="diagram-title">图3：Diffie-Hellman 密钥交换（网络上只传输公钥，私钥从不传输）</div>
+  </div>
+
+  <h3>会话密钥派生</h3>
+  <p>DH 交换得到共享密钥 K 后，SSH 不直接用 K 加密，而是通过哈希函数派生多个独立密钥（<a href="https://www.rfc-editor.org/rfc/rfc4253#section-7.2" class="source-link" target="_blank">RFC 4253 §7.2</a>）：</p>
+  <pre><code><span class="c-comment"># RFC 4253 §7.2 密钥派生公式</span>
+IV_client_to_server  = HASH(K || H || "A" || session_id)
+IV_server_to_client  = HASH(K || H || "B" || session_id)
+Key_client_to_server = HASH(K || H || "C" || session_id)
+Key_server_to_client = HASH(K || H || "D" || session_id)
+MAC_client_to_server = HASH(K || H || "E" || session_id)
+MAC_server_to_client = HASH(K || H || "F" || session_id)
+<span class="c-comment"># 每个方向独立加密密钥 + MAC 密钥，互不干扰</span></code></pre>
+
+  <h3>数据包格式（RFC 4253 §6）</h3>
+  <div class="diagram-wrap">
+    <svg width="640" height="100" viewBox="0 0 640 100">
+      <rect x="10" y="20" width="90" height="60" rx="4" fill="rgba(20,184,166,0.2)" stroke="#0f766e" stroke-width="1"/>
+      <text x="55" y="47" text-anchor="middle" fill="#5eead4" font-size="10" font-weight="600">Packet</text>
+      <text x="55" y="63" text-anchor="middle" fill="#94a3b8" font-size="9">Length</text>
+      <text x="55" y="75" text-anchor="middle" fill="#64748b" font-size="8">4 bytes</text>
+
+      <rect x="106" y="20" width="70" height="60" rx="4" fill="rgba(20,184,166,0.15)" stroke="#0f766e" stroke-width="1"/>
+      <text x="141" y="47" text-anchor="middle" fill="#5eead4" font-size="10" font-weight="600">Padding</text>
+      <text x="141" y="63" text-anchor="middle" fill="#94a3b8" font-size="9">Length</text>
+      <text x="141" y="75" text-anchor="middle" fill="#64748b" font-size="8">1 byte</text>
+
+      <rect x="182" y="20" width="220" height="60" rx="4" fill="rgba(30,58,95,0.5)" stroke="#1e3a5f" stroke-width="1"/>
+      <text x="292" y="47" text-anchor="middle" fill="#7dd3fc" font-size="10" font-weight="600">Payload（实际数据）</text>
+      <text x="292" y="63" text-anchor="middle" fill="#94a3b8" font-size="9">命令/通道数据...</text>
+      <text x="292" y="75" text-anchor="middle" fill="#64748b" font-size="8">变长</text>
+
+      <rect x="408" y="20" width="100" height="60" rx="4" fill="rgba(15,118,110,0.2)" stroke="#0f766e" stroke-width="1"/>
+      <text x="458" y="47" text-anchor="middle" fill="#5eead4" font-size="10" font-weight="600">Random</text>
+      <text x="458" y="63" text-anchor="middle" fill="#94a3b8" font-size="9">Padding</text>
+      <text x="458" y="75" text-anchor="middle" fill="#64748b" font-size="8">≥4 bytes</text>
+
+      <rect x="514" y="20" width="116" height="60" rx="4" fill="rgba(245,158,11,0.15)" stroke="#f59e0b" stroke-width="1"/>
+      <text x="572" y="47" text-anchor="middle" fill="#fbbf24" font-size="10" font-weight="600">MAC</text>
+      <text x="572" y="63" text-anchor="middle" fill="#94a3b8" font-size="9">完整性校验</text>
+      <text x="572" y="75" text-anchor="middle" fill="#64748b" font-size="8">可变长</text>
+
+      <text x="320" y="12" text-anchor="middle" fill="#64748b" font-size="9">← 整个 Payload + Padding 使用对称密钥（AES/ChaCha20）加密 →</text>
+    </svg>
+    <div class="diagram-title">图4：SSH 数据包结构（RFC 4253 §6）</div>
+  </div>
+
+  <div class="summary-box">
+    <h3>📌 本章小结</h3>
+    <p>SSH 握手的本质是：先通过 <strong>DH/ECDH</strong> 在不安全信道上安全地协商出一个双方共享的秘密 K，再从 K 派生出用于对称加密（AES/ChaCha20）和完整性验证（HMAC）的会话密钥。握手完成后，所有数据都通过这些派生密钥加密传输。</p>
+    <div class="first-principles">
+      <h4>🔬 第一性原理</h4>
+      <p>对称加密速度快但密钥分发是难题；非对称加密可解决密钥分发但速度慢。DH 密钥交换是两者的完美结合：用"数学单向函数"（离散对数难题）在公开信道协商密钥，再用对称加密做高速数据传输。这是现代所有安全协议（TLS/HTTPS）的共同基础。</p>
+    </div>
+  </div>
+</section>
+
+<!-- §3 认证方式 -->
+<section class="section" id="s3">
+  <div class="section-title">
+    <span class="section-num">3</span>认证方式与原理
+  </div>
+  <p>根据 <a href="https://man7.org/linux/man-pages/man1/ssh.1.html" class="source-link" target="_blank">ssh(1) man page</a> 及 <a href="https://www.rfc-editor.org/rfc/rfc4252" class="source-link" target="_blank">RFC 4252</a>，SSH 支持多种认证方式，默认尝试顺序如下：</p>
+  <pre><code><span class="c-comment"># PreferredAuthentications 默认顺序（可在 ssh_config 中配置）</span>
+gssapi-with-mic, hostbased, publickey, keyboard-interactive, password</code></pre>
+
+  <h3>1. 公钥认证（Public Key Authentication）</h3>
+  <p>这是最推荐的方式。根据 ssh(1) man page 的官方描述：</p>
+  <div class="info-box note">
+    <div class="box-title">官方说明</div>
+    <em>"The scheme is based on public-key cryptography, using cryptosystems where encryption and decryption are done using separate keys, and it is unfeasible to derive the decryption key from the encryption key."</em>
+  </div>
+
+  <div class="diagram-wrap">
+    <svg width="640" height="260" viewBox="0 0 640 260">
+      <defs>
+        <marker id="a5" markerWidth="8" markerHeight="6" refX="8" refY="3" orient="auto">
+          <polygon points="0 0, 8 3, 0 6" fill="#5eead4"/>
+        </marker>
+        <marker id="a6" markerWidth="8" markerHeight="6" refX="0" refY="3" orient="auto">
+          <polygon points="8 0, 0 3, 8 6" fill="#fbbf24"/>
+        </marker>
+      </defs>
+      <text x="130" y="20" text-anchor="middle" fill="#5eead4" font-size="11" font-weight="600">客户端</text>
+      <line x1="130" y1="28" x2="130" y2="255" stroke="#334155" stroke-width="1" stroke-dasharray="4,3"/>
+      <text x="510" y="20" text-anchor="middle" fill="#fbbf24" font-size="11" font-weight="600">服务端 (~/.ssh/authorized_keys)</text>
+      <line x1="510" y1="28" x2="510" y2="255" stroke="#334155" stroke-width="1" stroke-dasharray="4,3"/>
+
+      <!-- Step 1 -->
+      <line x1="130" y1="50" x2="510" y2="50" stroke="#5eead4" stroke-width="1.5" marker-end="url(#a5)"/>
+      <text x="320" y="44" text-anchor="middle" fill="#a5f3fc" font-size="9">① 请求使用公钥 K_pub 认证（发送公钥指纹）</text>
+
+      <!-- Step 2 -->
+      <line x1="510" y1="80" x2="130" y2="80" stroke="#fbbf24" stroke-width="1.5" marker-end="url(#a6)"/>
+      <text x="320" y="74" text-anchor="middle" fill="#fde68a" font-size="9">② 检查 authorized_keys，生成随机 Challenge 并用 K_pub 加密发送</text>
+
+      <!-- Step 3 -->
+      <rect x="30" y="90" width="200" height="50" rx="6" fill="rgba(20,184,166,0.1)" stroke="rgba(20,184,166,0.3)" stroke-width="1"/>
+      <text x="130" y="110" text-anchor="middle" fill="#e2e8f0" font-size="10">③ 用私钥 K_priv 解密 Challenge</text>
+      <text x="130" y="126" text-anchor="middle" fill="#86efac" font-size="10">生成签名 = sign(K_priv, Challenge)</text>
+
+      <!-- Step 4 -->
+      <line x1="130" y1="150" x2="510" y2="150" stroke="#5eead4" stroke-width="1.5" marker-end="url(#a5)"/>
+      <text x="320" y="144" text-anchor="middle" fill="#a5f3fc" font-size="9">④ 发送签名</text>
+
+      <!-- Step 5 -->
+      <rect x="410" y="160" width="200" height="40" rx="6" fill="rgba(245,158,11,0.08)" stroke="rgba(245,158,11,0.3)" stroke-width="1"/>
+      <text x="510" y="180" text-anchor="middle" fill="#e2e8f0" font-size="10">⑤ 用 K_pub 验证签名</text>
+      <text x="510" y="196" text-anchor="middle" fill="#86efac" font-size="10">verify(K_pub, sig, Challenge)</text>
+
+      <!-- Step 6 -->
+      <line x1="510" y1="210" x2="130" y2="210" stroke="#86efac" stroke-width="1.5" marker-end="url(#a6)"/>
+      <text x="320" y="225" text-anchor="middle" fill="#86efac" font-size="10">⑥ SSH_MSG_USERAUTH_SUCCESS → 认证成功</text>
+    </svg>
+    <div class="diagram-title">图5：SSH 公钥认证流程（Challenge-Response）</div>
+  </div>
+
+  <pre><code><span class="c-comment"># 生成密钥对（支持 RSA / ECDSA / Ed25519）</span>
+<span class="c-cmd">ssh-keygen</span> <span class="c-flag">-t</span> <span class="c-val">ed25519</span> <span class="c-flag">-C</span> <span class="c-val">"your_email@example.com"</span>
+<span class="c-comment"># 私钥存放：~/.ssh/id_ed25519</span>
+<span class="c-comment"># 公钥存放：~/.ssh/id_ed25519.pub</span>
+
+<span class="c-comment"># 将公钥复制到服务端</span>
+<span class="c-cmd">ssh-copy-id</span> <span class="c-flag">-i</span> ~/.ssh/id_ed25519.pub <span class="c-val">user@server</span>
+<span class="c-comment"># 等价于：将公钥内容追加到服务端 ~/.ssh/authorized_keys</span></code></pre>
+
+  <h3>2. 密码认证（Password Authentication）</h3>
+  <p>用户名和密码在已加密的信道内传输，不会被网络监听者截获。但存在暴力破解风险，建议配合 <code class="inline">fail2ban</code> 或 <code class="inline">PasswordAuthentication no</code> 禁用。</p>
+
+  <h3>3. 主机认证与 known_hosts</h3>
+  <p>根据 ssh(1) man page：<em>"ssh automatically maintains and checks a database containing identification for all hosts it has ever been used with. Host keys are stored in ~/.ssh/known_hosts"</em></p>
+  <pre><code><span class="c-comment"># 首次连接时，验证服务端主机公钥</span>
+The authenticity of host 'server.example.com' can't be established.
+ED25519 key fingerprint is SHA256:abc123...
+Are you sure you want to continue connecting (yes/no/[fingerprint])?
+
+<span class="c-comment"># 接受后记录到 ~/.ssh/known_hosts，防止中间人攻击</span>
+<span class="c-comment"># 查看指纹</span>
+<span class="c-cmd">ssh-keygen</span> <span class="c-flag">-l</span> <span class="c-flag">-f</span> /etc/ssh/ssh_host_ed25519_key</code></pre>
+
+  <div class="summary-box">
+    <h3>📌 本章小结</h3>
+    <p>SSH 的认证安全性从高到低：<strong>Ed25519 公钥 > RSA 公钥 > 密码</strong>。公钥认证的安全性基于非对称密码学：私钥永不离开客户端，服务端只存公钥，即使服务端被攻破也不能伪造客户端身份。known_hosts 机制保护防止"中间人攻击"。</p>
+  </div>
+</section>
+
+<!-- §4 远程登录 -->
+<section class="section" id="s4">
+  <div class="section-title">
+    <span class="section-num">4</span>场景一：远程登录
+  </div>
+  <p>最基本也是最常用的 SSH 用途。根据 <a href="https://man7.org/linux/man-pages/man1/ssh.1.html" class="source-link" target="_blank">ssh(1) man page</a>：</p>
+
+  <div class="scenario-card">
+    <div class="scenario-header">
+      <span class="scenario-badge">基础</span>
+      <span class="scenario-name">远程交互式 Shell 登录</span>
+    </div>
+    <div class="scenario-body">
+      <pre><code><span class="c-comment"># 最基础形式：连接到远程主机（默认端口 22，当前用户名）</span>
+<span class="c-cmd">ssh</span> <span class="c-host">server.example.com</span>
+
+<span class="c-comment"># 指定用户名</span>
+<span class="c-cmd">ssh</span> <span class="c-val">alice</span>@<span class="c-host">server.example.com</span>
+
+<span class="c-comment"># 指定端口（服务端非 22 端口时）</span>
+<span class="c-cmd">ssh</span> <span class="c-flag">-p</span> <span class="c-val">2222</span> <span class="c-val">alice</span>@<span class="c-host">server.example.com</span>
+
+<span class="c-comment"># 指定私钥文件</span>
+<span class="c-cmd">ssh</span> <span class="c-flag">-i</span> ~/.ssh/my_key <span class="c-val">alice</span>@<span class="c-host">server.example.com</span>
+
+<span class="c-comment"># URI 形式</span>
+<span class="c-cmd">ssh</span> ssh://alice@server.example.com:2222</code></pre>
+    </div>
+  </div>
+
+  <h3>背后原理</h3>
+  <p>登录成功后，SSH 在服务端为用户分配一个 <strong>伪终端（PTY）</strong>，并启动用户默认 Shell（如 bash/zsh）。客户端终端的键盘输入通过加密信道传到服务端 Shell，服务端输出同样通过加密信道返回客户端。</p>
+
+  <div class="diagram-wrap">
+    <svg width="560" height="120" viewBox="0 0 560 120">
+      <rect x="10" y="30" width="110" height="60" rx="8" fill="rgba(20,184,166,0.1)" stroke="#0f766e" stroke-width="1"/>
+      <text x="65" y="56" text-anchor="middle" fill="#5eead4" font-size="10" font-weight="600">本地终端</text>
+      <text x="65" y="74" text-anchor="middle" fill="#94a3b8" font-size="9">(stdin/stdout)</text>
+
+      <rect x="160" y="30" width="240" height="60" rx="8" fill="rgba(30,58,95,0.5)" stroke="#1e3a5f" stroke-width="1"/>
+      <text x="280" y="52" text-anchor="middle" fill="#7dd3fc" font-size="10" font-weight="600">SSH 加密信道</text>
+      <text x="280" y="68" text-anchor="middle" fill="#64748b" font-size="9">AES-256-CTR / ChaCha20-Poly1305</text>
+      <text x="280" y="83" text-anchor="middle" fill="#64748b" font-size="9">所有按键输入 & 终端输出均加密传输</text>
+
+      <rect x="450" y="10" width="100" height="40" rx="6" fill="rgba(245,158,11,0.1)" stroke="#f59e0b" stroke-width="1"/>
+      <text x="500" y="28" text-anchor="middle" fill="#fbbf24" font-size="9" font-weight="600">服务端 sshd</text>
+      <text x="500" y="42" text-anchor="middle" fill="#94a3b8" font-size="8">分配 PTY</text>
+      <rect x="450" y="70" width="100" height="40" rx="6" fill="rgba(134,239,172,0.1)" stroke="#86efac" stroke-width="1"/>
+      <text x="500" y="88" text-anchor="middle" fill="#86efac" font-size="9" font-weight="600">用户 Shell</text>
+      <text x="500" y="102" text-anchor="middle" fill="#94a3b8" font-size="8">bash / zsh</text>
+      <line x1="500" y1="50" x2="500" y2="70" stroke="#334155" stroke-width="1.5"/>
+
+      <defs>
+        <marker id="a7" markerWidth="6" markerHeight="5" refX="6" refY="2.5" orient="auto">
+          <polygon points="0 0, 6 2.5, 0 5" fill="#5eead4"/>
+        </marker>
+        <marker id="a8" markerWidth="6" markerHeight="5" refX="0" refY="2.5" orient="auto">
+          <polygon points="6 0, 0 2.5, 6 5" fill="#fbbf24"/>
+        </marker>
+      </defs>
+      <line x1="120" y1="52" x2="160" y2="52" stroke="#5eead4" stroke-width="1.5" marker-end="url(#a7)"/>
+      <line x1="160" y1="68" x2="120" y2="68" stroke="#fbbf24" stroke-width="1.5" marker-end="url(#a8)"/>
+      <line x1="400" y1="52" x2="450" y2="52" stroke="#5eead4" stroke-width="1.5" marker-end="url(#a7)"/>
+      <line x1="450" y1="68" x2="400" y2="68" stroke="#fbbf24" stroke-width="1.5" marker-end="url(#a8)"/>
+    </svg>
+    <div class="diagram-title">图6：远程登录数据流</div>
+  </div>
+
+  <div class="summary-box">
+    <h3>📌 本章小结</h3>
+    <p>远程登录是 SSH 最基础的使用场景，底层通过 <code class="inline">SSH_MSG_CHANNEL_REQUEST</code> 请求 <code class="inline">pty-req</code> 和 <code class="inline">shell</code>，在连接协议的 Channel 内双向传输终端数据。所有交互全程加密，与明文的 telnet/rsh 有本质区别。</p>
+  </div>
+</section>
+
+<!-- §5 远程执行命令 -->
+<section class="section" id="s5">
+  <div class="section-title">
+    <span class="section-num">5</span>场景二：远程执行命令
+  </div>
+  <p>根据 ssh(1) man page：<em>"If a command is specified, it will be executed on the remote host instead of a login shell."</em></p>
+
+  <div class="scenario-card">
+    <div class="scenario-header">
+      <span class="scenario-badge">常用</span>
+      <span class="scenario-name">不登录，直接执行命令</span>
+    </div>
+    <div class="scenario-body">
+      <pre><code><span class="c-comment"># 远程执行单条命令</span>
+<span class="c-cmd">ssh</span> user@server <span class="c-val">'df -h'</span>
+
+<span class="c-comment"># 执行多条命令</span>
+<span class="c-cmd">ssh</span> user@server <span class="c-val">'cd /var/log && tail -n 50 syslog'</span>
+
+<span class="c-comment"># 本地脚本在远端执行（不上传脚本文件）</span>
+<span class="c-cmd">ssh</span> user@server <span class="c-val">'bash -s'</span> < local_script.sh
+
+<span class="c-comment"># 传递参数到远端</span>
+<span class="c-cmd">ssh</span> user@server <span class="c-val">"echo Hello $(hostname)"</span>  <span class="c-comment"># 本地展开</span>
+<span class="c-cmd">ssh</span> user@server <span class="c-val">'echo Hello $(hostname)'</span>  <span class="c-comment"># 远端展开</span>
+
+<span class="c-comment"># -t 强制分配 PTY（用于交互式程序，如 sudo）</span>
+<span class="c-cmd">ssh</span> <span class="c-flag">-t</span> user@server <span class="c-val">'sudo apt update'</span>
+
+<span class="c-comment"># 批量对多台服务器执行同一命令</span>
+for host in server1 server2 server3; do
+  <span class="c-cmd">ssh</span> user@$host <span class="c-val">'uptime'</span>
+done</code></pre>
+    </div>
+  </div>
+
+  <h3>实际案例：自动化运维</h3>
+  <div class="scenario-card">
+    <div class="scenario-header">
+      <span class="scenario-badge">实战</span>
+      <span class="scenario-name">检查远程服务器磁盘 + 内存状态</span>
+    </div>
+    <div class="scenario-body">
+      <pre><code><span class="c-cmd">ssh</span> admin@prod-server.example.com <span class="c-val">'
+  echo "=== Disk ===" && df -h /
+  echo "=== Memory ===" && free -m
+  echo "=== Load ===" && uptime
+'</span></code></pre>
+    </div>
+  </div>
+
+  <h3>背后原理</h3>
+  <p>当指定命令时，SSH 通过 <code class="inline">SSH_MSG_CHANNEL_REQUEST</code> 发送 <code class="inline">exec</code> 请求（而不是 <code class="inline">shell</code>），服务端用用户 Shell 的 <code class="inline">-c</code> 选项执行命令，命令退出码通过 <code class="inline">SSH_MSG_CHANNEL_REQUEST exit-status</code> 返回客户端。</p>
+
+  <div class="summary-box">
+    <h3>📌 本章小结</h3>
+    <p>远程执行命令是自动化运维的基石。无需登录就能直接执行命令并获取结果，结合 Shell 脚本可实现批量操作。注意引号层级：单引号内变量在远端展开，双引号内变量在本地展开。</p>
+  </div>
+</section>
+
+<!-- §6 本地端口转发 -->
+<section class="section" id="s6">
+  <div class="section-title">
+    <span class="section-num">6</span>场景三：本地端口转发（-L）
+  </div>
+  <p>根据 <a href="https://man7.org/linux/man-pages/man1/ssh.1.html" class="source-link" target="_blank">ssh(1) man page</a> 官方说明：</p>
+  <div class="info-box note">
+    <div class="box-title">官方说明</div>
+    <em>"Specifies that connections to the given TCP port or Unix socket on the local (client) host are to be forwarded to the given host and port, or Unix socket, on the remote side."</em>
+  </div>
+
+  <pre><code><span class="c-comment"># 语法</span>
+<span class="c-cmd">ssh</span> <span class="c-flag">-L</span> [bind_addr:]local_port:destination_host:destination_port user@ssh_server
+
+<span class="c-comment"># 常用选项</span>
+<span class="c-flag">-N</span>  <span class="c-comment"># 不执行远程命令（仅转发）</span>
+<span class="c-flag">-f</span>  <span class="c-comment"># 后台运行</span></code></pre>
+
+  <div class="diagram-wrap">
+    <svg width="660" height="200" viewBox="0 0 660 200">
+      <defs>
+        <marker id="al" markerWidth="8" markerHeight="6" refX="8" refY="3" orient="auto">
+          <polygon points="0 0, 8 3, 0 6" fill="#86efac"/>
+        </marker>
+      </defs>
+      <!-- Local -->
+      <rect x="10" y="60" width="130" height="80" rx="10" fill="rgba(20,184,166,0.1)" stroke="#0f766e" stroke-width="1.5"/>
+      <text x="75" y="86" text-anchor="middle" fill="#5eead4" font-size="11" font-weight="600">本地机器</text>
+      <text x="75" y="104" text-anchor="middle" fill="#a5f3fc" font-size="10">监听</text>
+      <text x="75" y="119" text-anchor="middle" fill="#fbbf24" font-size="10">localhost:local_port</text>
+      <text x="75" y="133" text-anchor="middle" fill="#94a3b8" font-size="9">(MySQL Client, Browser...)</text>
+
+      <!-- Arrow 1: encrypted -->
+      <line x1="140" y1="100" x2="280" y2="100" stroke="#86efac" stroke-width="2" marker-end="url(#al)"/>
+      <rect x="165" y="82" width="90" height="16" rx="4" fill="var(--bg2)"/>
+      <text x="210" y="93" text-anchor="middle" fill="#86efac" font-size="9">🔒 SSH 加密隧道</text>
+
+      <!-- SSH Server -->
+      <rect x="280" y="50" width="150" height="100" rx="10" fill="rgba(30,58,95,0.6)" stroke="#1e3a5f" stroke-width="1.5"/>
+      <text x="355" y="76" text-anchor="middle" fill="#7dd3fc" font-size="11" font-weight="600">SSH 服务器</text>
+      <text x="355" y="95" text-anchor="middle" fill="#94a3b8" font-size="9">ssh_server:22</text>
+      <text x="355" y="115" text-anchor="middle" fill="#94a3b8" font-size="9">（可访问目标主机）</text>
+      <text x="355" y="135" text-anchor="middle" fill="#64748b" font-size="9">中转节点</text>
+
+      <!-- Arrow 2: plaintext (internal) -->
+      <line x1="430" y1="100" x2="530" y2="100" stroke="#fbbf24" stroke-width="2" marker-end="url(#al)"/>
+      <rect x="440" y="82" width="80" height="16" rx="4" fill="var(--bg2)"/>
+      <text x="480" y="93" text-anchor="middle" fill="#fbbf24" font-size="9">内网连接</text>
+
+      <!-- Target -->
+      <rect x="530" y="60" width="120" height="80" rx="10" fill="rgba(245,158,11,0.1)" stroke="#f59e0b" stroke-width="1.5"/>
+      <text x="590" y="86" text-anchor="middle" fill="#fbbf24" font-size="11" font-weight="600">目标服务</text>
+      <text x="590" y="104" text-anchor="middle" fill="#fde68a" font-size="10">destination_host:</text>
+      <text x="590" y="119" text-anchor="middle" fill="#fde68a" font-size="10">destination_port</text>
+      <text x="590" y="135" text-anchor="middle" fill="#94a3b8" font-size="9">(MySQL, Redis...)</text>
+
+      <!-- Label -->
+      <text x="330" y="180" text-anchor="middle" fill="#64748b" font-size="10">本地应用 → 本地端口 → 加密隧道 → SSH服务器 → 目标服务</text>
+    </svg>
+    <div class="diagram-title">图7：本地端口转发数据流（-L 参数）</div>
+  </div>
+
+  <div class="scenario-card">
+    <div class="scenario-header">
+      <span class="scenario-badge">实战</span>
+      <span class="scenario-name">访问内网 MySQL 数据库</span>
+    </div>
+    <div class="scenario-body">
+      <p>场景：数据库服务器 <code class="inline">db.internal:3306</code> 只对内网开放，通过堡垒机 <code class="inline">jump.example.com</code> 可访问。</p>
+      <pre><code><span class="c-comment"># 建立隧道：本地 3307 → 通过 jump.example.com → db.internal:3306</span>
+<span class="c-cmd">ssh</span> <span class="c-flag">-L</span> <span class="c-val">3307:db.internal:3306</span> <span class="c-flag">-N</span> <span class="c-flag">-f</span> user@jump.example.com
+
+<span class="c-comment"># 现在本地 MySQL 客户端直接连接</span>
+<span class="c-cmd">mysql</span> <span class="c-flag">-h</span> 127.0.0.1 <span class="c-flag">-P</span> 3307 <span class="c-flag">-u</span> dbuser <span class="c-flag">-p</span>
+
+<span class="c-comment"># 验证隧道</span>
+<span class="c-cmd">ps</span> aux | grep ssh</code></pre>
+    </div>
+  </div>
+
+  <div class="scenario-card">
+    <div class="scenario-header">
+      <span class="scenario-badge">实战</span>
+      <span class="scenario-name">访问内网 Web 管理面板</span>
+    </div>
+    <div class="scenario-body">
+      <pre><code><span class="c-comment"># 访问服务端上的 Grafana (8080) → 本地 9090 端口</span>
+<span class="c-cmd">ssh</span> <span class="c-flag">-L</span> <span class="c-val">9090:localhost:8080</span> <span class="c-flag">-N</span> user@server.example.com
+
+<span class="c-comment"># 打开浏览器访问 http://localhost:9090</span>
+
+<span class="c-comment"># 同时转发多个服务</span>
+<span class="c-cmd">ssh</span> <span class="c-flag">-L</span> <span class="c-val">3306:localhost:3306</span> \
+    <span class="c-flag">-L</span> <span class="c-val">6379:localhost:6379</span> \
+    <span class="c-flag">-L</span> <span class="c-val">9200:localhost:9200</span> \
+    <span class="c-flag">-N</span> user@server.example.com</code></pre>
+    </div>
+  </div>
+
+  <h3>背后原理</h3>
+  <p>根据 ssh(1) man page，<code class="inline">-L</code> 的工作机制：SSH 客户端在本地开启一个监听 Socket（local_port），每当有连接到达时，通过 SSH 连接协议发送 <code class="inline">SSH_MSG_CHANNEL_OPEN direct-tcpip</code> 消息，请求服务端建立一个 Channel，由服务端发起到 <code class="inline">destination_host:destination_port</code> 的 TCP 连接，将两端数据互相转发。</p>
+
+  <div class="summary-box">
+    <h3>📌 本章小结</h3>
+    <p>本地端口转发的本质：<strong>将不可达的远端服务"映射"到本地</strong>。适用于访问受防火墙保护的内网服务（数据库、Redis、内部 Web 服务）。数据路径：<code class="inline">本地应用 → 本地端口（明文）→ SSH 加密隧道 → SSH服务器 → 目标服务</code>。</p>
+  </div>
+</section>
+
+<!-- §7 远程端口转发 -->
+<section class="section" id="s7">
+  <div class="section-title">
+    <span class="section-num">7</span>场景四：远程端口转发（-R）
+  </div>
+  <p>根据 <a href="https://man7.org/linux/man-pages/man1/ssh.1.html" class="source-link" target="_blank">ssh(1) man page</a>：<em>"Specifies that connections to the given TCP port or Unix socket on the remote (server) host are to be forwarded to the given host and port, or Unix socket, on the local side."</em></p>
+
+  <pre><code><span class="c-comment"># 语法</span>
+<span class="c-cmd">ssh</span> <span class="c-flag">-R</span> [bind_addr:]remote_port:destination_host:destination_port user@ssh_server</code></pre>
+
+  <div class="diagram-wrap">
+    <svg width="660" height="200" viewBox="0 0 660 200">
+      <defs>
+        <marker id="ar" markerWidth="8" markerHeight="6" refX="8" refY="3" orient="auto">
+          <polygon points="0 0, 8 3, 0 6" fill="#86efac"/>
+        </marker>
+        <marker id="ar2" markerWidth="8" markerHeight="6" refX="0" refY="3" orient="auto">
+          <polygon points="8 0, 0 3, 8 6" fill="#86efac"/>
+        </marker>
+      </defs>
+      <!-- Target (local service) -->
+      <rect x="10" y="60" width="130" height="80" rx="10" fill="rgba(245,158,11,0.1)" stroke="#f59e0b" stroke-width="1.5"/>
+      <text x="75" y="86" text-anchor="middle" fill="#fbbf24" font-size="11" font-weight="600">本地服务</text>
+      <text x="75" y="104" text-anchor="middle" fill="#fde68a" font-size="10">localhost:3000</text>
+      <text x="75" y="119" text-anchor="middle" fill="#94a3b8" font-size="9">(开发中的Web应用)</text>
+      <text x="75" y="133" text-anchor="middle" fill="#94a3b8" font-size="9">无公网IP</text>
+
+      <!-- Arrow 2: encrypted (reverse) -->
+      <line x1="280" y1="100" x2="140" y2="100" stroke="#86efac" stroke-width="2" marker-end="url(#ar2)"/>
+      <rect x="165" y="82" width="90" height="16" rx="4" fill="var(--bg2)"/>
+      <text x="210" y="93" text-anchor="middle" fill="#86efac" font-size="9">🔒 SSH 加密隧道</text>
+
+      <!-- SSH Server -->
+      <rect x="280" y="50" width="150" height="100" rx="10" fill="rgba(30,58,95,0.6)" stroke="#1e3a5f" stroke-width="1.5"/>
+      <text x="355" y="76" text-anchor="middle" fill="#7dd3fc" font-size="11" font-weight="600">SSH 服务器</text>
+      <text x="355" y="95" text-anchor="middle" fill="#5eead4" font-size="9">监听: remote_port</text>
+      <text x="355" y="112" text-anchor="middle" fill="#94a3b8" font-size="9">（有公网IP）</text>
+      <text x="355" y="132" text-anchor="middle" fill="#64748b" font-size="9">公网可访问</text>
+
+      <!-- Arrow 1: from internet -->
+      <line x1="530" y1="100" x2="430" y2="100" stroke="#c4b5fd" stroke-width="2" marker-end="url(#ar2)"/>
+      <rect x="440" y="82" width="80" height="16" rx="4" fill="var(--bg2)"/>
+      <text x="480" y="93" text-anchor="middle" fill="#c4b5fd" font-size="9">外网访问</text>
+
+      <!-- Internet user -->
+      <rect x="530" y="60" width="120" height="80" rx="10" fill="rgba(167,139,250,0.1)" stroke="#a78bfa" stroke-width="1.5"/>
+      <text x="590" y="86" text-anchor="middle" fill="#c4b5fd" font-size="11" font-weight="600">互联网用户</text>
+      <text x="590" y="104" text-anchor="middle" fill="#ddd6fe" font-size="10">server:8080</text>
+      <text x="590" y="119" text-anchor="middle" fill="#94a3b8" font-size="9">访问你的</text>
+      <text x="590" y="133" text-anchor="middle" fill="#94a3b8" font-size="9">本地服务</text>
+
+      <text x="330" y="180" text-anchor="middle" fill="#64748b" font-size="10">互联网用户 → SSH服务器:remote_port → 加密隧道 → 本地机器:3000</text>
+    </svg>
+    <div class="diagram-title">图8：远程端口转发数据流（-R 参数，反向隧道）</div>
+  </div>
+
+  <div class="scenario-card">
+    <div class="scenario-header">
+      <span class="scenario-badge">实战</span>
+      <span class="scenario-name">将本地开发服务暴露到公网</span>
+    </div>
+    <div class="scenario-body">
+      <p>场景：本地运行一个 Web 应用（localhost:3000），需要让外网同事临时访问。</p>
+      <pre><code><span class="c-comment"># 将服务端 8080 端口转发到本地 3000 端口</span>
+<span class="c-cmd">ssh</span> <span class="c-flag">-R</span> <span class="c-val">8080:localhost:3000</span> <span class="c-flag">-N</span> user@public.server.com
+
+<span class="c-comment"># 外网同事访问：http://public.server.com:8080</span>
+<span class="c-comment"># 流量路径：外网 → 服务端:8080 → SSH隧道 → 本地:3000</span>
+
+<span class="c-comment"># 注意：需要服务端 sshd_config 中开启</span>
+<span class="c-comment"># GatewayPorts yes  （默认只监听 127.0.0.1）</span></code></pre>
+    </div>
+  </div>
+
+  <div class="scenario-card">
+    <div class="scenario-header">
+      <span class="scenario-badge">实战</span>
+      <span class="scenario-name">内网服务器穿透（NAT 穿透）</span>
+    </div>
+    <div class="scenario-body">
+      <p>场景：在 NAT 后的服务器（无公网 IP）主动连接到公网服务器，实现反向登录。</p>
+      <pre><code><span class="c-comment"># 在内网服务器上执行：将公网服务器 2222 转发回内网的 22</span>
+<span class="c-cmd">ssh</span> <span class="c-flag">-R</span> <span class="c-val">2222:localhost:22</span> <span class="c-flag">-N</span> <span class="c-flag">-f</span> user@public.server.com
+
+<span class="c-comment"># 从任何地方，通过公网服务器中转登录内网服务器</span>
+<span class="c-cmd">ssh</span> <span class="c-flag">-p</span> <span class="c-val">2222</span> inner-user@public.server.com</code></pre>
+    </div>
+  </div>
+
+  <div class="info-box warn">
+    <div class="box-title">注意</div>
+    根据 ssh(1) man page，远程端口转发默认只绑定到 <code class="inline">127.0.0.1</code>（回环地址）。若需绑定到 <code class="inline">0.0.0.0</code> 使外网可访问，需在服务端 <code class="inline">/etc/ssh/sshd_config</code> 中设置 <code class="inline">GatewayPorts yes</code>，或使用 <code class="inline">-R *:8080:localhost:3000</code>。
+  </div>
+
+  <div class="summary-box">
+    <h3>📌 本章小结</h3>
+    <p>远程端口转发是<strong>本地端口转发的镜像操作</strong>：-L 把远端拉到本地，-R 把本地推到远端。最典型应用场景是"内网穿透"——让没有公网 IP 的内网机器通过主动发起 SSH 连接，使外网可以反向访问它。</p>
+  </div>
+</section>
+
+<!-- §8 动态代理 -->
+<section class="section" id="s8">
+  <div class="section-title">
+    <span class="section-num">8</span>场景五：动态 SOCKS 代理（-D）
+  </div>
+  <p>根据 <a href="https://man7.org/linux/man-pages/man1/ssh.1.html" class="source-link" target="_blank">ssh(1) man page</a> 官方描述：</p>
+  <div class="info-box note">
+    <div class="box-title">官方说明</div>
+    <em>"Specifies a local 'dynamic' application-level port forwarding. This works by allocating a socket to listen to port on the local side... Currently the SOCKS4 and SOCKS5 protocols are supported, and ssh will act as a SOCKS server."</em>
+  </div>
+
+  <pre><code><span class="c-comment"># 语法：在本地建立 SOCKS 代理</span>
+<span class="c-cmd">ssh</span> <span class="c-flag">-D</span> [bind_addr:]local_port user@ssh_server
+
+<span class="c-comment"># 实例：在本地 9090 建立 SOCKS5 代理</span>
+<span class="c-cmd">ssh</span> <span class="c-flag">-D</span> <span class="c-val">9090</span> <span class="c-flag">-N</span> <span class="c-flag">-f</span> user@server.example.com</code></pre>
+
+  <div class="diagram-wrap">
+    <svg width="660" height="220" viewBox="0 0 660 220">
+      <defs>
+        <marker id="ad" markerWidth="8" markerHeight="6" refX="8" refY="3" orient="auto">
+          <polygon points="0 0, 8 3, 0 6" fill="#86efac"/>
+        </marker>
+      </defs>
+      <!-- Browser -->
+      <rect x="10" y="40" width="130" height="60" rx="8" fill="rgba(20,184,166,0.1)" stroke="#0f766e" stroke-width="1"/>
+      <text x="75" y="64" text-anchor="middle" fill="#5eead4" font-size="11" font-weight="600">本地浏览器</text>
+      <text x="75" y="80" text-anchor="middle" fill="#94a3b8" font-size="9">SOCKS5 代理配置</text>
+      <text x="75" y="94" text-anchor="middle" fill="#a5f3fc" font-size="9">127.0.0.1:9090</text>
+
+      <!-- Arrow local -->
+      <line x1="140" y1="70" x2="200" y2="70" stroke="#5eead4" stroke-width="1.5" marker-end="url(#ad)"/>
+      <text x="170" y="64" text-anchor="middle" fill="#94a3b8" font-size="8">SOCKS5</text>
+
+      <!-- SOCKS Server (ssh -D) -->
+      <rect x="200" y="30" width="150" height="80" rx="8" fill="rgba(30,58,95,0.7)" stroke="#1e3a5f" stroke-width="1.5"/>
+      <text x="275" y="58" text-anchor="middle" fill="#7dd3fc" font-size="11" font-weight="600">SSH Client</text>
+      <text x="275" y="75" text-anchor="middle" fill="#5eead4" font-size="9">ssh -D 9090</text>
+      <text x="275" y="90" text-anchor="middle" fill="#94a3b8" font-size="9">SOCKS Server</text>
+      <text x="275" y="105" text-anchor="middle" fill="#64748b" font-size="8">动态解析目标地址</text>
+
+      <!-- Encrypted tunnel -->
+      <line x1="350" y1="70" x2="450" y2="70" stroke="#86efac" stroke-width="2" marker-end="url(#ad)"/>
+      <rect x="360" y="54" width="80" height="14" rx="4" fill="var(--bg2)"/>
+      <text x="400" y="64" text-anchor="middle" fill="#86efac" font-size="8">🔒 加密隧道</text>
+
+      <!-- SSH Server -->
+      <rect x="450" y="30" width="130" height="80" rx="8" fill="rgba(20,184,166,0.1)" stroke="#0f766e" stroke-width="1.5"/>
+      <text x="515" y="58" text-anchor="middle" fill="#5eead4" font-size="11" font-weight="600">SSH 服务器</text>
+      <text x="515" y="75" text-anchor="middle" fill="#94a3b8" font-size="9">代为建立连接</text>
+
+      <!-- Arrows to internet sites -->
+      <line x1="580" y1="55" x2="630" y2="35" stroke="#fbbf24" stroke-width="1.5" marker-end="url(#ad)"/>
+      <text x="640" y="33" fill="#fde68a" font-size="9">site-a.com</text>
+      <line x1="580" y1="70" x2="630" y2="70" stroke="#fbbf24" stroke-width="1.5" marker-end="url(#ad)"/>
+      <text x="640" y="74" fill="#fde68a" font-size="9">site-b.com</text>
+      <line x1="580" y1="85" x2="630" y2="105" stroke="#fbbf24" stroke-width="1.5" marker-end="url(#ad)"/>
+      <text x="640" y="108" fill="#fde68a" font-size="9">site-c.com</text>
+
+      <text x="330" y="145" text-anchor="middle" fill="#64748b" font-size="10">-D 与 -L 的区别：-L 是固定目标，-D 是动态目标（由 SOCKS 协议决定）</text>
+      <text x="330" y="165" text-anchor="middle" fill="#64748b" font-size="10">所有流量通过 SSH 服务器出口，实现代理上网/加密流量</text>
+    </svg>
+    <div class="diagram-title">图9：动态 SOCKS5 代理（-D 参数）数据流</div>
+  </div>
+
+  <div class="scenario-card">
+    <div class="scenario-header">
+      <span class="scenario-badge">实战</span>
+      <span class="scenario-name">浏览器通过 SSH 服务器代理访问网络</span>
+    </div>
+    <div class="scenario-body">
+      <pre><code><span class="c-comment"># 第一步：建立 SOCKS5 代理（后台运行）</span>
+<span class="c-cmd">ssh</span> <span class="c-flag">-D</span> <span class="c-val">9090</span> <span class="c-flag">-N</span> <span class="c-flag">-f</span> user@server.example.com
+
+<span class="c-comment"># 第二步：配置浏览器（Firefox）</span>
+<span class="c-comment"># 设置 → 网络设置 → 手动代理 → SOCKS 主机: 127.0.0.1 端口: 9090 → SOCKS v5</span>
+
+<span class="c-comment"># 或配合 proxychains 让命令行程序走代理</span>
+<span class="c-cmd">proxychains</span> curl https://example.com
+
+<span class="c-comment"># 使用 curl 测试代理</span>
+<span class="c-cmd">curl</span> <span class="c-flag">--socks5</span> 127.0.0.1:9090 https://example.com</code></pre>
+    </div>
+  </div>
+
+  <h3>-D 与 -L 的对比</h3>
+  <div class="table-wrap">
+    <table>
+      <tr><th>特性</th><th>-L 本地转发</th><th>-D 动态转发</th></tr>
+      <tr><td>目标地址</td><td>固定（创建时指定）</td><td>动态（由应用层 SOCKS 协议决定）</td></tr>
+      <tr><td>适用场景</td><td>访问特定服务（DB/Redis）</td><td>通用代理（浏览器/curl）</td></tr>
+      <tr><td>协议</td><td>任意 TCP</td><td>SOCKS4 / SOCKS5</td></tr>
+      <tr><td>应用配置</td><td>无需额外配置</td><td>需配置 SOCKS 代理</td></tr>
+    </table>
+  </div>
+
+  <div class="summary-box">
+    <h3>📌 本章小结</h3>
+    <p>动态转发将 SSH 变成了一个<strong>全功能 SOCKS5 代理服务器</strong>。与固定的 -L 不同，SSH 客户端动态解析 SOCKS 请求中的目标地址，然后通过加密隧道由服务端代为连接，实现流量代理。适合需要让多个不同目标都走加密隧道的场景。</p>
+  </div>
+</section>
+
+<!-- §9 跳板机 -->
+<section class="section" id="s9">
+  <div class="section-title">
+    <span class="section-num">9</span>场景六：跳板机 / ProxyJump（-J）
+  </div>
+  <p>根据 <a href="https://man7.org/linux/man-pages/man1/ssh.1.html" class="source-link" target="_blank">ssh(1) man page</a>：<em>"Connect to the target host by first making an ssh connection to the jump host described by destination and then establishing a TCP forwarding to the ultimate destination from there."</em></p>
+
+  <pre><code><span class="c-comment"># 语法：通过跳板机连接目标</span>
+<span class="c-cmd">ssh</span> <span class="c-flag">-J</span> jump_host target_host
+
+<span class="c-comment"># 多跳（多级跳板）</span>
+<span class="c-cmd">ssh</span> <span class="c-flag">-J</span> jump1,jump2 target_host
+
+<span class="c-comment"># 等价的旧方式（ProxyCommand）</span>
+<span class="c-cmd">ssh</span> <span class="c-flag">-o</span> <span class="c-val">ProxyJump=jump.example.com</span> target.internal</code></pre>
+
+  <div class="diagram-wrap">
+    <svg width="660" height="160" viewBox="0 0 660 160">
+      <defs>
+        <marker id="aj" markerWidth="8" markerHeight="6" refX="8" refY="3" orient="auto">
+          <polygon points="0 0, 8 3, 0 6" fill="#86efac"/>
+        </marker>
+      </defs>
+
+      <!-- Local -->
+      <rect x="10" y="55" width="110" height="60" rx="8" fill="rgba(20,184,166,0.1)" stroke="#0f766e" stroke-width="1.5"/>
+      <text x="65" y="80" text-anchor="middle" fill="#5eead4" font-size="11" font-weight="600">本地机器</text>
+      <text x="65" y="97" text-anchor="middle" fill="#94a3b8" font-size="9">无法直接访问</text>
+      <text x="65" y="110" text-anchor="middle" fill="#94a3b8" font-size="9">目标主机</text>
+
+      <!-- Arrow 1 -->
+      <line x1="120" y1="85" x2="200" y2="85" stroke="#5eead4" stroke-width="2" marker-end="url(#aj)"/>
+      <text x="160" y="78" text-anchor="middle" fill="#a5f3fc" font-size="8">SSH #1</text>
+      <text x="160" y="100" text-anchor="middle" fill="#86efac" font-size="8">🔒 加密</text>
+
+      <!-- Jump -->
+      <rect x="200" y="45" width="130" height="80" rx="8" fill="rgba(30,58,95,0.6)" stroke="#1e3a5f" stroke-width="1.5"/>
+      <text x="265" y="72" text-anchor="middle" fill="#7dd3fc" font-size="11" font-weight="600">跳板机</text>
+      <text x="265" y="90" text-anchor="middle" fill="#5eead4" font-size="9">jump.example.com</text>
+      <text x="265" y="107" text-anchor="middle" fill="#94a3b8" font-size="9">公网 SSH 入口</text>
+      <text x="265" y="118" text-anchor="middle" fill="#64748b" font-size="8">转发 TCP 连接</text>
+
+      <!-- Arrow 2 -->
+      <line x1="330" y1="85" x2="420" y2="85" stroke="#5eead4" stroke-width="2" marker-end="url(#aj)"/>
+      <text x="375" y="78" text-anchor="middle" fill="#a5f3fc" font-size="8">SSH #2</text>
+      <text x="375" y="100" text-anchor="middle" fill="#86efac" font-size="8">🔒 加密</text>
+
+      <!-- Target -->
+      <rect x="420" y="55" width="130" height="60" rx="8" fill="rgba(245,158,11,0.1)" stroke="#f59e0b" stroke-width="1.5"/>
+      <text x="485" y="80" text-anchor="middle" fill="#fbbf24" font-size="11" font-weight="600">目标服务器</text>
+      <text x="485" y="97" text-anchor="middle" fill="#fde68a" font-size="9">internal.host</text>
+      <text x="485" y="110" text-anchor="middle" fill="#94a3b8" font-size="9">内网服务器</text>
+
+      <!-- Multi-hop label -->
+      <line x1="555" y1="85" x2="600" y2="85" stroke="#94a3b8" stroke-width="1" stroke-dasharray="3,3"/>
+      <text x="635" y="80" text-anchor="middle" fill="#64748b" font-size="9">更多跳</text>
+      <text x="635" y="92" text-anchor="middle" fill="#64748b" font-size="9">用逗号</text>
+
+      <text x="330" y="148" text-anchor="middle" fill="#64748b" font-size="10">-J 在跳板机上发起 direct-tcpip 通道，所有流量均端到端加密</text>
+    </svg>
+    <div class="diagram-title">图10：跳板机（ProxyJump）工作原理</div>
+  </div>
+
+  <div class="scenario-card">
+    <div class="scenario-header">
+      <span class="scenario-badge">实战</span>
+      <span class="scenario-name">通过跳板机访问内网多台服务器</span>
+    </div>
+    <div class="scenario-body">
+      <pre><code><span class="c-comment"># 直接单跳</span>
+<span class="c-cmd">ssh</span> <span class="c-flag">-J</span> user@jump.example.com user@10.0.0.5
+
+<span class="c-comment"># 多级跳板（先跳 jump1，再跳 jump2，最终到 target）</span>
+<span class="c-cmd">ssh</span> <span class="c-flag">-J</span> user@jump1.example.com,user@jump2.internal user@10.0.0.100
+
+<span class="c-comment"># 在 ~/.ssh/config 中固定跳板机配置（推荐）</span></code></pre>
+      <pre><code>Host internal-server
+    HostName 10.0.0.5
+    User alice
+    ProxyJump jump.example.com
+
+Host jump.example.com
+    User alice
+    IdentityFile ~/.ssh/jump_key</code></pre>
+      <pre><code><span class="c-comment"># 配置后直接连接，SSH 自动通过跳板机</span>
+<span class="c-cmd">ssh</span> internal-server</code></pre>
+    </div>
+  </div>
+
+  <h3>-J 与 ProxyCommand 的关系</h3>
+  <p><code class="inline">-J destination</code> 是 <code class="inline">-o ProxyJump=destination</code> 的简写，底层等价于：</p>
+  <pre><code><span class="c-comment"># -J 等价形式（旧版本兼容写法）</span>
+<span class="c-cmd">ssh</span> <span class="c-flag">-o</span> <span class="c-val">'ProxyCommand ssh -W %h:%p jump.example.com'</span> target.host
+
+<span class="c-comment"># ssh -W 选项：请求跳板机建立到指定目标的 TCP 转发</span>
+<span class="c-comment"># 等价于在跳板机上打开 direct-tcpip 通道</span></code></pre>
+
+  <div class="summary-box">
+    <h3>📌 本章小结</h3>
+    <p>跳板机（Jump Host）模式是企业安全实践的标配：只有跳板机暴露在公网，内网所有服务器都通过跳板机中转访问，大幅缩小攻击面。<code class="inline">-J</code> 参数让多跳连接变得简洁，且全程端到端加密，跳板机也无法看到数据内容。</p>
+    <div class="first-principles">
+      <h4>🔬 第一性原理</h4>
+      <p>零信任网络的核心思想：最小暴露面。跳板机模式将"能被外网直接访问的节点"降到最少（只有跳板机），其他节点隐藏在内网，极大降低攻击面。</p>
+    </div>
+  </div>
+</section>
+
+<!-- §10 文件传输 -->
+<section class="section" id="s10">
+  <div class="section-title">
+    <span class="section-num">10</span>场景七：文件传输（SCP/SFTP）
+  </div>
+  <p>根据 <a href="https://man7.org/linux/man-pages/man1/ssh.1.html" class="source-link" target="_blank">ssh(1) man page</a> SEE ALSO 部分，SSH 生态包含 <code class="inline">scp(1)</code> 和 <code class="inline">sftp(1)</code> 两个文件传输工具，均基于 SSH 加密信道。</p>
+
+  <h3>SCP（Secure Copy）</h3>
+  <div class="scenario-card">
+    <div class="scenario-header">
+      <span class="scenario-badge">常用</span>
+      <span class="scenario-name">scp 文件复制</span>
+    </div>
+    <div class="scenario-body">
+      <pre><code><span class="c-comment"># 本地文件上传到远端</span>
+<span class="c-cmd">scp</span> /local/file.txt user@server:/remote/path/
+
+<span class="c-comment"># 远端文件下载到本地</span>
+<span class="c-cmd">scp</span> user@server:/remote/file.txt /local/path/
+
+<span class="c-comment"># 递归复制目录</span>
+<span class="c-cmd">scp</span> <span class="c-flag">-r</span> /local/dir/ user@server:/remote/dir/
+
+<span class="c-comment"># 指定端口</span>
+<span class="c-cmd">scp</span> <span class="c-flag">-P</span> <span class="c-val">2222</span> file.txt user@server:/path/
+
+<span class="c-comment"># 保留文件属性（时间戳、权限）</span>
+<span class="c-cmd">scp</span> <span class="c-flag">-p</span> file.txt user@server:/path/
+
+<span class="c-comment"># 两台远程服务器之间传输</span>
+<span class="c-cmd">scp</span> user1@server1:/path/file user2@server2:/path/</code></pre>
+    </div>
+  </div>
+
+  <h3>SFTP（SSH File Transfer Protocol）</h3>
+  <div class="scenario-card">
+    <div class="scenario-header">
+      <span class="scenario-badge">常用</span>
+      <span class="scenario-name">sftp 交互式文件管理</span>
+    </div>
+    <div class="scenario-body">
+      <pre><code><span class="c-comment"># 启动 sftp 交互式会话</span>
+<span class="c-cmd">sftp</span> user@server.example.com
+
+<span class="c-comment"># sftp 提示符内的常用命令</span>
+sftp> <span class="c-cmd">ls</span>             <span class="c-comment"># 列出远端文件</span>
+sftp> <span class="c-cmd">lls</span>            <span class="c-comment"># 列出本地文件（l 前缀 = local）</span>
+sftp> <span class="c-cmd">cd</span> /remote/dir  <span class="c-comment"># 切换远端目录</span>
+sftp> <span class="c-cmd">lcd</span> /local/dir  <span class="c-comment"># 切换本地目录</span>
+sftp> <span class="c-cmd">get</span> remote.txt  <span class="c-comment"># 下载文件</span>
+sftp> <span class="c-cmd">put</span> local.txt   <span class="c-comment"># 上传文件</span>
+sftp> <span class="c-cmd">mget</span> *.log      <span class="c-comment"># 批量下载</span>
+sftp> <span class="c-cmd">mput</span> *.conf     <span class="c-comment"># 批量上传</span>
+sftp> <span class="c-cmd">mkdir</span> newdir    <span class="c-comment"># 远端创建目录</span>
+sftp> <span class="c-cmd">rm</span> oldfile.txt  <span class="c-comment"># 删除远端文件</span>
+sftp> <span class="c-cmd">exit</span>            <span class="c-comment"># 退出</span>
+
+<span class="c-comment"># 非交互批量操作</span>
+<span class="c-cmd">sftp</span> user@server << 'EOF'
+put /local/backup.tar.gz /remote/backups/
+EOF</code></pre>
+    </div>
+  </div>
+
+  <h3>SCP vs SFTP 对比</h3>
+  <div class="table-wrap">
+    <table>
+      <tr><th>特性</th><th>SCP</th><th>SFTP</th></tr>
+      <tr><td>操作模式</td><td>单次命令行复制</td><td>交互式 FTP 风格</td></tr>
+      <tr><td>断点续传</td><td>❌ 不支持</td><td>✅ 支持</td></tr>
+      <tr><td>目录浏览</td><td>❌ 不支持</td><td>✅ 支持</td></tr>
+      <tr><td>适用场景</td><td>脚本/快速传输</td><td>管理文件/大文件传输</td></tr>
+      <tr><td>底层协议</td><td>SSH exec channel</td><td>SSH SFTP subsystem</td></tr>
+    </table>
+  </div>
+
+  <div class="summary-box">
+    <h3>📌 本章小结</h3>
+    <p>SCP 和 SFTP 都复用 SSH 的加密信道传输文件，无需额外配置 FTP 服务器，也无需开放额外端口（只需 22 端口）。SCP 适合脚本化快速传输，SFTP 适合交互式文件管理和断点续传场景。</p>
+  </div>
+</section>
+
+<!-- §11 X11 转发 -->
+<section class="section" id="s11">
+  <div class="section-title">
+    <span class="section-num">11</span>场景八：X11 图形界面转发
+  </div>
+  <p>根据 <a href="https://man7.org/linux/man-pages/man1/ssh.1.html" class="source-link" target="_blank">ssh(1) man page</a> X11 FORWARDING 章节：<em>"If the ForwardX11 variable is set to 'yes' (or see the description of the -X, -x, and -Y options below) and the user is using X11, the DISPLAY environment variable will be set automatically."</em></p>
+
+  <div class="scenario-card">
+    <div class="scenario-header">
+      <span class="scenario-badge">高级</span>
+      <span class="scenario-name">在远端运行 GUI 程序，显示在本地</span>
+    </div>
+    <div class="scenario-body">
+      <pre><code><span class="c-comment"># -X 启用 X11 转发（安全模式，受信任客户端）</span>
+<span class="c-cmd">ssh</span> <span class="c-flag">-X</span> user@server
+
+<span class="c-comment"># -Y 启用可信 X11 转发（某些程序需要，安全性稍低）</span>
+<span class="c-cmd">ssh</span> <span class="c-flag">-Y</span> user@server
+
+<span class="c-comment"># 登录后在远端运行 GUI 程序</span>
+user@server:~$ <span class="c-cmd">gedit</span> &         <span class="c-comment"># 文本编辑器显示在本地</span>
+user@server:~$ <span class="c-cmd">firefox</span> &        <span class="c-comment"># 浏览器显示在本地</span>
+user@server:~$ <span class="c-cmd">xterm</span> &          <span class="c-comment"># 额外终端窗口</span>
+
+<span class="c-comment"># 不登录，直接启动远端 GUI 程序</span>
+<span class="c-cmd">ssh</span> <span class="c-flag">-X</span> user@server <span class="c-val">'gedit'</span></code></pre>
+    </div>
+  </div>
+
+  <div class="diagram-wrap">
+    <svg width="580" height="150" viewBox="0 0 580 150">
+      <rect x="10" y="30" width="140" height="90" rx="8" fill="rgba(20,184,166,0.08)" stroke="#0f766e" stroke-width="1"/>
+      <text x="80" y="58" text-anchor="middle" fill="#5eead4" font-size="11" font-weight="600">本地机器</text>
+      <text x="80" y="76" text-anchor="middle" fill="#94a3b8" font-size="9">X11 Server (Xorg)</text>
+      <text x="80" y="92" text-anchor="middle" fill="#94a3b8" font-size="9">显示 GUI 窗口</text>
+      <text x="80" y="108" text-anchor="middle" fill="#64748b" font-size="8">DISPLAY=:0</text>
+
+      <rect x="200" y="20" width="180" height="110" rx="8" fill="rgba(30,58,95,0.5)" stroke="#1e3a5f" stroke-width="1"/>
+      <text x="290" y="46" text-anchor="middle" fill="#7dd3fc" font-size="10" font-weight="600">SSH 加密隧道</text>
+      <text x="290" y="64" text-anchor="middle" fill="#94a3b8" font-size="9">X11 协议数据加密传输</text>
+      <text x="290" y="82" text-anchor="middle" fill="#64748b" font-size="8">随机 Cookie 验证，防止</text>
+      <text x="290" y="96" text-anchor="middle" fill="#64748b" font-size="8">X11 会话被劫持</text>
+      <text x="290" y="114" text-anchor="middle" fill="#64748b" font-size="8">DISPLAY=localhost:10.0</text>
+
+      <rect x="430" y="30" width="140" height="90" rx="8" fill="rgba(245,158,11,0.08)" stroke="#f59e0b" stroke-width="1"/>
+      <text x="500" y="58" text-anchor="middle" fill="#fbbf24" font-size="11" font-weight="600">远端服务器</text>
+      <text x="500" y="76" text-anchor="middle" fill="#94a3b8" font-size="9">运行 gedit / firefox</text>
+      <text x="500" y="92" text-anchor="middle" fill="#94a3b8" font-size="9">X11 Client 程序</text>
+
+      <defs>
+        <marker id="ax" markerWidth="7" markerHeight="5" refX="7" refY="2.5" orient="auto">
+          <polygon points="0 0, 7 2.5, 0 5" fill="#86efac"/>
+        </marker>
+      </defs>
+      <line x1="150" y1="70" x2="200" y2="70" stroke="#86efac" stroke-width="1.5" marker-end="url(#ax)"/>
+      <line x1="380" y1="70" x2="430" y2="70" stroke="#86efac" stroke-width="1.5" marker-end="url(#ax)"/>
+      <text x="290" y="142" text-anchor="middle" fill="#64748b" font-size="9">远端程序的图形输出 → 加密 → 本地 X11 Server 渲染显示</text>
+    </svg>
+    <div class="diagram-title">图11：X11 图形界面转发原理</div>
+  </div>
+
+  <div class="info-box warn">
+    <div class="box-title">安全提示</div>
+    根据 ssh(1) man page，X11 转发存在安全风险：服务端上有权限的用户可能截获 X11 事件。使用 <code class="inline">-X</code>（安全模式）而非 <code class="inline">-Y</code>（可信模式），并确保服务端值得信任。
+  </div>
+
+  <div class="summary-box">
+    <h3>📌 本章小结</h3>
+    <p>X11 转发让 SSH 隧道不仅传输文本，还能传输图形界面协议帧，将远端 GUI 程序的显示"搬"到本地。本质是把 X11 协议数据封装在 SSH Channel 内传输，本地 X11 Server 负责实际渲染，远端只运行程序逻辑。</p>
+  </div>
+</section>
+
+<!-- §12 SSH 配置文件 -->
+<section class="section" id="s12">
+  <div class="section-title">
+    <span class="section-num">12</span>场景九：SSH 配置文件（~/.ssh/config）
+  </div>
+  <p>根据 ssh(1) man page FILES 章节：<em>"~/.ssh/config: This is the per-user configuration file. The file format and configuration options are described in ssh_config(5). Because of the potential for abuse, this file must have strict permissions: read/write for the user, and not writable by others."</em></p>
+
+  <div class="scenario-card">
+    <div class="scenario-header">
+      <span class="scenario-badge">效率</span>
+      <span class="scenario-name">配置文件简化复杂连接</span>
+    </div>
+    <div class="scenario-body">
+      <pre><code><span class="c-comment"># ~/.ssh/config 示例配置</span>
+
+<span class="c-comment"># 生产服务器：简化连接命令</span>
+Host prod
+    HostName prod-server.example.com
+    User deploy
+    Port 2222
+    IdentityFile ~/.ssh/prod_key
+    ServerAliveInterval 60       <span class="c-comment"># 保活心跳</span>
+    ServerAliveCountMax 3
+
+<span class="c-comment"># 跳板机配置</span>
+Host bastion
+    HostName jump.example.com
+    User alice
+    IdentityFile ~/.ssh/bastion_key
+
+<span class="c-comment"># 内网服务器（通过跳板机）</span>
+Host internal-*
+    User alice
+    ProxyJump bastion
+    IdentityFile ~/.ssh/internal_key
+
+Host internal-db
+    HostName 10.0.0.10
+    LocalForward 3306 localhost:3306  <span class="c-comment"># 自动建立端口转发</span>
+
+<span class="c-comment"># 通配符默认配置</span>
+Host *
+    AddKeysToAgent yes
+    IdentityFile ~/.ssh/id_ed25519
+    StrictHostKeyChecking ask
+    ConnectTimeout 10
+    Compression yes</code></pre>
+      <pre><code><span class="c-comment"># 配置后极简连接</span>
+<span class="c-cmd">ssh</span> prod           <span class="c-comment"># 等价于 ssh -p 2222 -i ~/.ssh/prod_key deploy@prod-server.example.com</span>
+<span class="c-cmd">ssh</span> internal-db    <span class="c-comment"># 自动通过跳板机 + 自动建立数据库端口转发</span>
+
+<span class="c-comment"># 权限设置（必须）</span>
+<span class="c-cmd">chmod</span> 600 ~/.ssh/config</code></pre>
+    </div>
+  </div>
+
+  <h3>常用配置项速查</h3>
+  <div class="table-wrap">
+    <table>
+      <tr><th>配置项</th><th>说明</th><th>示例值</th></tr>
+      <tr><td><code class="inline">HostName</code></td><td>实际主机名/IP</td><td>server.example.com</td></tr>
+      <tr><td><code class="inline">User</code></td><td>登录用户名</td><td>alice</td></tr>
+      <tr><td><code class="inline">Port</code></td><td>SSH 端口</td><td>22 / 2222</td></tr>
+      <tr><td><code class="inline">IdentityFile</code></td><td>私钥文件路径</td><td>~/.ssh/id_ed25519</td></tr>
+      <tr><td><code class="inline">ProxyJump</code></td><td>跳板机配置</td><td>bastion.example.com</td></tr>
+      <tr><td><code class="inline">LocalForward</code></td><td>本地端口转发（同 -L）</td><td>3306 localhost:3306</td></tr>
+      <tr><td><code class="inline">RemoteForward</code></td><td>远程端口转发（同 -R）</td><td>8080 localhost:3000</td></tr>
+      <tr><td><code class="inline">ServerAliveInterval</code></td><td>发送保活包间隔（秒）</td><td>60</td></tr>
+      <tr><td><code class="inline">Compression</code></td><td>启用 gzip 压缩（同 -C）</td><td>yes / no</td></tr>
+      <tr><td><code class="inline">StrictHostKeyChecking</code></td><td>主机密钥检查策略</td><td>yes / no / ask</td></tr>
+    </table>
+  </div>
+
+  <div class="summary-box">
+    <h3>📌 本章小结</h3>
+    <p><code class="inline">~/.ssh/config</code> 是 SSH 使用效率的倍增器。它将长串的命令行参数固化为别名，支持通配符批量配置，是专业运维人员管理大量服务器的必备工具。严格遵守文件权限（<code class="inline">chmod 600</code>）是安全要求。</p>
+  </div>
+</section>
+
+<!-- §13 安全最佳实践 -->
+<section class="section" id="s13">
+  <div class="section-title">
+    <span class="section-num">13</span>安全最佳实践
+  </div>
+  <p>根据 <a href="https://man7.org/linux/man-pages/man8/sshd.8.html" class="source-link" target="_blank">sshd(8) man page</a> 及 <a href="https://man7.org/linux/man-pages/man1/ssh.1.html" class="source-link" target="_blank">ssh(1) man page</a> 的安全建议：</p>
+
+  <div class="diagram-wrap">
+    <svg width="640" height="280" viewBox="0 0 640 280">
+      <!-- Security layers -->
+      <rect x="20" y="20" width="600" height="240" rx="12" fill="rgba(239,68,68,0.05)" stroke="rgba(239,68,68,0.2)" stroke-width="1"/>
+      <text x="320" y="44" text-anchor="middle" fill="#fca5a5" font-size="11" font-weight="600">🔒 SSH 安全防御纵深模型</text>
+
+      <!-- Layer 1 -->
+      <rect x="40" y="54" width="560" height="42" rx="8" fill="rgba(20,184,166,0.12)" stroke="rgba(20,184,166,0.3)" stroke-width="1"/>
+      <text x="320" y="72" text-anchor="middle" fill="#5eead4" font-size="10" font-weight="600">第一层：认证加固</text>
+      <text x="320" y="88" text-anchor="middle" fill="#94a3b8" font-size="9">禁用密码登录 PasswordAuthentication no · 使用 Ed25519 公钥 · 禁用 root 直连 PermitRootLogin no</text>
+
+      <!-- Layer 2 -->
+      <rect x="40" y="104" width="560" height="42" rx="8" fill="rgba(30,58,95,0.4)" stroke="rgba(59,130,246,0.3)" stroke-width="1"/>
+      <text x="320" y="122" text-anchor="middle" fill="#93c5fd" font-size="10" font-weight="600">第二层：网络访问控制</text>
+      <text x="320" y="138" text-anchor="middle" fill="#94a3b8" font-size="9">更改默认端口 Port 2222 · 防火墙白名单 · fail2ban 暴力破解防护 · AllowUsers 限制用户</text>
+
+      <!-- Layer 3 -->
+      <rect x="40" y="154" width="560" height="42" rx="8" fill="rgba(76,29,149,0.3)" stroke="rgba(167,139,250,0.3)" stroke-width="1"/>
+      <text x="320" y="172" text-anchor="middle" fill="#c4b5fd" font-size="10" font-weight="600">第三层：密钥管理</text>
+      <text x="320" y="188" text-anchor="middle" fill="#94a3b8" font-size="9">私钥设置 passphrase · 使用 ssh-agent 管理 · 定期轮换密钥 · 最小权限 authorized_keys</text>
+
+      <!-- Layer 4 -->
+      <rect x="40" y="204" width="560" height="42" rx="8" fill="rgba(245,158,11,0.08)" stroke="rgba(245,158,11,0.2)" stroke-width="1"/>
+      <text x="320" y="222" text-anchor="middle" fill="#fbbf24" font-size="10" font-weight="600">第四层：连接安全</text>
+      <text x="320" y="238" text-anchor="middle" fill="#94a3b8" font-size="9">StrictHostKeyChecking yes · ClientAliveInterval 防空闲 · 禁用 X11 转发（非必要）</text>
+    </svg>
+    <div class="diagram-title">图12：SSH 安全防御纵深模型</div>
+  </div>
+
+  <h3>服务端 /etc/ssh/sshd_config 关键配置</h3>
+  <pre><code><span class="c-comment"># 禁用密码认证（最重要！强制使用密钥）</span>
+PasswordAuthentication no
+ChallengeResponseAuthentication no
+
+<span class="c-comment"># 禁止 root 直接登录</span>
+PermitRootLogin no
+
+<span class="c-comment"># 只允许特定用户</span>
+AllowUsers alice bob deploy
+
+<span class="c-comment"># 修改默认端口（减少扫描噪音）</span>
+Port 2222
+
+<span class="c-comment"># 空闲超时断开</span>
+ClientAliveInterval 300
+ClientAliveCountMax 2
+
+<span class="c-comment"># 只使用安全算法（OpenSSH 9.x 默认已安全）</span>
+KexAlgorithms curve25519-sha256,ecdh-sha2-nistp256
+Ciphers chacha20-poly1305@openssh.com,aes256-gcm@openssh.com
+MACs hmac-sha2-256-etm@openssh.com
+
+<span class="c-comment"># 修改后重启</span>
+<span class="c-cmd">sudo</span> systemctl restart sshd</code></pre>
+
+  <div class="info-box danger">
+    <div class="box-title">危险操作警告</div>
+    修改 sshd_config 前，务必保持一个已连接的 SSH 会话！新开会话测试配置无误后，再关闭旧会话。否则配置错误可能导致永久失去服务器访问权。
+  </div>
+
+  <div class="summary-box">
+    <h3>📌 本章小结</h3>
+    <p>SSH 安全的核心原则：<strong>最小攻击面 + 强身份认证 + 访问控制 + 日志审计</strong>。最高优先级：禁用密码登录（<code class="inline">PasswordAuthentication no</code>）+ 使用 Ed25519 密钥。配合 fail2ban、防火墙白名单，可抵御绝大多数自动化攻击。</p>
+  </div>
+</section>
+
+<!-- §14 常用参数速查 -->
+<section class="section" id="s14">
+  <div class="section-title">
+    <span class="section-num">14</span>常用参数速查表
+  </div>
+  <p>以下参数均来自 <a href="https://man7.org/linux/man-pages/man1/ssh.1.html" class="source-link" target="_blank">ssh(1) Linux man page</a>（OpenSSH 9.9p2）：</p>
+
+  <div class="table-wrap">
+    <table>
+      <tr><th>参数</th><th>全称/含义</th><th>典型用法</th></tr>
+      <tr>
+        <td><code class="inline">-p port</code></td>
+        <td>指定远端 SSH 端口</td>
+        <td><code class="inline">ssh -p 2222 user@host</code></td>
+      </tr>
+      <tr>
+        <td><code class="inline">-i file</code></td>
+        <td>指定私钥文件</td>
+        <td><code class="inline">ssh -i ~/.ssh/mykey user@host</code></td>
+      </tr>
+      <tr>
+        <td><code class="inline">-l user</code></td>
+        <td>指定登录用户名</td>
+        <td><code class="inline">ssh -l alice host</code></td>
+      </tr>
+      <tr>
+        <td><code class="inline">-L local:host:port</code></td>
+        <td>本地端口转发</td>
+        <td><code class="inline">ssh -L 3307:db:3306 jump</code></td>
+      </tr>
+      <tr>
+        <td><code class="inline">-R remote:host:port</code></td>
+        <td>远程端口转发</td>
+        <td><code class="inline">ssh -R 8080:localhost:3000 server</code></td>
+      </tr>
+      <tr>
+        <td><code class="inline">-D port</code></td>
+        <td>动态 SOCKS 代理</td>
+        <td><code class="inline">ssh -D 9090 user@server</code></td>
+      </tr>
+      <tr>
+        <td><code class="inline">-J dest</code></td>
+        <td>跳板机（ProxyJump）</td>
+        <td><code class="inline">ssh -J jump target</code></td>
+      </tr>
+      <tr>
+        <td><code class="inline">-N</code></td>
+        <td>不执行远程命令（仅转发）</td>
+        <td><code class="inline">ssh -L ... -N user@host</code></td>
+      </tr>
+      <tr>
+        <td><code class="inline">-f</code></td>
+        <td>后台运行（fork to background）</td>
+        <td><code class="inline">ssh -f -N -D 9090 user@host</code></td>
+      </tr>
+      <tr>
+        <td><code class="inline">-t</code></td>
+        <td>强制分配 PTY</td>
+        <td><code class="inline">ssh -t user@host 'sudo bash'</code></td>
+      </tr>
+      <tr>
+        <td><code class="inline">-X</code></td>
+        <td>启用 X11 转发</td>
+        <td><code class="inline">ssh -X user@host</code></td>
+      </tr>
+      <tr>
+        <td><code class="inline">-A</code></td>
+        <td>启用 Agent 转发</td>
+        <td><code class="inline">ssh -A user@jump</code></td>
+      </tr>
+      <tr>
+        <td><code class="inline">-C</code></td>
+        <td>启用 gzip 压缩</td>
+        <td><code class="inline">ssh -C user@host</code></td>
+      </tr>
+      <tr>
+        <td><code class="inline">-v / -vv / -vvv</code></td>
+        <td>调试详细输出</td>
+        <td><code class="inline">ssh -vvv user@host</code></td>
+      </tr>
+      <tr>
+        <td><code class="inline">-o option=val</code></td>
+        <td>设置配置选项</td>
+        <td><code class="inline">ssh -o StrictHostKeyChecking=no host</code></td>
+      </tr>
+      <tr>
+        <td><code class="inline">-W host:port</code></td>
+        <td>端口转发（stdio 模式）</td>
+        <td><code class="inline">ssh -W target:22 jump</code></td>
+      </tr>
+      <tr>
+        <td><code class="inline">-4 / -6</code></td>
+        <td>强制 IPv4 / IPv6</td>
+        <td><code class="inline">ssh -4 user@host</code></td>
+      </tr>
+      <tr>
+        <td><code class="inline">-q</code></td>
+        <td>静默模式（抑制警告）</td>
+        <td><code class="inline">ssh -q user@host</code></td>
+      </tr>
+    </table>
+  </div>
+
+  <h3>场景分类速查</h3>
+  <div style="display:flex;flex-wrap:wrap;gap:12px;margin-top:16px;">
+    <div style="flex:1;min-width:200px;background:var(--bg2);border:1px solid var(--border);border-radius:8px;padding:14px;">
+      <div style="color:var(--primary-light);font-weight:700;margin-bottom:8px;font-size:0.88rem;">🖥️ 登录与执行</div>
+      <code class="inline" style="display:block;margin:4px 0">ssh user@host</code>
+      <code class="inline" style="display:block;margin:4px 0">ssh -p 2222 user@host</code>
+      <code class="inline" style="display:block;margin:4px 0">ssh user@host 'cmd'</code>
+    </div>
+    <div style="flex:1;min-width:200px;background:var(--bg2);border:1px solid var(--border);border-radius:8px;padding:14px;">
+      <div style="color:var(--accent);font-weight:700;margin-bottom:8px;font-size:0.88rem;">🔀 端口转发</div>
+      <code class="inline" style="display:block;margin:4px 0">ssh -L 3306:db:3306 jump</code>
+      <code class="inline" style="display:block;margin:4px 0">ssh -R 8080:localhost:3000 srv</code>
+      <code class="inline" style="display:block;margin:4px 0">ssh -D 9090 -N user@host</code>
+    </div>
+    <div style="flex:1;min-width:200px;background:var(--bg2);border:1px solid var(--border);border-radius:8px;padding:14px;">
+      <div style="color:#c4b5fd;font-weight:700;margin-bottom:8px;font-size:0.88rem;">🔗 跳板与代理</div>
+      <code class="inline" style="display:block;margin:4px 0">ssh -J jump target</code>
+      <code class="inline" style="display:block;margin:4px 0">ssh -J j1,j2 target</code>
+      <code class="inline" style="display:block;margin:4px 0">ssh -A -J jump target</code>
+    </div>
+    <div style="flex:1;min-width:200px;background:var(--bg2);border:1px solid var(--border);border-radius:8px;padding:14px;">
+      <div style="color:#86efac;font-weight:700;margin-bottom:8px;font-size:0.88rem;">🐛 调试诊断</div>
+      <code class="inline" style="display:block;margin:4px 0">ssh -v user@host</code>
+      <code class="inline" style="display:block;margin:4px 0">ssh -vvv user@host</code>
+      <code class="inline" style="display:block;margin:4px 0">ssh -G host</code>
+    </div>
+  </div>
+
+  <div class="summary-box">
+    <h3>📌 总结：SSH 的第一性原理</h3>
+    <p>SSH 的所有功能——登录、命令执行、端口转发、文件传输、X11 转发——都建立在同一个基础之上：</p>
+    <ol style="margin-top:12px;margin-left:18px;">
+      <li style="margin-bottom:8px;"><strong>一条安全加密信道</strong>（SSH-TRANS：DH 密钥交换 + AES/ChaCha20 + HMAC）</li>
+      <li style="margin-bottom:8px;"><strong>身份认证机制</strong>（SSH-AUTH：密钥对/密码验证，确认"你是你"）</li>
+      <li style="margin-bottom:8px;"><strong>多路复用通道</strong>（SSH-CONN：在一条连接上开多个 Channel，每个 Channel 独立传输不同业务数据）</li>
+    </ol>
+    <p style="margin-top:12px;">理解了这三点，所有 SSH 功能都是自然推论：<code class="inline">-L/-R/-D</code> 是 Channel 类型不同，<code class="inline">-X</code> 是传输 X11 数据，<code class="inline">scp/sftp</code> 是特殊子系统……本质上，SSH 是一个<strong>通用安全隧道框架</strong>。</p>
+    <div class="first-principles" style="margin-top:16px;">
+      <h4>🔬 终极第一性原理</h4>
+      <p>在不可信网络上的安全通信只需要三件事：<strong>密钥协商（解决谁来加密）→ 身份认证（解决谁在连接）→ 数据传输（解决传什么）</strong>。SSH 用三层协议栈优雅地解决了这三个问题，并在此基础上构建了一切。</p>
+    </div>
+  </div>
+</section>
+
+<footer style="text-align:center;padding:32px 0;color:var(--text-dim);font-size:0.82rem;border-top:1px solid var(--border);margin-top:32px;">
+  <p>内容依据 <a href="https://man7.org/linux/man-pages/man1/ssh.1.html" style="color:var(--primary-light);text-decoration:none;" target="_blank">ssh(1) Linux man page</a> · <a href="https://www.rfc-editor.org/rfc/rfc4251" style="color:var(--primary-light);text-decoration:none;" target="_blank">RFC 4251-4254</a> · <a href="http://www.openssh.com/" style="color:var(--primary-light);text-decoration:none;" target="_blank">OpenSSH 官方</a></p>
+  <p style="margin-top:6px;">OpenSSH 9.9p2 · Linux man-pages project · 2024</p>
+</footer>
+
+</div>
+</main>
+
+<script>
+// ===== PROGRESS BAR =====
+function updateProgress() {
+  const scrollTop = window.scrollY;
+  const docHeight = document.documentElement.scrollHeight - window.innerHeight;
+  const pct = docHeight > 0 ? (scrollTop / docHeight) * 100 : 0;
+  document.getElementById('progress-bar').style.width = pct + '%';
+}
+
+// ===== SIDEBAR TOGGLE =====
+const hamburger = document.getElementById('hamburger');
+const sidebar = document.getElementById('sidebar');
+const overlay = document.getElementById('sidebar-overlay');
+
+function openSidebar() {
+  sidebar.classList.add('open');
+  overlay.classList.add('open');
+  hamburger.classList.add('open');
+}
+function closeSidebar() {
+  sidebar.classList.remove('open');
+  overlay.classList.remove('open');
+  hamburger.classList.remove('open');
+}
+
+hamburger.addEventListener('click', () => {
+  sidebar.classList.contains('open') ? closeSidebar() : openSidebar();
+});
+overlay.addEventListener('click', closeSidebar);
+
+// ===== NAV GROUP COLLAPSE =====
+document.querySelectorAll('.nav-group-header').forEach(header => {
+  const group = header.dataset.group;
+  const items = document.querySelector(`.nav-items[data-items="${group}"]`);
+  // Set initial max-height
+  items.style.maxHeight = items.scrollHeight + 'px';
+
+  header.addEventListener('click', () => {
+    const collapsed = header.classList.toggle('collapsed');
+    if (collapsed) {
+      items.style.maxHeight = items.scrollHeight + 'px';
+      requestAnimationFrame(() => {
+        items.classList.add('collapsed');
+      });
+    } else {
+      items.classList.remove('collapsed');
+      items.style.maxHeight = items.scrollHeight + 'px';
+    }
+  });
+});
+
+// ===== ACTIVE NAV TRACKING =====
+const sections = Array.from(document.querySelectorAll('.section'));
+const navItems = document.querySelectorAll('.nav-item');
+
+function getSectionId(item) {
+  return item.dataset.section;
+}
+
+navItems.forEach(item => {
+  item.addEventListener('click', () => {
+    const id = getSectionId(item);
+    const el = document.getElementById(id);
+    if (el) {
+      const top = el.getBoundingClientRect().top + window.scrollY - 72;
+      window.scrollTo({ top, behavior: 'smooth' });
+    }
+    if (window.innerWidth < 900) closeSidebar();
+  });
+});
+
+function updateActiveNav() {
+  const scrollTop = window.scrollY + 100;
+  let current = sections[0];
+  for (const sec of sections) {
+    if (sec.offsetTop <= scrollTop) current = sec;
+  }
+  navItems.forEach(item => {
+    item.classList.toggle('active', item.dataset.section === current.id);
+  });
+}
+
+// ===== KEYBOARD NAVIGATION =====
+let currentSectionIdx = 0;
+document.addEventListener('keydown', e => {
+  if (e.target.tagName === 'INPUT' || e.target.tagName === 'TEXTAREA') return;
+  if (e.key === 'ArrowRight' || e.key === 'ArrowLeft') {
+    const scrollTop = window.scrollY + 100;
+    for (let i = 0; i < sections.length; i++) {
+      if (sections[i].offsetTop <= scrollTop) currentSectionIdx = i;
+    }
+    if (e.key === 'ArrowRight' && currentSectionIdx < sections.length - 1) {
+      currentSectionIdx++;
+    } else if (e.key === 'ArrowLeft' && currentSectionIdx > 0) {
+      currentSectionIdx--;
+    }
+    const target = sections[currentSectionIdx];
+    const top = target.getBoundingClientRect().top + window.scrollY - 72;
+    window.scrollTo({ top, behavior: 'smooth' });
+    e.preventDefault();
+  }
+});
+
+// ===== SCROLL EVENTS =====
+window.addEventListener('scroll', () => {
+  updateProgress();
+  updateActiveNav();
+}, { passive: true });
+
+// Init
+updateProgress();
+updateActiveNav();
+</script>
+</body>
+</html>

@@ -1,0 +1,1869 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>UBIFS 文件系统深度解析</title>
+<style>
+  :root {
+    --bg: #0f1117;
+    --surface: #1a1d27;
+    --surface2: #222638;
+    --border: #2e3348;
+    --accent: #4f8ef7;
+    --accent2: #7c5cfc;
+    --accent3: #00d2a0;
+    --accent4: #f7934f;
+    --text: #e2e8f0;
+    --text2: #94a3b8;
+    --text3: #64748b;
+    --danger: #ef4444;
+    --warn: #f59e0b;
+    --ok: #22c55e;
+    --nav-w: 280px;
+    --header-h: 56px;
+    --progress-h: 3px;
+  }
+  *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+  html { scroll-behavior: smooth; }
+  body {
+    font-family: 'Segoe UI', system-ui, -apple-system, sans-serif;
+    background: var(--bg);
+    color: var(--text);
+    line-height: 1.7;
+    overflow-x: hidden;
+  }
+
+  /* ── Progress bar ── */
+  #progress-bar {
+    position: fixed; top: 0; left: 0; right: 0; height: var(--progress-h);
+    background: linear-gradient(90deg, var(--accent), var(--accent2), var(--accent3));
+    transform-origin: left;
+    transform: scaleX(0);
+    z-index: 1000;
+    transition: transform 0.1s linear;
+  }
+
+  /* ── Top header ── */
+  #top-header {
+    position: fixed; top: var(--progress-h); left: 0; right: 0;
+    height: var(--header-h);
+    background: rgba(15,17,23,0.92);
+    backdrop-filter: blur(12px);
+    border-bottom: 1px solid var(--border);
+    display: flex; align-items: center; justify-content: space-between;
+    padding: 0 20px;
+    z-index: 900;
+  }
+  #top-header .logo {
+    font-size: 1.1rem; font-weight: 700;
+    background: linear-gradient(135deg, var(--accent), var(--accent2));
+    -webkit-background-clip: text; -webkit-text-fill-color: transparent;
+    background-clip: text;
+    white-space: nowrap;
+  }
+  #hamburger {
+    display: none; flex-direction: column; gap: 5px; cursor: pointer;
+    background: none; border: none; padding: 6px;
+  }
+  #hamburger span {
+    display: block; width: 22px; height: 2px;
+    background: var(--text); border-radius: 2px;
+    transition: all 0.3s;
+  }
+  #hamburger.open span:nth-child(1) { transform: rotate(45deg) translate(5px,5px); }
+  #hamburger.open span:nth-child(2) { opacity: 0; }
+  #hamburger.open span:nth-child(3) { transform: rotate(-45deg) translate(5px,-5px); }
+
+  /* ── Sidebar nav ── */
+  #sidebar {
+    position: fixed;
+    top: calc(var(--header-h) + var(--progress-h));
+    left: 0; bottom: 0;
+    width: var(--nav-w);
+    background: var(--surface);
+    border-right: 1px solid var(--border);
+    overflow-y: auto;
+    overflow-x: hidden;
+    z-index: 800;
+    transition: transform 0.3s ease;
+    padding-bottom: 40px;
+  }
+  #sidebar::-webkit-scrollbar { width: 4px; }
+  #sidebar::-webkit-scrollbar-thumb { background: var(--border); border-radius: 2px; }
+
+  .nav-group { border-bottom: 1px solid var(--border); }
+  .nav-group-header {
+    display: flex; align-items: center; justify-content: space-between;
+    padding: 12px 16px;
+    cursor: pointer;
+    user-select: none;
+    font-size: 0.78rem;
+    font-weight: 700;
+    letter-spacing: 0.08em;
+    text-transform: uppercase;
+    color: var(--text3);
+    transition: color 0.2s, background 0.2s;
+  }
+  .nav-group-header:hover { color: var(--accent); background: rgba(79,142,247,0.05); }
+  .nav-group-header .arrow {
+    font-size: 0.7rem; transition: transform 0.25s;
+  }
+  .nav-group.collapsed .nav-group-header .arrow { transform: rotate(-90deg); }
+  .nav-group-items { overflow: hidden; }
+  .nav-group.collapsed .nav-group-items { display: none; }
+
+  .nav-item {
+    display: block;
+    padding: 8px 16px 8px 28px;
+    font-size: 0.85rem;
+    color: var(--text2);
+    text-decoration: none;
+    cursor: pointer;
+    border-left: 2px solid transparent;
+    transition: all 0.2s;
+    line-height: 1.4;
+  }
+  .nav-item:hover { color: var(--text); background: rgba(255,255,255,0.04); border-left-color: var(--border); }
+  .nav-item.active { color: var(--accent); background: rgba(79,142,247,0.08); border-left-color: var(--accent); font-weight: 600; }
+
+  /* ── Main content ── */
+  #main {
+    margin-left: var(--nav-w);
+    padding-top: calc(var(--header-h) + var(--progress-h) + 40px);
+    padding-bottom: 80px;
+    min-height: 100vh;
+    transition: margin-left 0.3s;
+  }
+  .content-wrap {
+    max-width: 860px;
+    margin: 0 auto;
+    padding: 0 24px;
+  }
+
+  /* ── Sections ── */
+  .section {
+    margin-bottom: 72px;
+    scroll-margin-top: calc(var(--header-h) + var(--progress-h) + 24px);
+  }
+  .section-title {
+    font-size: 1.9rem; font-weight: 800;
+    margin-bottom: 24px;
+    padding-bottom: 14px;
+    border-bottom: 1px solid var(--border);
+    background: linear-gradient(135deg, var(--text) 60%, var(--accent));
+    -webkit-background-clip: text; -webkit-text-fill-color: transparent;
+    background-clip: text;
+  }
+  .section-subtitle {
+    font-size: 1.2rem; font-weight: 700;
+    margin: 32px 0 14px;
+    color: var(--accent);
+  }
+  p { margin-bottom: 14px; color: var(--text2); }
+  strong { color: var(--text); }
+
+  /* ── Cards ── */
+  .card {
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: 12px;
+    padding: 20px 24px;
+    margin-bottom: 16px;
+  }
+  .card-title {
+    font-size: 1rem; font-weight: 700; margin-bottom: 8px;
+    color: var(--text);
+  }
+  .card p { margin-bottom: 0; font-size: 0.9rem; }
+
+  /* ── Grid ── */
+  .grid-2 { display: grid; grid-template-columns: 1fr 1fr; gap: 16px; margin-bottom: 16px; }
+  .grid-3 { display: grid; grid-template-columns: repeat(3,1fr); gap: 16px; margin-bottom: 16px; }
+
+  /* ── Pros / Cons ── */
+  .pros-card { border-color: #22c55e33; background: #0f291a; }
+  .pros-card .card-title { color: var(--ok); }
+  .cons-card { border-color: #ef444433; background: #2a1414; }
+  .cons-card .card-title { color: var(--danger); }
+
+  /* ── Code blocks ── */
+  pre {
+    background: #0d1117;
+    border: 1px solid var(--border);
+    border-radius: 10px;
+    padding: 18px 20px;
+    overflow-x: auto;
+    font-size: 0.82rem;
+    line-height: 1.6;
+    margin-bottom: 16px;
+    color: #c9d1d9;
+  }
+  code { font-family: 'Fira Code', 'Cascadia Code', monospace; }
+  .inline-code {
+    background: #1e2533;
+    border: 1px solid var(--border);
+    border-radius: 4px;
+    padding: 1px 6px;
+    font-size: 0.83em;
+    font-family: 'Fira Code', monospace;
+    color: #7dd3fc;
+  }
+
+  /* ── Tables ── */
+  .table-wrap { overflow-x: auto; margin-bottom: 20px; border-radius: 10px; border: 1px solid var(--border); }
+  table { width: 100%; border-collapse: collapse; font-size: 0.87rem; }
+  th {
+    background: var(--surface2); color: var(--accent);
+    padding: 10px 14px; text-align: left;
+    font-weight: 700; font-size: 0.8rem; letter-spacing: 0.04em;
+    border-bottom: 1px solid var(--border);
+  }
+  td { padding: 10px 14px; border-bottom: 1px solid rgba(46,51,72,0.5); color: var(--text2); vertical-align: top; }
+  tr:last-child td { border-bottom: none; }
+  tr:hover td { background: rgba(79,142,247,0.04); }
+  .ok-cell { color: var(--ok); font-weight: 600; }
+  .warn-cell { color: var(--warn); font-weight: 600; }
+  .bad-cell { color: var(--danger); font-weight: 600; }
+
+  /* ── Info/warn boxes ── */
+  .info-box {
+    border-radius: 10px; padding: 14px 18px; margin-bottom: 16px;
+    display: flex; gap: 12px; align-items: flex-start;
+    font-size: 0.9rem;
+  }
+  .info-box .icon { font-size: 1.2rem; flex-shrink: 0; margin-top: 1px; }
+  .info-box p { margin-bottom: 0; }
+  .info-box.note { background: #0f1e35; border: 1px solid #1e4a80; }
+  .info-box.note .icon { color: var(--accent); }
+  .info-box.warn { background: #2a1f0a; border: 1px solid #7a4c10; }
+  .info-box.warn .icon { color: var(--warn); }
+  .info-box.tip { background: #0a2a1f; border: 1px solid #0d5c3e; }
+  .info-box.tip .icon { color: var(--accent3); }
+
+  /* ── Summary box ── */
+  .summary-box {
+    background: linear-gradient(135deg, #1a1d27, #1e2240);
+    border: 1px solid var(--accent2);
+    border-radius: 12px;
+    padding: 20px 24px;
+    margin-top: 28px;
+  }
+  .summary-box .summary-title {
+    font-size: 0.85rem; font-weight: 700;
+    text-transform: uppercase; letter-spacing: 0.08em;
+    color: var(--accent2); margin-bottom: 10px;
+  }
+  .summary-box p { color: var(--text2); margin-bottom: 0; font-size: 0.93rem; }
+
+  /* ── Source link ── */
+  .source-link {
+    display: inline-flex; align-items: center; gap: 5px;
+    font-size: 0.78rem; color: var(--text3);
+    text-decoration: none;
+    border: 1px solid var(--border);
+    border-radius: 6px;
+    padding: 3px 10px;
+    margin-top: 4px;
+    transition: all 0.2s;
+  }
+  .source-link:hover { color: var(--accent); border-color: var(--accent); background: rgba(79,142,247,0.06); }
+
+  /* ── Tag badges ── */
+  .badge {
+    display: inline-block;
+    font-size: 0.72rem; font-weight: 700;
+    padding: 2px 8px; border-radius: 4px;
+    text-transform: uppercase; letter-spacing: 0.06em;
+    margin-right: 6px; margin-bottom: 4px;
+  }
+  .badge-blue { background: #1e3a5f; color: #60a5fa; }
+  .badge-green { background: #14372a; color: #4ade80; }
+  .badge-red { background: #3b1111; color: #f87171; }
+  .badge-yellow { background: #3b2a0a; color: #fbbf24; }
+  .badge-purple { background: #2a1e4a; color: #c084fc; }
+
+  /* ── SVG diagrams ── */
+  .diagram-wrap {
+    background: #0d1117;
+    border: 1px solid var(--border);
+    border-radius: 12px;
+    padding: 24px;
+    margin: 20px 0;
+    overflow-x: auto;
+    text-align: center;
+  }
+  .diagram-wrap svg { max-width: 100%; height: auto; }
+  .diagram-caption {
+    font-size: 0.8rem; color: var(--text3); margin-top: 10px; text-align: center;
+  }
+
+  /* ── Hero ── */
+  #hero {
+    text-align: center;
+    padding: 48px 0 32px;
+    margin-bottom: 40px;
+  }
+  #hero .tag { font-size: 0.75rem; font-weight: 700; letter-spacing: 0.12em; text-transform: uppercase; color: var(--accent3); margin-bottom: 16px; }
+  #hero h1 { font-size: clamp(2rem, 5vw, 3rem); font-weight: 900; line-height: 1.15; margin-bottom: 16px; }
+  #hero h1 span { background: linear-gradient(135deg, var(--accent), var(--accent2), var(--accent3)); -webkit-background-clip: text; -webkit-text-fill-color: transparent; background-clip: text; }
+  #hero .subtitle { font-size: 1.05rem; color: var(--text2); max-width: 600px; margin: 0 auto 24px; }
+  .hero-badges { display: flex; gap: 10px; justify-content: center; flex-wrap: wrap; }
+
+  /* ── Overlay ── */
+  #overlay {
+    display: none; position: fixed; inset: 0; background: rgba(0,0,0,0.6);
+    z-index: 750; backdrop-filter: blur(2px);
+  }
+  #overlay.show { display: block; }
+
+  /* ── Layer stack viz ── */
+  .layer-stack { margin: 16px 0; }
+  .layer {
+    border-radius: 8px; padding: 10px 16px;
+    margin-bottom: 6px; display: flex; align-items: center; gap: 10px;
+    font-size: 0.88rem; font-weight: 600;
+    position: relative;
+  }
+  .layer::after {
+    content: '▼'; position: absolute; bottom: -14px; left: 50%;
+    transform: translateX(-50%);
+    color: var(--text3); font-size: 0.7rem;
+    z-index: 1;
+  }
+  .layer:last-child::after { display: none; }
+  .layer-ubifs { background: #1e2e5c; border: 1px solid #3a5ab5; color: #93c5fd; }
+  .layer-ubi { background: #1e3a2a; border: 1px solid #2e7a4a; color: #86efac; }
+  .layer-mtd { background: #3b2a0a; border: 1px solid #8a5a10; color: #fcd34d; }
+  .layer-hw { background: #2a1e3b; border: 1px solid #5a3a8a; color: #c4b5fd; }
+
+  /* ── Responsive ── */
+  @media (max-width: 900px) {
+    :root { --nav-w: 260px; }
+    #sidebar { transform: translateX(-100%); }
+    #sidebar.open { transform: translateX(0); }
+    #hamburger { display: flex; }
+    #main { margin-left: 0; }
+    .grid-2 { grid-template-columns: 1fr; }
+    .grid-3 { grid-template-columns: 1fr; }
+  }
+  @media (max-width: 600px) {
+    .content-wrap { padding: 0 14px; }
+    .section-title { font-size: 1.45rem; }
+    pre { font-size: 0.76rem; }
+  }
+
+  /* scrollbar */
+  #main::-webkit-scrollbar { width: 6px; }
+
+  /* Chip/tool card */
+  .tool-card {
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: 10px;
+    padding: 16px 18px;
+    margin-bottom: 14px;
+  }
+  .tool-card .tool-name {
+    font-size: 1rem; font-weight: 700; color: var(--accent); font-family: monospace;
+    margin-bottom: 6px;
+  }
+  .tool-card .tool-desc { font-size: 0.88rem; color: var(--text2); margin-bottom: 10px; }
+  .tool-card pre { margin-bottom: 0; }
+</style>
+</head>
+<body>
+
+<div id="progress-bar"></div>
+<div id="overlay"></div>
+
+<!-- Top Header -->
+<header id="top-header">
+  <div class="logo">UBIFS 深度解析</div>
+  <button id="hamburger" aria-label="菜单" onclick="toggleSidebar()">
+    <span></span><span></span><span></span>
+  </button>
+</header>
+
+<!-- Sidebar -->
+<nav id="sidebar">
+  <div class="nav-group" id="grp-intro">
+    <div class="nav-group-header" onclick="toggleGroup('grp-intro')">
+      <span>📖 概述</span><span class="arrow">▾</span>
+    </div>
+    <div class="nav-group-items">
+      <a class="nav-item" onclick="navTo('hero')">主页</a>
+      <a class="nav-item" onclick="navTo('sec-intro')">什么是 UBIFS</a>
+      <a class="nav-item" onclick="navTo('sec-layer')">软件层次结构</a>
+    </div>
+  </div>
+  <div class="nav-group" id="grp-struct">
+    <div class="nav-group-header" onclick="toggleGroup('grp-struct')">
+      <span>🏗️ 内部结构</span><span class="arrow">▾</span>
+    </div>
+    <div class="nav-group-items">
+      <a class="nav-item" onclick="navTo('sec-nodes')">节点类型</a>
+      <a class="nav-item" onclick="navTo('sec-leb')">LEB 布局</a>
+      <a class="nav-item" onclick="navTo('sec-btree')">B+ 树索引</a>
+      <a class="nav-item" onclick="navTo('sec-journal')">日志系统</a>
+      <a class="nav-item" onclick="navTo('sec-lpt')">LPT 属性树</a>
+      <a class="nav-item" onclick="navTo('sec-tnc')">TNC 缓存</a>
+    </div>
+  </div>
+  <div class="nav-group" id="grp-principle">
+    <div class="nav-group-header" onclick="toggleGroup('grp-principle')">
+      <span>⚙️ 工作原理</span><span class="arrow">▾</span>
+    </div>
+    <div class="nav-group-items">
+      <a class="nav-item" onclick="navTo('sec-writeback')">写回机制</a>
+      <a class="nav-item" onclick="navTo('sec-gc')">垃圾回收</a>
+      <a class="nav-item" onclick="navTo('sec-compress')">透明压缩</a>
+      <a class="nav-item" onclick="navTo('sec-crash')">掉电容忍</a>
+    </div>
+  </div>
+  <div class="nav-group" id="grp-proscons">
+    <div class="nav-group-header" onclick="toggleGroup('grp-proscons')">
+      <span>⚖️ 优势与劣势</span><span class="arrow">▾</span>
+    </div>
+    <div class="nav-group-items">
+      <a class="nav-item" onclick="navTo('sec-pros')">优势</a>
+      <a class="nav-item" onclick="navTo('sec-cons')">劣势</a>
+      <a class="nav-item" onclick="navTo('sec-compare')">与 JFFS2 对比</a>
+    </div>
+  </div>
+  <div class="nav-group" id="grp-usage">
+    <div class="nav-group-header" onclick="toggleGroup('grp-usage')">
+      <span>🎯 适用场景</span><span class="arrow">▾</span>
+    </div>
+    <div class="nav-group-items">
+      <a class="nav-item" onclick="navTo('sec-scenario')">典型场景</a>
+      <a class="nav-item" onclick="navTo('sec-notfit')">不适用场景</a>
+    </div>
+  </div>
+  <div class="nav-group" id="grp-tools">
+    <div class="nav-group-header" onclick="toggleGroup('grp-tools')">
+      <span>🔧 工具链</span><span class="arrow">▾</span>
+    </div>
+    <div class="nav-group-items">
+      <a class="nav-item" onclick="navTo('sec-mkfs')">mkfs.ubifs</a>
+      <a class="nav-item" onclick="navTo('sec-ubinize')">ubinize</a>
+      <a class="nav-item" onclick="navTo('sec-ubitools')">UBI 管理工具</a>
+      <a class="nav-item" onclick="navTo('sec-extract')">解压与提取</a>
+      <a class="nav-item" onclick="navTo('sec-workflow')">完整工作流</a>
+    </div>
+  </div>
+</nav>
+
+<!-- Main -->
+<main id="main">
+<div class="content-wrap">
+
+<!-- Hero -->
+<div class="section" id="hero">
+  <div class="tag">Linux 原始闪存文件系统</div>
+  <h1><span>UBIFS</span> 深度解析</h1>
+  <p class="subtitle">UBI File System — 专为裸 NAND/NOR Flash 设计的下一代日志型文件系统，涵盖结构、原理、优劣势、适用场景与工具链</p>
+  <div class="hero-badges">
+    <span class="badge badge-blue">内核原生支持</span>
+    <span class="badge badge-green">掉电安全</span>
+    <span class="badge badge-purple">B+树索引</span>
+    <span class="badge badge-yellow">写回支持</span>
+    <span class="badge badge-blue">透明压缩</span>
+    <span class="badge badge-green">对数扩展性</span>
+  </div>
+</div>
+
+<!-- Section 1: Introduction -->
+<section class="section" id="sec-intro">
+  <h2 class="section-title">1. 什么是 UBIFS</h2>
+
+  <p>
+    <strong>UBIFS</strong>（UBI File System）是由诺基亚工程师与<a href="http://www.inf.u-szeged.hu/" style="color:var(--accent);">匈牙利塞格德大学</a>联合开发的闪存文件系统，在某种意义上可视为 JFFS2 的下一代继任者。UBIFS 专门设计用于<strong>裸闪存（Raw Flash）</strong>，与运行在块设备（eMMC、SD 卡、SSD、USB 闪存）之上的传统文件系统（Ext4、XFS 等）有着根本性的区别。
+  </p>
+
+  <div class="info-box warn">
+    <span class="icon">⚠️</span>
+    <p><strong>重要警告：</strong>UBIFS <em>不能</em>运行在块设备上（如硬盘、MMC/SD 卡、SSD）。块设备内部通过硬件 FTL（Flash Translation Layer）向外暴露块接口，已隐藏了裸 Flash 的细节。UBIFS 只能运行在 UBI 卷之上，而 UBI 运行在 MTD 设备上，MTD 直接驱动原始 Flash 芯片。</p>
+  </div>
+  <a class="source-link" href="http://www.linux-mtd.infradead.org/doc/ubifs.html" target="_blank">📎 原文：linux-mtd.infradead.org/doc/ubifs.html</a>
+
+  <h3 class="section-subtitle">MTD 设备 vs. 块设备</h3>
+  <p>理解 UBIFS 必须先理解 MTD 设备的独特操作模型，内核官方文档明确列出以下关键差异：</p>
+
+  <div class="table-wrap">
+    <table>
+      <thead>
+        <tr>
+          <th>特性</th><th>MTD 设备（裸 Flash）</th><th>块设备（HDD/eMMC/SSD）</th>
+        </tr>
+      </thead>
+      <tbody>
+        <tr><td>基本单元</td><td>擦除块（Eraseblock），典型约 128 KiB</td><td>块（Block），典型 512 字节</td></tr>
+        <tr><td>操作</td><td>读（偏移）/ 写（偏移）/ 擦除（整块）</td><td>读块 / 写块</td></tr>
+        <tr><td>覆盖写</td><td>必须先擦除整块才能重写</td><td>可直接覆盖写</td></tr>
+        <tr><td>磨损</td><td>擦除次数有限（SLC NAND: 100K~1G 次，MLC: 1K~10K 次）</td><td>无磨损限制（HW 透明处理）</td></tr>
+        <tr><td>坏块</td><td>NAND 闪存存在坏块，软件必须处理</td><td>现代 LBA 磁盘自动处理坏块</td></tr>
+      </tbody>
+    </table>
+  </div>
+  <a class="source-link" href="https://www.kernel.org/doc/Documentation/filesystems/ubifs.txt" target="_blank">📎 原文：kernel.org/doc/Documentation/filesystems/ubifs.txt</a>
+
+  <div class="summary-box">
+    <div class="summary-title">📌 章节总结 · 第一性原理</div>
+    <p>闪存的物理约束（必须整块擦除、有磨损次数、可能出现坏块）决定了传统块设备文件系统无法直接适用。UBIFS 的根本设计动机是：在接受这些物理约束的前提下，提供类 POSIX 的文件系统语义，同时兼顾磨损均衡、掉电安全和性能。</p>
+  </div>
+</section>
+
+<!-- Section 2: Layer -->
+<section class="section" id="sec-layer">
+  <h2 class="section-title">2. 软件层次结构</h2>
+
+  <p>UBIFS 并非直接操作硬件，而是构建在完整的软件栈之上。内核文档描述了三个核心子系统：</p>
+
+  <div class="layer-stack">
+    <div class="layer layer-ubifs">🗂️ UBIFS 文件系统层 — 实现文件语义、B+树索引、日志、压缩</div>
+    <div class="layer layer-ubi">📦 UBI 层 — 磨损均衡、卷管理、坏块屏蔽</div>
+    <div class="layer layer-mtd">⚡ MTD 子系统 — 统一 Flash 接口 (/dev/mtd0 …)</div>
+    <div class="layer layer-hw">🔩 硬件驱动 — NAND 驱动 / NOR 驱动</div>
+  </div>
+
+  <div class="diagram-wrap">
+    <svg viewBox="0 0 700 320" xmlns="http://www.w3.org/2000/svg" font-family="'Segoe UI', system-ui, sans-serif">
+      <!-- UBIFS -->
+      <rect x="220" y="20" width="260" height="52" rx="8" fill="#1e2e5c" stroke="#3a5ab5" stroke-width="1.5"/>
+      <text x="350" y="42" fill="#93c5fd" font-size="14" font-weight="700" text-anchor="middle">UBIFS</text>
+      <text x="350" y="60" fill="#60a5fa" font-size="11" text-anchor="middle">B+树 · 日志 · TNC · 压缩</text>
+
+      <!-- Arrow -->
+      <line x1="350" y1="72" x2="350" y2="100" stroke="#4a5568" stroke-width="2" marker-end="url(#arr)"/>
+
+      <!-- UBI -->
+      <rect x="180" y="100" width="340" height="52" rx="8" fill="#1e3a2a" stroke="#2e7a4a" stroke-width="1.5"/>
+      <text x="350" y="122" fill="#86efac" font-size="14" font-weight="700" text-anchor="middle">UBI（Unsorted Block Images）</text>
+      <text x="350" y="140" fill="#4ade80" font-size="11" text-anchor="middle">磨损均衡 · 卷管理 · 坏块处理 · 纠删码</text>
+
+      <!-- Arrow -->
+      <line x1="350" y1="152" x2="350" y2="180" stroke="#4a5568" stroke-width="2" marker-end="url(#arr)"/>
+
+      <!-- MTD -->
+      <rect x="80" y="180" width="540" height="52" rx="8" fill="#3b2a0a" stroke="#8a5a10" stroke-width="1.5"/>
+      <text x="350" y="202" fill="#fcd34d" font-size="14" font-weight="700" text-anchor="middle">MTD 子系统（Memory Technology Device）</text>
+      <text x="350" y="220" fill="#fbbf24" font-size="11" text-anchor="middle">/dev/mtd0, /dev/mtd1 … — 统一原始 Flash 接口</text>
+
+      <!-- Arrow -->
+      <line x1="200" y1="232" x2="200" y2="260" stroke="#4a5568" stroke-width="2" marker-end="url(#arr)"/>
+      <line x1="350" y1="232" x2="350" y2="260" stroke="#4a5568" stroke-width="2" marker-end="url(#arr)"/>
+      <line x1="500" y1="232" x2="500" y2="260" stroke="#4a5568" stroke-width="2" marker-end="url(#arr)"/>
+
+      <!-- HW -->
+      <rect x="60" y="260" width="180" height="44" rx="8" fill="#1a132b" stroke="#5a3a8a" stroke-width="1.5"/>
+      <text x="150" y="279" fill="#c4b5fd" font-size="12" font-weight="700" text-anchor="middle">NAND 驱动</text>
+      <text x="150" y="295" fill="#a78bfa" font-size="10" text-anchor="middle">SLC / MLC / TLC</text>
+
+      <rect x="260" y="260" width="180" height="44" rx="8" fill="#1a132b" stroke="#5a3a8a" stroke-width="1.5"/>
+      <text x="350" y="279" fill="#c4b5fd" font-size="12" font-weight="700" text-anchor="middle">NOR 驱动</text>
+      <text x="350" y="295" fill="#a78bfa" font-size="10" text-anchor="middle">NOR Flash</text>
+
+      <rect x="460" y="260" width="180" height="44" rx="8" fill="#1a132b" stroke="#5a3a8a" stroke-width="1.5"/>
+      <text x="550" y="279" fill="#c4b5fd" font-size="12" font-weight="700" text-anchor="middle">其他</text>
+      <text x="550" y="295" fill="#a78bfa" font-size="10" text-anchor="middle">OneNAND / …</text>
+
+      <defs>
+        <marker id="arr" markerWidth="8" markerHeight="8" refX="4" refY="4" orient="auto">
+          <path d="M0,0 L8,4 L0,8 Z" fill="#4a5568"/>
+        </marker>
+      </defs>
+    </svg>
+    <div class="diagram-caption">图1：Linux 内核中处理原始 Flash 的子系统层次（来源：kernel.org ubifs-authentication 文档）</div>
+  </div>
+  <a class="source-link" href="https://www.kernel.org/doc/html/v5.8/filesystems/ubifs-authentication.html" target="_blank">📎 原文：kernel.org/doc/html/v5.8/filesystems/ubifs-authentication.html</a>
+
+  <p>UBI 层为 UBIFS 提供了以下保证，使文件系统层无需处理底层 Flash 的原始复杂性：</p>
+  <div class="grid-2">
+    <div class="card">
+      <div class="card-title">🔄 磨损均衡</div>
+      <p>UBI 在物理擦除块（PEB）之间均匀分布写入，延长整体寿命</p>
+    </div>
+    <div class="card">
+      <div class="card-title">🚫 坏块屏蔽</div>
+      <p>UBI 透明地将逻辑擦除块（LEB）映射到正常的物理擦除块，坏块对 UBIFS 不可见</p>
+    </div>
+    <div class="card">
+      <div class="card-title">📚 卷管理</div>
+      <p>UBI 支持在一个 MTD 分区上创建多个命名的逻辑卷，类似于分区</p>
+    </div>
+    <div class="card">
+      <div class="card-title">🔍 位翻转清理</div>
+      <p>UBI 检测并纠正可修正的位翻转（Bit Flip），防止累积为不可修正错误</p>
+    </div>
+  </div>
+
+  <div class="summary-box">
+    <div class="summary-title">📌 章节总结</div>
+    <p>分层设计是 UBIFS 的核心工程哲学：MTD 负责硬件抽象，UBI 负责可靠性（磨损均衡、坏块），UBIFS 专注于文件系统语义。每一层职责清晰，UBIFS 因此得以在不关心 Flash 物理细节的情况下提供高性能文件系统服务。</p>
+  </div>
+</section>
+
+<!-- Section 3: Nodes -->
+<section class="section" id="sec-nodes">
+  <h2 class="section-title">3. 节点类型（On-Flash Nodes）</h2>
+
+  <p>
+    UBIFS 在闪存上存储的基本实体称为<strong>节点（Node）</strong>。几乎所有节点类型共享一个公共头部（<span class="inline-code">struct ubifs_ch</span>），包含节点类型、长度、序列号等基础信息（见内核源码 <span class="inline-code">fs/ubifs/ubifs-media.h</span>）。
+  </p>
+  <a class="source-link" href="https://www.kernel.org/doc/Documentation/filesystems/ubifs-authentication.rst" target="_blank">📎 原文：kernel.org/doc/Documentation/filesystems/ubifs-authentication.rst</a>
+
+  <div class="table-wrap">
+    <table>
+      <thead>
+        <tr><th>节点类型</th><th>内核结构体</th><th>用途</th></tr>
+      </thead>
+      <tbody>
+        <tr><td><strong>超级块节点</strong> (Superblock)</td><td><span class="inline-code">ubifs_sb_node</span></td><td>存储文件系统全局参数（LEB 大小、日志大小、压缩类型等），位于 LEB 0，很少变化</td></tr>
+        <tr><td><strong>主节点</strong> (Master Node)</td><td><span class="inline-code">ubifs_mst_node</span></td><td>指向 B+树根节点的最新位置，存于 LEB 1（LEB 2 备份），每次 commit 更新</td></tr>
+        <tr><td><strong>索引节点</strong> (Index Node)</td><td><span class="inline-code">ubifs_idx_node</span></td><td>B+树的中间节点，存储子节点的键和物理位置</td></tr>
+        <tr><td><strong>数据节点</strong> (Data Node)</td><td><span class="inline-code">ubifs_data_node</span></td><td>存储文件内容的压缩数据块（最大 4096 字节数据）</td></tr>
+        <tr><td><strong>Inode 节点</strong> (Inode Node)</td><td><span class="inline-code">ubifs_ino_node</span></td><td>对应 VFS inode，存储文件元数据（权限、时间戳、大小等）</td></tr>
+        <tr><td><strong>目录项节点</strong> (Dentry Node)</td><td><span class="inline-code">ubifs_dent_node</span></td><td>目录条目，关联文件名与 inode 编号</td></tr>
+        <tr><td><strong>引用节点</strong> (Reference Node)</td><td><span class="inline-code">ubifs_ref_node</span></td><td>日志区内使用，指向日志条目（bud）所在的物理位置</td></tr>
+        <tr><td><strong>提交开始节点</strong> (Commit Start)</td><td><span class="inline-code">ubifs_cs_node</span></td><td>标记一次索引 commit 的起点，用于挂载时日志回放</td></tr>
+        <tr><td><strong>填充节点</strong> (Padding Node)</td><td>—</td><td>填充 LEB 末尾无法利用的空间，使数据对齐</td></tr>
+      </tbody>
+    </table>
+  </div>
+
+  <div class="diagram-wrap">
+    <svg viewBox="0 0 680 200" xmlns="http://www.w3.org/2000/svg" font-family="'Segoe UI', system-ui, sans-serif">
+      <!-- Common header -->
+      <text x="340" y="18" fill="#94a3b8" font-size="11" text-anchor="middle">通用节点布局（所有节点共享公共头部）</text>
+      <rect x="40" y="28" width="600" height="50" rx="6" fill="#1e2533" stroke="#2e3348" stroke-width="1"/>
+      <rect x="40" y="28" width="140" height="50" rx="6" fill="#1e3a5c" stroke="#3a5ab5" stroke-width="1.5"/>
+      <text x="110" y="50" fill="#93c5fd" font-size="11" font-weight="700" text-anchor="middle">公共头部 (ubifs_ch)</text>
+      <text x="110" y="66" fill="#60a5fa" font-size="10" text-anchor="middle">类型·长度·序列号·CRC</text>
+      <rect x="180" y="28" width="160" height="50" rx="0" fill="#1e3a2a" stroke="#2e7a4a" stroke-width="1"/>
+      <text x="260" y="52" fill="#86efac" font-size="11" font-weight="700" text-anchor="middle">键 / Key</text>
+      <text x="260" y="67" fill="#4ade80" font-size="10" text-anchor="middle">inode#·type·block#</text>
+      <rect x="340" y="28" width="300" height="50" rx="0" fill="#2a1f0a" stroke="#7a4c10" stroke-width="1"/>
+      <text x="490" y="52" fill="#fcd34d" font-size="11" font-weight="700" text-anchor="middle">节点特定数据</text>
+      <text x="490" y="67" fill="#fbbf24" font-size="10" text-anchor="middle">依节点类型而定</text>
+
+      <!-- Node examples -->
+      <text x="40" y="108" fill="#64748b" font-size="10">数据节点 (Data):</text>
+      <rect x="40" y="115" width="100" height="34" rx="4" fill="#1e3a5c" stroke="#3a5ab5" stroke-width="1"/>
+      <text x="90" y="136" fill="#93c5fd" font-size="10" text-anchor="middle">ubifs_ch</text>
+      <rect x="140" y="115" width="70" height="34" rx="0" fill="#1e3a2a" stroke="#2e7a4a" stroke-width="1"/>
+      <text x="175" y="136" fill="#86efac" font-size="10" text-anchor="middle">key</text>
+      <rect x="210" y="115" width="160" height="34" rx="0" fill="#2a1f0a" stroke="#7a4c10" stroke-width="1"/>
+      <text x="290" y="136" fill="#fcd34d" font-size="10" text-anchor="middle">压缩数据 (≤4096B)</text>
+
+      <text x="400" y="108" fill="#64748b" font-size="10">Inode 节点:</text>
+      <rect x="400" y="115" width="100" height="34" rx="4" fill="#1e3a5c" stroke="#3a5ab5" stroke-width="1"/>
+      <text x="450" y="136" fill="#93c5fd" font-size="10" text-anchor="middle">ubifs_ch</text>
+      <rect x="500" y="115" width="70" height="34" rx="0" fill="#1e3a2a" stroke="#2e7a4a" stroke-width="1"/>
+      <text x="535" y="136" fill="#86efac" font-size="10" text-anchor="middle">key</text>
+      <rect x="570" y="115" width="70" height="34" rx="0" fill="#2a1f0a" stroke="#7a4c10" stroke-width="1"/>
+      <text x="605" y="133" fill="#fcd34d" font-size="9" text-anchor="middle">uid/gid/mode</text>
+      <text x="605" y="145" fill="#fcd34d" font-size="9" text-anchor="middle">时间戳/大小</text>
+
+      <!-- integrity note -->
+      <rect x="40" y="164" width="600" height="28" rx="6" fill="#14372a" stroke="#2e7a4a" stroke-width="1"/>
+      <text x="340" y="183" fill="#4ade80" font-size="11" text-anchor="middle">✓ 每个节点都有 CRC32 校验 — UBIFS 对所有写入内容执行完整性校验</text>
+    </svg>
+    <div class="diagram-caption">图2：UBIFS 节点通用布局及典型节点示例</div>
+  </div>
+
+  <div class="summary-box">
+    <div class="summary-title">📌 章节总结</div>
+    <p>节点是 UBIFS 闪存存储的原子单元。所有节点携带 CRC 校验，保证数据完整性。节点不跨越 LEB 边界，这一设计使垃圾回收成为以 LEB 为粒度的简单操作。</p>
+  </div>
+</section>
+
+<!-- Section 4: LEB Layout -->
+<section class="section" id="sec-leb">
+  <h2 class="section-title">4. LEB 空间布局</h2>
+
+  <p>UBIFS 将 UBI 卷中的逻辑擦除块（LEB）按照固定用途进行划分。以下是一个典型 UBIFS 卷的 LEB 区域分配（摘自 <span class="inline-code">mkfs.ubifs</span> 输出）：</p>
+
+  <div class="diagram-wrap">
+    <svg viewBox="0 0 660 380" xmlns="http://www.w3.org/2000/svg" font-family="'Segoe UI', system-ui, sans-serif">
+      <!-- Title -->
+      <text x="330" y="20" fill="#94a3b8" font-size="12" text-anchor="middle" font-weight="600">UBIFS 卷 LEB 区域布局</text>
+
+      <!-- LEB 0: Superblock -->
+      <rect x="40" y="32" width="580" height="38" rx="5" fill="#1e3a5c" stroke="#3a5ab5" stroke-width="1.5"/>
+      <text x="56" y="48" fill="#93c5fd" font-size="11" font-weight="700">LEB 0</text>
+      <text x="56" y="62" fill="#60a5fa" font-size="10">超级块节点（Superblock Node）— 文件系统全局参数</text>
+      <text x="606" y="55" fill="#3a5ab5" font-size="10" text-anchor="end">1 LEB</text>
+
+      <!-- LEB 1-2: Master -->
+      <rect x="40" y="76" width="580" height="38" rx="5" fill="#2a1f4a" stroke="#5a3a8a" stroke-width="1.5"/>
+      <text x="56" y="92" fill="#c4b5fd" font-size="11" font-weight="700">LEB 1–2</text>
+      <text x="56" y="106" fill="#a78bfa" font-size="10">主节点（Master Node）× 2 — 指向 B+树根，互为备份</text>
+      <text x="606" y="99" fill="#5a3a8a" font-size="10" text-anchor="end">2 LEBs</text>
+
+      <!-- Log area -->
+      <rect x="40" y="120" width="580" height="38" rx="5" fill="#1e3a2a" stroke="#2e7a4a" stroke-width="1.5"/>
+      <text x="56" y="136" fill="#86efac" font-size="11" font-weight="700">LEB 3–N</text>
+      <text x="56" y="150" fill="#4ade80" font-size="10">日志区（Log Area）— Reference Nodes + Commit Start Nodes，环形</text>
+      <text x="606" y="143" fill="#2e7a4a" font-size="10" text-anchor="end">可配置</text>
+
+      <!-- LPT area -->
+      <rect x="40" y="164" width="580" height="38" rx="5" fill="#3b2a0a" stroke="#8a5a10" stroke-width="1.5"/>
+      <text x="56" y="180" fill="#fcd34d" font-size="11" font-weight="700">LPT 区</text>
+      <text x="56" y="194" fill="#fbbf24" font-size="10">LPT B+树（LEB Properties Tree）— 每个 LEB 的脏/空闲空间统计</text>
+      <text x="606" y="187" fill="#8a5a10" font-size="10" text-anchor="end">若干 LEBs</text>
+
+      <!-- Orphan area -->
+      <rect x="40" y="208" width="580" height="38" rx="5" fill="#2a1414" stroke="#6a2020" stroke-width="1.5"/>
+      <text x="56" y="224" fill="#fca5a5" font-size="11" font-weight="700">孤儿区（Orphan Area）</text>
+      <text x="56" y="238" fill="#f87171" font-size="10">记录已删除但尚有引用的 inode，重启后清理</text>
+      <text x="606" y="231" fill="#6a2020" font-size="10" text-anchor="end">1 LEB</text>
+
+      <!-- Main area -->
+      <rect x="40" y="252" width="580" height="70" rx="5" fill="#0f1e35" stroke="#1e4a80" stroke-width="1.5"/>
+      <text x="56" y="270" fill="#7dd3fc" font-size="11" font-weight="700">主数据区（Main Area）</text>
+      <text x="56" y="285" fill="#60a5fa" font-size="10">索引节点 · 数据节点 · Inode 节点 · 目录节点 · Bud LEBs（日志数据）</text>
+      <!-- subdivide -->
+      <rect x="56" y="293" width="100" height="22" rx="3" fill="#1a3a6a" stroke="#3a6ab5"/>
+      <text x="106" y="308" fill="#93c5fd" font-size="9" text-anchor="middle">GC 保留</text>
+      <rect x="162" y="293" width="120" height="22" rx="3" fill="#1a3a6a" stroke="#3a6ab5"/>
+      <text x="222" y="308" fill="#93c5fd" font-size="9" text-anchor="middle">索引 LEBs</text>
+      <rect x="288" y="293" width="300" height="22" rx="3" fill="#0f2a4a" stroke="#2a5a90"/>
+      <text x="438" y="308" fill="#60a5fa" font-size="9" text-anchor="middle">数据 LEBs（Bud + 已索引数据）</text>
+      <text x="606" y="287" fill="#1e4a80" font-size="10" text-anchor="end">大部分空间</text>
+
+      <!-- Total -->
+      <rect x="40" y="332" width="580" height="36" rx="5" fill="#1a1d27" stroke="#2e3348" stroke-width="1"/>
+      <text x="330" y="355" fill="#94a3b8" font-size="11" text-anchor="middle">LEB 总数 = 1(超级块) + 2(Master) + log_lebs + lpt_lebs + orph_lebs + main_lebs</text>
+    </svg>
+    <div class="diagram-caption">图3：UBIFS 卷 LEB 区域分配示意图</div>
+  </div>
+
+  <div class="info-box note">
+    <span class="icon">ℹ️</span>
+    <p>UBIFS 节点<strong>不跨越 LEB 边界</strong>。这一约束简化了垃圾回收（GC 以整个 LEB 为单位操作）和崩溃恢复。这也意味着 LEB 末尾可能有少量空间浪费（padding）。</p>
+  </div>
+  <a class="source-link" href="http://www.linux-mtd.infradead.org/faq/ubifs.html" target="_blank">📎 原文：linux-mtd.infradead.org/faq/ubifs.html</a>
+
+  <div class="summary-box">
+    <div class="summary-title">📌 章节总结</div>
+    <p>UBIFS 将 UBI 卷的 LEB 按功能分区：超级块、双主节点（互备）、日志区、LPT 区、孤儿区、主数据区。这种固定职责划分保证了每个区域语义清晰，挂载时只需读 LEB 1/2（主节点）即可定位整个文件系统状态，避免了全盘扫描。</p>
+  </div>
+</section>
+
+<!-- Section 5: B+Tree Index -->
+<section class="section" id="sec-btree">
+  <h2 class="section-title">5. B+ 树索引（Wandering Tree）</h2>
+
+  <p>
+    UBIFS 在闪存上维护一棵 <strong>B+ 树</strong>作为文件系统索引（Index）。叶节点存储实际的文件系统数据（数据节点、inode 节点等），中间节点存储路由信息。
+  </p>
+
+  <p>
+    为了避免每次修改都重写整棵 B+ 树，UBIFS 将其实现为<strong>漂移树（Wandering Tree）</strong>：只有被修改的节点才会被重新写入，旧版本节点被标记为过时（Obsolete）但不立即擦除。结果是索引并不固定在 Flash 的某一位置，而是随着写入不断"漂移"。
+  </p>
+  <a class="source-link" href="https://www.kernel.org/doc/Documentation/filesystems/ubifs-authentication.rst" target="_blank">📎 原文：kernel.org/doc/Documentation/filesystems/ubifs-authentication.rst</a>
+
+  <div class="diagram-wrap">
+    <svg viewBox="0 0 680 310" xmlns="http://www.w3.org/2000/svg" font-family="'Segoe UI', system-ui, sans-serif">
+      <text x="340" y="18" fill="#94a3b8" font-size="11" text-anchor="middle">UBIFS B+ 漂移树结构（索引节点 + 数据节点）</text>
+
+      <!-- Root (index node) -->
+      <rect x="270" y="28" width="140" height="40" rx="6" fill="#1e3a5c" stroke="#4f8ef7" stroke-width="2"/>
+      <text x="340" y="44" fill="#93c5fd" font-size="11" font-weight="700" text-anchor="middle">根索引节点</text>
+      <text x="340" y="58" fill="#60a5fa" font-size="9" text-anchor="middle">主节点(LEB1)指向此处</text>
+
+      <!-- Level 1 index nodes -->
+      <line x1="290" y1="68" x2="170" y2="112" stroke="#3a5ab5" stroke-width="1.5"/>
+      <line x1="350" y1="68" x2="350" y2="112" stroke="#3a5ab5" stroke-width="1.5"/>
+      <line x1="410" y1="68" x2="510" y2="112" stroke="#3a5ab5" stroke-width="1.5"/>
+
+      <rect x="100" y="112" width="120" height="34" rx="5" fill="#1e3a5c" stroke="#3a5ab5" stroke-width="1.5"/>
+      <text x="160" y="134" fill="#93c5fd" font-size="10" text-anchor="middle">中间索引节点</text>
+      <rect x="290" y="112" width="120" height="34" rx="5" fill="#1e3a5c" stroke="#3a5ab5" stroke-width="1.5"/>
+      <text x="350" y="134" fill="#93c5fd" font-size="10" text-anchor="middle">中间索引节点</text>
+      <rect x="450" y="112" width="120" height="34" rx="5" fill="#1e3a5c" stroke="#3a5ab5" stroke-width="1.5"/>
+      <text x="510" y="134" fill="#93c5fd" font-size="10" text-anchor="middle">中间索引节点</text>
+
+      <!-- Leaf nodes -->
+      <line x1="140" y1="146" x2="80" y2="188" stroke="#2e7a4a" stroke-width="1.5"/>
+      <line x1="160" y1="146" x2="160" y2="188" stroke="#2e7a4a" stroke-width="1.5"/>
+      <line x1="180" y1="146" x2="240" y2="188" stroke="#2e7a4a" stroke-width="1.5"/>
+      <line x1="490" y1="146" x2="530" y2="188" stroke="#2e7a4a" stroke-width="1.5"/>
+      <line x1="530" y1="146" x2="600" y2="188" stroke="#2e7a4a" stroke-width="1.5"/>
+
+      <!-- Data/inode leaf nodes -->
+      <rect x="44" y="188" width="72" height="32" rx="4" fill="#1a2b1a" stroke="#2e7a4a" stroke-width="1"/>
+      <text x="80" y="208" fill="#86efac" font-size="9" text-anchor="middle">数据节点</text>
+      <rect x="124" y="188" width="72" height="32" rx="4" fill="#1a2b1a" stroke="#2e7a4a" stroke-width="1"/>
+      <text x="160" y="208" fill="#86efac" font-size="9" text-anchor="middle">Inode节点</text>
+      <rect x="204" y="188" width="72" height="32" rx="4" fill="#1a2b1a" stroke="#2e7a4a" stroke-width="1"/>
+      <text x="240" y="208" fill="#86efac" font-size="9" text-anchor="middle">目录节点</text>
+      <rect x="494" y="188" width="72" height="32" rx="4" fill="#1a2b1a" stroke="#2e7a4a" stroke-width="1"/>
+      <text x="530" y="208" fill="#86efac" font-size="9" text-anchor="middle">数据节点</text>
+      <rect x="574" y="188" width="72" height="32" rx="4" fill="#1a2b1a" stroke="#2e7a4a" stroke-width="1"/>
+      <text x="610" y="208" fill="#86efac" font-size="9" text-anchor="middle">数据节点</text>
+
+      <!-- Wandering: show "dirty" node being rewritten -->
+      <rect x="270" y="240" width="200" height="50" rx="8" fill="#2a1f0a" stroke="#f59e0b" stroke-width="1.5" stroke-dasharray="5,3"/>
+      <text x="370" y="258" fill="#fcd34d" font-size="10" font-weight="700" text-anchor="middle">⟳ 漂移树机制</text>
+      <text x="370" y="272" fill="#fbbf24" font-size="9" text-anchor="middle">修改节点 → 写新位置</text>
+      <text x="370" y="284" fill="#fbbf24" font-size="9" text-anchor="middle">旧节点标记 Obsolete</text>
+
+      <!-- Obsolete marker -->
+      <rect x="44" y="188" width="72" height="32" rx="4" fill="none" stroke="#ef4444" stroke-width="2" stroke-dasharray="4,3"/>
+      <text x="80" y="230" fill="#ef4444" font-size="8" text-anchor="middle">← 已过时</text>
+    </svg>
+    <div class="diagram-caption">图4：UBIFS B+ 漂移树示意图，修改的节点写入新位置，旧节点标记过时</div>
+  </div>
+
+  <h3 class="section-subtitle">主节点（Master Node）</h3>
+  <p>
+    为了找到最新版本的 B+ 树根节点，UBIFS 在 <strong>LEB 1</strong> 中存储一个特殊的<strong>主节点（Master Node）</strong>，它始终指向最新的 B+ 树根。为了可恢复性，主节点同时备份于 <strong>LEB 2</strong>。挂载 UBIFS 只需读取 LEB 1 和 LEB 2 即可获取主节点，再从主节点找到最新的索引根——无需全盘扫描。
+  </p>
+  <a class="source-link" href="https://www.kernel.org/doc/Documentation/filesystems/ubifs-authentication.rst" target="_blank">📎 原文：kernel.org/doc/Documentation/filesystems/ubifs-authentication.rst</a>
+
+  <div class="summary-box">
+    <div class="summary-title">📌 章节总结 · 第一性原理</div>
+    <p>闪存写入只能追加（Out-of-Place Write），不能原地修改。B+ 漂移树正是对这一约束的直接映射：每次修改写到新位置，旧位置由垃圾回收异步清理。主节点的双备份机制保证了即使在修改索引途中掉电，也总能找到一致的文件系统状态。</p>
+  </div>
+</section>
+
+<!-- Section 6: Journal -->
+<section class="section" id="sec-journal">
+  <h2 class="section-title">6. 日志系统（Journal）</h2>
+
+  <p>
+    为避免频繁更新闪存上的 B+ 树（每次 commit 的开销），UBIFS 使用<strong>日志（Journal）</strong>来缓冲文件系统变更。日志记录 commit 之间的所有修改，挂载时回放日志即可重建最新状态。
+  </p>
+
+  <div class="info-box note">
+    <span class="icon">ℹ️</span>
+    <p>UBIFS 日志是<strong>"漂移"的</strong>，没有固定位置。提交后 UBIFS 选择新的 LEB 作为新日志，旧日志 LEB 被回收。这与 ext3 固定位置的日志完全不同。</p>
+  </div>
+  <a class="source-link" href="http://www.linux-mtd.infradead.org/faq/ubifs.html" target="_blank">📎 原文：linux-mtd.infradead.org/faq/ubifs.html（"I need more space" 章节）</a>
+
+  <h3 class="section-subtitle">日志区组成</h3>
+  <p>日志区（Log Area）由 <span class="inline-code">mkfs.ubifs</span> 创建时配置，只包含两种节点：</p>
+  <div class="grid-2">
+    <div class="card">
+      <div class="card-title">📌 引用节点（Reference Node）</div>
+      <p>每次日志更新时写入，指向实际变更数据（Bud 节点）所在的 Flash 位置</p>
+    </div>
+    <div class="card">
+      <div class="card-title">🏁 提交开始节点（Commit Start Node）</div>
+      <p>每次索引 commit 时写入，挂载时从最新的 Commit Start Node 开始回放，忽略之前的引用节点</p>
+    </div>
+  </div>
+
+  <div class="diagram-wrap">
+    <svg viewBox="0 0 680 240" xmlns="http://www.w3.org/2000/svg" font-family="'Segoe UI', system-ui, sans-serif">
+      <text x="340" y="18" fill="#94a3b8" font-size="11" text-anchor="middle">UBIFS 日志区 + Bud 区结构（环形日志）</text>
+
+      <!-- Log area ring -->
+      <rect x="20" y="28" width="640" height="54" rx="6" fill="#1e3a2a" stroke="#2e7a4a" stroke-width="1.5"/>
+      <text x="36" y="44" fill="#4ade80" font-size="10" font-weight="700">日志区（Log Area）— 环形</text>
+      <!-- items -->
+      <rect x="36" y="50" width="70" height="26" rx="3" fill="#3b1111" stroke="#6a2020"/>
+      <text x="71" y="67" fill="#fca5a5" font-size="9" text-anchor="middle">CS</text>
+      <rect x="112" y="50" width="70" height="26" rx="3" fill="#1e3a2a" stroke="#2e7a4a"/>
+      <text x="147" y="67" fill="#86efac" font-size="9" text-anchor="middle">REF→A</text>
+      <rect x="188" y="50" width="70" height="26" rx="3" fill="#1e3a2a" stroke="#2e7a4a"/>
+      <text x="223" y="67" fill="#86efac" font-size="9" text-anchor="middle">REF→B</text>
+      <rect x="264" y="50" width="70" height="26" rx="3" fill="#3b1111" stroke="#6a2020"/>
+      <text x="299" y="67" fill="#fca5a5" font-size="9" text-anchor="middle">CS'</text>
+      <rect x="340" y="50" width="70" height="26" rx="3" fill="#1e3a2a" stroke="#2e7a4a"/>
+      <text x="375" y="67" fill="#86efac" font-size="9" text-anchor="middle">REF→C</text>
+      <rect x="416" y="50" width="70" height="26" rx="3" fill="#1e3a2a" stroke="#2e7a4a"/>
+      <text x="451" y="67" fill="#86efac" font-size="9" text-anchor="middle">REF→D</text>
+      <text x="530" y="62" fill="#4ade80" font-size="10">… (环形)</text>
+      <!-- legend -->
+      <rect x="580" y="50" width="12" height="12" fill="#3b1111" stroke="#6a2020"/>
+      <text x="596" y="62" fill="#fca5a5" font-size="9">CS=Commit Start</text>
+      <rect x="580" y="68" width="12" height="12" fill="#1e3a2a" stroke="#2e7a4a"/>
+      <text x="596" y="80" fill="#86efac" font-size="9">REF=Reference</text>
+
+      <!-- Arrows to Bud LEBs -->
+      <line x1="147" y1="76" x2="147" y2="115" stroke="#2e7a4a" stroke-width="1.5" marker-end="url(#arr2)"/>
+      <line x1="375" y1="76" x2="375" y2="115" stroke="#2e7a4a" stroke-width="1.5" marker-end="url(#arr2)"/>
+
+      <!-- Bud LEBs -->
+      <rect x="60" y="115" width="180" height="50" rx="6" fill="#1e2240" stroke="#3a4ab5" stroke-width="1.5"/>
+      <text x="150" y="133" fill="#93c5fd" font-size="10" font-weight="700" text-anchor="middle">Bud LEB A</text>
+      <text x="150" y="149" fill="#60a5fa" font-size="9" text-anchor="middle">inode/数据节点 (实际变更)</text>
+      <rect x="284" y="115" width="180" height="50" rx="6" fill="#1e2240" stroke="#3a4ab5" stroke-width="1.5"/>
+      <text x="374" y="133" fill="#93c5fd" font-size="10" font-weight="700" text-anchor="middle">Bud LEB C</text>
+      <text x="374" y="149" fill="#60a5fa" font-size="9" text-anchor="middle">inode/数据节点 (实际变更)</text>
+
+      <!-- Replay note -->
+      <rect x="20" y="180" width="640" height="44" rx="6" fill="#0f1e35" stroke="#1e4a80" stroke-width="1"/>
+      <text x="340" y="197" fill="#60a5fa" font-size="10" font-weight="700" text-anchor="middle">挂载时日志回放流程</text>
+      <text x="340" y="214" fill="#93c5fd" font-size="9.5" text-anchor="middle">找到最新 CS 节点 → 回放其后所有 REF 节点 → 读取 Bud → 重建 TNC（内存索引） → 挂载完成</text>
+
+      <defs>
+        <marker id="arr2" markerWidth="8" markerHeight="8" refX="4" refY="4" orient="auto">
+          <path d="M0,0 L8,4 L0,8 Z" fill="#2e7a4a"/>
+        </marker>
+      </defs>
+    </svg>
+    <div class="diagram-caption">图5：UBIFS 日志区结构与挂载时回放流程</div>
+  </div>
+
+  <h3 class="section-subtitle">后台线程（ubifs_bgt）</h3>
+  <p>
+    UBIFS 为每个挂载的文件系统创建一个后台线程，命名为 <span class="inline-code">ubifs_bgt<em>X</em>_<em>Y</em></span>（X=UBI设备号，Y=卷号）。其主要职责包括：
+  </p>
+  <ul style="color:var(--text2); padding-left:20px; margin-bottom:14px;">
+    <li>日志使用率达约 80% 时发起<strong>后台提交</strong>（Background Commit），确保提交完成前日志不会满</li>
+    <li>定时刷新<strong>写缓冲区</strong>（Write Buffer）</li>
+  </ul>
+  <a class="source-link" href="http://www.linux-mtd.infradead.org/faq/ubifs.html" target="_blank">📎 原文：linux-mtd.infradead.org/faq/ubifs.html（"ubifs_bgt" 章节）</a>
+
+  <div class="summary-box">
+    <div class="summary-title">📌 章节总结</div>
+    <p>日志是 UBIFS 掉电安全的核心机制，也是快速挂载的关键：挂载时只需扫描固定大小的日志（不随文件系统容量增长），而非全盘扫描。日志大小是在 <span class="inline-code">mkfs.ubifs</span> 创建时配置的，并存储在超级块节点中。</p>
+  </div>
+</section>
+
+<!-- Section 7: LPT -->
+<section class="section" id="sec-lpt">
+  <h2 class="section-title">7. LPT — 逻辑擦除块属性树</h2>
+
+  <p>
+    <strong>LPT（LEB Properties Tree）</strong>是一棵存储在闪存上的 B+ 树，记录每个 UBI 逻辑擦除块（LEB）的<strong>空间使用信息</strong>（空闲空间、脏空间大小）。这是 UBIFS 相比 JFFS2 的关键改进之一。
+  </p>
+
+  <div class="table-wrap">
+    <table>
+      <thead>
+        <tr><th>特性</th><th>JFFS2</th><th>UBIFS (LPT)</th></tr>
+      </thead>
+      <tbody>
+        <tr>
+          <td>空间统计存储位置</td>
+          <td class="bad-cell">不存储，每次挂载重新扫描全盘计算</td>
+          <td class="ok-cell">持久化存储在 LPT B+树中</td>
+        </tr>
+        <tr>
+          <td>挂载后全盘 CRC 检查</td>
+          <td class="bad-cell">需要，挂载后后台进行，消耗大量 CPU</td>
+          <td class="ok-cell">不需要，直接读 LPT 即可</td>
+        </tr>
+        <tr>
+          <td>内存占用</td>
+          <td class="bad-cell">与 Flash 大小线性相关</td>
+          <td class="ok-cell">LPT 可收缩（Shrinkable）</td>
+        </tr>
+      </tbody>
+    </table>
+  </div>
+  <a class="source-link" href="http://www.linux-mtd.infradead.org/doc/ubifs.html" target="_blank">📎 原文：linux-mtd.infradead.org/doc/ubifs.html（Scalability 章节对比表）</a>
+
+  <p>LPT 的根节点地址存储在主节点（Master Node）中，每次 commit 时 LPT 被原子性地整体写入，无需对单个 LPT 节点做单独认证。</p>
+
+  <div class="summary-box">
+    <div class="summary-title">📌 章节总结</div>
+    <p>LPT 的本质是将"空间记账"持久化到 Flash。由于空间信息总是最新且随时可读，UBIFS 既不需要全盘扫描（像 JFFS2 挂载时那样），也不需要在内存中为每个节点保留数据结构。这是实现"挂载时间不依赖文件系统内容"的根本保障。</p>
+  </div>
+</section>
+
+<!-- Section 8: TNC -->
+<section class="section" id="sec-tnc">
+  <h2 class="section-title">8. TNC — 树节点缓存</h2>
+
+  <p>
+    <strong>TNC（Tree Node Cache）</strong>是闪存上 B+ 索引树的<strong>内存表示</strong>。它包含每个节点的运行时额外属性（不持久化），最重要的是一个<strong>脏标志（Dirty Flag）</strong>——标记需要在下次 commit 时写回闪存的节点。
+  </p>
+
+  <div class="grid-2">
+    <div class="card">
+      <div class="card-title">📝 写回缓存</div>
+      <p>TNC 充当写回缓存，所有对 B+ 树的修改都经过 TNC。这使 UBIFS 支持写回（Write-Back）模式，大幅提升写入吞吐量</p>
+    </div>
+    <div class="card">
+      <div class="card-title">💾 可收缩</div>
+      <p>TNC 不需要将完整的 B+ 树镜像到内存中，按需从 Flash 读取部分节点，并可在内存不足时被内核收缩（Shrink）</p>
+    </div>
+  </div>
+
+  <p>
+    <strong>Commit 操作</strong>是将 TNC 中所有脏节点写回闪存、更新 B+ 树的过程。触发 commit 的条件包括：<span class="inline-code">fsync(2)</span>、日志将满（约80%时由后台线程触发）、<span class="inline-code">sync()</span> 系统调用等。
+  </p>
+  <a class="source-link" href="https://www.kernel.org/doc/Documentation/filesystems/ubifs-authentication.rst" target="_blank">📎 原文：kernel.org/doc/Documentation/filesystems/ubifs-authentication.rst（TNC 章节）</a>
+
+  <div class="summary-box">
+    <div class="summary-title">📌 章节总结</div>
+    <p>TNC 是内存与闪存之间的桥梁。它不仅提升了读性能（缓存热索引节点），更通过延迟写（写回）减少了闪存擦写次数，延长设备寿命。这是 UBIFS 在写性能上显著优于 JFFS2（写穿）的直接原因。</p>
+  </div>
+</section>
+
+<!-- Section 9: Write-back -->
+<section class="section" id="sec-writeback">
+  <h2 class="section-title">9. 写回机制（Write-Back）</h2>
+
+  <p>
+    与 JFFS2 的<strong>写穿（Write-Through）</strong>不同，UBIFS 支持<strong>写回（Write-Back）</strong>。数据先写入页缓存（Page Cache），由内核 pdflush/writeback 线程异步刷写到 Flash。这极大地提升了写入吞吐量。
+  </p>
+  <a class="source-link" href="http://www.linux-mtd.infradead.org/doc/ubifs.html" target="_blank">📎 原文：linux-mtd.infradead.org/doc/ubifs.html（Write-back support 章节）</a>
+
+  <h3 class="section-subtitle">写缓冲区（Write Buffer）</h3>
+  <p>
+    UBIFS 维护一个内存中的<strong>写缓冲区（Write Buffer）</strong>，对应 Flash 的最小 I/O 单元大小（通常为 2KiB NAND 页）。写缓冲区使 UBIFS 可以将小写操作合并，避免频繁的 Flash 写入操作。
+  </p>
+  <p>写缓冲区由后台线程定时刷新（超时后强制写回），也可通过 <span class="inline-code">fsync()</span>/<span class="inline-code">sync()</span> 显式触发。</p>
+
+  <div class="info-box warn">
+    <span class="icon">⚠️</span>
+    <p>写回模式意味着：文件创建或截断后若发生掉电，文件可能丢失或变为零字节（创建是同步的，数据写入是异步的）。应用程序应使用 <span class="inline-code">fsync()</span> 或原子文件更新技术来保证关键数据安全。</p>
+  </div>
+  <a class="source-link" href="http://www.linux-mtd.infradead.org/faq/ubifs.html" target="_blank">📎 原文：linux-mtd.infradead.org/faq/ubifs.html（"Why is my file empty" 章节）</a>
+
+  <div class="summary-box">
+    <div class="summary-title">📌 章节总结 · 第一性原理</div>
+    <p>写回是以牺牲"掉电前最后数据必然持久化"为代价，换取显著的写入性能。对于嵌入式系统，这是合理的取舍——关键数据可通过 fsync 显式持久化，一般文件则享受批量写入带来的性能红利与闪存寿命延长。</p>
+  </div>
+</section>
+
+<!-- Section 10: GC -->
+<section class="section" id="sec-gc">
+  <h2 class="section-title">10. 垃圾回收（Garbage Collection）</h2>
+
+  <p>
+    UBIFS 无法原地覆盖 Flash 数据。文件内容被修改时，旧数据节点变为<strong>脏空间（Dirty Space）</strong>。脏空间必须通过<strong>垃圾回收（GC）</strong>整理后才能重新利用。
+  </p>
+
+  <div class="diagram-wrap">
+    <svg viewBox="0 0 680 200" xmlns="http://www.w3.org/2000/svg" font-family="'Segoe UI', system-ui, sans-serif">
+      <text x="340" y="18" fill="#94a3b8" font-size="11" text-anchor="middle">UBIFS 垃圾回收流程</text>
+
+      <!-- Step 1: Victim LEB -->
+      <rect x="20" y="30" width="140" height="130" rx="6" fill="#2a1414" stroke="#6a2020" stroke-width="1.5"/>
+      <text x="90" y="48" fill="#f87171" font-size="10" font-weight="700" text-anchor="middle">受害 LEB（Victim）</text>
+      <rect x="30" y="54" width="120" height="20" rx="3" fill="#3a2020" stroke="#6a2020"/>
+      <text x="90" y="68" fill="#ef4444" font-size="9" text-anchor="middle">脏节点（过时）</text>
+      <rect x="30" y="78" width="120" height="20" rx="3" fill="#1e3a2a" stroke="#2e7a4a"/>
+      <text x="90" y="92" fill="#86efac" font-size="9" text-anchor="middle">有效节点 A</text>
+      <rect x="30" y="102" width="120" height="20" rx="3" fill="#3a2020" stroke="#6a2020"/>
+      <text x="90" y="116" fill="#ef4444" font-size="9" text-anchor="middle">脏节点（过时）</text>
+      <rect x="30" y="126" width="120" height="20" rx="3" fill="#1e3a2a" stroke="#2e7a4a"/>
+      <text x="90" y="140" fill="#86efac" font-size="9" text-anchor="middle">有效节点 B</text>
+
+      <!-- Arrow 1 -->
+      <text x="175" y="95" fill="#f59e0b" font-size="20" text-anchor="middle">→</text>
+      <text x="175" y="112" fill="#f59e0b" font-size="8" text-anchor="middle">移动有效节点</text>
+
+      <!-- Step 2: GC reserved LEB -->
+      <rect x="200" y="30" width="140" height="130" rx="6" fill="#1a2b3a" stroke="#2e5a80" stroke-width="1.5"/>
+      <text x="270" y="48" fill="#7dd3fc" font-size="10" font-weight="700" text-anchor="middle">GC 保留 LEB</text>
+      <rect x="210" y="54" width="120" height="20" rx="3" fill="#0f1e35" stroke="#1e4a80"/>
+      <text x="270" y="68" fill="#60a5fa" font-size="9" text-anchor="middle">（原有数据）</text>
+      <rect x="210" y="78" width="120" height="20" rx="3" fill="#1e3a2a" stroke="#2e7a4a"/>
+      <text x="270" y="92" fill="#86efac" font-size="9" text-anchor="middle">有效节点 A（新）</text>
+      <rect x="210" y="102" width="120" height="20" rx="3" fill="#1e3a2a" stroke="#2e7a4a"/>
+      <text x="270" y="116" fill="#86efac" font-size="9" text-anchor="middle">有效节点 B（新）</text>
+      <rect x="210" y="126" width="120" height="20" rx="3" fill="#0f2a4a" stroke="#1e4a80" stroke-dasharray="4,3"/>
+      <text x="270" y="140" fill="#3a6ab5" font-size="9" text-anchor="middle">空闲空间 ✓</text>
+
+      <!-- Arrow 2 -->
+      <text x="355" y="95" fill="#f59e0b" font-size="20" text-anchor="middle">→</text>
+      <text x="355" y="112" fill="#f59e0b" font-size="8" text-anchor="middle">擦除受害 LEB</text>
+
+      <!-- Step 3: Erased LEB -->
+      <rect x="380" y="30" width="140" height="130" rx="6" fill="#1a1d27" stroke="#2e3348" stroke-width="1.5"/>
+      <text x="450" y="48" fill="#94a3b8" font-size="10" font-weight="700" text-anchor="middle">空闲 LEB</text>
+      <rect x="390" y="54" width="120" height="96" rx="3" fill="#0f1117" stroke="#2e3348" stroke-dasharray="5,3"/>
+      <text x="450" y="107" fill="#3a3d52" font-size="11" text-anchor="middle">0xFF 0xFF 0xFF</text>
+
+      <!-- Arrow 3 -->
+      <text x="535" y="95" fill="#22c55e" font-size="20" text-anchor="middle">→</text>
+      <text x="535" y="112" fill="#22c55e" font-size="8" text-anchor="middle">可重新使用</text>
+
+      <!-- Result -->
+      <rect x="560" y="50" width="100" height="80" rx="6" fill="#14372a" stroke="#2e7a4a" stroke-width="1.5"/>
+      <text x="610" y="85" fill="#4ade80" font-size="10" font-weight="700" text-anchor="middle">✓ 空闲</text>
+      <text x="610" y="102" fill="#22c55e" font-size="9" text-anchor="middle">空间回收</text>
+      <text x="610" y="116" fill="#22c55e" font-size="9" text-anchor="middle">完成</text>
+    </svg>
+    <div class="diagram-caption">图6：UBIFS 垃圾回收流程——移动有效节点、擦除受害 LEB、释放空间</div>
+  </div>
+
+  <p>GC 的效率受最小 I/O 单元大小影响：当脏空间小于最小 I/O 单元时，GC 无法高效回收所有脏空间。UBIFS GC 目前不在后台自动运行（不像 JFFS2），只在需要空间时被动触发。</p>
+  <a class="source-link" href="http://www.linux-mtd.infradead.org/doc/ubifs.html" target="_blank">📎 原文：linux-mtd.infradead.org/doc/ubifs.html（"Dirty space" 章节）</a>
+
+  <div class="summary-box">
+    <div class="summary-title">📌 章节总结</div>
+    <p>GC 是裸 Flash 文件系统的必要机制，因为 Flash 的写入本质上是追加式（Out-of-Place）的。UBIFS GC 以 LEB 为粒度，被动触发，无后台 GC。对于接近写满的文件系统，GC 压力增大，性能可能下降。</p>
+  </div>
+</section>
+
+<!-- Section 11: Compression -->
+<section class="section" id="sec-compress">
+  <h2 class="section-title">11. 透明压缩（On-the-Fly Compression）</h2>
+
+  <p>
+    UBIFS 支持对数据进行<strong>透明压缩</strong>，数据以压缩形式存储在 Flash 上，读取时自动解压，对上层应用完全透明。这使得同样大小的 Flash 可以存储更多数据。
+  </p>
+  <a class="source-link" href="http://www.linux-mtd.infradead.org/doc/ubifs.html" target="_blank">📎 原文：linux-mtd.infradead.org/doc/ubifs.html（Compression 章节）</a>
+
+  <div class="grid-3">
+    <div class="card">
+      <div class="card-title">⚡ LZO（默认）</div>
+      <p>速度快，压缩比适中。适合嵌入式 CPU 性能有限的场景</p>
+    </div>
+    <div class="card">
+      <div class="card-title">🗜️ zlib</div>
+      <p>压缩比更高，但速度较慢（压缩、解压均慢）。数据敏感、存储紧张时使用</p>
+    </div>
+    <div class="card">
+      <div class="card-title">🔀 Favor LZO</div>
+      <p><span class="inline-code">mkfs.ubifs 1.1+</span> 新增：同时尝试两种算法，若 zlib 压缩率比 LZO 高 20%（可配置）则用 zlib，否则用 LZO</p>
+    </div>
+  </div>
+
+  <p>UBIFS 支持<strong>按 inode 设置压缩方式</strong>，可全局开启，也可针对特定文件（如多媒体文件）关闭压缩，避免无效压缩计算。</p>
+
+  <h3 class="section-subtitle">挂载时覆盖压缩器</h3>
+  <pre><code># 挂载时指定压缩器
+mount -t ubifs ubi0:rootfs /mnt/ubifs -o compr=lzo
+mount -t ubifs ubi0:rootfs /mnt/ubifs -o compr=zlib
+mount -t ubifs ubi0:rootfs /mnt/ubifs -o compr=none</code></pre>
+  <a class="source-link" href="https://www.kernel.org/doc/Documentation/filesystems/ubifs.txt" target="_blank">📎 原文：kernel.org/doc/Documentation/filesystems/ubifs.txt（Mount options 章节）</a>
+
+  <div class="summary-box">
+    <div class="summary-title">📌 章节总结</div>
+    <p>透明压缩对嵌入式系统意义重大：它等效地扩大了 Flash 容量，且对应用层完全透明。LZO 的选择平衡了速度与压缩比；Favor LZO 模式进一步优化了这一平衡。</p>
+  </div>
+</section>
+
+<!-- Section 12: Crash Tolerance -->
+<section class="section" id="sec-crash">
+  <h2 class="section-title">12. 掉电容忍（Power-Cut Tolerance）</h2>
+
+  <p>UBIFS 被设计为对意外掉电和不正常重启具有充分的容忍能力，无需像 <span class="inline-code">fsck.ext2</span> 这样的工具进行修复。</p>
+  <a class="source-link" href="http://www.linux-mtd.infradead.org/doc/ubifs.html" target="_blank">📎 原文：linux-mtd.infradead.org/doc/ubifs.html（Power-cuts tolerance 章节）</a>
+
+  <div class="info-box tip">
+    <span class="icon">✅</span>
+    <p>UBIFS 在 OneNAND Flash 上经历了超过 <strong>100,000 次真实掉电测试</strong>（使用 Power Node 设备通过串口控制电源），证明了其掉电安全性。</p>
+  </div>
+
+  <h3 class="section-subtitle">恢复机制</h3>
+  <div class="grid-2">
+    <div class="card">
+      <div class="card-title">📖 日志回放</div>
+      <p>挂载时找到最新的 Commit Start 节点，回放其后的引用节点和 Bud，重建一致的文件系统状态</p>
+    </div>
+    <div class="card">
+      <div class="card-title">🔄 主节点双备份</div>
+      <p>LEB 1 和 LEB 2 互为备份，即使更新主节点途中掉电，也总有一个有效副本可用</p>
+    </div>
+    <div class="card">
+      <div class="card-title">🗑️ 孤儿区清理</div>
+      <p>孤儿区记录已删除但尚有引用的 inode，重启时清理，防止空间泄漏</p>
+    </div>
+    <div class="card">
+      <div class="card-title">⚡ CRC 完整性</div>
+      <p>每个节点携带 CRC32，UBIFS 可检测到部分写入（Partial Write）产生的损坏节点并跳过</p>
+    </div>
+  </div>
+
+  <h3 class="section-subtitle">MLC NAND 的特殊问题</h3>
+  <p>官方文档明确指出，MLC NAND 存在<strong>配对页（Paired Pages）</strong>问题：对某页写入时掉电，可能同时损坏与之配对的另一页。UBIFS 当前尚未完全解决此问题（标注为 <span class="badge badge-yellow">NEED WORK</span>）：</p>
+  <a class="source-link" href="http://www.linux-mtd.infradead.org/doc/ubifs.html" target="_blank">📎 原文：linux-mtd.infradead.org/doc/ubifs.html（UBIFS and MLC NAND flash 章节）</a>
+
+  <div class="summary-box">
+    <div class="summary-title">📌 章节总结 · 第一性原理</div>
+    <p>掉电安全的本质是保证"原子性"：每次提交要么完整写入（可通过日志回放恢复），要么被检测为损坏并丢弃。UBIFS 通过日志、CRC、主节点双备份三重机制实现这一保证。但 MLC NAND 的配对页问题是硬件约束，当前仍是 UBIFS 的已知局限。</p>
+  </div>
+</section>
+
+<!-- Section 13: Pros -->
+<section class="section" id="sec-pros">
+  <h2 class="section-title">13. 优势</h2>
+
+  <div class="grid-2">
+    <div class="card pros-card">
+      <div class="card-title">🚀 快速挂载</div>
+      <p>挂载时间不依赖 Flash 大小（UBIFS 层面），只需读取主节点（LEB 1/2）和回放固定大小的日志。百毫秒级挂载。</p>
+    </div>
+    <div class="card pros-card">
+      <div class="card-title">📈 对数扩展性</div>
+      <p>UBIFS 使用 B+ 树，文件访问时间、挂载时间均为 O(log N)，不随 Flash 容量线性增长（JFFS2 是线性的）。</p>
+    </div>
+    <div class="card pros-card">
+      <div class="card-title">⚡ 写回支持</div>
+      <p>支持 Write-Back，显著提升写入吞吐量（尤其是小文件密集写场景）。JFFS2 是同步写穿，每次写操作直接落盘。</p>
+    </div>
+    <div class="card pros-card">
+      <div class="card-title">🗜️ 透明压缩</div>
+      <p>LZO/zlib/Favor LZO 按需压缩，可大幅减少 Flash 占用，支持按 inode 精细控制。</p>
+    </div>
+    <div class="card pros-card">
+      <div class="card-title">⚡ 掉电安全</div>
+      <p>日志型文件系统，支持 100,000+ 次真实掉电测试验证。自动回放日志，无需 fsck。</p>
+    </div>
+    <div class="card pros-card">
+      <div class="card-title">🔍 数据完整性</div>
+      <p>所有节点携带 CRC32，元数据损坏可被检测。文件系统可通过扫描全盘重建索引（类似 JFFS2）。</p>
+    </div>
+    <div class="card pros-card">
+      <div class="card-title">💾 内存高效</div>
+      <p>内存占用不依赖文件系统内容量（JFFS2 为每个节点保留内存数据结构）。TNC 可收缩。</p>
+    </div>
+    <div class="card pros-card">
+      <div class="card-title">🔒 无关坏块/磨损</div>
+      <p>借助 UBI 层，坏块处理和磨损均衡对 UBIFS 完全透明，文件系统层无需关心硬件细节。</p>
+    </div>
+  </div>
+  <a class="source-link" href="http://www.linux-mtd.infradead.org/doc/ubifs.html" target="_blank">📎 原文：linux-mtd.infradead.org/doc/ubifs.html（Overview 章节特性列表）</a>
+</section>
+
+<!-- Section 14: Cons -->
+<section class="section" id="sec-cons">
+  <h2 class="section-title">14. 劣势与局限</h2>
+
+  <div class="grid-2">
+    <div class="card cons-card">
+      <div class="card-title">❌ 不支持块设备</div>
+      <p>UBIFS <strong>不能</strong>用于 eMMC、SD 卡、SSD、USB 存储等块设备。只能用于裸 NAND/NOR Flash 的 UBI 卷。</p>
+    </div>
+    <div class="card cons-card">
+      <div class="card-title">❌ UBI 线性扩展</div>
+      <p>虽然 UBIFS 本身对数扩展，但 UBI 层是线性扩展的（扫描所有 PEB 以构建映射表）。整体栈在大容量 Flash 上仍有扩展瓶颈。</p>
+    </div>
+    <div class="card cons-card">
+      <div class="card-title">❌ 空间开销较大</div>
+      <p>相比 JFFS2，UBIFS 在闪存上存储更多索引信息（LPT、B+树），对小 Flash（如 64MiB 以下）空间开销相对较高。官方建议小 Flash 考虑 JFFS2。</p>
+    </div>
+    <div class="card cons-card">
+      <div class="card-title">❌ 空间统计不精确</div>
+      <p>UBIFS 的 <span class="inline-code">df</span> 报告可能偏保守（悲观估计）：因节点不跨 LEB 存在末尾浪费、脏空间不可完全回收、索引大小不精确估算。文件系统 sync 后报告更准确。</p>
+    </div>
+    <div class="card cons-card">
+      <div class="card-title">❌ MLC NAND 配对页问题</div>
+      <p>MLC NAND 的配对页（Paired Pages）掉电损坏问题尚未完全解决，UBIFS 官方文档标注为 NEED WORK。</p>
+    </div>
+    <div class="card cons-card">
+      <div class="card-title">❌ 最小 LEB 数限制</div>
+      <p>UBIFS 要求至少 17 个 LEB。对极小 Flash（如 ≤8MiB）不适用，会报 "too few LEBs" 错误。</p>
+    </div>
+    <div class="card cons-card">
+      <div class="card-title">❌ 写回带来文件一致性风险</div>
+      <p>写回模式下，掉电可能导致文件内容为空（创建后未 fsync）。应用程序需配合使用 fsync 或原子文件更新模式。</p>
+    </div>
+    <div class="card cons-card">
+      <div class="card-title">❌ 不支持循环挂载</div>
+      <p>UBIFS 无法挂载为 loopback 设备（文件驱动的块设备），必须通过 UBI 卷挂载。调试时需借助 nandsim 模拟器。</p>
+    </div>
+  </div>
+  <a class="source-link" href="http://www.linux-mtd.infradead.org/faq/ubifs.html" target="_blank">📎 原文：linux-mtd.infradead.org/faq/ubifs.html</a>
+
+  <div class="summary-box">
+    <div class="summary-title">📌 章节总结</div>
+    <p>UBIFS 的局限大多源自其设计哲学：专为裸 Flash 优化。当使用场景超出这一前提（块设备、极小 Flash、MLC NAND 高可靠需求），局限就变得明显。这些不是 BUG，而是设计取舍的结果。</p>
+  </div>
+</section>
+
+<!-- Section 15: Compare -->
+<section class="section" id="sec-compare">
+  <h2 class="section-title">15. 与 JFFS2 详细对比</h2>
+
+  <div class="table-wrap">
+    <table>
+      <thead>
+        <tr><th>特性</th><th>JFFS2</th><th>UBIFS</th></tr>
+      </thead>
+      <tbody>
+        <tr>
+          <td>运行在</td>
+          <td>MTD 设备（直接）</td>
+          <td class="ok-cell">UBI 卷（需要 UBI 层）</td>
+        </tr>
+        <tr>
+          <td>挂载时间 vs Flash 大小</td>
+          <td class="bad-cell">线性依赖，需全盘扫描</td>
+          <td class="ok-cell">不依赖 Flash 大小，毫秒级</td>
+        </tr>
+        <tr>
+          <td>挂载时间 vs 文件系统内容</td>
+          <td class="bad-cell">线性依赖，内容越多越慢</td>
+          <td class="ok-cell">不依赖内容量，只与日志大小有关</td>
+        </tr>
+        <tr>
+          <td>挂载后全盘 CRC 检查</td>
+          <td class="bad-cell">NAND 上需要，消耗大量 CPU</td>
+          <td class="ok-cell">不需要（LPT 存储空间信息）</td>
+        </tr>
+        <tr>
+          <td>内存占用 vs 文件系统内容</td>
+          <td class="bad-cell">线性依赖（每节点一个内存结构）</td>
+          <td class="ok-cell">不依赖内容量</td>
+        </tr>
+        <tr>
+          <td>文件访问时间 vs 文件大小</td>
+          <td class="bad-cell">线性（首次打开需读所有片段树）</td>
+          <td class="ok-cell">对数（B+树查找）</td>
+        </tr>
+        <tr>
+          <td>写模式</td>
+          <td class="bad-cell">写穿（Write-Through）</td>
+          <td class="ok-cell">写回（Write-Back）</td>
+        </tr>
+        <tr>
+          <td>磨损均衡</td>
+          <td class="warn-cell">内置（部分实现）</td>
+          <td class="ok-cell">由 UBI 完全处理</td>
+        </tr>
+        <tr>
+          <td>坏块处理</td>
+          <td class="warn-cell">内置</td>
+          <td class="ok-cell">由 UBI 处理</td>
+        </tr>
+        <tr>
+          <td>在线索引</td>
+          <td class="bad-cell">无，挂载时重建</td>
+          <td class="ok-cell">有，B+树持久化</td>
+        </tr>
+        <tr>
+          <td>适合小 Flash（&lt;64MiB）</td>
+          <td class="ok-cell">更适合</td>
+          <td class="warn-cell">空间开销较大，至少需要 17 LEB</td>
+        </tr>
+        <tr>
+          <td>后台 GC</td>
+          <td class="ok-cell">有</td>
+          <td class="warn-cell">无（被动触发）</td>
+        </tr>
+      </tbody>
+    </table>
+  </div>
+  <a class="source-link" href="http://www.linux-mtd.infradead.org/doc/ubifs.html" target="_blank">📎 原文：linux-mtd.infradead.org/doc/ubifs.html（Scalability 章节对比表）</a>
+  <a class="source-link" href="https://www.kernel.org/doc/Documentation/filesystems/ubifs.txt" target="_blank">📎 原文：kernel.org/doc/Documentation/filesystems/ubifs.txt</a>
+</section>
+
+<!-- Section 16: Scenarios -->
+<section class="section" id="sec-scenario">
+  <h2 class="section-title">16. 适用场景</h2>
+
+  <p>官方文档指出，裸 Flash + UBI/UBIFS 的组合主要用于嵌入式世界，适合以下场景：</p>
+  <a class="source-link" href="http://www.linux-mtd.infradead.org/doc/ubifs.html" target="_blank">📎 原文：linux-mtd.infradead.org/doc/ubifs.html（"Raw flash vs. FTL devices" 章节）</a>
+
+  <div class="grid-2">
+    <div class="card">
+      <div class="card-title">📱 嵌入式 Linux 根文件系统</div>
+      <p>路由器、工控设备、智能家电、机顶盒等搭载裸 NAND Flash 的嵌入式系统，使用 UBIFS 作为根文件系统，兼顾掉电安全与性能</p>
+    </div>
+    <div class="card">
+      <div class="card-title">🏭 工业级设备</div>
+      <p>对掉电安全要求极高的工控设备，在已知 Flash 可靠参数的情况下，UBIFS 的掉电容忍机制比 FTL 黑盒更可控、可验证</p>
+    </div>
+    <div class="card">
+      <div class="card-title">🌐 网络设备</div>
+      <p>使用裸 NAND/NOR Flash 的网络交换机、无线接入点等，UBIFS 提供压缩存储以节省 Flash 空间，同时支持快速重启后恢复</p>
+    </div>
+    <div class="card">
+      <div class="card-title">💾 中大容量 Flash（64MiB~数 GiB）</div>
+      <p>对于超过 64MiB 的裸 Flash，UBIFS 的扩展性优势明显优于 JFFS2，挂载时间和内存占用不随容量增长</p>
+    </div>
+    <div class="card">
+      <div class="card-title">🔧 SLC NAND 场景</div>
+      <p>SLC NAND 具有更长的擦除寿命和更好的掉电特性，是 UBIFS 最成熟的使用场景，官方测试充分</p>
+    </div>
+    <div class="card">
+      <div class="card-title">📦 只读或低写入负载</div>
+      <p>使用 <span class="inline-code">mkfs.ubifs</span> 制作的只读镜像（rootfs），结合压缩，可在 Flash 上存放远超实际大小的文件系统内容</p>
+    </div>
+  </div>
+
+  <div class="summary-box">
+    <div class="summary-title">📌 章节总结</div>
+    <p>UBIFS 的黄金使用场景：裸 SLC NAND Flash + 中大容量 + 嵌入式 Linux + 需要掉电安全。在这个场景下，UBI/UBIFS 是目前 Linux 生态中最成熟、可靠的选择。</p>
+  </div>
+</section>
+
+<!-- Section 17: Not Fit -->
+<section class="section" id="sec-notfit">
+  <h2 class="section-title">17. 不适用场景</h2>
+
+  <div class="grid-2">
+    <div class="card cons-card">
+      <div class="card-title">❌ eMMC / SD / SSD / USB 存储</div>
+      <p>这些是块设备（内部有 FTL），UBIFS 无法运行于其上。应使用 ext4、f2fs 等块设备文件系统</p>
+    </div>
+    <div class="card cons-card">
+      <div class="card-title">❌ 极小 Flash（&lt;17 LEB）</div>
+      <p>UBIFS 自身的元数据开销较大，官方建议极小 Flash 使用 JFFS2，其元数据开销更低</p>
+    </div>
+    <div class="card cons-card">
+      <div class="card-title">❌ MLC NAND 高可靠需求</div>
+      <p>MLC NAND 配对页问题在 UBIFS 尚未完全解决，对掉电安全有极高要求时需谨慎评估</p>
+    </div>
+    <div class="card cons-card">
+      <div class="card-title">❌ FAT 兼容需求</div>
+      <p>若需要与 Windows/相机/消费电子兼容（如相机存储卡），应使用 FTL 设备 + FAT，UBIFS 不具备 FAT 兼容性</p>
+    </div>
+  </div>
+  <a class="source-link" href="http://www.linux-mtd.infradead.org/doc/ubifs.html" target="_blank">📎 原文：linux-mtd.infradead.org/doc/ubifs.html（"Raw flash vs. FTL devices" 章节）</a>
+  <a class="source-link" href="http://www.linux-mtd.infradead.org/faq/ubifs.html" target="_blank">📎 原文：linux-mtd.infradead.org/faq/ubifs.html（"too few LEBs" 章节）</a>
+</section>
+
+<!-- Section 18: mkfs.ubifs -->
+<section class="section" id="sec-mkfs">
+  <h2 class="section-title">18. 打包工具：mkfs.ubifs</h2>
+
+  <p>
+    <span class="inline-code">mkfs.ubifs</span> 是创建 UBIFS 镜像的工具，来自 <strong>mtd-utils</strong> 项目（<span class="inline-code">git://git.infradead.org/mtd-utils.git</span>）。它生成的镜像可写入 UBI 卷，或进一步用 <span class="inline-code">ubinize</span> 打包为 UBI 镜像。
+  </p>
+  <a class="source-link" href="http://www.linux-mtd.infradead.org/doc/ubifs.html" target="_blank">📎 原文：linux-mtd.infradead.org/doc/ubifs.html（User-space tools 章节）</a>
+  <a class="source-link" href="http://www.linux-mtd.infradead.org/faq/ubifs.html" target="_blank">📎 原文：linux-mtd.infradead.org/faq/ubifs.html（"How do I create an UBIFS image" 章节）</a>
+
+  <div class="tool-card">
+    <div class="tool-name">mkfs.ubifs</div>
+    <div class="tool-desc">从目录树创建 UBIFS 镜像文件（.img）</div>
+    <pre><code># 基本用法：从 root-fs 目录创建 UBIFS 镜像
+# 针对 256MiB SLC OneNAND，128KiB PEB，2048B 页，512B 子页
+mkfs.ubifs -q -r root-fs -m 2048 -e 129024 -c 2047 -o ubifs.img
+
+# 参数说明：
+# -r root-fs    从 root-fs 目录构建文件系统内容
+# -m 2048       最小 I/O 单元大小（NAND 页大小，字节）
+# -e 129024     逻辑擦除块（LEB）大小（字节）
+#               = 物理擦除块 - UBI 开销
+# -c 2047       最大文件系统大小（以 LEB 为单位，约 251MiB）
+# -o ubifs.img  输出文件
+# -q            安静模式
+
+# 使用 zlib 压缩（压缩比更高）
+mkfs.ubifs -q -r root-fs -m 2048 -e 129024 -c 2047 -x zlib -o ubifs.img
+
+# 使用 Favor LZO 压缩（threshold=5%，若 zlib 压缩率高5%则用zlib）
+mkfs.ubifs -q -r root-fs -m 2048 -e 129024 -c 2047 -x favor_lzo -X 5 -o ubifs.img
+
+# 不压缩
+mkfs.ubifs -q -r root-fs -m 2048 -e 129024 -c 2047 -x none -o ubifs.img
+
+# 启用 free space fixup（某些平台如 AM335x 必须加 -F）
+mkfs.ubifs -q -r root-fs -m 2048 -e 129024 -c 2047 -F -o ubifs.img
+
+# NOR Flash（32MiB，128KiB PEB，min IO=1字节）
+mkfs.ubifs -q -r root-fs -m 1 -e 130944 -c 255 -o ubifs.img</code></pre>
+  </div>
+
+  <h3 class="section-subtitle">关键参数详解</h3>
+  <div class="table-wrap">
+    <table>
+      <thead>
+        <tr><th>参数</th><th>含义</th><th>如何获取</th></tr>
+      </thead>
+      <tbody>
+        <tr><td><span class="inline-code">-m</span></td><td>最小 I/O 单元大小（NAND 页大小）</td><td><span class="inline-code">mtdinfo -u</span> 输出的 "Minimum input/output unit size"</td></tr>
+        <tr><td><span class="inline-code">-e</span></td><td>逻辑擦除块（LEB）大小 = 物理擦除块大小 - UBI 开销</td><td><span class="inline-code">mtdinfo -u</span> 计算；UBI overhead = ALIGN(VID_hdr_offset + 64, min_io)</td></tr>
+        <tr><td><span class="inline-code">-c</span></td><td>最大文件系统大小（LEB 数量），决定 LPT 大小</td><td>根据 MTD 分区大小计算；建议用最大可能值保证兼容性</td></tr>
+        <tr><td><span class="inline-code">-r</span></td><td>源目录（文件系统内容）</td><td>你的 rootfs 目录路径</td></tr>
+        <tr><td><span class="inline-code">-x</span></td><td>压缩算法：lzo（默认）/ zlib / favor_lzo / none</td><td>按需选择</td></tr>
+        <tr><td><span class="inline-code">-F</span></td><td>空闲空间修复标志（某些平台首次挂载时触发自动修复）</td><td>某些 SoC（如 TI AM335x）必须</td></tr>
+      </tbody>
+    </table>
+  </div>
+  <a class="source-link" href="http://www.linux-mtd.infradead.org/faq/ubifs.html" target="_blank">📎 原文：linux-mtd.infradead.org/faq/ubifs.html（创建镜像章节）</a>
+
+  <div class="summary-box">
+    <div class="summary-title">📌 章节总结</div>
+    <p><span class="inline-code">mkfs.ubifs</span> 最关键的参数是 <span class="inline-code">-m</span>（页大小）和 <span class="inline-code">-e</span>（LEB 大小），必须与目标硬件完全匹配。错误的 LEB 大小会导致超级块 mismatch 错误，文件系统无法挂载。</p>
+  </div>
+</section>
+
+<!-- Section 19: ubinize -->
+<section class="section" id="sec-ubinize">
+  <h2 class="section-title">19. 打包工具：ubinize</h2>
+
+  <p>
+    <span class="inline-code">ubinize</span> 将一个或多个 UBIFS 镜像打包为 <strong>UBI 镜像</strong>（.ubi），该 UBI 镜像可直接刷写到裸 Flash。UBI 镜像中包含 UBI 头部信息（EC header、VID header）以及 UBI 卷。
+  </p>
+  <a class="source-link" href="http://www.linux-mtd.infradead.org/faq/ubifs.html" target="_blank">📎 原文：linux-mtd.infradead.org/faq/ubifs.html（"How do I create an UBIFS image" 章节）</a>
+
+  <div class="tool-card">
+    <div class="tool-name">ubinize</div>
+    <div class="tool-desc">将 UBIFS 镜像封装为 UBI 镜像（可直接刷写到裸 Flash）</div>
+    <pre><code># 第一步：准备 ubinize.cfg 配置文件
+cat ubinize.cfg
+# [ubifs]
+# mode=ubi
+# image=ubifs.img          # mkfs.ubifs 生成的 UBIFS 镜像
+# vol_id=0                 # 卷 ID
+# vol_size=200MiB          # 卷大小（初始值；autoresize 时会自动扩展）
+# vol_type=dynamic         # 动态卷（可读写）
+# vol_name=rootfs          # 卷名称
+# vol_flags=autoresize     # 首次运行时自动扩展到最大可用空间
+
+# 第二步：运行 ubinize
+# 针对 256MiB SLC OneNAND，128KiB PEB，512B 子页
+ubinize -o ubi.img -m 2048 -p 128KiB -s 512 ubinize.cfg
+
+# 参数说明：
+# -o ubi.img    输出 UBI 镜像文件
+# -m 2048       最小 I/O 单元大小（NAND 页大小，字节）
+# -p 128KiB     物理擦除块大小
+# -s 512        子页大小（支持子页时 EC/VID 头共用同一 NAND 页，节省空间）
+
+# 针对 512MiB MLC NAND，128KiB PEB，2048B 页，无子页
+ubinize -o ubi.img -m 2048 -p 128KiB ubinize.cfg
+
+# 针对 32MiB NOR Flash，128KiB PEB，min_io=1
+ubinize -o ubi.img -m 1 -p 128KiB ubinize.cfg</code></pre>
+  </div>
+
+  <h3 class="section-subtitle">参数详解</h3>
+  <div class="table-wrap">
+    <table>
+      <thead>
+        <tr><th>参数</th><th>含义</th><th>说明</th></tr>
+      </thead>
+      <tbody>
+        <tr><td><span class="inline-code">-m</span></td><td>最小 I/O 单元大小</td><td>与 mkfs.ubifs 的 -m 参数一致</td></tr>
+        <tr><td><span class="inline-code">-p</span></td><td>物理擦除块大小</td><td>Flash 芯片规格，通常为 128KiB 或 256KiB</td></tr>
+        <tr><td><span class="inline-code">-s</span></td><td>子页大小</td><td>SLC NAND 典型支持子页；设置后 VID header 与 EC header 放同一 NAND 页，节省一个子页</td></tr>
+        <tr><td><span class="inline-code">vol_flags=autoresize</span></td><td>自动扩容</td><td>配合 <span class="inline-code">-c 2047</span>，首次挂载时卷和文件系统自动扩展到最大可用空间</td></tr>
+        <tr><td><span class="inline-code">vol_type=static</span></td><td>静态卷</td><td>只读，带 CRC；与 dynamic（可读写）对应</td></tr>
+      </tbody>
+    </table>
+  </div>
+  <a class="source-link" href="http://www.linux-mtd.infradead.org/faq/ubifs.html" target="_blank">📎 原文：linux-mtd.infradead.org/faq/ubifs.html</a>
+</section>
+
+<!-- Section 20: UBI tools -->
+<section class="section" id="sec-ubitools">
+  <h2 class="section-title">20. UBI 管理工具</h2>
+
+  <p>以下工具均来自 <strong>mtd-utils</strong> 软件包，在 Ubuntu/Debian 上通过 <span class="inline-code">sudo apt-get install mtd-utils</span> 安装：</p>
+  <a class="source-link" href="https://trac.gateworks.com/wiki/linux/ubi" target="_blank">📎 参考：trac.gateworks.com/wiki/linux/ubi</a>
+
+  <div class="tool-card">
+    <div class="tool-name">ubiformat</div>
+    <div class="tool-desc">格式化 MTD 分区并写入 UBI 镜像（推荐，保留擦除计数器）</div>
+    <pre><code># 格式化并写入 UBI 镜像（推荐方式）
+ubiformat /dev/mtd0 -f ubi.img
+
+# 仅格式化（不写入数据）
+ubiformat /dev/mtd0</code></pre>
+  </div>
+
+  <div class="tool-card">
+    <div class="tool-name">ubiattach / ubidetach</div>
+    <div class="tool-desc">将 MTD 设备挂接/解挂到 UBI 子系统</div>
+    <pre><code># 将 mtd0 挂接到 UBI（创建 /dev/ubi0）
+ubiattach /dev/ubi_ctrl -m 0
+
+# 解挂
+ubidetach -m 0</code></pre>
+  </div>
+
+  <div class="tool-card">
+    <div class="tool-name">ubimkvol / ubirmvol</div>
+    <div class="tool-desc">在 UBI 设备上创建/删除 UBI 卷</div>
+    <pre><code># 创建名为 "rootfs" 的 200MiB 动态卷
+ubimkvol /dev/ubi0 -N rootfs -s 200MiB
+
+# 删除卷
+ubirmvol /dev/ubi0 -N rootfs</code></pre>
+  </div>
+
+  <div class="tool-card">
+    <div class="tool-name">ubiupdatevol</div>
+    <div class="tool-desc">将 UBIFS 镜像写入已有的 UBI 卷（无需重新 ubinize）</div>
+    <pre><code># 将 ubifs.img 写入 UBI 卷 0（在线更新）
+ubiupdatevol /dev/ubi0_0 ubifs.img
+
+# 擦除卷（清空为 0xFF）
+ubiupdatevol /dev/ubi0_0 -t</code></pre>
+  </div>
+
+  <div class="tool-card">
+    <div class="tool-name">ubinfo</div>
+    <div class="tool-desc">查询 UBI 设备和卷信息</div>
+    <pre><code>ubinfo -a          # 列出所有 UBI 设备和卷
+ubinfo /dev/ubi0   # 查看 ubi0 设备信息</code></pre>
+  </div>
+
+  <div class="tool-card">
+    <div class="tool-name">mtdinfo</div>
+    <div class="tool-desc">查询 MTD 设备参数（获取 mkfs.ubifs 所需参数的关键工具）</div>
+    <pre><code># 获取 mtd0 的所有参数（包括页大小、擦除块大小等）
+mtdinfo -u /dev/mtd0
+
+# 输出示例：
+# Name: mtd0
+# Type: nand
+# Eraseblock size: 131072 bytes, 128.0 KiB
+# Amount of eraseblocks: 2048 (total 256 MiB)
+# Minimum input/output unit size: 2048 bytes
+# Sub-page size: 512 bytes
+# ...
+
+# 列出所有 MTD 设备
+mtdinfo -a</code></pre>
+  </div>
+
+  <div class="summary-box">
+    <div class="summary-title">📌 章节总结</div>
+    <p>mtd-utils 工具链覆盖了 UBIFS 的完整生命周期：参数查询（mtdinfo）→ 镜像制作（mkfs.ubifs）→ UBI 封装（ubinize）→ 写入（ubiformat）→ 挂接（ubiattach）→ 在线管理（ubimkvol/ubiupdatevol）。每个工具职责单一，组合使用构成完整工作流。</p>
+  </div>
+</section>
+
+<!-- Section 21: Extract -->
+<section class="section" id="sec-extract">
+  <h2 class="section-title">21. 解压与提取工具</h2>
+
+  <p>解压/提取 UBI/UBIFS 镜像通常需要借助 nandsim 模拟器（在 PC 上模拟 NAND 设备）或专用提取工具：</p>
+  <a class="source-link" href="http://www.linux-mtd.infradead.org/faq/ubifs.html" target="_blank">📎 原文：linux-mtd.infradead.org/faq/ubifs.html（"How do I extract files from UBI/UBIFS image" 章节）</a>
+
+  <div class="tool-card">
+    <div class="tool-name">nandsim + 挂载（官方推荐方式）</div>
+    <div class="tool-desc">使用 Linux 内核 NAND 模拟器，将镜像写入虚拟 MTD，再通过 UBI/UBIFS 正常挂载</div>
+    <pre><code># 安装必要内核模块
+modprobe nandsim
+modprobe ubi
+modprobe ubifs
+
+# 设置 Flash 参数（以 2048B 页，256KiB PEB 的 NAND 为例）
+PAGESIZE=2048
+PEBSIZE=262144
+IOSIZE=2048
+
+# 创建 nandsim 虚拟 NAND 设备
+modprobe nandsim first_id_byte=0x20 second_id_byte=0xaa \
+  third_id_byte=0x00 fourth_id_byte=0x15
+
+# 格式化并写入 UBI 镜像
+ubiformat /dev/mtd0 -f ubi.img -s $IOSIZE
+
+# 挂接 UBI
+modprobe ubi mtd=0
+
+# 挂载 UBIFS
+mount /dev/ubi0_0 /mnt/ubifs
+
+# 提取完成后清理
+umount /mnt/ubifs
+rmmod ubifs ubi nandsim</code></pre>
+  </div>
+
+  <div class="tool-card">
+    <div class="tool-name">ubi_reader（第三方工具）</div>
+    <div class="tool-desc">Python 编写的独立 UBI/UBIFS 解析工具，无需内核模块，可在 PC 上直接提取文件</div>
+    <pre><code># 安装
+pip install ubi_reader
+
+# 从 UBI 镜像提取 UBIFS 镜像
+ubireader_extract_images ubi.img
+
+# 从 UBIFS 镜像提取文件
+ubireader_extract_files ubifs.img
+
+# 从 UBI 镜像直接提取所有文件
+ubireader_extract_files ubi.img</code></pre>
+  </div>
+
+  <div class="tool-card">
+    <div class="tool-name">jefferson（第三方工具）</div>
+    <div class="tool-desc">JFFS2 提取工具（不适用于 UBIFS，此处对比说明）</div>
+    <pre><code># 注意：jefferson 用于 JFFS2，不适用于 UBIFS！
+# UBIFS 应使用 ubi_reader 或 nandsim 方式</code></pre>
+  </div>
+
+  <div class="info-box note">
+    <span class="icon">ℹ️</span>
+    <p>由于 UBIFS <strong>不支持 loopback 挂载</strong>（块设备），直接用 <span class="inline-code">mount -o loop</span> 挂载 ubifs.img 是不可能的。官方推荐的 PC 提取方式是 nandsim 模拟器；对于脚本化批量处理，ubi_reader 等第三方工具更方便。</p>
+  </div>
+</section>
+
+<!-- Section 22: Workflow -->
+<section class="section" id="sec-workflow">
+  <h2 class="section-title">22. 完整工作流</h2>
+
+  <div class="diagram-wrap">
+    <svg viewBox="0 0 680 520" xmlns="http://www.w3.org/2000/svg" font-family="'Segoe UI', system-ui, sans-serif">
+      <text x="340" y="18" fill="#94a3b8" font-size="12" text-anchor="middle" font-weight="600">UBIFS 镜像制作 → 烧录 → 挂载 完整流程</text>
+
+      <!-- Step 1 -->
+      <rect x="40" y="30" width="600" height="54" rx="8" fill="#1a1d27" stroke="#2e3348" stroke-width="1"/>
+      <rect x="40" y="30" width="54" height="54" rx="8" fill="#1e3a5c" stroke="#3a5ab5"/>
+      <text x="67" y="62" fill="#93c5fd" font-size="18" font-weight="900" text-anchor="middle">1</text>
+      <text x="108" y="52" fill="#e2e8f0" font-size="12" font-weight="700">查询 Flash 参数</text>
+      <text x="108" y="70" fill="#94a3b8" font-size="10">mtdinfo -u /dev/mtd0 → 获取 PEB 大小、页大小、子页大小</text>
+
+      <line x1="340" y1="84" x2="340" y2="104" stroke="#4a5568" stroke-width="2" marker-end="url(#fa)"/>
+
+      <!-- Step 2 -->
+      <rect x="40" y="104" width="600" height="54" rx="8" fill="#1a1d27" stroke="#2e3348" stroke-width="1"/>
+      <rect x="40" y="104" width="54" height="54" rx="8" fill="#1e3a2a" stroke="#2e7a4a"/>
+      <text x="67" y="136" fill="#86efac" font-size="18" font-weight="900" text-anchor="middle">2</text>
+      <text x="108" y="126" fill="#e2e8f0" font-size="12" font-weight="700">创建 UBIFS 镜像</text>
+      <text x="108" y="144" fill="#94a3b8" font-size="10">mkfs.ubifs -r rootfs/ -m &lt;page&gt; -e &lt;LEB&gt; -c &lt;max_leb&gt; -o ubifs.img</text>
+
+      <line x1="340" y1="158" x2="340" y2="178" stroke="#4a5568" stroke-width="2" marker-end="url(#fa)"/>
+
+      <!-- Step 3 -->
+      <rect x="40" y="178" width="600" height="54" rx="8" fill="#1a1d27" stroke="#2e3348" stroke-width="1"/>
+      <rect x="40" y="178" width="54" height="54" rx="8" fill="#3b2a0a" stroke="#8a5a10"/>
+      <text x="67" y="210" fill="#fcd34d" font-size="18" font-weight="900" text-anchor="middle">3</text>
+      <text x="108" y="200" fill="#e2e8f0" font-size="12" font-weight="700">准备 ubinize.cfg</text>
+      <text x="108" y="218" fill="#94a3b8" font-size="10">[ubifs] mode=ubi image=ubifs.img vol_id=0 vol_type=dynamic vol_name=rootfs vol_flags=autoresize</text>
+
+      <line x1="340" y1="232" x2="340" y2="252" stroke="#4a5568" stroke-width="2" marker-end="url(#fa)"/>
+
+      <!-- Step 4 -->
+      <rect x="40" y="252" width="600" height="54" rx="8" fill="#1a1d27" stroke="#2e3348" stroke-width="1"/>
+      <rect x="40" y="252" width="54" height="54" rx="8" fill="#2a1f4a" stroke="#5a3a8a"/>
+      <text x="67" y="284" fill="#c4b5fd" font-size="18" font-weight="900" text-anchor="middle">4</text>
+      <text x="108" y="274" fill="#e2e8f0" font-size="12" font-weight="700">创建 UBI 镜像</text>
+      <text x="108" y="292" fill="#94a3b8" font-size="10">ubinize -o ubi.img -m &lt;page&gt; -p &lt;PEB&gt; [-s &lt;subpage&gt;] ubinize.cfg</text>
+
+      <line x1="340" y1="306" x2="340" y2="326" stroke="#4a5568" stroke-width="2" marker-end="url(#fa)"/>
+
+      <!-- Step 5 -->
+      <rect x="40" y="326" width="600" height="54" rx="8" fill="#1a1d27" stroke="#2e3348" stroke-width="1"/>
+      <rect x="40" y="326" width="54" height="54" rx="8" fill="#2a1414" stroke="#6a2020"/>
+      <text x="67" y="358" fill="#fca5a5" font-size="18" font-weight="900" text-anchor="middle">5</text>
+      <text x="108" y="348" fill="#e2e8f0" font-size="12" font-weight="700">写入目标设备</text>
+      <text x="108" y="366" fill="#94a3b8" font-size="10">ubiformat /dev/mtd0 -f ubi.img   （保留擦除计数器，推荐）</text>
+
+      <line x1="340" y1="380" x2="340" y2="400" stroke="#4a5568" stroke-width="2" marker-end="url(#fa)"/>
+
+      <!-- Step 6 -->
+      <rect x="40" y="400" width="600" height="54" rx="8" fill="#1a1d27" stroke="#2e3348" stroke-width="1"/>
+      <rect x="40" y="400" width="54" height="54" rx="8" fill="#0f1e35" stroke="#1e4a80"/>
+      <text x="67" y="432" fill="#7dd3fc" font-size="18" font-weight="900" text-anchor="middle">6</text>
+      <text x="108" y="422" fill="#e2e8f0" font-size="12" font-weight="700">挂接 UBI 并挂载</text>
+      <text x="108" y="440" fill="#94a3b8" font-size="10">ubiattach /dev/ubi_ctrl -m 0  →  mount -t ubifs ubi0:rootfs /mnt/ubifs</text>
+
+      <!-- Result -->
+      <rect x="160" y="470" width="360" height="40" rx="8" fill="#14372a" stroke="#2e7a4a" stroke-width="1.5"/>
+      <text x="340" y="495" fill="#4ade80" font-size="12" font-weight="700" text-anchor="middle">✓ UBIFS 挂载成功，文件系统可读写</text>
+
+      <defs>
+        <marker id="fa" markerWidth="8" markerHeight="8" refX="4" refY="4" orient="auto">
+          <path d="M0,0 L8,4 L0,8 Z" fill="#4a5568"/>
+        </marker>
+      </defs>
+    </svg>
+    <div class="diagram-caption">图7：UBIFS 完整工作流程（制作 → 烧录 → 使用）</div>
+  </div>
+
+  <h3 class="section-subtitle">内核启动参数挂载示例</h3>
+  <pre><code># 内核启动参数：将 mtd0 挂接 UBI 并挂载 rootfs 卷
+ubi.mtd=0 root=ubi0:rootfs rootfstype=ubifs
+
+# 或者用卷号方式
+ubi.mtd=0 root=ubi0_0 rootfstype=ubifs</code></pre>
+  <a class="source-link" href="https://www.kernel.org/doc/Documentation/filesystems/ubifs.txt" target="_blank">📎 原文：kernel.org/doc/Documentation/filesystems/ubifs.txt（Quick usage instructions 章节）</a>
+
+  <h3 class="section-subtitle">在线卷更新（无需重新 ubinize）</h3>
+  <pre><code># 在运行的系统上更新 UBIFS（只需 UBIFS 镜像，无需 UBI 镜像）
+mkfs.ubifs -q -r new-rootfs -m 2048 -e 129024 -c 2047 -o new-ubifs.img
+ubiupdatevol /dev/ubi0_0 new-ubifs.img</code></pre>
+  <a class="source-link" href="http://www.linux-mtd.infradead.org/faq/ubifs.html" target="_blank">📎 原文：linux-mtd.infradead.org/faq/ubifs.html</a>
+
+  <div class="summary-box">
+    <div class="summary-title">📌 总结 · 第一性原理回顾</div>
+    <p>UBIFS 的整个设计链条可以从一个第一性原理推导：<strong>闪存只能顺序追加写、不能原地修改、有磨损限制</strong>。由此衍生出：分层架构（UBI 处理磨损，UBIFS 处理文件语义）→ Out-of-Place Write（写到新位置）→ B+ 漂移树（追踪最新数据位置）→ 日志（缓冲变更，减少索引更新频率）→ LPT（持久化空间统计，避免全盘扫描）→ 垃圾回收（整理旧版本数据）→ 透明压缩（最大化闪存利用率）。每一个设计决策都能溯源到这一物理约束。</p>
+  </div>
+</section>
+
+</div><!-- .content-wrap -->
+</main>
+
+<script>
+// ── Progress bar ──
+const bar = document.getElementById('progress-bar');
+function updateProgress() {
+  const scrollTop = window.scrollY || document.documentElement.scrollTop;
+  const docH = document.documentElement.scrollHeight - window.innerHeight;
+  bar.style.transform = `scaleX(${docH > 0 ? scrollTop / docH : 0})`;
+}
+window.addEventListener('scroll', updateProgress, { passive: true });
+updateProgress();
+
+// ── Nav toggle ──
+function toggleSidebar() {
+  const sb = document.getElementById('sidebar');
+  const hb = document.getElementById('hamburger');
+  const ov = document.getElementById('overlay');
+  sb.classList.toggle('open');
+  hb.classList.toggle('open');
+  ov.classList.toggle('show');
+}
+document.getElementById('overlay').addEventListener('click', toggleSidebar);
+
+// ── Nav group collapse ──
+function toggleGroup(id) {
+  document.getElementById(id).classList.toggle('collapsed');
+}
+
+// ── Nav jump ──
+function navTo(id) {
+  const el = document.getElementById(id);
+  if (el) {
+    el.scrollIntoView({ behavior: 'smooth' });
+    // close mobile sidebar
+    const sb = document.getElementById('sidebar');
+    if (sb.classList.contains('open')) toggleSidebar();
+  }
+}
+
+// ── Active nav highlight ──
+const sections = [
+  'hero','sec-intro','sec-layer',
+  'sec-nodes','sec-leb','sec-btree','sec-journal','sec-lpt','sec-tnc',
+  'sec-writeback','sec-gc','sec-compress','sec-crash',
+  'sec-pros','sec-cons','sec-compare',
+  'sec-scenario','sec-notfit',
+  'sec-mkfs','sec-ubinize','sec-ubitools','sec-extract','sec-workflow'
+];
+const navItems = document.querySelectorAll('.nav-item');
+const sectionEls = sections.map(id => document.getElementById(id)).filter(Boolean);
+
+function updateActiveNav() {
+  const offset = 80;
+  let current = sectionEls[0];
+  for (const s of sectionEls) {
+    if (s && s.getBoundingClientRect().top <= offset) current = s;
+  }
+  navItems.forEach(item => {
+    const target = item.getAttribute('onclick')?.match(/navTo\('(.+?)'\)/)?.[1];
+    item.classList.toggle('active', target === current?.id);
+  });
+}
+window.addEventListener('scroll', updateActiveNav, { passive: true });
+updateActiveNav();
+
+// ── Keyboard navigation ──
+const chapterOrder = [
+  'hero','sec-intro','sec-layer',
+  'sec-nodes','sec-leb','sec-btree','sec-journal','sec-lpt','sec-tnc',
+  'sec-writeback','sec-gc','sec-compress','sec-crash',
+  'sec-pros','sec-cons','sec-compare',
+  'sec-scenario','sec-notfit',
+  'sec-mkfs','sec-ubinize','sec-ubitools','sec-extract','sec-workflow'
+];
+document.addEventListener('keydown', e => {
+  if (e.target.tagName === 'INPUT' || e.target.tagName === 'TEXTAREA') return;
+  const offset = 80;
+  let currentIdx = 0;
+  chapterOrder.forEach((id, i) => {
+    const el = document.getElementById(id);
+    if (el && el.getBoundingClientRect().top <= offset) currentIdx = i;
+  });
+  if (e.key === 'ArrowRight' || e.key === 'ArrowDown') {
+    e.preventDefault();
+    const next = chapterOrder[Math.min(currentIdx + 1, chapterOrder.length - 1)];
+    document.getElementById(next)?.scrollIntoView({ behavior: 'smooth' });
+  } else if (e.key === 'ArrowLeft' || e.key === 'ArrowUp') {
+    e.preventDefault();
+    const prev = chapterOrder[Math.max(currentIdx - 1, 0)];
+    document.getElementById(prev)?.scrollIntoView({ behavior: 'smooth' });
+  }
+});
+</script>
+</body>
+</html>

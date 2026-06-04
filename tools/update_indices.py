@@ -36,6 +36,8 @@ EXCLUDE_DIR_NAMES = {
     '__pycache__', 'node_modules', '.git', 'network_packet_loss_guide_src',
     'assets', 'tmp', 'dist',
 }
+# 不在目录索引中列出的子目录（如仅含维护脚本）
+LISTING_SKIP_DIRS = {'tools'}
 EXCLUDE_FILE_NAMES = {'.DS_Store'}
 
 TITLE_RE = re.compile(r'<title[^>]*>(.*?)</title>', re.IGNORECASE | re.DOTALL)
@@ -56,7 +58,7 @@ SKIP_URL_RE = re.compile(
 )
 
 DIR_INTROS = {
-    '': '嵌入式与网络协议技术笔记库：蓝牙、WiFi、TLS、网络协议、程序设计、总线、驱动、Buildroot、工具等专题。',
+    '': '嵌入式与网络协议技术笔记库：蓝牙、WiFi、TLS、网络协议、内核、文件系统、程序设计、总线、驱动、Buildroot、命令行工具等专题。',
     'program': 'C 语言标准、Linux 系统编程、并发与设计模式等程序设计笔记。',
     'bt': '蓝牙 Core 规范导读、信令索引、抓包流程与深度专题。',
     'bt/overview': 'Bluetooth Core 6.0 各协议层规范概览（Vol 1 / Part A–H）。',
@@ -65,7 +67,7 @@ DIR_INTROS = {
     'bt/principle': '从第一性原理理解蓝牙底层架构与 LMP 信令。',
     'bt/profile': '经典蓝牙应用层 Profile：RFCOMM、SPP 等。',
     'bt/signaling': 'HCI / LMP / LL / L2CAP / ATT 各层信令与 PDU 参考索引表。',
-    'buildroot': 'Buildroot 嵌入式根文件系统：配置、编译框架、U-Boot、包编译与 GNU Make。',
+    'buildroot': 'Buildroot 嵌入式根文件系统：配置、内核镜像、编译框架、U-Boot、包编译与 GNU Make。',
     'bus': '硬件总线与接口：USB、串口、UART 调试等。',
     'bus/usb': 'USB 2.0 / Type-C 规范、描述符、事务、Linux Gadget 与调试。',
     'driver': 'Linux 内核设备模型与常见外设驱动（GPIO、UART、I2C、以太网、IRQ）。',
@@ -77,8 +79,10 @@ DIR_INTROS = {
     'tls': 'TLS/SSL 协议、密码学基础、PKI、证书与握手抓包。',
     'tls/packet': 'TLS 1.2 / 1.3 解密抓包逐包分析。',
     'tls/rfc': 'TLS 相关 RFC 图解导读与规范原文存档。',
-    'tools': '开发工具：Git、Shell 工具链、抓包、网络诊断与 ELF 等。',
-    'wifi': 'IEEE 802.11 标准导读、无线组网、协议栈、关联/认证、调制技术。',
+    'wifi': 'IEEE 802.11 标准导读、无线组网、wpa_supplicant/iw、协议栈、关联/认证、调制技术。',
+    'commands': 'Linux 命令行工具：Git、Shell 工具链、抓包、网络诊断、文件传输与性能分析等。',
+    'kernel': 'Linux 内核专题：内存分析、进程地址空间、MIPS 启动与 SoC 内存生命周期。',
+    'fs': '嵌入式文件系统：SquashFS、UBIFS 等只读/闪存文件系统概览。',
 }
 
 MODULE_GROUPS = {
@@ -91,7 +95,9 @@ MODULE_GROUPS = {
         ('总线与接口', 'USB、串口、UART', ['bus/']),
         ('Linux 驱动', '设备模型与外设子系统', ['driver/']),
         ('Buildroot', '嵌入式构建系统', ['buildroot/']),
-        ('工具', 'Git、命令行、抓包与诊断', ['tools/']),
+        ('命令行工具', 'Git、抓包、网络诊断、文件传输', ['commands/']),
+        ('Linux 内核', '内存分析、MIPS 启动', ['kernel/']),
+        ('文件系统', 'SquashFS、UBIFS', ['fs/']),
     ],
     'program': [
         ('C 语言标准与安全', 'C89/C99/C11 与头文件安全分析', [
@@ -185,6 +191,9 @@ MODULE_GROUPS = {
             'wifi_authentication_guide.html', 'wifi_authentication_comparison_with_tls_bt.html',
             '80211i_spec_overview.html',
         ]),
+        ('用户空间工具', 'wpa_supplicant、iw 命令', [
+            'wpa_supplicant_guide.html', 'wpa_supplicant_command.html', 'iw_guide.html',
+        ]),
         ('物理层与调制', '调制解调技术', [
             'wireless_modulation_technology_guide.html',
             'wireless_modulation_technology_guide_2nd.html',
@@ -273,10 +282,14 @@ MODULE_GROUPS = {
             'buildroot_build_frame.html', 'buildroot_build_system.html',
         ]),
         ('包编译', '单包编译流程分析', ['buildroot_package_compilation_analysis.html']),
+        ('内核构建', 'kernel image 与 configuration', [
+            'kernel_image_guide.html', 'kernel_configuration_guide.html',
+        ]),
+        ('开发调试', 'GCC 头文件搜索', ['gcc_search_header_guide.html']),
         ('Bootloader', 'U-Boot 编译集成', ['buildroot_uboot_build.html']),
         ('构建工具', 'GNU Make 内部流程', ['make_internal.html']),
     ],
-    'tools': [
+    'commands': [
         ('版本控制', 'Git 原理与常用命令', ['git_guide.html']),
         ('抓包与分析', 'tcpdump、TShark', ['tcpdump_guide.html', 'tshark_guide.html']),
         ('网络诊断', 'ip、ss、curl、丢包排查', [
@@ -287,7 +300,26 @@ MODULE_GROUPS = {
             'grep_command_guide.html', 'sed_command_guide.html',
             'awk_command_guide.html', 'find_command_guide.html',
         ]),
+        ('文件与传输', 'tar、rsync、ssh、unzip', [
+            'tar_guide.html', 'rsync_guide.html', 'ssh_guide.html', 'unzip_guide.html',
+        ]),
+        ('系统与性能', 'mount、perf、squash', [
+            'mount_guide.html', 'perf_guide.html', 'squash_guide.html',
+        ]),
         ('调试与二进制', 'strace、ELF', ['strace_command_guide.html', 'elf_overview.html']),
+    ],
+    'kernel': [
+        ('内存分析', '内核与用户态内存', [
+            'memory_analysis_guide.html', 'process_memory_analysis.html',
+        ]),
+        ('MIPS / X2600', '启动流程与 SoC 内存生命周期', [
+            'mips_kernel_boot_guide.html', 'mips_x2600_memory_lifecycle_analysis.html',
+        ]),
+    ],
+    'fs': [
+        ('闪存文件系统', 'SquashFS、UBIFS 概览', [
+            'squashfs_overview.html', 'ubifs_overview.html',
+        ]),
     ],
 }
 
@@ -566,6 +598,8 @@ def write_index_for_dir(d: Path, dry_run: bool = False) -> bool:
         if should_skip_path(p):
             continue
         if p.is_dir():
+            if p.name in LISTING_SKIP_DIRS:
+                continue
             if (p / 'index.html').exists():
                 href = dir_index_href(p.name)
             elif (p / 'index.htm').exists():
@@ -726,7 +760,9 @@ def main():
 
     dirs = collect_index_dirs(all_html)
     index_count = 0
-    for d in sorted(dirs):
+    # 先写子目录 index，再写根目录，确保父级链接能指向 xxx/index.html
+    ordered = sorted(d for d in dirs if d != ROOT) + ([ROOT] if ROOT in dirs else [])
+    for d in ordered:
         if should_skip_path(d) and d != ROOT:
             continue
         if write_index_for_dir(d, dry_run=args.dry_run):

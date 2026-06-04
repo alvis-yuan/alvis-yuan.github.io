@@ -1,0 +1,1951 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Linux wpa_supplicant 深度解析</title>
+<style>
+  :root {
+    --bg: #0f1117;
+    --surface: #1a1d2e;
+    --surface2: #232640;
+    --border: #2e3250;
+    --accent: #5b8dee;
+    --accent2: #7c5cbf;
+    --accent3: #3ecfa3;
+    --accent4: #f0a500;
+    --text: #e2e8f0;
+    --text2: #94a3b8;
+    --text3: #64748b;
+    --code-bg: #141520;
+    --nav-w: 270px;
+    --radius: 10px;
+    --progress-h: 3px;
+  }
+  *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+  html { scroll-behavior: smooth; }
+  body {
+    background: var(--bg);
+    color: var(--text);
+    font-family: 'PingFang SC', 'Microsoft YaHei', 'Segoe UI', system-ui, sans-serif;
+    font-size: 15px;
+    line-height: 1.75;
+    overflow-x: hidden;
+  }
+
+  /* ===== PROGRESS BAR ===== */
+  #progress-bar {
+    position: fixed;
+    top: 0; left: 0;
+    height: var(--progress-h);
+    width: 0%;
+    background: linear-gradient(90deg, var(--accent), var(--accent3));
+    z-index: 9999;
+    transition: width 0.1s linear;
+    border-radius: 0 2px 2px 0;
+  }
+
+  /* ===== TOP NAV (mobile) ===== */
+  #topbar {
+    display: none;
+    position: fixed;
+    top: var(--progress-h);
+    left: 0; right: 0;
+    height: 52px;
+    background: var(--surface);
+    border-bottom: 1px solid var(--border);
+    z-index: 500;
+    align-items: center;
+    padding: 0 16px;
+    gap: 12px;
+  }
+  #topbar .logo { font-weight: 700; font-size: 14px; color: var(--accent); flex: 1; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  #hamburger {
+    background: none; border: none; cursor: pointer;
+    display: flex; flex-direction: column; gap: 5px; padding: 4px;
+  }
+  #hamburger span {
+    display: block; width: 22px; height: 2px;
+    background: var(--text); border-radius: 2px;
+    transition: transform 0.3s, opacity 0.3s;
+  }
+  #hamburger.open span:nth-child(1) { transform: translateY(7px) rotate(45deg); }
+  #hamburger.open span:nth-child(2) { opacity: 0; }
+  #hamburger.open span:nth-child(3) { transform: translateY(-7px) rotate(-45deg); }
+
+  /* ===== SIDEBAR NAV ===== */
+  #sidebar {
+    position: fixed;
+    top: var(--progress-h); left: 0;
+    width: var(--nav-w);
+    height: 100vh;
+    background: var(--surface);
+    border-right: 1px solid var(--border);
+    overflow-y: auto;
+    z-index: 400;
+    padding-bottom: 40px;
+    transition: transform 0.3s ease;
+  }
+  #sidebar::-webkit-scrollbar { width: 4px; }
+  #sidebar::-webkit-scrollbar-track { background: transparent; }
+  #sidebar::-webkit-scrollbar-thumb { background: var(--border); border-radius: 4px; }
+
+  .nav-header {
+    padding: 20px 16px 12px;
+    border-bottom: 1px solid var(--border);
+  }
+  .nav-header h1 {
+    font-size: 13px;
+    font-weight: 700;
+    color: var(--accent);
+    letter-spacing: 0.05em;
+    text-transform: uppercase;
+  }
+  .nav-header p { font-size: 11px; color: var(--text3); margin-top: 4px; }
+
+  .nav-group { margin-top: 8px; }
+  .nav-group-header {
+    display: flex; align-items: center; justify-content: space-between;
+    padding: 8px 16px 6px;
+    cursor: pointer;
+    user-select: none;
+    transition: background 0.2s;
+  }
+  .nav-group-header:hover { background: var(--surface2); }
+  .nav-group-title {
+    font-size: 11px;
+    font-weight: 700;
+    color: var(--text3);
+    text-transform: uppercase;
+    letter-spacing: 0.06em;
+  }
+  .nav-group-arrow {
+    font-size: 10px;
+    color: var(--text3);
+    transition: transform 0.25s;
+  }
+  .nav-group.collapsed .nav-group-arrow { transform: rotate(-90deg); }
+  .nav-group-items { overflow: hidden; transition: max-height 0.3s ease; }
+  .nav-group.collapsed .nav-group-items { max-height: 0 !important; }
+
+  .nav-item {
+    display: block;
+    padding: 7px 16px 7px 26px;
+    color: var(--text2);
+    text-decoration: none;
+    font-size: 13px;
+    border-left: 2px solid transparent;
+    transition: all 0.2s;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+  }
+  .nav-item:hover { color: var(--text); background: var(--surface2); }
+  .nav-item.active {
+    color: var(--accent);
+    border-left-color: var(--accent);
+    background: rgba(91,141,238,0.08);
+    font-weight: 600;
+  }
+
+  /* ===== OVERLAY (mobile) ===== */
+  #overlay {
+    display: none;
+    position: fixed;
+    inset: 0;
+    background: rgba(0,0,0,0.6);
+    z-index: 350;
+    backdrop-filter: blur(2px);
+  }
+
+  /* ===== MAIN CONTENT ===== */
+  #main {
+    margin-left: var(--nav-w);
+    padding: 40px 48px 80px;
+    max-width: 960px;
+  }
+
+  /* ===== SECTIONS ===== */
+  .section { margin-bottom: 80px; }
+  .section-label {
+    font-size: 11px;
+    font-weight: 700;
+    color: var(--accent3);
+    text-transform: uppercase;
+    letter-spacing: 0.1em;
+    margin-bottom: 8px;
+  }
+  h2.section-title {
+    font-size: 26px;
+    font-weight: 800;
+    color: var(--text);
+    margin-bottom: 20px;
+    line-height: 1.3;
+    border-bottom: 1px solid var(--border);
+    padding-bottom: 14px;
+  }
+  h3 {
+    font-size: 18px;
+    font-weight: 700;
+    color: var(--text);
+    margin: 28px 0 12px;
+  }
+  h4 {
+    font-size: 15px;
+    font-weight: 600;
+    color: var(--accent4);
+    margin: 20px 0 8px;
+  }
+  p { margin-bottom: 12px; color: var(--text2); }
+  ul, ol { padding-left: 22px; margin-bottom: 14px; }
+  li { color: var(--text2); margin-bottom: 5px; }
+  strong { color: var(--text); }
+  a { color: var(--accent); text-decoration: none; }
+  a:hover { text-decoration: underline; }
+
+  /* ===== CODE BLOCKS ===== */
+  pre {
+    background: var(--code-bg);
+    border: 1px solid var(--border);
+    border-radius: var(--radius);
+    padding: 16px 20px;
+    overflow-x: auto;
+    margin: 14px 0;
+    font-size: 13px;
+    line-height: 1.6;
+    position: relative;
+  }
+  pre::-webkit-scrollbar { height: 4px; }
+  pre::-webkit-scrollbar-thumb { background: var(--border); border-radius: 4px; }
+  code {
+    font-family: 'JetBrains Mono', 'Fira Code', 'Cascadia Code', 'Courier New', monospace;
+    color: #a8d8ff;
+  }
+  pre code { color: #a8d8ff; }
+  .code-comment { color: #6a7d9f; }
+  .code-keyword { color: #f0a500; }
+  .code-string { color: #3ecfa3; }
+  .code-value { color: #f07070; }
+  .code-label { font-size: 11px; color: var(--text3); position: absolute; top: 8px; right: 12px; }
+
+  /* ===== INLINE CODE ===== */
+  :not(pre) > code {
+    background: var(--surface2);
+    border: 1px solid var(--border);
+    border-radius: 4px;
+    padding: 1px 6px;
+    font-size: 13px;
+    color: var(--accent3);
+  }
+
+  /* ===== CARDS & BOXES ===== */
+  .card {
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: var(--radius);
+    padding: 20px 24px;
+    margin: 16px 0;
+  }
+  .card.accent-left { border-left: 3px solid var(--accent); }
+  .card.green-left { border-left: 3px solid var(--accent3); }
+  .card.yellow-left { border-left: 3px solid var(--accent4); }
+  .card.purple-left { border-left: 3px solid var(--accent2); }
+
+  .info-box {
+    background: rgba(91,141,238,0.08);
+    border: 1px solid rgba(91,141,238,0.25);
+    border-radius: var(--radius);
+    padding: 14px 18px;
+    margin: 14px 0;
+  }
+  .info-box .info-title { font-size: 12px; font-weight: 700; color: var(--accent); margin-bottom: 6px; text-transform: uppercase; letter-spacing: 0.05em; }
+
+  .warn-box {
+    background: rgba(240,165,0,0.08);
+    border: 1px solid rgba(240,165,0,0.25);
+    border-radius: var(--radius);
+    padding: 14px 18px;
+    margin: 14px 0;
+  }
+  .warn-box .warn-title { font-size: 12px; font-weight: 700; color: var(--accent4); margin-bottom: 6px; text-transform: uppercase; letter-spacing: 0.05em; }
+
+  /* ===== TABLES ===== */
+  .table-wrap { overflow-x: auto; margin: 16px 0; border-radius: var(--radius); border: 1px solid var(--border); }
+  table { border-collapse: collapse; width: 100%; min-width: 500px; }
+  th {
+    background: var(--surface2);
+    color: var(--text);
+    font-size: 12px;
+    font-weight: 700;
+    text-transform: uppercase;
+    letter-spacing: 0.05em;
+    padding: 10px 14px;
+    text-align: left;
+    border-bottom: 1px solid var(--border);
+  }
+  td {
+    padding: 9px 14px;
+    font-size: 13px;
+    color: var(--text2);
+    border-bottom: 1px solid var(--border);
+    vertical-align: top;
+  }
+  tr:last-child td { border-bottom: none; }
+  tr:hover td { background: var(--surface2); }
+
+  /* ===== STEP FLOW ===== */
+  .step-flow { margin: 20px 0; }
+  .step-item {
+    display: flex;
+    gap: 14px;
+    margin-bottom: 16px;
+    position: relative;
+  }
+  .step-item::after {
+    content: '';
+    position: absolute;
+    left: 15px;
+    top: 32px;
+    width: 2px;
+    height: calc(100% + 0px);
+    background: var(--border);
+  }
+  .step-item:last-child::after { display: none; }
+  .step-num {
+    flex-shrink: 0;
+    width: 32px;
+    height: 32px;
+    border-radius: 50%;
+    background: var(--accent);
+    color: #fff;
+    font-size: 13px;
+    font-weight: 700;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    z-index: 1;
+  }
+  .step-content { flex: 1; padding-top: 5px; }
+  .step-title { font-weight: 600; color: var(--text); font-size: 14px; margin-bottom: 4px; }
+  .step-desc { color: var(--text2); font-size: 13px; }
+
+  /* ===== BADGE ===== */
+  .badge {
+    display: inline-block;
+    padding: 2px 8px;
+    border-radius: 20px;
+    font-size: 11px;
+    font-weight: 700;
+    margin: 0 3px;
+  }
+  .badge-blue { background: rgba(91,141,238,0.15); color: var(--accent); border: 1px solid rgba(91,141,238,0.3); }
+  .badge-green { background: rgba(62,207,163,0.12); color: var(--accent3); border: 1px solid rgba(62,207,163,0.3); }
+  .badge-orange { background: rgba(240,165,0,0.12); color: var(--accent4); border: 1px solid rgba(240,165,0,0.3); }
+  .badge-purple { background: rgba(124,92,191,0.12); color: var(--accent2); border: 1px solid rgba(124,92,191,0.3); }
+
+  /* ===== SUMMARY BOX ===== */
+  .summary-box {
+    background: linear-gradient(135deg, rgba(91,141,238,0.08), rgba(62,207,163,0.06));
+    border: 1px solid rgba(91,141,238,0.2);
+    border-radius: var(--radius);
+    padding: 20px 24px;
+    margin-top: 28px;
+  }
+  .summary-box h3 {
+    font-size: 15px;
+    color: var(--accent3);
+    margin-bottom: 10px;
+    margin-top: 0;
+  }
+
+  /* ===== SVG DIAGRAMS ===== */
+  .diagram-wrap {
+    background: var(--code-bg);
+    border: 1px solid var(--border);
+    border-radius: var(--radius);
+    padding: 20px;
+    margin: 20px 0;
+    overflow-x: auto;
+    text-align: center;
+  }
+  .diagram-wrap svg { max-width: 100%; height: auto; }
+
+  /* ===== RESPONSIVE ===== */
+  @media (max-width: 900px) {
+    #topbar { display: flex; }
+    #sidebar {
+      top: calc(var(--progress-h) + 52px);
+      transform: translateX(-100%);
+    }
+    #sidebar.open { transform: translateX(0); }
+    #overlay.show { display: block; }
+    #main {
+      margin-left: 0;
+      padding: 72px 20px 60px;
+    }
+  }
+  @media (max-width: 600px) {
+    h2.section-title { font-size: 21px; }
+    h3 { font-size: 16px; }
+    #main { padding: 68px 15px 60px; }
+    pre { font-size: 12px; padding: 12px 14px; }
+    .card { padding: 14px 16px; }
+  }
+
+  /* ===== KEYBOARD NAV HINT ===== */
+  #keynav-hint {
+    position: fixed;
+    bottom: 20px;
+    right: 20px;
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    padding: 8px 14px;
+    font-size: 11px;
+    color: var(--text3);
+    opacity: 0;
+    transition: opacity 0.5s;
+    pointer-events: none;
+  }
+  #keynav-hint.show { opacity: 1; }
+  kbd {
+    display: inline-block;
+    background: var(--surface2);
+    border: 1px solid var(--border);
+    border-radius: 3px;
+    padding: 1px 5px;
+    font-size: 11px;
+    font-family: monospace;
+    color: var(--text2);
+  }
+
+  /* ===== SOURCE CITATION ===== */
+  .source-ref {
+    font-size: 12px;
+    color: var(--text3);
+    margin-top: 6px;
+  }
+  .source-ref a { color: var(--text3); }
+  .source-ref a:hover { color: var(--accent); }
+</style>
+</head>
+<body>
+
+<div id="progress-bar"></div>
+
+<!-- Mobile topbar -->
+<div id="topbar">
+  <button id="hamburger" aria-label="菜单">
+    <span></span><span></span><span></span>
+  </button>
+  <span class="logo">wpa_supplicant 深度解析</span>
+</div>
+
+<!-- Overlay -->
+<div id="overlay"></div>
+
+<!-- Sidebar -->
+<nav id="sidebar">
+  <div class="nav-header">
+    <h1>wpa_supplicant</h1>
+    <p>Linux 无线认证深度解析</p>
+  </div>
+
+  <div class="nav-group" id="grp-intro">
+    <div class="nav-group-header" onclick="toggleGroup('grp-intro')">
+      <span class="nav-group-title">基础篇</span>
+      <span class="nav-group-arrow">▾</span>
+    </div>
+    <div class="nav-group-items">
+      <a class="nav-item" href="#s1">1. 概述与背景</a>
+      <a class="nav-item" href="#s2">2. 系统架构原理</a>
+      <a class="nav-item" href="#s3">3. 核心组件</a>
+    </div>
+  </div>
+
+  <div class="nav-group" id="grp-principle">
+    <div class="nav-group-header" onclick="toggleGroup('grp-principle')">
+      <span class="nav-group-title">原理篇</span>
+      <span class="nav-group-arrow">▾</span>
+    </div>
+    <div class="nav-group-items">
+      <a class="nav-item" href="#s4">4. 驱动接口层</a>
+      <a class="nav-item" href="#s5">5. WPA 关联流程</a>
+      <a class="nav-item" href="#s6">6. 四次握手详解</a>
+    </div>
+  </div>
+
+  <div class="nav-group" id="grp-scenario">
+    <div class="nav-group-header" onclick="toggleGroup('grp-scenario')">
+      <span class="nav-group-title">使用场景</span>
+      <span class="nav-group-arrow">▾</span>
+    </div>
+    <div class="nav-group-items">
+      <a class="nav-item" href="#s7">7. WPA-PSK 家用网络</a>
+      <a class="nav-item" href="#s8">8. WPA-Enterprise 企业</a>
+      <a class="nav-item" href="#s9">9. WPA3 / SAE</a>
+      <a class="nav-item" href="#s10">10. 隐藏 SSID</a>
+      <a class="nav-item" href="#s11">11. 开放网络</a>
+      <a class="nav-item" href="#s12">12. 有线 802.1X</a>
+      <a class="nav-item" href="#s13">13. 多接口管理</a>
+      <a class="nav-item" href="#s14">14. wpa_cli 动态操控</a>
+    </div>
+  </div>
+
+  <div class="nav-group" id="grp-advanced">
+    <div class="nav-group-header" onclick="toggleGroup('grp-advanced')">
+      <span class="nav-group-title">进阶篇</span>
+      <span class="nav-group-arrow">▾</span>
+    </div>
+    <div class="nav-group-items">
+      <a class="nav-item" href="#s15">15. 漫游机制</a>
+      <a class="nav-item" href="#s16">16. 调试排错</a>
+      <a class="nav-item" href="#s17">17. 命令行参数速查</a>
+      <a class="nav-item" href="#s18">18. 总结与第一性原理</a>
+    </div>
+  </div>
+</nav>
+
+<!-- Main -->
+<main id="main">
+
+<!-- ============================== S1 ============================== -->
+<section class="section" id="s1">
+  <div class="section-label">第 1 章 · 基础篇</div>
+  <h2 class="section-title">概述与背景</h2>
+
+  <p><strong>wpa_supplicant</strong> 是 Wi-Fi Protected Access（WPA）客户端的实现，即运行在客户端设备上的 <em>请求方（Supplicant）</em> 组件。它同时实现了 IEEE 802.1X 请求方协议，可对接企业级认证服务器。</p>
+  <p class="source-ref">来源：<a href="https://manpages.debian.org/experimental/wpasupplicant/wpa_supplicant.8.en.html" target="_blank">Debian Manpages — wpa_supplicant(8)</a></p>
+
+  <div class="info-box">
+    <div class="info-title">官方定义（原文）</div>
+    <p style="font-style:italic;margin:0;">"wpa_supplicant is an implementation of the WPA Supplicant component, i.e., the part that runs in the client stations. It implements WPA key negotiation with a WPA Authenticator and EAP authentication with Authentication Server. In addition, it controls the roaming and IEEE 802.11 authentication/association of the wireless LAN driver."</p>
+    <p class="source-ref" style="margin-top:8px;">— <a href="https://man.archlinux.org/man/wpa_supplicant.8.en" target="_blank">Arch Linux Man Page — wpa_supplicant(8)</a></p>
+  </div>
+
+  <h3>为什么需要 wpa_supplicant？</h3>
+  <p>无线网络与有线网络最根本的区别在于：<strong>攻击者无需物理接触网络设备</strong>就能被动监听所有帧，或非授权接入网络。早期的 WEP 加密被证明存在严重缺陷，IEEE 802.11i（WPA2）引入了基于 AES-CCMP 的加密机制，才能真正称为安全。wpa_supplicant 正是在客户端实现这套安全机制的守护进程。</p>
+
+  <h3>历史演进</h3>
+  <div class="table-wrap">
+    <table>
+      <tr><th>协议</th><th>标准</th><th>主要缺陷</th><th>wpa_supplicant 支持</th></tr>
+      <tr><td>WEP</td><td>IEEE 802.11 (1997)</td><td>RC4 流密码易攻破，IV 重复</td><td><span class="badge badge-orange">已废弃</span></td></tr>
+      <tr><td>WPA</td><td>Wi-Fi Alliance (2003)</td><td>TKIP 存在部分缺陷</td><td><span class="badge badge-blue">支持</span></td></tr>
+      <tr><td>WPA2</td><td>IEEE 802.11i (2004)</td><td>PMKID 攻击（离线）</td><td><span class="badge badge-green">主流</span></td></tr>
+      <tr><td>WPA3</td><td>Wi-Fi Alliance (2018)</td><td>—</td><td><span class="badge badge-green">SAE/OWE</span></td></tr>
+    </table>
+  </div>
+
+  <div class="summary-box">
+    <h3>📌 本章小结</h3>
+    <p>wpa_supplicant 解决的核心问题是：<strong>在无线介质的开放物理环境中，如何让客户端安全地向接入点证明自己的身份，并协商出只有双方知晓的加密密钥。</strong>这是整个无线安全体系的逻辑起点。</p>
+    <p style="margin-bottom:0;"><strong>第一性原理：</strong>无线信道是广播信道，任何人都能收听。因此必须在链路层建立一个"只有合法双方才能推导出"的对称密钥，且这个密钥永远不能在信道上明文传输。wpa_supplicant 的所有机制都服务于这一基本约束。</p>
+  </div>
+</section>
+
+<!-- ============================== S2 ============================== -->
+<section class="section" id="s2">
+  <div class="section-label">第 2 章 · 基础篇</div>
+  <h2 class="section-title">系统架构原理</h2>
+
+  <p>wpa_supplicant 被设计为一个<strong>后台守护进程（daemon）</strong>，通过控制接口（ctrl_interface）与前端程序通信，并通过驱动接口与内核无线驱动交互。</p>
+
+  <div class="diagram-wrap">
+    <svg viewBox="0 0 720 380" xmlns="http://www.w3.org/2000/svg" width="720" height="380">
+      <defs>
+        <marker id="arr" markerWidth="8" markerHeight="8" refX="6" refY="3" orient="auto">
+          <path d="M0,0 L0,6 L8,3 z" fill="#5b8dee"/>
+        </marker>
+        <marker id="arr2" markerWidth="8" markerHeight="8" refX="6" refY="3" orient="auto">
+          <path d="M0,0 L0,6 L8,3 z" fill="#3ecfa3"/>
+        </marker>
+        <marker id="arr3" markerWidth="8" markerHeight="8" refX="6" refY="3" orient="auto">
+          <path d="M0,0 L0,6 L8,3 z" fill="#f0a500"/>
+        </marker>
+      </defs>
+
+      <!-- User space -->
+      <rect x="10" y="10" width="700" height="200" rx="10" fill="rgba(91,141,238,0.05)" stroke="#2e3250" stroke-width="1"/>
+      <text x="20" y="30" fill="#5b8dee" font-size="11" font-family="monospace" font-weight="700">用户空间 (User Space)</text>
+
+      <!-- Frontend apps -->
+      <rect x="30" y="45" width="130" height="50" rx="8" fill="#1a1d2e" stroke="#2e3250" stroke-width="1.5"/>
+      <text x="95" y="65" text-anchor="middle" fill="#94a3b8" font-size="12" font-family="monospace">wpa_cli</text>
+      <text x="95" y="82" text-anchor="middle" fill="#64748b" font-size="10" font-family="monospace">命令行前端</text>
+
+      <rect x="175" y="45" width="130" height="50" rx="8" fill="#1a1d2e" stroke="#2e3250" stroke-width="1.5"/>
+      <text x="240" y="65" text-anchor="middle" fill="#94a3b8" font-size="12" font-family="monospace">wpa_gui</text>
+      <text x="240" y="82" text-anchor="middle" fill="#64748b" font-size="10" font-family="monospace">图形界面前端</text>
+
+      <rect x="320" y="45" width="145" height="50" rx="8" fill="#1a1d2e" stroke="#2e3250" stroke-width="1.5"/>
+      <text x="392" y="65" text-anchor="middle" fill="#94a3b8" font-size="12" font-family="monospace">NetworkManager</text>
+      <text x="392" y="82" text-anchor="middle" fill="#64748b" font-size="10" font-family="monospace">网络管理器</text>
+
+      <rect x="480" y="45" width="130" height="50" rx="8" fill="#1a1d2e" stroke="#2e3250" stroke-width="1.5"/>
+      <text x="545" y="65" text-anchor="middle" fill="#94a3b8" font-size="12" font-family="monospace">DHCP Client</text>
+      <text x="545" y="82" text-anchor="middle" fill="#64748b" font-size="10" font-family="monospace">上层协议</text>
+
+      <!-- wpa_supplicant core -->
+      <rect x="160" y="130" width="400" height="65" rx="8" fill="#232640" stroke="#5b8dee" stroke-width="2"/>
+      <text x="360" y="152" text-anchor="middle" fill="#5b8dee" font-size="14" font-family="monospace" font-weight="700">wpa_supplicant (守护进程)</text>
+      <text x="220" y="172" fill="#94a3b8" font-size="10.5" font-family="monospace">EAP 认证引擎</text>
+      <text x="340" y="172" fill="#94a3b8" font-size="10.5" font-family="monospace">4-Way 握手</text>
+      <text x="450" y="172" fill="#94a3b8" font-size="10.5" font-family="monospace">密钥管理</text>
+      <text x="220" y="187" fill="#64748b" font-size="10" font-family="monospace">PMKSA缓存</text>
+      <text x="340" y="187" fill="#64748b" font-size="10" font-family="monospace">漫游管理</text>
+      <text x="450" y="187" fill="#64748b" font-size="10" font-family="monospace">BSS 选择</text>
+
+      <!-- Arrows: frontends to core -->
+      <line x1="95" y1="95" x2="240" y2="130" stroke="#5b8dee" stroke-width="1.5" stroke-dasharray="4,3" marker-end="url(#arr)"/>
+      <line x1="240" y1="95" x2="300" y2="130" stroke="#5b8dee" stroke-width="1.5" stroke-dasharray="4,3" marker-end="url(#arr)"/>
+      <line x1="392" y1="95" x2="380" y2="130" stroke="#3ecfa3" stroke-width="1.5" stroke-dasharray="4,3" marker-end="url(#arr2)"/>
+      <line x1="545" y1="95" x2="450" y2="130" stroke="#f0a500" stroke-width="1.5" stroke-dasharray="4,3" marker-end="url(#arr3)"/>
+
+      <!-- ctrl_interface label -->
+      <text x="168" y="120" fill="#64748b" font-size="9" font-family="monospace">Unix Socket (ctrl_interface)</text>
+
+      <!-- Kernel space -->
+      <rect x="10" y="225" width="700" height="145" rx="10" fill="rgba(62,207,163,0.04)" stroke="#2e3250" stroke-width="1"/>
+      <text x="20" y="245" fill="#3ecfa3" font-size="11" font-family="monospace" font-weight="700">内核空间 (Kernel Space)</text>
+
+      <!-- Driver layer -->
+      <rect x="30" y="255" width="200" height="50" rx="8" fill="#1a1d2e" stroke="#3ecfa3" stroke-width="1.5"/>
+      <text x="130" y="275" text-anchor="middle" fill="#3ecfa3" font-size="12" font-family="monospace">nl80211 / cfg80211</text>
+      <text x="130" y="292" text-anchor="middle" fill="#64748b" font-size="10" font-family="monospace">现代驱动接口 (Netlink)</text>
+
+      <rect x="250" y="255" width="200" height="50" rx="8" fill="#1a1d2e" stroke="#7c5cbf" stroke-width="1.5"/>
+      <text x="350" y="275" text-anchor="middle" fill="#7c5cbf" font-size="12" font-family="monospace">wext (wireless ext)</text>
+      <text x="350" y="292" text-anchor="middle" fill="#64748b" font-size="10" font-family="monospace">旧式驱动接口 (ioctl)</text>
+
+      <rect x="470" y="255" width="200" height="50" rx="8" fill="#1a1d2e" stroke="#f0a500" stroke-width="1.5"/>
+      <text x="570" y="275" text-anchor="middle" fill="#f0a500" font-size="12" font-family="monospace">wired / macsec</text>
+      <text x="570" y="292" text-anchor="middle" fill="#64748b" font-size="10" font-family="monospace">有线驱动接口</text>
+
+      <!-- Hardware -->
+      <rect x="200" y="325" width="330" height="36" rx="8" fill="#141520" stroke="#2e3250" stroke-width="1.5"/>
+      <text x="365" y="348" text-anchor="middle" fill="#64748b" font-size="12" font-family="monospace">物理无线网卡 (PHY Hardware)</text>
+
+      <!-- Arrows: core to driver -->
+      <line x1="310" y1="195" x2="200" y2="255" stroke="#3ecfa3" stroke-width="1.5" marker-end="url(#arr2)"/>
+      <line x1="360" y1="195" x2="350" y2="255" stroke="#7c5cbf" stroke-width="1.5" marker-end="url(#arr)"/>
+      <line x1="410" y1="195" x2="500" y2="255" stroke="#f0a500" stroke-width="1.5" marker-end="url(#arr3)"/>
+
+      <!-- driver to hw -->
+      <line x1="200" y1="305" x2="290" y2="325" stroke="#3ecfa3" stroke-width="1.5" marker-end="url(#arr2)"/>
+      <line x1="350" y1="305" x2="360" y2="325" stroke="#7c5cbf" stroke-width="1.5" marker-end="url(#arr)"/>
+
+      <!-- Config file -->
+      <rect x="610" y="130" width="95" height="65" rx="8" fill="#141520" stroke="#f0a500" stroke-width="1.5" stroke-dasharray="4,2"/>
+      <text x="657" y="152" text-anchor="middle" fill="#f0a500" font-size="10" font-family="monospace">wpa_supplicant</text>
+      <text x="657" y="167" text-anchor="middle" fill="#f0a500" font-size="10" font-family="monospace">.conf</text>
+      <text x="657" y="186" text-anchor="middle" fill="#64748b" font-size="9" font-family="monospace">配置文件</text>
+      <line x1="610" y1="162" x2="560" y2="162" stroke="#f0a500" stroke-width="1.5" stroke-dasharray="3,2" marker-end="url(#arr3)"/>
+    </svg>
+  </div>
+
+  <h3>官方组件定义</h3>
+  <p>根据官方 man page（<a href="https://manpages.debian.org/experimental/wpasupplicant/wpa_supplicant.8.en.html" target="_blank">Debian</a>），wpa_supplicant 系统由以下组件构成：</p>
+  <div class="table-wrap">
+    <table>
+      <tr><th>组件</th><th>角色</th><th>说明</th></tr>
+      <tr><td><code>wpa_supplicant.conf</code></td><td>配置文件</td><td>描述用户希望计算机连接的所有网络及安全策略</td></tr>
+      <tr><td><code>wpa_supplicant</code></td><td>核心守护进程</td><td>直接与网络接口交互的主程序</td></tr>
+      <tr><td><code>wpa_cli</code></td><td>命令行前端</td><td>为守护进程功能提供高级命令行接口</td></tr>
+      <tr><td><code>wpa_passphrase</code></td><td>密钥生成工具</td><td>用于生成含加密口令的 wpa_supplicant.conf</td></tr>
+    </table>
+  </div>
+
+  <div class="summary-box">
+    <h3>📌 本章小结</h3>
+    <p>wpa_supplicant 采用<strong>前后端分离架构</strong>：守护进程掌管所有低级无线操作，前端通过 Unix socket 发出高级命令。这种设计使得图形界面、命令行工具、NetworkManager 等可以共用同一个后端引擎，且可以热插拔前端而不影响连接状态。</p>
+  </div>
+</section>
+
+<!-- ============================== S3 ============================== -->
+<section class="section" id="s3">
+  <div class="section-label">第 3 章 · 基础篇</div>
+  <h2 class="section-title">核心组件详解</h2>
+
+  <h3>wpa_supplicant.conf 配置文件</h3>
+  <p>配置文件列出所有可接受的网络和安全策略。wpa_supplicant 会<strong>自动选择最优网络</strong>，选择依据是：配置文件中的网络块顺序、网络安全级别（WPA/WPA2 优先）、信号强度。</p>
+  <p class="source-ref">来源：<a href="https://man.cx/wpa_supplicant.conf(5)" target="_blank">man.cx — wpa_supplicant.conf(5)</a></p>
+
+  <div class="card accent-left">
+    <h4>配置文件路径说明</h4>
+    <ul>
+      <li>所有文件路径必须使用<strong>绝对路径</strong>（因为守护进程可能更改工作目录）</li>
+      <li>通过发送 <code>SIGHUP</code> 信号（<code>killall -HUP wpa_supplicant</code>）可热重载配置</li>
+      <li>也可用 <code>wpa_cli reconfigure</code> 触发重载</li>
+    </ul>
+  </div>
+
+  <h4>ctrl_interface — 控制接口</h4>
+  <pre><code><span class="code-comment"># 允许 wheel 组用户通过 wpa_cli 控制连接</span>
+<span class="code-keyword">ctrl_interface</span>=DIR=/var/run/wpa_supplicant GROUP=wheel
+<span class="code-keyword">update_config</span>=1</code></pre>
+
+  <h3>wpa_passphrase 工具</h3>
+  <p>将明文密码转换为 256-bit PSK（PBKDF2 推导），避免配置文件中存储明文：</p>
+  <pre><code><span class="code-comment"># 生成 PSK 并追加到配置文件</span>
+$ wpa_passphrase MySSID MyPassword >> /etc/wpa_supplicant/wpa_supplicant.conf
+
+<span class="code-comment"># 输出示例</span>
+network={
+    ssid="MySSID"
+    <span class="code-comment">#psk="MyPassword"</span>
+    <span class="code-keyword">psk</span>=<span class="code-string">8a9da8...</span>  <span class="code-comment"># 64位十六进制 PSK</span>
+}</code></pre>
+
+  <h3>wpa_cli 控制工具</h3>
+  <p>wpa_cli 提供交互式和批量模式两种使用方式，通过 Unix socket 与守护进程通信：</p>
+  <pre><code><span class="code-comment"># 交互模式</span>
+$ wpa_cli -i wlan0
+
+<span class="code-comment"># 批量执行单条命令</span>
+$ wpa_cli -i wlan0 status
+
+<span class="code-comment"># 常用命令</span>
+> status          <span class="code-comment"># 获取当前 WPA/EAPOL/EAP 状态</span>
+> scan            <span class="code-comment"># 触发 BSS 扫描</span>
+> scan_results    <span class="code-comment"># 显示扫描结果</span>
+> list_networks   <span class="code-comment"># 列出已配置网络</span>
+> reconnect       <span class="code-comment"># 断开后重连</span>
+> reconfigure     <span class="code-comment"># 重新读取配置文件</span>
+> pmksa           <span class="code-comment"># 显示 PMKSA 缓存</span></code></pre>
+  <p class="source-ref">来源：<a href="https://linux.die.net/man/8/wpa_cli" target="_blank">linux.die.net — wpa_cli(8)</a></p>
+
+  <div class="summary-box">
+    <h3>📌 本章小结</h3>
+    <p>三个核心工具形成完整闭环：<code>wpa_passphrase</code> 安全生成密钥 → <code>wpa_supplicant.conf</code> 描述网络策略 → <code>wpa_supplicant</code> 守护进程执行 → <code>wpa_cli</code> 运行时管理。配置文件中使用 PSK 哈希而非明文密码，是安全最佳实践。</p>
+  </div>
+</section>
+
+<!-- ============================== S4 ============================== -->
+<section class="section" id="s4">
+  <div class="section-label">第 4 章 · 原理篇</div>
+  <h2 class="section-title">驱动接口层</h2>
+
+  <p>wpa_supplicant 通过<strong>驱动抽象层</strong>与内核通信，支持多种驱动后端。具体使用哪个驱动在<strong>编译时确定</strong>，运行时通过 <code>-D</code> 参数指定。</p>
+  <p class="source-ref">来源：<a href="https://manpages.debian.org/experimental/wpasupplicant/wpa_supplicant.8.en.html" target="_blank">Debian Manpages — wpa_supplicant(8) AVAILABLE DRIVERS</a></p>
+
+  <div class="table-wrap">
+    <table>
+      <tr><th>驱动</th><th>接口类型</th><th>适用场景</th><th>推荐度</th></tr>
+      <tr>
+        <td><code>nl80211</code></td>
+        <td>Netlink (cfg80211)</td>
+        <td>Linux 2.6.30+ 现代无线驱动</td>
+        <td><span class="badge badge-green">首选</span></td>
+      </tr>
+      <tr>
+        <td><code>wext</code></td>
+        <td>ioctl (wireless ext)</td>
+        <td>旧版 Linux 无线驱动</td>
+        <td><span class="badge badge-orange">兼容</span></td>
+      </tr>
+      <tr>
+        <td><code>wired</code></td>
+        <td>以太网</td>
+        <td>有线 802.1X 认证</td>
+        <td><span class="badge badge-blue">特定</span></td>
+      </tr>
+      <tr>
+        <td><code>macsec_linux</code></td>
+        <td>MACsec</td>
+        <td>MACsec 加密以太网</td>
+        <td><span class="badge badge-blue">特定</span></td>
+      </tr>
+      <tr>
+        <td><code>none</code></td>
+        <td>无</td>
+        <td>仅 RADIUS/WPS ER</td>
+        <td><span class="badge badge-purple">特殊</span></td>
+      </tr>
+    </table>
+  </div>
+
+  <h3>nl80211 与 wext 的技术对比</h3>
+
+  <div class="diagram-wrap">
+    <svg viewBox="0 0 680 240" xmlns="http://www.w3.org/2000/svg" width="680" height="240">
+      <!-- nl80211 -->
+      <rect x="20" y="20" width="300" height="200" rx="10" fill="rgba(62,207,163,0.06)" stroke="#3ecfa3" stroke-width="1.5"/>
+      <text x="170" y="45" text-anchor="middle" fill="#3ecfa3" font-size="13" font-family="monospace" font-weight="700">nl80211 (现代)</text>
+
+      <rect x="50" y="60" width="240" height="36" rx="6" fill="#1a1d2e" stroke="#3ecfa3" stroke-width="1"/>
+      <text x="170" y="78" text-anchor="middle" fill="#94a3b8" font-size="11" font-family="monospace">wpa_supplicant</text>
+      <text x="170" y="91" text-anchor="middle" fill="#64748b" font-size="10" font-family="monospace">用户空间</text>
+
+      <line x1="170" y1="96" x2="170" y2="116" stroke="#3ecfa3" stroke-width="1.5" marker-end="url(#arr2)"/>
+      <text x="185" y="109" fill="#64748b" font-size="9" font-family="monospace">Netlink 消息</text>
+
+      <rect x="50" y="116" width="240" height="36" rx="6" fill="#141520" stroke="#3ecfa3" stroke-width="1"/>
+      <text x="170" y="134" text-anchor="middle" fill="#3ecfa3" font-size="11" font-family="monospace">cfg80211 / nl80211</text>
+      <text x="170" y="147" text-anchor="middle" fill="#64748b" font-size="10" font-family="monospace">内核通用无线框架</text>
+
+      <line x1="170" y1="152" x2="170" y2="172" stroke="#3ecfa3" stroke-width="1.5" marker-end="url(#arr2)"/>
+      <rect x="50" y="172" width="240" height="36" rx="6" fill="#141520" stroke="#2e3250" stroke-width="1"/>
+      <text x="170" y="190" text-anchor="middle" fill="#64748b" font-size="11" font-family="monospace">具体无线驱动</text>
+      <text x="170" y="203" text-anchor="middle" fill="#3ecfa3" font-size="10" font-family="monospace">✓ 完整 WPA2/WPA3 支持</text>
+
+      <!-- wext -->
+      <rect x="360" y="20" width="300" height="200" rx="10" fill="rgba(124,92,191,0.06)" stroke="#7c5cbf" stroke-width="1.5"/>
+      <text x="510" y="45" text-anchor="middle" fill="#7c5cbf" font-size="13" font-family="monospace" font-weight="700">wext (传统)</text>
+
+      <rect x="390" y="60" width="240" height="36" rx="6" fill="#1a1d2e" stroke="#7c5cbf" stroke-width="1"/>
+      <text x="510" y="78" text-anchor="middle" fill="#94a3b8" font-size="11" font-family="monospace">wpa_supplicant</text>
+      <text x="510" y="91" text-anchor="middle" fill="#64748b" font-size="10" font-family="monospace">用户空间</text>
+
+      <line x1="510" y1="96" x2="510" y2="116" stroke="#7c5cbf" stroke-width="1.5" marker-end="url(#arr)"/>
+      <text x="525" y="109" fill="#64748b" font-size="9" font-family="monospace">ioctl 系统调用</text>
+
+      <rect x="390" y="116" width="240" height="36" rx="6" fill="#141520" stroke="#7c5cbf" stroke-width="1"/>
+      <text x="510" y="134" text-anchor="middle" fill="#7c5cbf" font-size="11" font-family="monospace">Linux Wireless Extensions</text>
+      <text x="510" y="147" text-anchor="middle" fill="#64748b" font-size="10" font-family="monospace">旧式 ioctl 接口</text>
+
+      <line x1="510" y1="152" x2="510" y2="172" stroke="#7c5cbf" stroke-width="1.5" marker-end="url(#arr)"/>
+      <rect x="390" y="172" width="240" height="36" rx="6" fill="#141520" stroke="#2e3250" stroke-width="1"/>
+      <text x="510" y="190" text-anchor="middle" fill="#64748b" font-size="11" font-family="monospace">旧版无线驱动</text>
+      <text x="510" y="203" text-anchor="middle" fill="#f0a500" font-size="10" font-family="monospace">⚠ 功能受限，逐步淘汰</text>
+    </svg>
+  </div>
+
+  <h4>驱动自动检测</h4>
+  <p>官方文档说明：如果不确定用哪个驱动，可以用逗号分隔列出多个，wpa_supplicant 会使用<strong>第一个能成功初始化接口的驱动</strong>：</p>
+  <pre><code><span class="code-comment"># 自动回退：先尝试 nl80211，失败则用 wext</span>
+$ wpa_supplicant -Dnl80211,wext -c/etc/wpa_supplicant.conf -iwlan0</code></pre>
+  <p class="source-ref">来源：<a href="https://man.archlinux.org/man/wpa_supplicant.8.en" target="_blank">Arch Linux Man Page — wpa_supplicant(8) SUPPORTED DRIVERS</a></p>
+
+  <div class="summary-box">
+    <h3>📌 本章小结</h3>
+    <p>nl80211 是当前 Linux 无线网络的标准接口，基于 Netlink 协议族，功能完整、性能更好。wext 是遗留接口，逐渐被弃用。对于所有现代系统，应优先使用 <code>-D nl80211</code>。驱动层的抽象使 wpa_supplicant 能跨不同硬件保持一致的行为。</p>
+  </div>
+</section>
+
+<!-- ============================== S5 ============================== -->
+<section class="section" id="s5">
+  <div class="section-label">第 5 章 · 原理篇</div>
+  <h2 class="section-title">WPA 关联完整流程</h2>
+
+  <p>以下是官方 man page 定义的使用 WPA 关联接入点的完整步骤：</p>
+  <p class="source-ref">来源：<a href="https://man.archlinux.org/man/wpa_supplicant.8.en" target="_blank">Arch Linux Man Page — wpa_supplicant(8) OVERVIEW</a></p>
+
+  <div class="step-flow">
+    <div class="step-item">
+      <div class="step-num">1</div>
+      <div class="step-content">
+        <div class="step-title">扫描邻近 BSS</div>
+        <div class="step-desc">wpa_supplicant 请求内核驱动扫描附近的基本服务集（BSS）。驱动通过 nl80211 发送探测请求帧（Probe Request）并收集响应。</div>
+      </div>
+    </div>
+    <div class="step-item">
+      <div class="step-num">2</div>
+      <div class="step-content">
+        <div class="step-title">BSS 选择</div>
+        <div class="step-desc">wpa_supplicant 根据配置文件中的网络块顺序、安全级别（WPA2 > WPA > Open）、信号强度（RSSI）综合评分，选择最优 BSS。</div>
+      </div>
+    </div>
+    <div class="step-item">
+      <div class="step-num">3</div>
+      <div class="step-content">
+        <div class="step-title">关联请求</div>
+        <div class="step-desc">wpa_supplicant 请求内核驱动与所选 BSS 进行 IEEE 802.11 认证和关联（Authentication + Association）。此时尚未建立加密通道。</div>
+      </div>
+    </div>
+    <div class="step-item">
+      <div class="step-num">4</div>
+      <div class="step-content">
+        <div class="step-title">EAP 认证（仅 WPA-EAP）</div>
+        <div class="step-desc">集成的 IEEE 802.1X 请求方与认证服务器（由 AP 代理）完成 EAP 认证。支持 EAP-TLS、EAP-PEAP、EAP-TTLS 等多种方法。</div>
+      </div>
+    </div>
+    <div class="step-item">
+      <div class="step-num">5</div>
+      <div class="step-content">
+        <div class="step-title">获取主密钥（PMK）</div>
+        <div class="step-desc"><strong>WPA-EAP：</strong>从 IEEE 802.1X 请求方获取 MSK（主会话密钥），派生出 PMK。<br><strong>WPA-PSK：</strong>直接用 PSK 作为主会话密钥（PMK = PBKDF2(passphrase, SSID, 4096, 32)）。</div>
+      </div>
+    </div>
+    <div class="step-item">
+      <div class="step-num">6</div>
+      <div class="step-content">
+        <div class="step-title">四次握手 + 组密钥握手</div>
+        <div class="step-desc">wpa_supplicant 与认证方（AP）完成 WPA 四次握手（4-Way Handshake）和组密钥握手（Group Key Handshake），派生单播和组播加密密钥。</div>
+      </div>
+    </div>
+    <div class="step-item">
+      <div class="step-num">7</div>
+      <div class="step-content">
+        <div class="step-title">安装加密密钥</div>
+        <div class="step-desc">wpa_supplicant 将单播密钥（PTK）和广播密钥（GTK）配置到驱动，启用链路层加密。</div>
+      </div>
+    </div>
+    <div class="step-item">
+      <div class="step-num">8</div>
+      <div class="step-content">
+        <div class="step-title">正常数据传输</div>
+        <div class="step-desc">加密通道建立完成，上层协议（如 DHCP）可以开始运行，正常数据包可以收发。</div>
+      </div>
+    </div>
+  </div>
+
+  <div class="diagram-wrap">
+    <svg viewBox="0 0 680 320" xmlns="http://www.w3.org/2000/svg" width="680" height="320">
+      <!-- Timeline -->
+      <text x="120" y="25" text-anchor="middle" fill="#5b8dee" font-size="12" font-family="monospace" font-weight="700">Client (Supplicant)</text>
+      <text x="340" y="25" text-anchor="middle" fill="#f0a500" font-size="12" font-family="monospace" font-weight="700">AP (Authenticator)</text>
+      <text x="560" y="25" text-anchor="middle" fill="#3ecfa3" font-size="12" font-family="monospace" font-weight="700">RADIUS Server</text>
+
+      <line x1="120" y1="30" x2="120" y2="310" stroke="#5b8dee" stroke-width="1.5" stroke-dasharray="4,3"/>
+      <line x1="340" y1="30" x2="340" y2="310" stroke="#f0a500" stroke-width="1.5" stroke-dasharray="4,3"/>
+      <line x1="560" y1="30" x2="560" y2="310" stroke="#3ecfa3" stroke-width="1.5" stroke-dasharray="4,3"/>
+
+      <!-- Step 1: Probe -->
+      <line x1="120" y1="55" x2="330" y2="55" stroke="#5b8dee" stroke-width="1.5" marker-end="url(#arr)"/>
+      <text x="225" y="48" text-anchor="middle" fill="#94a3b8" font-size="10" font-family="monospace">Probe Request / Association</text>
+      <line x1="340" y1="70" x2="130" y2="70" stroke="#f0a500" stroke-width="1.5" marker-end="url(#arr3)"/>
+      <text x="225" y="64" text-anchor="middle" fill="#64748b" font-size="10" font-family="monospace">Association Response</text>
+
+      <!-- Step 2: 802.1X / EAP (WPA-EAP only) -->
+      <rect x="200" y="83" width="280" height="14" rx="4" fill="rgba(124,92,191,0.12)" stroke="rgba(124,92,191,0.3)" stroke-width="1"/>
+      <text x="340" y="94" text-anchor="middle" fill="#7c5cbf" font-size="9.5" font-family="monospace">── WPA-EAP 专有：EAP 认证交换 ──</text>
+
+      <line x1="120" y1="108" x2="330" y2="108" stroke="#7c5cbf" stroke-width="1.5" marker-end="url(#arr)"/>
+      <text x="225" y="102" text-anchor="middle" fill="#94a3b8" font-size="10" font-family="monospace">EAPOL-Start / EAP-Identity</text>
+      <line x1="340" y1="123" x2="550" y2="123" stroke="#7c5cbf" stroke-width="1.5" marker-end="url(#arr2)"/>
+      <text x="450" y="117" text-anchor="middle" fill="#94a3b8" font-size="10" font-family="monospace">RADIUS Access-Request</text>
+      <line x1="560" y1="138" x2="350" y2="138" stroke="#3ecfa3" stroke-width="1.5" marker-end="url(#arr2)"/>
+      <text x="455" y="132" text-anchor="middle" fill="#94a3b8" font-size="10" font-family="monospace">RADIUS Access-Accept + MSK</text>
+      <line x1="340" y1="153" x2="130" y2="153" stroke="#7c5cbf" stroke-width="1.5" marker-end="url(#arr)"/>
+      <text x="225" y="147" text-anchor="middle" fill="#94a3b8" font-size="10" font-family="monospace">EAP-Success → PMK 派生</text>
+
+      <!-- Divider -->
+      <line x1="20" y1="165" x2="660" y2="165" stroke="#2e3250" stroke-width="1" stroke-dasharray="3,3"/>
+      <text x="340" y="176" text-anchor="middle" fill="#5b8dee" font-size="10" font-family="monospace">── 四次握手（WPA-PSK / WPA-EAP 均执行）──</text>
+
+      <!-- 4-way handshake -->
+      <line x1="340" y1="188" x2="130" y2="188" stroke="#f0a500" stroke-width="1.5" marker-end="url(#arr3)"/>
+      <text x="225" y="183" text-anchor="middle" fill="#94a3b8" font-size="10" font-family="monospace">M1: ANonce (AP随机数)</text>
+
+      <line x1="120" y1="203" x2="330" y2="203" stroke="#5b8dee" stroke-width="1.5" marker-end="url(#arr)"/>
+      <text x="225" y="198" text-anchor="middle" fill="#94a3b8" font-size="10" font-family="monospace">M2: SNonce + MIC (证明持有PMK)</text>
+
+      <line x1="340" y1="220" x2="130" y2="220" stroke="#f0a500" stroke-width="1.5" marker-end="url(#arr3)"/>
+      <text x="225" y="215" text-anchor="middle" fill="#94a3b8" font-size="10" font-family="monospace">M3: GTK(加密) + MIC (安装PTK)</text>
+
+      <line x1="120" y1="237" x2="330" y2="237" stroke="#5b8dee" stroke-width="1.5" marker-end="url(#arr)"/>
+      <text x="225" y="232" text-anchor="middle" fill="#94a3b8" font-size="10" font-family="monospace">M4: ACK (确认密钥安装)</text>
+
+      <!-- Final -->
+      <rect x="60" y="252" width="560" height="28" rx="6" fill="rgba(62,207,163,0.1)" stroke="#3ecfa3" stroke-width="1.5"/>
+      <text x="340" y="271" text-anchor="middle" fill="#3ecfa3" font-size="12" font-family="monospace" font-weight="700">✓ PTK/GTK 安装完成 → 加密数据传输开始</text>
+
+      <!-- DHCP -->
+      <line x1="120" y1="295" x2="330" y2="295" stroke="#94a3b8" stroke-width="1" stroke-dasharray="3,2" marker-end="url(#arr)"/>
+      <text x="225" y="289" text-anchor="middle" fill="#64748b" font-size="10" font-family="monospace">DHCP / 上层协议（后续）</text>
+    </svg>
+  </div>
+
+  <div class="summary-box">
+    <h3>📌 本章小结</h3>
+    <p>关联流程体现了"认证在前、加密在后"的分层设计。DHCP 等上层协议只有在 wpa_supplicant 完成加密密钥配置后才能运行。对 WPA-PSK，整个过程无需外部认证服务器；对 WPA-EAP，认证服务器参与但只影响 PMK 来源，之后的四次握手流程完全相同。</p>
+  </div>
+</section>
+
+<!-- ============================== S6 ============================== -->
+<section class="section" id="s6">
+  <div class="section-label">第 6 章 · 原理篇</div>
+  <h2 class="section-title">四次握手（4-Way Handshake）详解</h2>
+
+  <p>四次握手是 WPA/WPA2 安全机制的核心，其目的是让双方在<strong>不传输密钥本身</strong>的前提下，通过数学证明双方都持有相同的 PMK，并协商出会话密钥。</p>
+
+  <h3>密钥层次体系</h3>
+
+  <div class="diagram-wrap">
+    <svg viewBox="0 0 660 280" xmlns="http://www.w3.org/2000/svg" width="660" height="280">
+      <!-- PMK -->
+      <rect x="250" y="10" width="160" height="40" rx="8" fill="rgba(240,165,0,0.15)" stroke="#f0a500" stroke-width="2"/>
+      <text x="330" y="35" text-anchor="middle" fill="#f0a500" font-size="13" font-family="monospace" font-weight="700">PMK (256-bit)</text>
+
+      <!-- PSK path -->
+      <text x="110" y="30" text-anchor="middle" fill="#94a3b8" font-size="10" font-family="monospace">WPA-PSK:</text>
+      <text x="110" y="44" text-anchor="middle" fill="#64748b" font-size="10" font-family="monospace">PBKDF2(密码,SSID,4096)</text>
+      <line x1="200" y1="30" x2="250" y2="30" stroke="#f0a500" stroke-width="1.5" marker-end="url(#arr3)"/>
+
+      <!-- EAP path -->
+      <text x="530" y="30" text-anchor="middle" fill="#94a3b8" font-size="10" font-family="monospace">WPA-EAP:</text>
+      <text x="530" y="44" text-anchor="middle" fill="#64748b" font-size="10" font-family="monospace">MSK (来自RADIUS)</text>
+      <line x1="410" y1="30" x2="480" y2="30" stroke="#3ecfa3" stroke-width="1.5" marker-end="url(#arr2)"/>
+      <line x1="480" y1="30" x2="480" y2="50" stroke="#f0a500" stroke-width="0.5" stroke-dasharray="2"/>
+
+      <!-- PTK derivation -->
+      <line x1="330" y1="50" x2="330" y2="80" stroke="#5b8dee" stroke-width="1.5" marker-end="url(#arr)"/>
+      <text x="345" y="68" fill="#64748b" font-size="9" font-family="monospace">PRF(PMK, ANonce, SNonce, MAC_AP, MAC_STA)</text>
+
+      <rect x="200" y="80" width="260" height="40" rx="8" fill="rgba(91,141,238,0.12)" stroke="#5b8dee" stroke-width="2"/>
+      <text x="330" y="105" text-anchor="middle" fill="#5b8dee" font-size="13" font-family="monospace" font-weight="700">PTK (Pairwise Transient Key)</text>
+
+      <!-- PTK breakdown -->
+      <line x1="260" y1="120" x2="220" y2="155" stroke="#5b8dee" stroke-width="1.5" marker-end="url(#arr)"/>
+      <line x1="330" y1="120" x2="330" y2="155" stroke="#5b8dee" stroke-width="1.5" marker-end="url(#arr)"/>
+      <line x1="400" y1="120" x2="440" y2="155" stroke="#5b8dee" stroke-width="1.5" marker-end="url(#arr)"/>
+
+      <rect x="90" y="155" width="120" height="36" rx="6" fill="#1a1d2e" stroke="#5b8dee" stroke-width="1.5"/>
+      <text x="150" y="170" text-anchor="middle" fill="#5b8dee" font-size="11" font-family="monospace">KCK</text>
+      <text x="150" y="183" text-anchor="middle" fill="#64748b" font-size="9" font-family="monospace">密钥确认密钥</text>
+      <text x="150" y="195" text-anchor="middle" fill="#64748b" font-size="8" font-family="monospace">生成 MIC</text>
+
+      <rect x="270" y="155" width="120" height="36" rx="6" fill="#1a1d2e" stroke="#5b8dee" stroke-width="1.5"/>
+      <text x="330" y="170" text-anchor="middle" fill="#5b8dee" font-size="11" font-family="monospace">KEK</text>
+      <text x="330" y="183" text-anchor="middle" fill="#64748b" font-size="9" font-family="monospace">密钥加密密钥</text>
+      <text x="330" y="195" text-anchor="middle" fill="#64748b" font-size="8" font-family="monospace">加密 GTK</text>
+
+      <rect x="450" y="155" width="120" height="36" rx="6" fill="#1a1d2e" stroke="#3ecfa3" stroke-width="1.5"/>
+      <text x="510" y="170" text-anchor="middle" fill="#3ecfa3" font-size="11" font-family="monospace">TK</text>
+      <text x="510" y="183" text-anchor="middle" fill="#64748b" font-size="9" font-family="monospace">临时密钥</text>
+      <text x="510" y="195" text-anchor="middle" fill="#64748b" font-size="8" font-family="monospace">加密数据帧</text>
+
+      <!-- GTK -->
+      <rect x="250" y="215" width="160" height="40" rx="8" fill="rgba(62,207,163,0.12)" stroke="#3ecfa3" stroke-width="2"/>
+      <text x="330" y="240" text-anchor="middle" fill="#3ecfa3" font-size="12" font-family="monospace" font-weight="700">GTK (Group Temporal Key)</text>
+      <text x="150" y="250" text-anchor="middle" fill="#64748b" font-size="9" font-family="monospace">AP 在 M3 中用 KEK 加密发送</text>
+
+      <line x1="330" y1="191" x2="330" y2="215" stroke="#3ecfa3" stroke-width="1.5" marker-end="url(#arr2)"/>
+      <text x="345" y="207" fill="#64748b" font-size="9" font-family="monospace">M3 传送 (KEK加密)</text>
+
+      <!-- broadcast label -->
+      <text x="330" y="262" text-anchor="middle" fill="#64748b" font-size="9" font-family="monospace">用于组播/广播流量加密</text>
+    </svg>
+  </div>
+
+  <h3>四条消息详解</h3>
+
+  <div class="card accent-left">
+    <h4>M1：AP → Client（ANonce）</h4>
+    <p>AP 发送 32 字节随机数（ANonce）。此消息无加密保护——nonce 的作用是提供"新鲜性"以防重放攻击，而非保密。</p>
+    <p>客户端收到 M1 后，已具备推导 PTK 所需的所有参数：ANonce + 自己生成的 SNonce + AP/Client MAC + PMK。</p>
+  </div>
+
+  <div class="card green-left">
+    <h4>M2：Client → AP（SNonce + MIC）</h4>
+    <p>客户端生成 SNonce，推导 PTK，用 KCK 计算 MIC（消息完整性码），连同 RSN 信息元素发送给 AP。</p>
+    <p><strong>MIC 是关键</strong>：这是客户端在证明"我拥有正确的 PMK"，AP 此时也可推导 PTK 并验证 MIC。若 MIC 不匹配 = 密码错误，握手失败。</p>
+  </div>
+
+  <div class="card yellow-left">
+    <h4>M3：AP → Client（GTK + MIC，Install PTK）</h4>
+    <p>AP 用 KEK 加密 GTK 后发送，并设置 Install 标志（通知客户端安装 PTK）。AP 的 MIC 是反向认证：证明 AP 也持有正确的 PMK。</p>
+  </div>
+
+  <div class="card purple-left">
+    <h4>M4：Client → AP（ACK）</h4>
+    <p>客户端确认已安装 PTK 和 GTK。AP 收到并验证 M4 后，双方安装密钥，开始用 TK 加密数据帧。</p>
+  </div>
+
+  <div class="warn-box">
+    <div class="warn-title">⚠ 安全要点</div>
+    <p style="margin:0;">PMK 本身从不在空口传输。握手只交换随机数（nonce）和 MIC。离线破解攻击需要截获握手包后对 MIC 进行字典/暴力攻击，这也是为什么弱密码是 WPA2-PSK 的主要安全威胁。</p>
+  </div>
+
+  <div class="summary-box">
+    <h3>📌 本章小结</h3>
+    <p>四次握手的第一性原理是<strong>零知识证明思想</strong>的工程实现：双方通过交换随机数和哈希值，证明彼此持有相同的秘密（PMK），而无需公开这个秘密。PTK = PRF(PMK, ANonce, SNonce, MAC_AP, MAC_STA) 的设计保证每次会话密钥都是独一无二的，即使 PMK 相同（防止重放）。</p>
+  </div>
+</section>
+
+<!-- ============================== S7 ============================== -->
+<section class="section" id="s7">
+  <div class="section-label">第 7 章 · 使用场景</div>
+  <h2 class="section-title">场景一：WPA-PSK 家用/个人网络</h2>
+
+  <p><span class="badge badge-blue">WPA-Personal</span> 最常见的使用场景，路由器和客户端共享同一个预共享密钥（PSK）。</p>
+
+  <h3>背后原理</h3>
+  <p>PSK 由用户密码通过 PBKDF2-HMAC-SHA1（4096 次迭代，SSID 为盐）派生为 256-bit PMK，无需认证服务器。安全强度取决于密码强度。</p>
+
+  <h4>步骤 1：生成 PSK</h4>
+  <pre><code><span class="code-comment"># 使用 wpa_passphrase 将密码转换为 PSK（推荐，避免明文存储）</span>
+$ wpa_passphrase <span class="code-string">"MyHomeWifi"</span> <span class="code-string">"my_secret_pass"</span> | sudo tee /etc/wpa_supplicant/wpa_supplicant.conf</code></pre>
+
+  <h4>步骤 2：配置文件</h4>
+  <pre><code><span class="code-comment"># /etc/wpa_supplicant/wpa_supplicant.conf</span>
+<span class="code-comment"># 来源示例：man.cx/wpa_supplicant.conf(5)</span>
+<span class="code-keyword">ctrl_interface</span>=DIR=/var/run/wpa_supplicant GROUP=netdev
+<span class="code-keyword">update_config</span>=1
+
+network={
+    <span class="code-keyword">ssid</span>=<span class="code-string">"home"</span>
+    <span class="code-keyword">scan_ssid</span>=1
+    <span class="code-keyword">key_mgmt</span>=WPA-PSK
+    <span class="code-keyword">psk</span>=<span class="code-string">"very secret passphrase"</span>
+    <span class="code-comment"># 或使用哈希形式：</span>
+    <span class="code-comment"># psk=8a9da83c0b30...</span>
+}</code></pre>
+  <p class="source-ref">来源：<a href="https://man.cx/wpa_supplicant.conf(5)" target="_blank">man.cx — wpa_supplicant.conf(5) QUICK EXAMPLES</a></p>
+
+  <h4>步骤 3：启动守护进程</h4>
+  <pre><code><span class="code-comment"># 前台调试模式（推荐初次使用）</span>
+$ sudo wpa_supplicant -iwlan0 -c/etc/wpa_supplicant.conf -d
+
+<span class="code-comment"># 后台运行（生产模式）</span>
+$ sudo wpa_supplicant -B -iwlan0 -c/etc/wpa_supplicant.conf
+
+<span class="code-comment"># 获取 IP 地址</span>
+$ sudo dhclient wlan0</code></pre>
+  <p class="source-ref">来源：<a href="https://manpages.debian.org/experimental/wpasupplicant/wpa_supplicant.8.en.html" target="_blank">Debian Manpages — wpa_supplicant(8) QUICK START</a></p>
+
+  <h4>步骤 4：验证连接状态</h4>
+  <pre><code>$ wpa_cli -i wlan0 status
+<span class="code-comment">bssid=aa:bb:cc:dd:ee:ff</span>
+<span class="code-comment">freq=2412</span>
+<span class="code-comment">ssid=home</span>
+<span class="code-comment">id=0</span>
+<span class="code-comment">mode=station</span>
+<span class="code-comment">pairwise_cipher=CCMP</span>
+<span class="code-comment">group_cipher=CCMP</span>
+<span class="code-comment">key_mgmt=WPA2-PSK</span>
+<span class="code-comment">wpa_state=COMPLETED</span></code></pre>
+
+  <div class="info-box">
+    <div class="info-title">多网络优先级</div>
+    <p style="margin:0;">可在配置文件中定义多个 network 块，wpa_supplicant 自动按安全级别和信号选择最优，也可用 <code>priority</code> 字段手动指定优先级（数字越大优先级越高）。</p>
+  </div>
+
+  <div class="summary-box">
+    <h3>📌 本章小结</h3>
+    <p>WPA-PSK 场景下，所有安全性依赖密码强度。使用 wpa_passphrase 将密码哈希后存储是最佳实践。守护进程启动后，DHCP 等上层操作才能进行。<code>-B</code> 标志使进程后台运行，<code>-d</code> 用于调试。</p>
+  </div>
+</section>
+
+<!-- ============================== S8 ============================== -->
+<section class="section" id="s8">
+  <div class="section-label">第 8 章 · 使用场景</div>
+  <h2 class="section-title">场景二：WPA-Enterprise 企业级认证</h2>
+
+  <p><span class="badge badge-purple">WPA-Enterprise</span> 通过 IEEE 802.1X + EAP 与 RADIUS 服务器进行用户级认证，每个用户有独立的凭证，PMK 由认证服务器动态生成。</p>
+
+  <h3>背后原理</h3>
+  <p>与 WPA-PSK 的核心区别：PMK 不是从固定密码派生，而是由 RADIUS 服务器在 EAP 认证成功后动态生成并分发给 AP 和客户端（MSK → PMK）。这意味着每次连接都可以有不同的 PMK，大幅提升安全性。</p>
+
+  <h3>EAP-TLS（证书双向认证）</h3>
+  <p>最安全的 EAP 方式，客户端和服务器均需证书，无需密码：</p>
+  <pre><code><span class="code-comment"># 工作网络：EAP-TLS + WPA2 — 仅 CCMP 和 TKIP</span>
+<span class="code-comment"># 来源：man.cx/wpa_supplicant.conf(5) QUICK EXAMPLES</span>
+network={
+    <span class="code-keyword">ssid</span>=<span class="code-string">"work"</span>
+    <span class="code-keyword">scan_ssid</span>=1
+    <span class="code-keyword">key_mgmt</span>=WPA-EAP
+    <span class="code-keyword">pairwise</span>=CCMP TKIP
+    <span class="code-keyword">group</span>=CCMP TKIP
+    <span class="code-keyword">eap</span>=TLS
+    <span class="code-keyword">identity</span>=<span class="code-string">"user@example.com"</span>
+    <span class="code-keyword">ca_cert</span>=<span class="code-string">"/etc/cert/ca.pem"</span>
+    <span class="code-keyword">client_cert</span>=<span class="code-string">"/etc/cert/user.pem"</span>
+    <span class="code-keyword">private_key</span>=<span class="code-string">"/etc/cert/user.prv"</span>
+    <span class="code-keyword">private_key_passwd</span>=<span class="code-string">"password"</span>
+}</code></pre>
+
+  <h3>EAP-PEAP/MSCHAPv2（用户名+密码，常见于企业）</h3>
+  <pre><code><span class="code-comment"># EAP-PEAP with MSCHAPv2 — 来源：man.cx/wpa_supplicant.conf(5)</span>
+network={
+    <span class="code-keyword">ssid</span>=<span class="code-string">"example"</span>
+    <span class="code-keyword">scan_ssid</span>=1
+    <span class="code-keyword">key_mgmt</span>=WPA-EAP
+    <span class="code-keyword">eap</span>=PEAP
+    <span class="code-keyword">identity</span>=<span class="code-string">"user@example.com"</span>
+    <span class="code-keyword">password</span>=<span class="code-string">"foobar"</span>
+    <span class="code-keyword">ca_cert</span>=<span class="code-string">"/etc/cert/ca.pem"</span>
+    <span class="code-keyword">phase1</span>=<span class="code-string">"peaplabel=0"</span>
+    <span class="code-keyword">phase2</span>=<span class="code-string">"auth=MSCHAPV2"</span>
+}</code></pre>
+
+  <h3>EAP-TTLS/MD5（匿名外层身份）</h3>
+  <pre><code><span class="code-comment"># EAP-TTLS with anonymous outer identity</span>
+<span class="code-comment"># 真实身份仅在 TLS 隧道内传输，外层使用匿名身份</span>
+network={
+    <span class="code-keyword">ssid</span>=<span class="code-string">"example"</span>
+    <span class="code-keyword">scan_ssid</span>=1
+    <span class="code-keyword">key_mgmt</span>=WPA-EAP
+    <span class="code-keyword">eap</span>=TTLS
+    <span class="code-keyword">identity</span>=<span class="code-string">"user@example.com"</span>
+    <span class="code-keyword">anonymous_identity</span>=<span class="code-string">"anonymous@example.com"</span>
+    <span class="code-keyword">password</span>=<span class="code-string">"foobar"</span>
+    <span class="code-keyword">ca_cert</span>=<span class="code-string">"/etc/cert/ca.pem"</span>
+    <span class="code-keyword">phase2</span>=<span class="code-string">"auth=MD5"</span>
+}</code></pre>
+  <p class="source-ref">来源：<a href="https://man.cx/wpa_supplicant.conf(5)" target="_blank">man.cx — wpa_supplicant.conf(5) QUICK EXAMPLES</a></p>
+
+  <h3>证书格式转换</h3>
+  <pre><code><span class="code-comment"># PKCS#12/PFX 转 PEM 格式（wpa_supplicant 支持 PEM/DER）</span>
+$ openssl pkcs12 -in example.pfx -out user.pem -clcerts
+$ openssl pkcs12 -in example.pfx -out ca.pem -cacerts -nokeys</code></pre>
+
+  <div class="table-wrap">
+    <table>
+      <tr><th>EAP 方法</th><th>客户端证书</th><th>服务端证书</th><th>典型场景</th></tr>
+      <tr><td>EAP-TLS</td><td>✓ 必需</td><td>✓ 必需</td><td>高安全企业</td></tr>
+      <tr><td>EAP-PEAP/MSCHAPv2</td><td>✗</td><td>✓ 必需</td><td>eduroam、企业 Wi-Fi</td></tr>
+      <tr><td>EAP-TTLS</td><td>✗</td><td>✓ 必需</td><td>用户名密码认证</td></tr>
+      <tr><td>EAP-SIM / EAP-AKA</td><td>SIM 卡</td><td>✓</td><td>运营商热点</td></tr>
+    </table>
+  </div>
+
+  <div class="summary-box">
+    <h3>📌 本章小结</h3>
+    <p>企业模式下每个用户有独立身份和动态 PMK，吊销单个用户凭证不影响其他用户，且单个用户的流量不能被其他用户解密（即使他们在同一 AP 下）。这是企业 Wi-Fi 相比家用 PSK 的根本安全优势——<strong>密钥材料不再是共享的静态秘密，而是每次会话动态生成。</strong></p>
+  </div>
+</section>
+
+<!-- ============================== S9 ============================== -->
+<section class="section" id="s9">
+  <div class="section-label">第 9 章 · 使用场景</div>
+  <h2 class="section-title">场景三：WPA3 / SAE（同步认证等值）</h2>
+
+  <p><span class="badge badge-green">WPA3</span> 使用 SAE（Simultaneous Authentication of Equals，同步认证等值）替代 WPA2-PSK 的预共享密钥交换，基于 Dragonfly 密钥交换协议，提供前向保密。</p>
+
+  <h3>背后原理</h3>
+  <p>SAE 使用椭圆曲线 Diffie-Hellman 风格的密钥交换（Dragonfly），双方各自随机生成临时密钥并推导 PMK，<strong>密码在任何时候都不直接用于计算最终密钥</strong>，而是作为输入生成椭圆曲线上的一个点（Password Element，PWE）。即使攻击者截获到交换帧，也无法进行离线字典攻击（前向保密）。</p>
+  <p><code>ieee80211w=2</code> 启用管理帧保护（MFP），这是 WPA3 要求的必选项。</p>
+
+  <pre><code><span class="code-comment"># WPA3-Personal (SAE)</span>
+<span class="code-comment"># 来源：Void Linux Handbook / wpa_supplicant.conf 文档</span>
+network={
+    <span class="code-keyword">ssid</span>=<span class="code-string">"MYSSID"</span>
+    <span class="code-keyword">key_mgmt</span>=SAE
+    <span class="code-keyword">sae_password</span>=<span class="code-string">"YOUR AP PASSWORD"</span>
+    <span class="code-keyword">ieee80211w</span>=<span class="code-value">2</span>          <span class="code-comment"># 管理帧保护（必选）</span>
+}</code></pre>
+  <p class="source-ref">来源：<a href="https://docs.voidlinux.org/config/network/wpa_supplicant.html" target="_blank">Void Linux Handbook — wpa_supplicant</a></p>
+
+  <h3>WPA2/WPA3 混合模式</h3>
+  <pre><code><span class="code-comment"># 同时支持 WPA2-PSK 和 WPA3-SAE（过渡模式）</span>
+network={
+    <span class="code-keyword">ssid</span>=<span class="code-string">"MYSSID"</span>
+    <span class="code-keyword">key_mgmt</span>=SAE WPA-PSK
+    <span class="code-keyword">psk</span>=<span class="code-string">"password"</span>
+    <span class="code-keyword">sae_password</span>=<span class="code-string">"password"</span>
+    <span class="code-keyword">ieee80211w</span>=<span class="code-value">1</span>          <span class="code-comment"># 可选管理帧保护</span>
+}</code></pre>
+
+  <div class="diagram-wrap">
+    <svg viewBox="0 0 660 220" xmlns="http://www.w3.org/2000/svg" width="660" height="220">
+      <text x="145" y="22" text-anchor="middle" fill="#5b8dee" font-size="12" font-family="monospace" font-weight="700">Client</text>
+      <text x="515" y="22" text-anchor="middle" fill="#f0a500" font-size="12" font-family="monospace" font-weight="700">AP</text>
+      <line x1="145" y1="28" x2="145" y2="210" stroke="#5b8dee" stroke-width="1.5" stroke-dasharray="4,3"/>
+      <line x1="515" y1="28" x2="515" y2="210" stroke="#f0a500" stroke-width="1.5" stroke-dasharray="4,3"/>
+
+      <!-- Commit exchange -->
+      <rect x="10" y="35" width="630" height="16" rx="4" fill="rgba(62,207,163,0.08)" stroke="rgba(62,207,163,0.2)"/>
+      <text x="330" y="47" text-anchor="middle" fill="#3ecfa3" font-size="10" font-family="monospace">── SAE Commit Exchange ──</text>
+
+      <line x1="145" y1="62" x2="505" y2="62" stroke="#5b8dee" stroke-width="1.5" marker-end="url(#arr)"/>
+      <text x="330" y="56" text-anchor="middle" fill="#94a3b8" font-size="10" font-family="monospace">Commit（标量 + 椭圆曲线点，由 PWE+随机数计算）</text>
+
+      <line x1="515" y1="80" x2="155" y2="80" stroke="#f0a500" stroke-width="1.5" marker-end="url(#arr3)"/>
+      <text x="330" y="74" text-anchor="middle" fill="#94a3b8" font-size="10" font-family="monospace">Commit（AP 端标量 + 椭圆曲线点）</text>
+
+      <!-- Confirm exchange -->
+      <rect x="10" y="92" width="630" height="16" rx="4" fill="rgba(91,141,238,0.08)" stroke="rgba(91,141,238,0.2)"/>
+      <text x="330" y="104" text-anchor="middle" fill="#5b8dee" font-size="10" font-family="monospace">── SAE Confirm Exchange ──</text>
+
+      <line x1="145" y1="120" x2="505" y2="120" stroke="#5b8dee" stroke-width="1.5" marker-end="url(#arr)"/>
+      <text x="330" y="114" text-anchor="middle" fill="#94a3b8" font-size="10" font-family="monospace">Confirm（HMAC 证明 PMK 一致性）</text>
+
+      <line x1="515" y1="138" x2="155" y2="138" stroke="#f0a500" stroke-width="1.5" marker-end="url(#arr3)"/>
+      <text x="330" y="132" text-anchor="middle" fill="#94a3b8" font-size="10" font-family="monospace">Confirm（AP 端 HMAC）</text>
+
+      <!-- PMK derived -->
+      <rect x="90" y="152" width="480" height="28" rx="6" fill="rgba(62,207,163,0.1)" stroke="#3ecfa3" stroke-width="1.5"/>
+      <text x="330" y="171" text-anchor="middle" fill="#3ecfa3" font-size="11" font-family="monospace" font-weight="700">✓ 双方独立推导出相同 PMK（无需传输，前向保密）</text>
+
+      <!-- 4-way -->
+      <line x1="145" y1="190" x2="505" y2="190" stroke="#94a3b8" stroke-width="1" stroke-dasharray="3,2" marker-end="url(#arr)"/>
+      <text x="330" y="184" text-anchor="middle" fill="#64748b" font-size="10" font-family="monospace">后续：4-Way Handshake（与 WPA2 相同）</text>
+    </svg>
+  </div>
+
+  <div class="summary-box">
+    <h3>📌 本章小结</h3>
+    <p>SAE 的核心创新是：密码不再直接作为 PMK，而是通过椭圆曲线运算成为 PMK 推导的<strong>起点（PWE）</strong>，且每次握手引入新的随机性。即使攻击者录制了握手帧，也无法离线猜测密码（因为没有足够的数学依据）。这是 WPA3 相比 WPA2-PSK 的根本性安全提升。</p>
+  </div>
+</section>
+
+<!-- ============================== S10 ============================== -->
+<section class="section" id="s10">
+  <div class="section-label">第 10 章 · 使用场景</div>
+  <h2 class="section-title">场景四：连接隐藏 SSID 网络</h2>
+
+  <p>部分 AP 不广播 SSID（隐藏网络），需要客户端发送含目标 SSID 的<strong>定向探测请求</strong>（Directed Probe Request）才能发现。</p>
+
+  <h3>背后原理</h3>
+  <p>通常 AP 在信标帧（Beacon）中广播 SSID，wpa_supplicant 被动扫描即可发现。隐藏 SSID 的 AP 发空 SSID 信标，只有收到含正确 SSID 的 Probe Request 才会回应。<code>scan_ssid=1</code> 告知 wpa_supplicant 为该网络发送定向 Probe Request。</p>
+  <p class="source-ref">来源：<a href="https://web.mit.edu/freebsd/head/contrib/wpa/wpa_supplicant/wpa_supplicant.conf" target="_blank">MIT/FreeBSD — wpa_supplicant.conf 官方示例文件</a>（<code>scan_ssid</code> 字段说明）</p>
+
+  <pre><code><span class="code-comment"># 连接隐藏 SSID 网络</span>
+network={
+    <span class="code-keyword">ssid</span>=<span class="code-string">"HiddenNetwork"</span>
+    <span class="code-keyword">scan_ssid</span>=<span class="code-value">1</span>          <span class="code-comment"># 使用 SSID 特定的 Probe Request 帧</span>
+    <span class="code-keyword">key_mgmt</span>=WPA-PSK
+    <span class="code-keyword">psk</span>=<span class="code-string">"my_secret"</span>
+}</code></pre>
+
+  <div class="warn-box">
+    <div class="warn-title">⚠ 隐藏 SSID 并非真正的安全措施</div>
+    <p style="margin:0;">隐藏 SSID 只是防止普通用户看到网络名，任何被动扫描工具（如 airodump-ng）都能通过监听客户端的 Probe Request 发现真实 SSID。此外，<code>scan_ssid=1</code> 会增加扫描延迟（需要额外的 Probe 交换），不建议在非必要场景启用。</p>
+  </div>
+
+  <h3>按 BSSID 锁定特定 AP</h3>
+  <p>在多 AP 同 SSID 的网络中，可以锁定到特定 AP（BSSID）：</p>
+  <pre><code>network={
+    <span class="code-keyword">ssid</span>=<span class="code-string">"MyNetwork"</span>
+    <span class="code-keyword">bssid</span>=<span class="code-string">"aa:bb:cc:dd:ee:ff"</span>  <span class="code-comment"># 只与此 AP 关联</span>
+    <span class="code-keyword">key_mgmt</span>=WPA-PSK
+    <span class="code-keyword">psk</span>=<span class="code-string">"password"</span>
+}</code></pre>
+
+  <div class="summary-box">
+    <h3>📌 本章小结</h3>
+    <p><code>scan_ssid=1</code> 是 wpa_supplicant 应对隐藏网络的机制，它改变了扫描阶段的探测帧类型（广播 → 定向）。但安全本质上不依赖 SSID 隐藏，而依赖加密协议本身。</p>
+  </div>
+</section>
+
+<!-- ============================== S11 ============================== -->
+<section class="section" id="s11">
+  <div class="section-label">第 11 章 · 使用场景</div>
+  <h2 class="section-title">场景五：开放网络与 WEP</h2>
+
+  <p><span class="badge badge-orange">已废弃</span> WEP 和开放网络（无加密）配置说明，仅供历史参考和兼容旧设备使用。</p>
+
+  <h3>开放网络（无加密）</h3>
+  <pre><code><span class="code-comment"># 连接无加密开放网络（如酒店/咖啡馆免费 Wi-Fi）</span>
+network={
+    <span class="code-keyword">ssid</span>=<span class="code-string">"FreeWifi"</span>
+    <span class="code-keyword">key_mgmt</span>=NONE
+}</code></pre>
+
+  <h3>WEP 网络（不推荐，已被攻破）</h3>
+  <pre><code><span class="code-comment"># WEP 配置 — 来源：Void Linux Handbook</span>
+<span class="code-comment"># ⚠ WEP 已于 2004 年被证明不安全，应避免使用</span>
+network={
+    <span class="code-keyword">ssid</span>=<span class="code-string">"MYSSID"</span>
+    <span class="code-keyword">key_mgmt</span>=NONE
+    <span class="code-keyword">wep_key0</span>=<span class="code-string">"YOUR AP WEP KEY"</span>
+    <span class="code-keyword">wep_tx_keyidx</span>=<span class="code-value">0</span>
+    <span class="code-keyword">auth_alg</span>=SHARED
+}</code></pre>
+  <p class="source-ref">来源：<a href="https://docs.voidlinux.org/config/network/wpa_supplicant.html" target="_blank">Void Linux Handbook — wpa_supplicant</a></p>
+
+  <div class="warn-box">
+    <div class="warn-title">⚠ 安全警告</div>
+    <p style="margin:0;">WEP（Wired Equivalent Privacy）使用 RC4 流密码，存在 IV 重用等根本性缺陷，数秒内可被破解。IEEE 802.11i 已将其废弃，wpa_supplicant 编译时默认关闭 WEP 支持（需要 wep USE flag）。生产环境请勿使用。</p>
+  </div>
+
+  <div class="summary-box">
+    <h3>📌 本章小结</h3>
+    <p>开放网络下 wpa_supplicant 仅完成 802.11 关联，不执行任何加密/认证。数据帧明文传输，极易被截获。对于需要在开放网络上保护隐私的场景，应配合 VPN 使用，而非依赖无线层加密。</p>
+  </div>
+</section>
+
+<!-- ============================== S12 ============================== -->
+<section class="section" id="s12">
+  <div class="section-label">第 12 章 · 使用场景</div>
+  <h2 class="section-title">场景六：有线 802.1X 认证</h2>
+
+  <p>wpa_supplicant 不仅支持无线网络，也支持<strong>有线以太网的 IEEE 802.1X 认证</strong>，常见于企业内网准入控制（NAC）。</p>
+
+  <h3>背后原理</h3>
+  <p>使用 <code>-D wired</code> 驱动，<code>ap_scan=0</code> 禁用无线扫描（因为有线无需 BSS 扫描），直接通过以太网帧进行 EAPOL 交换与认证服务器通信。</p>
+  <p class="source-ref">来源：<a href="https://man.cx/wpa_supplicant.conf(5)" target="_blank">man.cx — wpa_supplicant.conf(5) QUICK EXAMPLES（示例 6）</a></p>
+
+  <pre><code><span class="code-comment"># 有线 802.1X 配置 — 使用 wired 或 roboswitch 驱动</span>
+<span class="code-keyword">ctrl_interface</span>=DIR=/var/run/wpa_supplicant GROUP=netdev
+<span class="code-keyword">ap_scan</span>=<span class="code-value">0</span>   <span class="code-comment"># 禁用无线 AP 扫描</span>
+
+network={
+    <span class="code-keyword">key_mgmt</span>=IEEE8021X
+    <span class="code-keyword">eap</span>=MD5
+    <span class="code-keyword">identity</span>=<span class="code-string">"user"</span>
+    <span class="code-keyword">password</span>=<span class="code-string">"password"</span>
+    <span class="code-keyword">eapol_flags</span>=<span class="code-value">0</span>   <span class="code-comment"># 有线模式，无需动态 WEP 密钥</span>
+}</code></pre>
+
+  <h4>有线 EAP-TLS（证书认证）</h4>
+  <pre><code><span class="code-comment"># 有线 EAP-TLS — 来源：Gentoo Wiki</span>
+<span class="code-keyword">ap_scan</span>=<span class="code-value">0</span>
+network={
+    <span class="code-keyword">ssid</span>=<span class="code-string">"1x-test"</span>
+    <span class="code-keyword">key_mgmt</span>=IEEE8021X
+    <span class="code-keyword">eap</span>=TLS
+    <span class="code-keyword">identity</span>=<span class="code-string">"user@example.com"</span>
+    <span class="code-keyword">ca_cert</span>=<span class="code-string">"/etc/cert/ca.pem"</span>
+    <span class="code-keyword">client_cert</span>=<span class="code-string">"/etc/cert/user.pem"</span>
+    <span class="code="keyword">private_key</span>=<span class="code-string">"/etc/cert/user.prv"</span>
+    <span class="code-keyword">private_key_passwd</span>=<span class="code-string">"password"</span>
+    <span class="code-keyword">eapol_flags</span>=<span class="code-value">3</span>
+}</code></pre>
+
+  <h4>启动命令</h4>
+  <pre><code><span class="code-comment"># 启动有线 802.1X 认证（Arch Linux Wiki 建议先将接口置为 DOWN）</span>
+$ sudo ip link set eth0 down
+$ sudo wpa_supplicant -B -Dwired -ieth0 -c/etc/wpa_supplicant-wired.conf</code></pre>
+  <p class="source-ref">来源：<a href="https://wiki.archlinux.org/title/Wpa_supplicant" target="_blank">Arch Wiki — wpa_supplicant</a></p>
+
+  <div class="summary-box">
+    <h3>📌 本章小结</h3>
+    <p>有线 802.1X 是企业网络准入控制（NAC）的常见实现。wpa_supplicant 通过 <code>-D wired</code> + <code>ap_scan=0</code> 跳过无线特有的扫描/关联流程，直接在以太网上运行 EAPOL 认证协议，与无线 WPA-Enterprise 共用相同的 EAP 引擎。</p>
+  </div>
+</section>
+
+<!-- ============================== S13 ============================== -->
+<section class="section" id="s13">
+  <div class="section-label">第 13 章 · 使用场景</div>
+  <h2 class="section-title">场景七：多接口并发管理</h2>
+
+  <p>wpa_supplicant 可以<strong>单进程管理多个无线接口</strong>，通过 <code>-N</code> 参数分隔每个接口的配置。</p>
+
+  <h3>背后原理</h3>
+  <p>每个接口对应独立的配置文件和驱动，守护进程内部为每个接口维护独立的状态机，互不影响。这比为每个接口运行独立进程更高效。</p>
+
+  <pre><code><span class="code-comment"># 同时管理两个无线接口 — 来源：Debian Manpages wpa_supplicant(8)</span>
+$ wpa_supplicant \
+    -c wpa1.conf -i wlan0 -D nl80211 <span class="code-keyword">-N</span> \
+    -c wpa2.conf -i ath0  -D wext</code></pre>
+  <p class="source-ref">来源：<a href="https://manpages.debian.org/experimental/wpasupplicant/wpa_supplicant.8.en.html" target="_blank">Debian Manpages — wpa_supplicant(8) ARCHITECTURE</a></p>
+
+  <h4>全局控制接口</h4>
+  <pre><code><span class="code-comment"># 使用全局 ctrl_interface，接口定义可省略</span>
+$ wpa_supplicant -g /run/wpa_supplicant/global
+
+<span class="code-comment"># 通过 wpa_cli 动态添加接口</span>
+$ wpa_cli -g /run/wpa_supplicant/global interface_add wlan0 /etc/wpa.conf nl80211</code></pre>
+
+  <h4>systemd 服务管理（单接口）</h4>
+  <pre><code><span class="code-comment"># 启用/启动 systemd 服务</span>
+$ sudo systemctl enable wpa_supplicant@wlan0.service
+$ sudo systemctl start  wpa_supplicant@wlan0.service
+
+<span class="code-comment"># 查看状态</span>
+$ systemctl status wpa_supplicant@wlan0.service</code></pre>
+
+  <div class="summary-box">
+    <h3>📌 本章小结</h3>
+    <p>多接口管理体现了 wpa_supplicant 的"一个后端，多个实例"设计。<code>-N</code> 参数优雅地解决了多接口场景，而全局控制接口则允许运行时动态增减接口，适合嵌入式路由器、网络管理器等复杂场景。</p>
+  </div>
+</section>
+
+<!-- ============================== S14 ============================== -->
+<section class="section" id="s14">
+  <div class="section-label">第 14 章 · 使用场景</div>
+  <h2 class="section-title">场景八：wpa_cli 动态操控（无配置文件）</h2>
+
+  <p>wpa_cli 可以在运行时动态添加、配置、连接网络，无需预先修改配置文件，适合脚本自动化和临时连接场景。</p>
+
+  <h3>交互式连接示例</h3>
+  <p>以下完整示例来自 Gentoo Wiki，展示了通过 wpa_cli 交互模式连接到 WPA 网络：</p>
+  <p class="source-ref">来源：<a href="https://wiki.gentoo.org/wiki/Wpa_supplicant" target="_blank">Gentoo Wiki — wpa_supplicant</a></p>
+
+  <pre><code>$ wpa_cli
+<span class="code-comment">Selected interface 'wlan0'</span>
+
+> scan
+OK
+> scan_results
+<span class="code-comment">bssid / frequency / signal level / flags / ssid</span>
+<span class="code-comment">01:23:45:67:89:ab  2437  0  [WPA-PSK-CCMP+TKIP][WPA2-PSK-CCMP+TKIP][ESS]  hotel-free-wifi</span>
+
+> add_network
+<span class="code-comment">0</span>
+
+> set_network 0 ssid <span class="code-string">"hotel-free-wifi"</span>
+OK
+> set_network 0 psk <span class="code-string">"password"</span>
+OK
+> enable_network 0
+OK
+<span class="code-comment">&lt;3&gt;CTRL-EVENT-SCAN-RESULTS</span>
+<span class="code-comment">&lt;3&gt;Trying to associate with 01:23:45:67:89:ab (SSID='hotel-free-wifi' freq=2437 MHz)</span>
+<span class="code-comment">&lt;3&gt;Associated with 01:23:45:67:89:ab</span>
+<span class="code-comment">&lt;3&gt;WPA: Key negotiation completed [PTK=CCMP GTK=TKIP]</span>
+<span class="code-comment">&lt;3&gt;CTRL-EVENT-CONNECTED - Connection to 01:23:45:67:89:ab completed [id=0 id_str=]</span>
+
+> save_config
+OK
+> quit</code></pre>
+
+  <h3>常用 wpa_cli 命令速查</h3>
+  <div class="table-wrap">
+    <table>
+      <tr><th>命令</th><th>功能说明</th></tr>
+      <tr><td><code>status</code></td><td>获取当前 WPA/EAPOL/EAP 状态</td></tr>
+      <tr><td><code>scan</code></td><td>触发新的 BSS 扫描</td></tr>
+      <tr><td><code>scan_results</code></td><td>获取最新扫描结果</td></tr>
+      <tr><td><code>add_network</code></td><td>添加新网络块，返回 network_id</td></tr>
+      <tr><td><code>set_network &lt;id&gt; &lt;var&gt; &lt;val&gt;</code></td><td>设置网络参数</td></tr>
+      <tr><td><code>enable_network &lt;id&gt;</code></td><td>启用并尝试连接网络</td></tr>
+      <tr><td><code>disable_network &lt;id&gt;</code></td><td>禁用网络</td></tr>
+      <tr><td><code>remove_network &lt;id&gt;</code></td><td>移除网络配置</td></tr>
+      <tr><td><code>select_network &lt;id&gt;</code></td><td>选择并连接特定网络</td></tr>
+      <tr><td><code>list_networks</code></td><td>列出所有已配置网络</td></tr>
+      <tr><td><code>save_config</code></td><td>保存当前配置到文件</td></tr>
+      <tr><td><code>reconfigure</code></td><td>重新读取配置文件</td></tr>
+      <tr><td><code>disconnect</code></td><td>断开连接（等待手动重连命令）</td></tr>
+      <tr><td><code>reconnect</code></td><td>若已断开则重连</td></tr>
+      <tr><td><code>reassociate</code></td><td>强制重新关联</td></tr>
+      <tr><td><code>pmksa</code></td><td>显示 PMKSA 缓存</td></tr>
+      <tr><td><code>terminate</code></td><td>终止 wpa_supplicant 守护进程</td></tr>
+    </table>
+  </div>
+  <p class="source-ref">来源：<a href="https://linux.die.net/man/8/wpa_cli" target="_blank">linux.die.net — wpa_cli(8)</a> / <a href="https://gist.github.com/penguinpowernz/1d36a38af4fac4553562410e0bd8d6cf" target="_blank">WPA CLI Commands Gist</a></p>
+
+  <h3>事件驱动脚本（wpa_cli -a）</h3>
+  <p>wpa_cli 可以在守护模式下执行脚本，响应连接/断开事件：</p>
+  <pre><code><span class="code-comment">#!/bin/sh — /etc/wpa_supplicant/action.sh</span>
+<span class="code-comment"># 来源：Arch Wiki — wpa_supplicant</span>
+case "$2" in
+    CONNECTED)
+        notify-send "WPA supplicant: 连接已建立"
+        dhclient "$1"
+        ;;
+    DISCONNECTED)
+        notify-send "WPA supplicant: 连接已断开"
+        ;;
+esac</code></pre>
+  <pre><code><span class="code-comment"># 使用 -a 参数绑定事件脚本</span>
+$ wpa_cli -i wlan0 -a /etc/wpa_supplicant/action.sh</code></pre>
+
+  <div class="summary-box">
+    <h3>📌 本章小结</h3>
+    <p>wpa_cli 的动态操作能力使 wpa_supplicant 可以在运行时"热配置"，无需重启守护进程。这是网络管理工具（如 NetworkManager）集成 wpa_supplicant 的核心机制：通过 Unix Socket 向守护进程发送命令，让用户无感知地完成网络切换。</p>
+  </div>
+</section>
+
+<!-- ============================== S15 ============================== -->
+<section class="section" id="s15">
+  <div class="section-label">第 15 章 · 进阶篇</div>
+  <h2 class="section-title">漫游机制（Roaming）</h2>
+
+  <p>当客户端处于有多个接入点的无线网络（同一 SSID，不同 BSSID）中时，wpa_supplicant 负责管理漫游行为。</p>
+
+  <p class="source-ref">来源：<a href="https://wiki.archlinux.org/title/Wpa_supplicant" target="_blank">Arch Wiki — wpa_supplicant Roaming</a></p>
+
+  <div class="info-box">
+    <div class="info-title">官方说明（Arch Wiki）</div>
+    <p style="margin:0;font-style:italic;">"When connected to a wireless network with multiple access points, wpa_supplicant is typically responsible for roaming between access points. Choosing a new access point requires wpa_supplicant to perform a scan of available networks, which causes a brief interruption in connectivity to the current access point while the wireless radio scans other frequencies."</p>
+  </div>
+
+  <h3>默认漫游行为（保守策略）</h3>
+  <p>官方文档指出：<strong>默认配置下，wpa_supplicant 只会在与当前 AP 的关联完全丢失时才重新扫描</strong>。这意味着客户端即使距离当前 AP 较远（信号弱），只要连接未断，也不会主动漫游到更近的 AP。</p>
+
+  <h3>PMKSA 缓存（快速漫游）</h3>
+  <p>WPA2/WPA3 支持 PMKSA（Pairwise Master Key Security Association）缓存，当漫游到曾经连接过的 AP 时，可以跳过完整的 EAP 认证，直接使用缓存的 PMK 进行四次握手，大幅减少重连延迟。</p>
+  <pre><code><span class="code-comment"># 查看 PMKSA 缓存</span>
+$ wpa_cli -i wlan0 pmksa
+<span class="code-comment">Index / AA                / PMK-ID (缓存的认证结果)</span>
+<span class="code-comment">1     aa:bb:cc:dd:ee:ff  xxx...  2024-01-01 00:00:00</span></code></pre>
+
+  <h3>BSS 选择优先级</h3>
+
+  <div class="diagram-wrap">
+    <svg viewBox="0 0 640 200" xmlns="http://www.w3.org/2000/svg" width="640" height="200">
+      <!-- Title -->
+      <text x="320" y="20" text-anchor="middle" fill="#94a3b8" font-size="12" font-family="monospace">BSS 选择综合评分（示意）</text>
+
+      <!-- AP1 -->
+      <rect x="40" y="40" width="160" height="140" rx="8" fill="rgba(62,207,163,0.08)" stroke="#3ecfa3" stroke-width="1.5"/>
+      <text x="120" y="60" text-anchor="middle" fill="#3ecfa3" font-size="11" font-family="monospace" font-weight="700">AP-A (当前)</text>
+      <text x="120" y="78" text-anchor="middle" fill="#94a3b8" font-size="10" font-family="monospace">RSSI: -85 dBm (弱)</text>
+      <text x="120" y="96" text-anchor="middle" fill="#94a3b8" font-size="10" font-family="monospace">安全: WPA2-PSK</text>
+      <text x="120" y="114" text-anchor="middle" fill="#94a3b8" font-size="10" font-family="monospace">优先级: 0</text>
+      <text x="120" y="135" text-anchor="middle" fill="#f07070" font-size="10" font-family="monospace">综合分: 低</text>
+      <rect x="65" y="145" width="110" height="14" rx="4" fill="rgba(240,112,112,0.15)"/>
+      <rect x="65" y="145" width="40" height="14" rx="4" fill="#f07070"/>
+
+      <!-- AP2 -->
+      <rect x="240" y="40" width="160" height="140" rx="8" fill="rgba(91,141,238,0.08)" stroke="#5b8dee" stroke-width="1.5"/>
+      <text x="320" y="60" text-anchor="middle" fill="#5b8dee" font-size="11" font-family="monospace" font-weight="700">AP-B</text>
+      <text x="320" y="78" text-anchor="middle" fill="#94a3b8" font-size="10" font-family="monospace">RSSI: -65 dBm (中)</text>
+      <text x="320" y="96" text-anchor="middle" fill="#94a3b8" font-size="10" font-family="monospace">安全: WPA2-PSK</text>
+      <text x="320" y="114" text-anchor="middle" fill="#94a3b8" font-size="10" font-family="monospace">优先级: 0</text>
+      <text x="320" y="135" text-anchor="middle" fill="#5b8dee" font-size="10" font-family="monospace">综合分: 中</text>
+      <rect x="265" y="145" width="110" height="14" rx="4" fill="rgba(91,141,238,0.15)"/>
+      <rect x="265" y="145" width="75" height="14" rx="4" fill="#5b8dee"/>
+
+      <!-- AP3 -->
+      <rect x="440" y="40" width="160" height="140" rx="8" fill="rgba(62,207,163,0.15)" stroke="#3ecfa3" stroke-width="2"/>
+      <text x="520" y="60" text-anchor="middle" fill="#3ecfa3" font-size="11" font-family="monospace" font-weight="700">AP-C ← 最优</text>
+      <text x="520" y="78" text-anchor="middle" fill="#94a3b8" font-size="10" font-family="monospace">RSSI: -45 dBm (强)</text>
+      <text x="520" y="96" text-anchor="middle" fill="#94a3b8" font-size="10" font-family="monospace">安全: WPA2-PSK</text>
+      <text x="520" y="114" text-anchor="middle" fill="#94a3b8" font-size="10" font-family="monospace">优先级: 0</text>
+      <text x="520" y="135" text-anchor="middle" fill="#3ecfa3" font-size="10" font-family="monospace">综合分: 高</text>
+      <rect x="465" y="145" width="110" height="14" rx="4" fill="rgba(62,207,163,0.15)"/>
+      <rect x="465" y="145" width="110" height="14" rx="4" fill="#3ecfa3"/>
+    </svg>
+  </div>
+
+  <div class="summary-box">
+    <h3>📌 本章小结</h3>
+    <p>wpa_supplicant 的漫游策略相对保守，以减少不必要的扫描（每次扫描需要暂时切换信道，会影响数据传输）。PMKSA 缓存是企业网络漫游速度优化的关键，避免了重复的 EAP 认证往返延迟。如需更激进的漫游行为，可配合 <code>bgscan</code> 插件实现后台扫描。</p>
+  </div>
+</section>
+
+<!-- ============================== S16 ============================== -->
+<section class="section" id="s16">
+  <div class="section-label">第 16 章 · 进阶篇</div>
+  <h2 class="section-title">调试与排错</h2>
+
+  <h3>调试模式启动</h3>
+  <p>官方文档推荐的调试方式是<strong>前台运行 + 开启调试输出</strong>：</p>
+  <p class="source-ref">来源：<a href="https://manpages.debian.org/experimental/wpasupplicant/wpa_supplicant.8.en.html" target="_blank">Debian Manpages — wpa_supplicant(8) EXAMPLES</a></p>
+
+  <pre><code><span class="code-comment"># 前台运行，开启调试（-d 基础，-dd 更详细，-K 含密钥）</span>
+$ sudo wpa_supplicant -c/etc/wpa_supplicant.conf -iwlan0 -d
+
+<span class="code-comment"># 更详细调试（包含密钥信息，仅用于调试）</span>
+$ sudo wpa_supplicant -c/etc/wpa_supplicant.conf -iwlan0 -dd -K
+
+<span class="code-comment"># 输出到日志文件</span>
+$ sudo wpa_supplicant -c/etc/wpa_supplicant.conf -iwlan0 -d -f /tmp/wpa_debug.log
+
+<span class="code-comment"># 输出到 syslog</span>
+$ sudo wpa_supplicant -c/etc/wpa_supplicant.conf -iwlan0 -s</code></pre>
+
+  <h3>常用调试命令</h3>
+  <pre><code><span class="code-comment"># 查看当前连接状态</span>
+$ wpa_cli -i wlan0 status
+
+<span class="code-comment"># 扫描并列出结果</span>
+$ wpa_cli -i wlan0 scan
+$ wpa_cli -i wlan0 scan_results
+
+<span class="code-comment"># 查看 PMKSA 缓存</span>
+$ wpa_cli -i wlan0 pmksa
+
+<span class="code-comment"># 检查接口是否存在</span>
+$ ip link show wlan0
+
+<span class="code-comment"># 查看 systemd 服务日志</span>
+$ journalctl -u wpa_supplicant@wlan0 -f</code></pre>
+
+  <h3>常见问题排查</h3>
+  <div class="table-wrap">
+    <table>
+      <tr><th>症状</th><th>可能原因</th><th>排查方法</th></tr>
+      <tr><td>守护进程立即退出</td><td>接口不存在或驱动未加载</td><td><code>ip link show</code> 确认接口存在</td></tr>
+      <tr><td><code>wpa_state=SCANNING</code> 卡住</td><td>驱动问题或 SSID 不存在</td><td>加 <code>-d</code> 看扫描结果，尝试 <code>-D wext</code></td></tr>
+      <tr><td><code>wpa_state=4WAY_HANDSHAKE</code></td><td>密码错误</td><td>核对 PSK；用 wpa_passphrase 重新生成</td></tr>
+      <tr><td>已关联但无法 DHCP</td><td>wpa_supplicant 未完成（state != COMPLETED）</td><td>等待 CTRL-EVENT-CONNECTED 事件后再 DHCP</td></tr>
+      <tr><td>EAP 认证失败</td><td>证书路径/密码错误，CA 不受信任</td><td>检查证书路径；加 <code>-d</code> 看 EAP 协商日志</td></tr>
+      <tr><td>配置修改不生效</td><td>守护进程未重载</td><td><code>wpa_cli reconfigure</code> 或 <code>killall -HUP wpa_supplicant</code></td></tr>
+    </table>
+  </div>
+
+  <div class="summary-box">
+    <h3>📌 本章小结</h3>
+    <p>调试 wpa_supplicant 最有效的方式是前台 + <code>-d</code> 输出，结合 <code>wpa_cli status</code> 实时监控状态机。状态机路径 <code>DISCONNECTED → SCANNING → ASSOCIATING → 4WAY_HANDSHAKE → COMPLETED</code> 可以精准定位问题出现在哪个阶段。</p>
+  </div>
+</section>
+
+<!-- ============================== S17 ============================== -->
+<section class="section" id="s17">
+  <div class="section-label">第 17 章 · 进阶篇</div>
+  <h2 class="section-title">命令行参数速查</h2>
+
+  <p class="source-ref">来源：<a href="https://manpages.debian.org/experimental/wpasupplicant/wpa_supplicant.8.en.html" target="_blank">Debian Manpages — wpa_supplicant(8) COMMAND LINE OPTIONS</a></p>
+
+  <div class="table-wrap">
+    <table>
+      <tr><th>参数</th><th>作用域</th><th>说明</th></tr>
+      <tr><td><code>-B</code></td><td>全局</td><td>后台运行守护进程（fork into background）</td></tr>
+      <tr><td><code>-c filename</code></td><td>接口</td><td>指定配置文件路径</td></tr>
+      <tr><td><code>-i ifname</code></td><td>接口</td><td>指定监听的网络接口名</td></tr>
+      <tr><td><code>-D driver</code></td><td>接口</td><td>驱动类型（nl80211, wext, wired 等，可逗号分隔多个）</td></tr>
+      <tr><td><code>-N</code></td><td>全局</td><td>开始描述新接口（多接口时分隔各接口参数）</td></tr>
+      <tr><td><code>-d</code></td><td>全局</td><td>增加调试详细度（<code>-dd</code> 更多）</td></tr>
+      <tr><td><code>-q</code></td><td>全局</td><td>减少调试输出（<code>-qq</code> 更少）</td></tr>
+      <tr><td><code>-K</code></td><td>全局</td><td>在调试输出中包含密钥（密码等敏感信息）</td></tr>
+      <tr><td><code>-f output</code></td><td>全局</td><td>日志输出到指定文件（需编译 CONFIG_DEBUG_FILE）</td></tr>
+      <tr><td><code>-s</code></td><td>全局</td><td>日志输出到 syslog（需编译 CONFIG_DEBUG_SYSLOG）</td></tr>
+      <tr><td><code>-t</code></td><td>全局</td><td>调试消息中包含时间戳</td></tr>
+      <tr><td><code>-P PID_file</code></td><td>全局</td><td>指定 PID 文件路径</td></tr>
+      <tr><td><code>-g global_ctrl</code></td><td>全局</td><td>全局控制接口 socket 路径（可省略接口定义）</td></tr>
+      <tr><td><code>-u</code></td><td>全局</td><td>启用 DBus 控制接口（需编译 CONFIG_CTRL_IFACE_DBUS_NEW）</td></tr>
+      <tr><td><code>-v</code></td><td>全局</td><td>显示版本号</td></tr>
+      <tr><td><code>-h</code></td><td>全局</td><td>显示帮助信息（含支持的驱动列表）</td></tr>
+      <tr><td><code>-b br_ifname</code></td><td>接口</td><td>可选网桥接口名</td></tr>
+      <tr><td><code>-I filename</code></td><td>接口</td><td>附加配置文件路径</td></tr>
+      <tr><td><code>-C ctrl_interface</code></td><td>接口</td><td>控制接口 socket 路径（不使用 -c 时）</td></tr>
+      <tr><td><code>-W</code></td><td>全局</td><td>启动前等待控制接口监控连接</td></tr>
+      <tr><td><code>-e entropy_file</code></td><td>全局</td><td>用于维护跨重启的内部熵存储</td></tr>
+    </table>
+  </div>
+
+  <h3>典型启动命令汇总</h3>
+  <pre><code><span class="code-comment"># 最常见的后台启动</span>
+$ sudo wpa_supplicant -B -c/etc/wpa_supplicant.conf -iwlan0
+
+<span class="code-comment"># 前台调试</span>
+$ sudo wpa_supplicant -c/etc/wpa_supplicant.conf -iwlan0 -d
+
+<span class="code-comment"># 指定驱动 + 自动回退</span>
+$ sudo wpa_supplicant -Dnl80211,wext -c/etc/wpa_supplicant.conf -iwlan0
+
+<span class="code-comment"># 多接口</span>
+$ sudo wpa_supplicant \
+    -c wpa1.conf -i wlan0 -D nl80211 -N \
+    -c wpa2.conf -i ath0  -D wext -B
+
+<span class="code-comment"># 有线 802.1X</span>
+$ sudo wpa_supplicant -B -Dwired -ieth0 -c/etc/wpa_wired.conf
+
+<span class="code-comment"># 全局控制接口模式</span>
+$ sudo wpa_supplicant -g/run/wpa_supplicant/global -B</code></pre>
+
+  <div class="summary-box">
+    <h3>📌 本章小结</h3>
+    <p>命令行参数分为"全局参数"和"接口参数"两类。接口参数（<code>-c</code>, <code>-i</code>, <code>-D</code> 等）对特定接口生效，在多接口场景下通过 <code>-N</code> 分隔。全局参数影响整个守护进程行为。<code>-h</code> 查看可用驱动列表是排查驱动问题的第一步。</p>
+  </div>
+</section>
+
+<!-- ============================== S18 ============================== -->
+<section class="section" id="s18">
+  <div class="section-label">第 18 章 · 总结</div>
+  <h2 class="section-title">总结与第一性原理</h2>
+
+  <h3>全局知识图谱</h3>
+
+  <div class="diagram-wrap">
+    <svg viewBox="0 0 700 380" xmlns="http://www.w3.org/2000/svg" width="700" height="380">
+      <!-- Center -->
+      <circle cx="350" cy="190" r="60" fill="rgba(91,141,238,0.15)" stroke="#5b8dee" stroke-width="2"/>
+      <text x="350" y="184" text-anchor="middle" fill="#5b8dee" font-size="13" font-family="monospace" font-weight="700">wpa_</text>
+      <text x="350" y="200" text-anchor="middle" fill="#5b8dee" font-size="13" font-family="monospace" font-weight="700">supplicant</text>
+
+      <!-- Nodes -->
+      <!-- WPA-PSK -->
+      <ellipse cx="145" cy="80" rx="72" ry="28" fill="rgba(62,207,163,0.1)" stroke="#3ecfa3" stroke-width="1.5"/>
+      <text x="145" y="76" text-anchor="middle" fill="#3ecfa3" font-size="10" font-family="monospace">WPA-PSK</text>
+      <text x="145" y="90" text-anchor="middle" fill="#64748b" font-size="9" font-family="monospace">PBKDF2 → PMK</text>
+      <line x1="200" y1="100" x2="295" y2="148" stroke="#3ecfa3" stroke-width="1.2"/>
+
+      <!-- WPA-Enterprise -->
+      <ellipse cx="145" cy="190" rx="80" ry="28" fill="rgba(124,92,191,0.1)" stroke="#7c5cbf" stroke-width="1.5"/>
+      <text x="145" y="186" text-anchor="middle" fill="#7c5cbf" font-size="10" font-family="monospace">WPA-Enterprise</text>
+      <text x="145" y="200" text-anchor="middle" fill="#64748b" font-size="9" font-family="monospace">EAP + RADIUS → MSK</text>
+      <line x1="225" y1="190" x2="290" y2="190" stroke="#7c5cbf" stroke-width="1.2"/>
+
+      <!-- WPA3/SAE -->
+      <ellipse cx="145" cy="300" rx="72" ry="28" fill="rgba(240,165,0,0.1)" stroke="#f0a500" stroke-width="1.5"/>
+      <text x="145" y="296" text-anchor="middle" fill="#f0a500" font-size="10" font-family="monospace">WPA3 / SAE</text>
+      <text x="145" y="310" text-anchor="middle" fill="#64748b" font-size="9" font-family="monospace">Dragonfly → PMK</text>
+      <line x1="200" y1="285" x2="295" y2="232" stroke="#f0a500" stroke-width="1.2"/>
+
+      <!-- 4-Way Handshake -->
+      <ellipse cx="555" cy="80" rx="80" ry="28" fill="rgba(91,141,238,0.1)" stroke="#5b8dee" stroke-width="1.5"/>
+      <text x="555" y="76" text-anchor="middle" fill="#5b8dee" font-size="10" font-family="monospace">4-Way Handshake</text>
+      <text x="555" y="90" text-anchor="middle" fill="#64748b" font-size="9" font-family="monospace">PMK → PTK + GTK</text>
+      <line x1="480" y1="100" x2="405" y2="148" stroke="#5b8dee" stroke-width="1.2"/>
+
+      <!-- Roaming -->
+      <ellipse cx="555" cy="190" rx="72" ry="28" fill="rgba(62,207,163,0.1)" stroke="#3ecfa3" stroke-width="1.5"/>
+      <text x="555" y="186" text-anchor="middle" fill="#3ecfa3" font-size="10" font-family="monospace">漫游 / PMKSA</text>
+      <text x="555" y="200" text-anchor="middle" fill="#64748b" font-size="9" font-family="monospace">缓存 + 快速重连</text>
+      <line x1="483" y1="190" x2="410" y2="190" stroke="#3ecfa3" stroke-width="1.2"/>
+
+      <!-- Wired 802.1X -->
+      <ellipse cx="555" cy="300" rx="80" ry="28" fill="rgba(240,112,112,0.1)" stroke="#f07070" stroke-width="1.5"/>
+      <text x="555" y="296" text-anchor="middle" fill="#f07070" font-size="10" font-family="monospace">有线 802.1X</text>
+      <text x="555" y="310" text-anchor="middle" fill="#64748b" font-size="9" font-family="monospace">-D wired, ap_scan=0</text>
+      <line x1="480" y1="285" x2="405" y2="232" stroke="#f07070" stroke-width="1.2"/>
+
+      <!-- wpa_cli -->
+      <ellipse cx="350" cy="348" rx="72" ry="24" fill="rgba(240,165,0,0.08)" stroke="#f0a500" stroke-width="1.5" stroke-dasharray="4,2"/>
+      <text x="350" y="344" text-anchor="middle" fill="#f0a500" font-size="10" font-family="monospace">wpa_cli</text>
+      <text x="350" y="358" text-anchor="middle" fill="#64748b" font-size="9" font-family="monospace">运行时管理接口</text>
+      <line x1="350" y1="324" x2="350" y2="250" stroke="#f0a500" stroke-width="1.2" stroke-dasharray="3,2"/>
+
+      <!-- nl80211 -->
+      <ellipse cx="350" cy="28" rx="72" ry="24" fill="rgba(62,207,163,0.08)" stroke="#3ecfa3" stroke-width="1.5" stroke-dasharray="4,2"/>
+      <text x="350" y="24" text-anchor="middle" fill="#3ecfa3" font-size="10" font-family="monospace">nl80211 / wext</text>
+      <text x="350" y="38" text-anchor="middle" fill="#64748b" font-size="9" font-family="monospace">内核驱动接口层</text>
+      <line x1="350" y1="52" x2="350" y2="130" stroke="#3ecfa3" stroke-width="1.2" stroke-dasharray="3,2"/>
+    </svg>
+  </div>
+
+  <h3>支持的完整功能列表</h3>
+  <p class="source-ref">来源：<a href="https://manpages.debian.org/experimental/wpasupplicant/wpa_supplicant.8.en.html" target="_blank">Debian Manpages — wpa_supplicant(8) SUPPORTED FEATURES</a></p>
+  <div class="card accent-left">
+    <p><strong>WPA/IEEE 802.11i 支持：</strong></p>
+    <ul>
+      <li>WPA-PSK（WPA-Personal）</li>
+      <li>WPA with EAP（WPA-Enterprise）+ EAP-TLS, EAP-PEAP, EAP-TTLS, EAP-SIM, EAP-AKA, EAP-PSK, EAP-PAX, LEAP</li>
+      <li>密钥管理：CCMP, TKIP, WEP104, WEP40</li>
+      <li>RSN/WPA2（IEEE 802.11i）</li>
+      <li>RSN 预认证（pre-authentication）</li>
+      <li>PMKSA 缓存</li>
+      <li>WPA3 / SAE（Dragonfly）</li>
+      <li>OWE（Opportunistic Wireless Encryption）</li>
+    </ul>
+  </div>
+
+  <h3>操作系统要求</h3>
+  <p class="source-ref">来源：<a href="https://manpages.debian.org/experimental/wpasupplicant/wpa_supplicant.8.en.html" target="_blank">Debian Manpages — wpa_supplicant(8) OS REQUIREMENTS</a></p>
+  <ul>
+    <li>Linux kernel <strong>2.6.30+</strong> 配合 nl80211/cfg80211 支持（推荐）</li>
+    <li>Linux kernel 2.4.x+ 配合 Linux Wireless Extensions v15+</li>
+    <li>FreeBSD 6-CURRENT</li>
+    <li>Microsoft Windows（需要 WinPcap）</li>
+  </ul>
+
+  <h3>版权信息</h3>
+  <p class="source-ref">来源：<a href="https://manpages.debian.org/experimental/wpasupplicant/wpa_supplicant.8.en.html" target="_blank">Debian Manpages — wpa_supplicant(8) LEGAL</a></p>
+  <div class="info-box">
+    <div class="info-title">版权</div>
+    <p style="margin:0;">wpa_supplicant is copyright (c) 2003-2022, Jouni Malinen &lt;j@w1.fi&gt; and contributors. All Rights Reserved. 本程序依据 BSD 许可证（已删除广告条款）授权。</p>
+  </div>
+
+  <div class="summary-box">
+    <h3>🔑 第一性原理总结</h3>
+    <p>从最根本的物理约束出发，理解 wpa_supplicant 的设计逻辑：</p>
+    <ol style="color:var(--text2);padding-left:22px;margin-top:10px;">
+      <li style="margin-bottom:8px;"><strong>无线信道是广播介质</strong> → 所有人都能收听 → 必须加密。</li>
+      <li style="margin-bottom:8px;"><strong>加密密钥不能在信道上传输</strong> → 必须让双方独立推导出相同密钥 → PBKDF2（PSK）或 EAP（Enterprise）或 SAE（WPA3）。</li>
+      <li style="margin-bottom:8px;"><strong>密钥推导后需验证双方一致</strong> → 四次握手通过 MIC（HMAC）进行零知识证明，PMK 永远不出现在信道上。</li>
+      <li style="margin-bottom:8px;"><strong>每次会话密钥需唯一</strong> → ANonce + SNonce 引入随机性，即使 PMK 相同，每次 PTK 也不同 → 防止重放攻击。</li>
+      <li style="margin-bottom:8px;"><strong>加密完成后，上层协议（DHCP 等）才能运行</strong> → 链路层安全是网络层的前提。</li>
+    </ol>
+    <p style="margin-top:12px;margin-bottom:0;"><strong>wpa_supplicant 的所有功能特性，都是这五条物理/数学约束在工程层面的具体实现。</strong>理解了这些约束，所有配置选项和行为逻辑就自然清晰了。</p>
+  </div>
+
+  <h3>参考文档</h3>
+  <ul>
+    <li><a href="https://manpages.debian.org/experimental/wpasupplicant/wpa_supplicant.8.en.html" target="_blank">Debian Manpages — wpa_supplicant(8)</a></li>
+    <li><a href="https://man.archlinux.org/man/wpa_supplicant.8.en" target="_blank">Arch Linux Man Page — wpa_supplicant(8)</a></li>
+    <li><a href="https://man.cx/wpa_supplicant.conf(5)" target="_blank">man.cx — wpa_supplicant.conf(5)</a></li>
+    <li><a href="https://linux.die.net/man/8/wpa_cli" target="_blank">linux.die.net — wpa_cli(8)</a></li>
+    <li><a href="https://wiki.archlinux.org/title/Wpa_supplicant" target="_blank">Arch Wiki — wpa_supplicant</a></li>
+    <li><a href="https://wiki.gentoo.org/wiki/Wpa_supplicant" target="_blank">Gentoo Wiki — wpa_supplicant</a></li>
+    <li><a href="https://docs.voidlinux.org/config/network/wpa_supplicant.html" target="_blank">Void Linux Handbook — wpa_supplicant</a></li>
+    <li><a href="https://web.mit.edu/freebsd/head/contrib/wpa/wpa_supplicant/wpa_supplicant.conf" target="_blank">MIT — wpa_supplicant.conf 官方示例</a></li>
+  </ul>
+</section>
+
+</main>
+
+<div id="keynav-hint"><kbd>←</kbd> / <kbd>→</kbd> 键翻章节</div>
+
+<script>
+// ===== SECTIONS LIST =====
+const SECTIONS = ['s1','s2','s3','s4','s5','s6','s7','s8','s9','s10','s11','s12','s13','s14','s15','s16','s17','s18'];
+
+// ===== PROGRESS BAR =====
+function updateProgress() {
+  const doc = document.documentElement;
+  const top = doc.scrollTop || document.body.scrollTop;
+  const height = doc.scrollHeight - doc.clientHeight;
+  const pct = height > 0 ? (top / height) * 100 : 0;
+  document.getElementById('progress-bar').style.width = pct + '%';
+}
+
+// ===== ACTIVE NAV TRACKING =====
+function updateActiveNav() {
+  const scrollY = window.scrollY + 100;
+  let current = SECTIONS[0];
+  for (const id of SECTIONS) {
+    const el = document.getElementById(id);
+    if (el && el.offsetTop <= scrollY) current = id;
+  }
+  document.querySelectorAll('.nav-item').forEach(a => {
+    a.classList.toggle('active', a.getAttribute('href') === '#' + current);
+  });
+  // Auto-scroll sidebar to active item
+  const activeEl = document.querySelector('.nav-item.active');
+  if (activeEl) {
+    const sidebar = document.getElementById('sidebar');
+    const itemTop = activeEl.offsetTop;
+    const sidebarH = sidebar.clientHeight;
+    if (itemTop < sidebar.scrollTop || itemTop > sidebar.scrollTop + sidebarH - 80) {
+      sidebar.scrollTo({ top: itemTop - sidebarH / 2, behavior: 'smooth' });
+    }
+  }
+}
+
+window.addEventListener('scroll', () => { updateProgress(); updateActiveNav(); }, { passive: true });
+
+// ===== HAMBURGER =====
+const hamburger = document.getElementById('hamburger');
+const sidebar = document.getElementById('sidebar');
+const overlay = document.getElementById('overlay');
+hamburger.addEventListener('click', () => {
+  const open = sidebar.classList.toggle('open');
+  hamburger.classList.toggle('open', open);
+  overlay.classList.toggle('show', open);
+});
+overlay.addEventListener('click', () => {
+  sidebar.classList.remove('open');
+  hamburger.classList.remove('open');
+  overlay.classList.remove('show');
+});
+// Close sidebar on nav item click (mobile)
+document.querySelectorAll('.nav-item').forEach(a => {
+  a.addEventListener('click', () => {
+    sidebar.classList.remove('open');
+    hamburger.classList.remove('open');
+    overlay.classList.remove('show');
+  });
+});
+
+// ===== GROUP TOGGLE =====
+function toggleGroup(id) {
+  const grp = document.getElementById(id);
+  grp.classList.toggle('collapsed');
+  // Store max-height for items
+  const items = grp.querySelector('.nav-group-items');
+  if (!grp.classList.contains('collapsed')) {
+    items.style.maxHeight = items.scrollHeight + 'px';
+  } else {
+    items.style.maxHeight = '0px';
+  }
+}
+
+// Init max-heights for open groups
+document.querySelectorAll('.nav-group:not(.collapsed) .nav-group-items').forEach(el => {
+  el.style.maxHeight = el.scrollHeight + 'px';
+});
+
+// ===== KEYBOARD NAV =====
+const hint = document.getElementById('keynav-hint');
+let hintTimer = null;
+function showHint() {
+  hint.classList.add('show');
+  clearTimeout(hintTimer);
+  hintTimer = setTimeout(() => hint.classList.remove('show'), 2500);
+}
+document.addEventListener('keydown', (e) => {
+  if (e.target.tagName === 'INPUT' || e.target.tagName === 'TEXTAREA') return;
+  if (e.key !== 'ArrowLeft' && e.key !== 'ArrowRight') return;
+  showHint();
+  const scrollY = window.scrollY + 100;
+  let curIdx = 0;
+  for (let i = 0; i < SECTIONS.length; i++) {
+    const el = document.getElementById(SECTIONS[i]);
+    if (el && el.offsetTop <= scrollY) curIdx = i;
+  }
+  let nextIdx = curIdx + (e.key === 'ArrowRight' ? 1 : -1);
+  nextIdx = Math.max(0, Math.min(SECTIONS.length - 1, nextIdx));
+  const target = document.getElementById(SECTIONS[nextIdx]);
+  if (target) {
+    target.scrollIntoView({ behavior: 'smooth', block: 'start' });
+  }
+  e.preventDefault();
+});
+
+// Show hint on load
+setTimeout(showHint, 1500);
+
+// Initial calls
+updateProgress();
+updateActiveNav();
+</script>
+</body>
+</html>

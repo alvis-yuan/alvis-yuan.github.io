@@ -1,0 +1,2199 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Linux 嵌入式系统物理内存精确排查指南</title>
+<style>
+  :root {
+    --primary: #1a73e8;
+    --primary-dark: #1557b0;
+    --accent: #e8f0fe;
+    --bg: #f8f9fa;
+    --sidebar-bg: #1e2a3a;
+    --sidebar-text: #c9d4e0;
+    --sidebar-hover: #2d3f54;
+    --sidebar-active: #1a73e8;
+    --card-bg: #ffffff;
+    --border: #e0e7ef;
+    --text: #212529;
+    --text-muted: #6c757d;
+    --code-bg: #1e2a3a;
+    --code-text: #a8d8a8;
+    --warn: #fff3cd;
+    --warn-border: #ffc107;
+    --tip: #d1ecf1;
+    --tip-border: #17a2b8;
+    --success: #d4edda;
+    --success-border: #28a745;
+    --sidebar-w: 270px;
+    --progress-h: 4px;
+    --header-h: 56px;
+  }
+
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+
+  html { scroll-behavior: smooth; }
+
+  body {
+    font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', 'PingFang SC', 'Microsoft YaHei', sans-serif;
+    background: var(--bg);
+    color: var(--text);
+    line-height: 1.7;
+    overflow-x: hidden;
+  }
+
+  /* ── Progress bar ── */
+  #progress-bar {
+    position: fixed;
+    top: 0; left: 0;
+    height: var(--progress-h);
+    width: 0%;
+    background: linear-gradient(90deg, #1a73e8, #34a853);
+    z-index: 9999;
+    transition: width .1s linear;
+    border-radius: 0 2px 2px 0;
+  }
+
+  /* ── Top header ── */
+  #topbar {
+    position: fixed;
+    top: var(--progress-h); left: 0; right: 0;
+    height: var(--header-h);
+    background: var(--sidebar-bg);
+    display: flex;
+    align-items: center;
+    padding: 0 16px;
+    z-index: 1000;
+    box-shadow: 0 2px 8px rgba(0,0,0,.3);
+    gap: 12px;
+  }
+
+  #hamburger {
+    display: none;
+    background: none;
+    border: none;
+    cursor: pointer;
+    padding: 6px;
+    color: white;
+    font-size: 22px;
+    line-height: 1;
+  }
+
+  #topbar-title {
+    color: white;
+    font-size: 15px;
+    font-weight: 600;
+    flex: 1;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+  }
+
+  #topbar-nav {
+    display: flex;
+    gap: 8px;
+  }
+
+  #topbar-nav button {
+    background: rgba(255,255,255,.12);
+    border: none;
+    color: white;
+    padding: 5px 12px;
+    border-radius: 16px;
+    cursor: pointer;
+    font-size: 13px;
+    transition: background .2s;
+  }
+  #topbar-nav button:hover { background: rgba(255,255,255,.22); }
+
+  /* ── Sidebar ── */
+  #sidebar {
+    position: fixed;
+    top: calc(var(--progress-h) + var(--header-h));
+    left: 0;
+    width: var(--sidebar-w);
+    height: calc(100vh - var(--progress-h) - var(--header-h));
+    background: var(--sidebar-bg);
+    overflow-y: auto;
+    z-index: 900;
+    transition: transform .3s ease;
+    scrollbar-width: thin;
+    scrollbar-color: #3d5166 transparent;
+  }
+  #sidebar::-webkit-scrollbar { width: 4px; }
+  #sidebar::-webkit-scrollbar-track { background: transparent; }
+  #sidebar::-webkit-scrollbar-thumb { background: #3d5166; border-radius: 2px; }
+
+  #sidebar-overlay {
+    display: none;
+    position: fixed;
+    inset: 0;
+    background: rgba(0,0,0,.5);
+    z-index: 850;
+  }
+
+  .nav-group { border-bottom: 1px solid #2d3f54; }
+
+  .nav-group-header {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    padding: 10px 16px 10px 14px;
+    color: #7fa8cc;
+    font-size: 11px;
+    font-weight: 700;
+    text-transform: uppercase;
+    letter-spacing: .08em;
+    cursor: pointer;
+    user-select: none;
+    transition: background .15s;
+  }
+  .nav-group-header:hover { background: var(--sidebar-hover); }
+  .nav-arrow { transition: transform .25s; font-size: 10px; }
+  .nav-group.collapsed .nav-arrow { transform: rotate(-90deg); }
+  .nav-group-items { overflow: hidden; transition: max-height .3s ease; }
+  .nav-group.collapsed .nav-group-items { max-height: 0 !important; }
+
+  .nav-item {
+    display: block;
+    padding: 8px 14px 8px 24px;
+    color: var(--sidebar-text);
+    text-decoration: none;
+    font-size: 13px;
+    transition: background .15s, color .15s;
+    border-left: 3px solid transparent;
+    line-height: 1.4;
+  }
+  .nav-item:hover { background: var(--sidebar-hover); color: white; }
+  .nav-item.active {
+    background: rgba(26,115,232,.18);
+    border-left-color: var(--sidebar-active);
+    color: #80b3f8;
+    font-weight: 600;
+  }
+
+  /* ── Main content ── */
+  #main {
+    margin-left: var(--sidebar-w);
+    margin-top: calc(var(--progress-h) + var(--header-h));
+    padding: 32px 24px 80px;
+    max-width: 920px;
+    min-height: 100vh;
+  }
+
+  .chapter {
+    margin-bottom: 60px;
+    scroll-margin-top: calc(var(--header-h) + var(--progress-h) + 16px);
+  }
+
+  .chapter-title {
+    font-size: 26px;
+    font-weight: 700;
+    color: #1a2d45;
+    margin-bottom: 8px;
+    padding-bottom: 12px;
+    border-bottom: 3px solid var(--primary);
+    display: flex;
+    align-items: center;
+    gap: 12px;
+  }
+  .chapter-num {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    width: 36px; height: 36px;
+    background: var(--primary);
+    color: white;
+    border-radius: 8px;
+    font-size: 16px;
+    font-weight: 700;
+    flex-shrink: 0;
+  }
+
+  .section-title {
+    font-size: 18px;
+    font-weight: 700;
+    color: #1e3a5f;
+    margin: 28px 0 12px;
+    display: flex;
+    align-items: center;
+    gap: 8px;
+  }
+  .section-title::before {
+    content: '';
+    display: inline-block;
+    width: 4px; height: 18px;
+    background: var(--primary);
+    border-radius: 2px;
+    flex-shrink: 0;
+  }
+
+  .subsection-title {
+    font-size: 15px;
+    font-weight: 700;
+    color: #2d4f6e;
+    margin: 18px 0 8px;
+  }
+
+  p { margin-bottom: 12px; }
+
+  /* ── Cards & boxes ── */
+  .card {
+    background: var(--card-bg);
+    border: 1px solid var(--border);
+    border-radius: 10px;
+    padding: 20px;
+    margin: 16px 0;
+    box-shadow: 0 1px 4px rgba(0,0,0,.06);
+  }
+
+  .info-box {
+    border-radius: 8px;
+    padding: 14px 16px;
+    margin: 14px 0;
+    border-left: 4px solid;
+    font-size: 14px;
+  }
+  .info-box.tip { background: var(--tip); border-color: var(--tip-border); }
+  .info-box.warn { background: var(--warn); border-color: var(--warn-border); }
+  .info-box.success { background: var(--success); border-color: var(--success-border); }
+  .info-box.note { background: #f0f4ff; border-color: var(--primary); }
+
+  .info-box strong { display: block; margin-bottom: 4px; }
+
+  /* ── Code blocks ── */
+  pre {
+    background: var(--code-bg);
+    color: var(--code-text);
+    border-radius: 8px;
+    padding: 16px;
+    overflow-x: auto;
+    font-size: 13px;
+    line-height: 1.6;
+    margin: 12px 0;
+    border: 1px solid #2d3f54;
+    max-width: 100%;
+    white-space: pre-wrap;
+    word-break: break-all;
+  }
+  code {
+    background: #e8eef7;
+    color: #c0392b;
+    padding: 1px 5px;
+    border-radius: 4px;
+    font-size: .88em;
+    font-family: 'SFMono-Regular', Consolas, 'Liberation Mono', Menlo, monospace;
+  }
+  pre code {
+    background: none;
+    color: inherit;
+    padding: 0;
+    font-size: inherit;
+    border-radius: 0;
+  }
+  .comment { color: #7fa8cc; }
+  .cmd { color: #f9ca74; }
+  .val { color: #a8d8a8; }
+  .kw { color: #c792ea; }
+  .string { color: #f78c6c; }
+
+  /* ── Tables ── */
+  .table-wrap { overflow-x: auto; margin: 14px 0; }
+  table {
+    border-collapse: collapse;
+    width: 100%;
+    font-size: 13.5px;
+    background: var(--card-bg);
+    border-radius: 8px;
+    overflow: hidden;
+    border: 1px solid var(--border);
+  }
+  th {
+    background: #1e2a3a;
+    color: #c9d4e0;
+    padding: 10px 14px;
+    text-align: left;
+    font-weight: 600;
+    font-size: 13px;
+  }
+  td { padding: 9px 14px; border-bottom: 1px solid #eef2f7; vertical-align: top; }
+  tr:last-child td { border-bottom: none; }
+  tr:nth-child(even) td { background: #f7f9fc; }
+  tr:hover td { background: #eef4ff; }
+
+  /* ── SVG diagrams ── */
+  .diagram-wrap {
+    background: var(--card-bg);
+    border: 1px solid var(--border);
+    border-radius: 10px;
+    padding: 16px;
+    margin: 16px 0;
+    overflow-x: auto;
+    text-align: center;
+  }
+  .diagram-wrap svg { max-width: 100%; height: auto; }
+  .diagram-caption {
+    font-size: 13px;
+    color: var(--text-muted);
+    margin-top: 8px;
+    text-align: center;
+  }
+
+  /* ── Summary box ── */
+  .summary-box {
+    background: linear-gradient(135deg, #1e2a3a 0%, #1a3a5c 100%);
+    color: #c9d4e0;
+    border-radius: 10px;
+    padding: 20px 24px;
+    margin-top: 28px;
+    border: 1px solid #2d4f6e;
+  }
+  .summary-box h4 {
+    color: #80b3f8;
+    font-size: 15px;
+    margin-bottom: 12px;
+    display: flex;
+    align-items: center;
+    gap: 8px;
+  }
+  .summary-box ul { padding-left: 18px; }
+  .summary-box li { margin-bottom: 6px; font-size: 14px; line-height: 1.5; }
+
+  /* ── Badges ── */
+  .badge {
+    display: inline-block;
+    padding: 2px 8px;
+    border-radius: 10px;
+    font-size: 11px;
+    font-weight: 600;
+    vertical-align: middle;
+    margin-left: 6px;
+  }
+  .badge-blue { background: #dbeafe; color: #1d4ed8; }
+  .badge-green { background: #d1fae5; color: #065f46; }
+  .badge-red { background: #fee2e2; color: #991b1b; }
+  .badge-yellow { background: #fef3c7; color: #92400e; }
+
+  /* ── Source link ── */
+  .src-link {
+    display: inline-flex;
+    align-items: center;
+    gap: 4px;
+    font-size: 12px;
+    color: var(--primary);
+    text-decoration: none;
+    background: var(--accent);
+    padding: 2px 8px;
+    border-radius: 10px;
+    margin-left: 8px;
+    vertical-align: middle;
+    border: 1px solid #c5d8f8;
+    transition: background .15s;
+  }
+  .src-link:hover { background: #d2e3fc; }
+
+  /* ── Principle box ── */
+  .principle-box {
+    background: linear-gradient(135deg, #fff8e1 0%, #fffbf0 100%);
+    border: 1px solid #f9ca74;
+    border-radius: 8px;
+    padding: 16px 18px;
+    margin: 14px 0;
+    font-size: 14px;
+  }
+  .principle-box h5 {
+    color: #92400e;
+    font-size: 13px;
+    font-weight: 700;
+    margin-bottom: 6px;
+    letter-spacing: .04em;
+  }
+
+  /* ── Command reference ── */
+  .cmd-ref {
+    background: #f8fafc;
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    overflow: hidden;
+    margin: 14px 0;
+  }
+  .cmd-ref-header {
+    background: #2d3f54;
+    color: #c9d4e0;
+    padding: 8px 14px;
+    font-size: 12px;
+    font-weight: 600;
+    letter-spacing: .05em;
+    display: flex;
+    align-items: center;
+    gap: 8px;
+  }
+  .cmd-ref-body {
+    padding: 14px;
+  }
+  .cmd-row {
+    display: flex;
+    gap: 12px;
+    align-items: flex-start;
+    padding: 6px 0;
+    border-bottom: 1px solid #f0f4f8;
+    font-size: 13px;
+  }
+  .cmd-row:last-child { border-bottom: none; }
+  .cmd-code { flex-shrink: 0; min-width: 180px; max-width: 240px; }
+  .cmd-desc { color: var(--text-muted); flex: 1; }
+
+  /* ── Responsive ── */
+  @media (max-width: 768px) {
+    #hamburger { display: flex; }
+    #sidebar { transform: translateX(-100%); }
+    #sidebar.open { transform: translateX(0); }
+    #sidebar-overlay.open { display: block; }
+    #main { margin-left: 0; padding: 20px 16px 80px; }
+    #topbar-nav { display: none; }
+    .chapter-title { font-size: 21px; }
+    .section-title { font-size: 16px; }
+    .cmd-row { flex-direction: column; gap: 4px; }
+    .cmd-code { min-width: unset; max-width: unset; }
+  }
+
+  @media (max-width: 480px) {
+    #main { padding: 14px 12px 80px; }
+    pre { font-size: 12px; padding: 12px; }
+    table { font-size: 12px; }
+    th, td { padding: 7px 10px; }
+  }
+
+  /* ── Utility ── */
+  .flex-gap { display: flex; gap: 12px; flex-wrap: wrap; margin: 12px 0; }
+  .metric-card {
+    flex: 1 1 160px;
+    background: var(--card-bg);
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    padding: 14px;
+    text-align: center;
+    box-shadow: 0 1px 3px rgba(0,0,0,.05);
+  }
+  .metric-card .val { font-size: 22px; font-weight: 700; color: var(--primary); display: block; }
+  .metric-card .lbl { font-size: 12px; color: var(--text-muted); margin-top: 4px; }
+
+  hr.section-sep { border: none; border-top: 1px solid var(--border); margin: 24px 0; }
+</style>
+</head>
+<body>
+
+<div id="progress-bar"></div>
+
+<!-- Top bar -->
+<header id="topbar">
+  <button id="hamburger" onclick="toggleSidebar()" aria-label="菜单">☰</button>
+  <div id="topbar-title">Linux 嵌入式系统物理内存精确排查指南</div>
+  <div id="topbar-nav">
+    <button onclick="prevChapter()">← 上一章</button>
+    <button onclick="nextChapter()">下一章 →</button>
+  </div>
+</header>
+
+<!-- Sidebar overlay -->
+<div id="sidebar-overlay" onclick="closeSidebar()"></div>
+
+<!-- Sidebar navigation -->
+<nav id="sidebar">
+  <div class="nav-group" id="grp0">
+    <div class="nav-group-header" onclick="toggleGroup('grp0')">
+      <span>📖 概述</span>
+      <span class="nav-arrow">▼</span>
+    </div>
+    <div class="nav-group-items">
+      <a class="nav-item" href="#ch0" onclick="closeSidebar()">内存排查全景图</a>
+    </div>
+  </div>
+  <div class="nav-group" id="grp1">
+    <div class="nav-group-header" onclick="toggleGroup('grp1')">
+      <span>🗂 第一章</span>
+      <span class="nav-arrow">▼</span>
+    </div>
+    <div class="nav-group-items">
+      <a class="nav-item" href="#ch1" onclick="closeSidebar()">第一章：物理内存整体概况</a>
+      <a class="nav-item" href="#ch1-meminfo" onclick="closeSidebar()">1.1 /proc/meminfo 解读</a>
+      <a class="nav-item" href="#ch1-zones" onclick="closeSidebar()">1.2 内存区域（Zones）</a>
+      <a class="nav-item" href="#ch1-summary" onclick="closeSidebar()">1.3 章节总结</a>
+    </div>
+  </div>
+  <div class="nav-group" id="grp2">
+    <div class="nav-group-header" onclick="toggleGroup('grp2')">
+      <span>👤 第二章</span>
+      <span class="nav-arrow">▼</span>
+    </div>
+    <div class="nav-group-items">
+      <a class="nav-item" href="#ch2" onclick="closeSidebar()">第二章：用户进程内存分析</a>
+      <a class="nav-item" href="#ch2-smaps" onclick="closeSidebar()">2.1 smaps / smaps_rollup</a>
+      <a class="nav-item" href="#ch2-status" onclick="closeSidebar()">2.2 /proc/PID/status</a>
+      <a class="nav-item" href="#ch2-pagemap" onclick="closeSidebar()">2.3 pagemap 页级统计</a>
+      <a class="nav-item" href="#ch2-summary" onclick="closeSidebar()">2.4 章节总结</a>
+    </div>
+  </div>
+  <div class="nav-group" id="grp3">
+    <div class="nav-group-header" onclick="toggleGroup('grp3')">
+      <span>🔩 第三章</span>
+      <span class="nav-arrow">▼</span>
+    </div>
+    <div class="nav-group-items">
+      <a class="nav-item" href="#ch3" onclick="closeSidebar()">第三章：内核内存细分排查</a>
+      <a class="nav-item" href="#ch3-slab" onclick="closeSidebar()">3.1 Slab 分配器</a>
+      <a class="nav-item" href="#ch3-vmalloc" onclick="closeSidebar()">3.2 Vmalloc 空间</a>
+      <a class="nav-item" href="#ch3-pt" onclick="closeSidebar()">3.3 页表 / 内核栈</a>
+      <a class="nav-item" href="#ch3-buddy" onclick="closeSidebar()">3.4 Buddy 分配器</a>
+      <a class="nav-item" href="#ch3-summary" onclick="closeSidebar()">3.5 章节总结</a>
+    </div>
+  </div>
+  <div class="nav-group" id="grp4">
+    <div class="nav-group-header" onclick="toggleGroup('grp4')">
+      <span>📡 第四章</span>
+      <span class="nav-arrow">▼</span>
+    </div>
+    <div class="nav-group-items">
+      <a class="nav-item" href="#ch4" onclick="closeSidebar()">第四章：特殊机制内存</a>
+      <a class="nav-item" href="#ch4-cma" onclick="closeSidebar()">4.1 CMA 连续内存</a>
+      <a class="nav-item" href="#ch4-huge" onclick="closeSidebar()">4.2 大页（HugeTLB/THP）</a>
+      <a class="nav-item" href="#ch4-percpu" onclick="closeSidebar()">4.3 Per-CPU / 保留内存</a>
+      <a class="nav-item" href="#ch4-summary" onclick="closeSidebar()">4.4 章节总结</a>
+    </div>
+  </div>
+  <div class="nav-group" id="grp5">
+    <div class="nav-group-header" onclick="toggleGroup('grp5')">
+      <span>🧩 第五章</span>
+      <span class="nav-arrow">▼</span>
+    </div>
+    <div class="nav-group-items">
+      <a class="nav-item" href="#ch5" onclick="closeSidebar()">第五章：内存碎片化分析</a>
+      <a class="nav-item" href="#ch5-buddy" onclick="closeSidebar()">5.1 buddyinfo 解读</a>
+      <a class="nav-item" href="#ch5-pagetype" onclick="closeSidebar()">5.2 pagetypeinfo</a>
+      <a class="nav-item" href="#ch5-summary" onclick="closeSidebar()">5.3 章节总结</a>
+    </div>
+  </div>
+  <div class="nav-group" id="grp6">
+    <div class="nav-group-header" onclick="toggleGroup('grp6')">
+      <span>🔬 第六章</span>
+      <span class="nav-arrow">▼</span>
+    </div>
+    <div class="nav-group-items">
+      <a class="nav-item" href="#ch6" onclick="closeSidebar()">第六章：高级分析工具</a>
+      <a class="nav-item" href="#ch6-allocinfo" onclick="closeSidebar()">6.1 allocinfo 分配溯源</a>
+      <a class="nav-item" href="#ch6-memtrack" onclick="closeSidebar()">6.2 内存压力追踪</a>
+      <a class="nav-item" href="#ch6-workflow" onclick="closeSidebar()">6.3 综合排查流程</a>
+      <a class="nav-item" href="#ch6-summary" onclick="closeSidebar()">6.4 章节总结</a>
+    </div>
+  </div>
+</nav>
+
+<!-- Main content -->
+<main id="main">
+
+<!-- ══════════════════════════════════════════════════════════════
+     Chapter 0 — Overview
+═══════════════════════════════════════════════════════════════ -->
+<section class="chapter" id="ch0">
+  <h1 class="chapter-title">
+    <span class="chapter-num">0</span>
+    Linux 嵌入式物理内存排查全景图
+  </h1>
+
+  <p>
+    在嵌入式 Linux 系统中，物理内存（RAM）是最宝贵的系统资源。不同于桌面系统可以依赖大量 swap 空间，嵌入式设备往往只有几十 MB 至数百 MB 物理内存，且无 swap。
+    一旦物理内存耗尽，OOM Killer 便会介入，强制杀死进程。因此，精确掌握物理内存的各类分配情况，是嵌入式开发与调试的必备技能。
+  </p>
+
+  <!-- Architecture SVG diagram -->
+  <div class="diagram-wrap">
+    <svg viewBox="0 0 780 420" xmlns="http://www.w3.org/2000/svg" style="width:100%;max-width:780px">
+      <defs>
+        <linearGradient id="gKernel" x1="0" y1="0" x2="1" y2="0">
+          <stop offset="0%" stop-color="#1a73e8" stop-opacity=".9"/>
+          <stop offset="100%" stop-color="#1557b0" stop-opacity=".9"/>
+        </linearGradient>
+        <linearGradient id="gUser" x1="0" y1="0" x2="1" y2="0">
+          <stop offset="0%" stop-color="#34a853" stop-opacity=".85"/>
+          <stop offset="100%" stop-color="#1e7e34" stop-opacity=".85"/>
+        </linearGradient>
+        <linearGradient id="gFree" x1="0" y1="0" x2="1" y2="0">
+          <stop offset="0%" stop-color="#adb5bd" stop-opacity=".6"/>
+          <stop offset="100%" stop-color="#868e96" stop-opacity=".6"/>
+        </linearGradient>
+        <linearGradient id="gCache" x1="0" y1="0" x2="1" y2="0">
+          <stop offset="0%" stop-color="#f9ca74" stop-opacity=".9"/>
+          <stop offset="100%" stop-color="#e6a817" stop-opacity=".9"/>
+        </linearGradient>
+      </defs>
+
+      <!-- Title -->
+      <text x="390" y="24" text-anchor="middle" font-size="14" font-weight="bold" fill="#1e2a3a">Linux 物理内存分配全景（示意）</text>
+
+      <!-- Physical RAM bar -->
+      <rect x="30" y="44" width="720" height="56" rx="6" fill="#e9ecef" stroke="#dee2e6" stroke-width="1"/>
+
+      <!-- Kernel: ~15% -->
+      <rect x="30" y="44" width="108" height="56" rx="6" fill="url(#gKernel)"/>
+      <text x="84" y="68" text-anchor="middle" font-size="12" fill="white" font-weight="bold">内核占用</text>
+      <text x="84" y="84" text-anchor="middle" font-size="11" fill="#c5d8f8">code+slab+pt+stack</text>
+
+      <!-- User processes: ~35% -->
+      <rect x="138" y="44" width="252" height="56" fill="url(#gUser)"/>
+      <text x="264" y="68" text-anchor="middle" font-size="12" fill="white" font-weight="bold">用户进程（AnonPages + Mapped）</text>
+      <text x="264" y="84" text-anchor="middle" font-size="11" fill="#b8f0c8">堆 / 栈 / mmap / 共享库</text>
+
+      <!-- Cache/buffers: ~30% -->
+      <rect x="390" y="44" width="216" height="56" fill="url(#gCache)"/>
+      <text x="498" y="68" text-anchor="middle" font-size="12" fill="#1e2a3a" font-weight="bold">Page Cache + Buffers</text>
+      <text x="498" y="84" text-anchor="middle" font-size="11" fill="#5c3d00">可被内核回收</text>
+
+      <!-- Free: ~20% -->
+      <rect x="606" y="44" width="144" height="56" rx="6" fill="url(#gFree)"/>
+      <text x="678" y="68" text-anchor="middle" font-size="12" fill="#343a40" font-weight="bold">MemFree</text>
+      <text x="678" y="84" text-anchor="middle" font-size="11" fill="#495057">完全空闲</text>
+
+      <!-- Section labels below -->
+      <text x="84" y="120" text-anchor="middle" font-size="11" fill="#1a73e8">▼ 第3章</text>
+      <text x="264" y="120" text-anchor="middle" font-size="11" fill="#34a853">▼ 第2章</text>
+      <text x="498" y="120" text-anchor="middle" font-size="11" fill="#e6a817">▼ 第1/5章</text>
+      <text x="678" y="120" text-anchor="middle" font-size="11" fill="#6c757d">▼ 第1章</text>
+
+      <!-- Drill-down lines from "内核占用" -->
+      <line x1="84" y1="132" x2="84" y2="152" stroke="#1a73e8" stroke-width="1.5" stroke-dasharray="4"/>
+      <line x1="84" y1="152" x2="30" y2="152" stroke="#1a73e8" stroke-width="1" stroke-dasharray="4"/>
+      <line x1="84" y1="152" x2="138" y2="152" stroke="#1a73e8" stroke-width="1" stroke-dasharray="4"/>
+
+      <!-- Kernel breakdown row -->
+      <rect x="20" y="158" width="68" height="40" rx="5" fill="#dbeafe" stroke="#93c5fd" stroke-width="1"/>
+      <text x="54" y="174" text-anchor="middle" font-size="11" fill="#1d4ed8" font-weight="bold">Slab</text>
+      <text x="54" y="187" text-anchor="middle" font-size="10" fill="#1d4ed8">数据结构缓存</text>
+
+      <rect x="94" y="158" width="68" height="40" rx="5" fill="#dbeafe" stroke="#93c5fd" stroke-width="1"/>
+      <text x="128" y="174" text-anchor="middle" font-size="11" fill="#1d4ed8" font-weight="bold">PageTables</text>
+      <text x="128" y="187" text-anchor="middle" font-size="10" fill="#1d4ed8">页表占用</text>
+
+      <rect x="168" y="158" width="68" height="40" rx="5" fill="#dbeafe" stroke="#93c5fd" stroke-width="1"/>
+      <text x="202" y="174" text-anchor="middle" font-size="11" fill="#1d4ed8" font-weight="bold">KernelStack</text>
+      <text x="202" y="187" text-anchor="middle" font-size="10" fill="#1d4ed8">内核线程栈</text>
+
+      <rect x="242" y="158" width="60" height="40" rx="5" fill="#dbeafe" stroke="#93c5fd" stroke-width="1"/>
+      <text x="272" y="174" text-anchor="middle" font-size="11" fill="#1d4ed8" font-weight="bold">Vmalloc</text>
+      <text x="272" y="187" text-anchor="middle" font-size="10" fill="#1d4ed8">模块/ioremap</text>
+
+      <rect x="308" y="158" width="60" height="40" rx="5" fill="#dbeafe" stroke="#93c5fd" stroke-width="1"/>
+      <text x="338" y="174" text-anchor="middle" font-size="11" fill="#1d4ed8" font-weight="bold">Percpu</text>
+      <text x="338" y="187" text-anchor="middle" font-size="10" fill="#1d4ed8">per-cpu数据</text>
+
+      <!-- User process breakdown -->
+      <line x1="264" y1="132" x2="264" y2="152" stroke="#34a853" stroke-width="1.5" stroke-dasharray="4"/>
+      <line x1="264" y1="152" x2="170" y2="152" stroke="#34a853" stroke-width="1" stroke-dasharray="4"/>
+      <line x1="264" y1="152" x2="370" y2="152" stroke="#34a853" stroke-width="1" stroke-dasharray="4"/>
+
+      <rect x="396" y="158" width="64" height="40" rx="5" fill="#d1fae5" stroke="#6ee7b7" stroke-width="1"/>
+      <text x="428" y="174" text-anchor="middle" font-size="11" fill="#065f46" font-weight="bold">AnonPages</text>
+      <text x="428" y="187" text-anchor="middle" font-size="10" fill="#065f46">堆/栈/anon</text>
+
+      <rect x="466" y="158" width="64" height="40" rx="5" fill="#d1fae5" stroke="#6ee7b7" stroke-width="1"/>
+      <text x="498" y="174" text-anchor="middle" font-size="11" fill="#065f46" font-weight="bold">Mapped</text>
+      <text x="498" y="187" text-anchor="middle" font-size="10" fill="#065f46">共享库/mmap</text>
+
+      <rect x="536" y="158" width="64" height="40" rx="5" fill="#d1fae5" stroke="#6ee7b7" stroke-width="1"/>
+      <text x="568" y="174" text-anchor="middle" font-size="11" fill="#065f46" font-weight="bold">Shmem</text>
+      <text x="568" y="187" text-anchor="middle" font-size="10" fill="#065f46">共享内存</text>
+
+      <rect x="606" y="158" width="64" height="40" rx="5" fill="#d1fae5" stroke="#6ee7b7" stroke-width="1"/>
+      <text x="638" y="174" text-anchor="middle" font-size="11" fill="#065f46" font-weight="bold">Unevictable</text>
+      <text x="638" y="187" text-anchor="middle" font-size="10" fill="#065f46">mlock页</text>
+
+      <rect x="676" y="158" width="64" height="40" rx="5" fill="#d1fae5" stroke="#6ee7b7" stroke-width="1"/>
+      <text x="708" y="174" text-anchor="middle" font-size="11" fill="#065f46" font-weight="bold">HugeTLB</text>
+      <text x="708" y="187" text-anchor="middle" font-size="10" fill="#065f46">大页内存</text>
+
+      <!-- Probe tools section -->
+      <text x="390" y="226" text-anchor="middle" font-size="13" font-weight="bold" fill="#495057">主要探测工具</text>
+
+      <!-- Tool boxes row 1 -->
+      <rect x="20" y="238" width="120" height="36" rx="5" fill="#1e2a3a"/>
+      <text x="80" y="253" text-anchor="middle" font-size="11" fill="#a8d8a8" font-family="monospace">/proc/meminfo</text>
+      <text x="80" y="267" text-anchor="middle" font-size="10" fill="#7fa8cc">全局内存概况</text>
+
+      <rect x="148" y="238" width="120" height="36" rx="5" fill="#1e2a3a"/>
+      <text x="208" y="253" text-anchor="middle" font-size="11" fill="#a8d8a8" font-family="monospace">/proc/PID/smaps</text>
+      <text x="208" y="267" text-anchor="middle" font-size="10" fill="#7fa8cc">进程内存映射</text>
+
+      <rect x="276" y="238" width="120" height="36" rx="5" fill="#1e2a3a"/>
+      <text x="336" y="253" text-anchor="middle" font-size="11" fill="#a8d8a8" font-family="monospace">/proc/slabinfo</text>
+      <text x="336" y="267" text-anchor="middle" font-size="10" fill="#7fa8cc">Slab缓存统计</text>
+
+      <rect x="404" y="238" width="120" height="36" rx="5" fill="#1e2a3a"/>
+      <text x="464" y="253" text-anchor="middle" font-size="11" fill="#a8d8a8" font-family="monospace">/proc/vmallocinfo</text>
+      <text x="464" y="267" text-anchor="middle" font-size="10" fill="#7fa8cc">vmalloc区域</text>
+
+      <rect x="532" y="238" width="120" height="36" rx="5" fill="#1e2a3a"/>
+      <text x="592" y="253" text-anchor="middle" font-size="11" fill="#a8d8a8" font-family="monospace">/proc/buddyinfo</text>
+      <text x="592" y="267" text-anchor="middle" font-size="10" fill="#7fa8cc">伙伴系统空闲页</text>
+
+      <rect x="660" y="238" width="100" height="36" rx="5" fill="#1e2a3a"/>
+      <text x="710" y="253" text-anchor="middle" font-size="11" fill="#a8d8a8" font-family="monospace">/proc/allocinfo</text>
+      <text x="710" y="267" text-anchor="middle" font-size="10" fill="#7fa8cc">分配溯源(新)</text>
+
+      <!-- MemTotal equation at bottom -->
+      <rect x="20" y="296" width="740" height="112" rx="8" fill="#f0f4ff" stroke="#c5d8f8" stroke-width="1"/>
+      <text x="390" y="318" text-anchor="middle" font-size="12" font-weight="bold" fill="#1e3a5f">MemTotal ≈ MemFree + Active + Inactive + Unevictable + Slab + KernelStack + PageTables + HugeTLB + ...</text>
+      <text x="390" y="340" text-anchor="middle" font-size="12" fill="#495057">用户空间已用 ≈ AnonPages + Mapped（包含部分重叠）</text>
+      <text x="390" y="362" text-anchor="middle" font-size="12" fill="#495057">内核直接占用 ≈ Slab（SReclaimable + SUnreclaim）+ KernelStack + PageTables + Percpu + Vmalloc backing</text>
+      <text x="390" y="384" text-anchor="middle" font-size="11" fill="#6c757d">※ 各计数器存在设计上的重叠，不同来源数据须交叉核对；详见各章节说明</text>
+      <text x="390" y="400" text-anchor="middle" font-size="11" fill="#1a73e8">来源：kernel.org/doc/html/latest/filesystems/proc.html | man7.org/linux/man-pages/man5/proc_meminfo.5.html</text>
+    </svg>
+    <div class="diagram-caption">图 0-1：Linux 物理内存分配全景示意图（各部分比例仅为示意）</div>
+  </div>
+
+  <div class="info-box note">
+    <strong>⚠️ 重要说明</strong>
+    Linux 内核各 /proc 计数器之间<strong>存在设计上的重叠与不精确性</strong>。
+    如 <code>Shmem</code> 是 <code>Cached</code> 的子集；<code>Mapped</code> 同时涵盖 Page Cache 和 AnonPages 中的部分页面；<code>meminfo_proc_show()</code> 在没有全局锁的情况下读取各子系统计数器，存在竞争窗口。
+    使用时须结合多个接口交叉验证，而非直接求和。
+    <br><br>来源：<a class="src-link" href="https://www.kernel.org/doc/html/latest/filesystems/proc.html" target="_blank">kernel.org proc 文档</a>
+    <a class="src-link" href="https://www.man7.org/linux/man-pages/man5/proc_meminfo.5.html" target="_blank">man7 proc_meminfo(5)</a>
+  </div>
+</section>
+
+<!-- ══════════════════════════════════════════════════════════════
+     Chapter 1 — /proc/meminfo global overview
+═══════════════════════════════════════════════════════════════ -->
+<section class="chapter" id="ch1">
+  <h2 class="chapter-title">
+    <span class="chapter-num">1</span>
+    物理内存整体概况
+  </h2>
+
+  <p>
+    在排查内存问题的第一步，应先通过 <code>/proc/meminfo</code> 获得整个系统内存使用的全局快照。
+    这是 Linux 内核最权威的内存统计接口，由内核函数 <code>meminfo_proc_show()</code>（位于 <code>fs/proc/meminfo.c</code>）生成。
+  </p>
+
+  <div id="ch1-meminfo">
+  <h3 class="section-title">1.1 /proc/meminfo 字段完整解读</h3>
+
+  <p>以下字段定义均来自官方 Linux man-pages（man7.org）和 kernel.org proc 文档。</p>
+
+  <div class="cmd-ref">
+    <div class="cmd-ref-header">
+      <span>🖥</span> 查看命令
+    </div>
+    <div class="cmd-ref-body">
+<pre><span class="cmd">cat /proc/meminfo</span>
+<span class="comment"># 或过滤关键字段</span>
+<span class="cmd">grep -E 'MemTotal|MemFree|MemAvailable|Slab|KernelStack|PageTables|AnonPages|Mapped|Shmem|Cached|Buffers' /proc/meminfo</span></pre>
+    </div>
+  </div>
+
+  <pre><span class="comment"># /proc/meminfo 典型输出（嵌入式设备 256MB RAM 示例）</span>
+<span class="val">MemTotal:         262144 kB</span>   <span class="comment"># 全部可用 RAM</span>
+<span class="val">MemFree:           18432 kB</span>   <span class="comment"># 完全空闲</span>
+<span class="val">MemAvailable:      89600 kB</span>   <span class="comment"># 实际可用（含可回收）</span>
+<span class="val">Buffers:            3072 kB</span>   <span class="comment"># 块设备原始块缓冲</span>
+<span class="val">Cached:            61440 kB</span>   <span class="comment"># 页缓存（不含 SwapCached）</span>
+<span class="val">SwapCached:            0 kB</span>
+<span class="val">Active:            72704 kB</span>
+<span class="val">Inactive:          51200 kB</span>
+<span class="val">Active(anon):      20480 kB</span>
+<span class="val">Inactive(anon):    16384 kB</span>
+<span class="val">Active(file):      52224 kB</span>
+<span class="val">Inactive(file):    34816 kB</span>
+<span class="val">Unevictable:        1024 kB</span>   <span class="comment"># mlocked，不可回收</span>
+<span class="val">Mlocked:            1024 kB</span>
+<span class="val">AnonPages:         36864 kB</span>   <span class="comment"># 用户匿名页（堆、栈等）</span>
+<span class="val">Mapped:            24576 kB</span>   <span class="comment"># mmap 映射（含共享库）</span>
+<span class="val">Shmem:              1024 kB</span>   <span class="comment"># tmpfs / SysV shm / POSIX shm</span>
+<span class="val">KReclaimable:      12288 kB</span>
+<span class="val">Slab:              22528 kB</span>   <span class="comment"># 内核数据结构缓存总计</span>
+<span class="val">SReclaimable:      12288 kB</span>   <span class="comment"># Slab 可回收部分</span>
+<span class="val">SUnreclaim:        10240 kB</span>   <span class="comment"># Slab 不可回收部分</span>
+<span class="val">KernelStack:        4096 kB</span>   <span class="comment"># 内核线程栈</span>
+<span class="val">PageTables:         2048 kB</span>   <span class="comment"># 最低级页表</span>
+<span class="val">Percpu:             1024 kB</span>   <span class="comment"># per-cpu 数据</span>
+<span class="val">VmallocTotal:  34359738367 kB</span> <span class="comment"># vmalloc 总虚拟地址空间</span>
+<span class="val">VmallocUsed:       20480 kB</span>   <span class="comment"># 已使用 vmalloc（Linux≥4.4 见 /proc/vmallocinfo）</span>
+<span class="val">CmaTotal:          32768 kB</span>   <span class="comment"># CMA 总量（CONFIG_CMA）</span>
+<span class="val">CmaFree:           20480 kB</span>   <span class="comment"># CMA 空闲</span></pre>
+
+  <div class="table-wrap">
+    <table>
+      <thead>
+        <tr>
+          <th>字段</th>
+          <th>含义（官方定义）</th>
+          <th>分类</th>
+          <th>来源</th>
+        </tr>
+      </thead>
+      <tbody>
+        <tr>
+          <td><code>MemTotal</code></td>
+          <td>全部可用 RAM（物理 RAM 减去固件保留区域和内核代码区）</td>
+          <td><span class="badge badge-blue">总量</span></td>
+          <td><a href="https://www.man7.org/linux/man-pages/man5/proc_meminfo.5.html" target="_blank">man7</a></td>
+        </tr>
+        <tr>
+          <td><code>MemFree</code></td>
+          <td>LowFree + HighFree 之和。完全空闲的页</td>
+          <td><span class="badge badge-green">空闲</span></td>
+          <td><a href="https://www.man7.org/linux/man-pages/man5/proc_meminfo.5.html" target="_blank">man7</a></td>
+        </tr>
+        <tr>
+          <td><code>MemAvailable</code></td>
+          <td>估算在不发生 swap 时可分配给新应用的内存（自 Linux 3.14 起）。算法：MemFree - totalreserve_pages + pagecache（部分）+ reclaimable_slab（部分）</td>
+          <td><span class="badge badge-green">可用</span></td>
+          <td><a href="https://www.man7.org/linux/man-pages/man5/proc_meminfo.5.html" target="_blank">man7</a></td>
+        </tr>
+        <tr>
+          <td><code>Buffers</code></td>
+          <td>块设备原始块的临时存储（通常不超过 20 MB）</td>
+          <td><span class="badge badge-yellow">缓存</span></td>
+          <td><a href="https://www.man7.org/linux/man-pages/man5/proc_meminfo.5.html" target="_blank">man7</a></td>
+        </tr>
+        <tr>
+          <td><code>Cached</code></td>
+          <td>磁盘文件的页缓存（Page Cache），不含 SwapCached</td>
+          <td><span class="badge badge-yellow">缓存</span></td>
+          <td><a href="https://www.man7.org/linux/man-pages/man5/proc_meminfo.5.html" target="_blank">man7</a></td>
+        </tr>
+        <tr>
+          <td><code>AnonPages</code></td>
+          <td>映射到用户空间页表的非文件型页（匿名页），包含进程堆、栈、private mmap</td>
+          <td><span class="badge badge-red">用户</span></td>
+          <td><a href="https://www.man7.org/linux/man-pages/man5/proc_meminfo.5.html" target="_blank">man7</a></td>
+        </tr>
+        <tr>
+          <td><code>Mapped</code></td>
+          <td>已 mmap(2) 映射进内存的文件（如共享库）</td>
+          <td><span class="badge badge-red">用户</span></td>
+          <td><a href="https://www.man7.org/linux/man-pages/man5/proc_meminfo.5.html" target="_blank">man7</a></td>
+        </tr>
+        <tr>
+          <td><code>Shmem</code></td>
+          <td>tmpfs、SysV/POSIX 共享内存、共享匿名 mmap 消耗的内存（自 Linux 2.6.32 起）</td>
+          <td><span class="badge badge-red">用户</span></td>
+          <td><a href="https://www.man7.org/linux/man-pages/man5/proc_meminfo.5.html" target="_blank">man7</a></td>
+        </tr>
+        <tr>
+          <td><code>Slab</code></td>
+          <td>内核数据结构缓存总量。详见 slabinfo(5)</td>
+          <td><span class="badge badge-blue">内核</span></td>
+          <td><a href="https://www.man7.org/linux/man-pages/man5/proc_meminfo.5.html" target="_blank">man7</a></td>
+        </tr>
+        <tr>
+          <td><code>SReclaimable</code></td>
+          <td>Slab 中可在内存压力下回收的部分（如 dentry cache、inode cache）</td>
+          <td><span class="badge badge-blue">内核</span></td>
+          <td><a href="https://www.man7.org/linux/man-pages/man5/proc_meminfo.5.html" target="_blank">man7</a></td>
+        </tr>
+        <tr>
+          <td><code>SUnreclaim</code></td>
+          <td>Slab 中内存压力下不可回收的部分</td>
+          <td><span class="badge badge-blue">内核</span></td>
+          <td><a href="https://www.man7.org/linux/man-pages/man5/proc_meminfo.5.html" target="_blank">man7</a></td>
+        </tr>
+        <tr>
+          <td><code>KernelStack</code></td>
+          <td>内核线程栈占用的内存（自 Linux 2.6.32 起）</td>
+          <td><span class="badge badge-blue">内核</span></td>
+          <td><a href="https://www.man7.org/linux/man-pages/man5/proc_meminfo.5.html" target="_blank">man7</a></td>
+        </tr>
+        <tr>
+          <td><code>PageTables</code></td>
+          <td>最低级页表所占内存（自 Linux 2.6.18 起）</td>
+          <td><span class="badge badge-blue">内核</span></td>
+          <td><a href="https://www.man7.org/linux/man-pages/man5/proc_meminfo.5.html" target="_blank">man7</a></td>
+        </tr>
+        <tr>
+          <td><code>KReclaimable</code></td>
+          <td>内核中可在压力下回收的分配（含 SReclaimable 及有 shrinker 的直接分配），自 Linux 4.20 起</td>
+          <td><span class="badge badge-blue">内核</span></td>
+          <td><a href="https://www.man7.org/linux/man-pages/man5/proc_meminfo.5.html" target="_blank">man7</a></td>
+        </tr>
+        <tr>
+          <td><code>Percpu</code></td>
+          <td>per-cpu 内存分配占用</td>
+          <td><span class="badge badge-blue">内核</span></td>
+          <td><a href="https://www.kernel.org/doc/html/latest/filesystems/proc.html" target="_blank">kernel.org</a></td>
+        </tr>
+        <tr>
+          <td><code>Unevictable</code></td>
+          <td>不可回收页（如 mlock 锁定的页），自 Linux 2.6.28 起</td>
+          <td><span class="badge badge-red">用户</span></td>
+          <td><a href="https://www.man7.org/linux/man-pages/man5/proc_meminfo.5.html" target="_blank">man7</a></td>
+        </tr>
+        <tr>
+          <td><code>CmaTotal / CmaFree</code></td>
+          <td>CMA（连续内存分配器）的总量/空闲量，需 CONFIG_CMA（自 Linux 3.1 起）</td>
+          <td><span class="badge badge-yellow">特殊</span></td>
+          <td><a href="https://www.man7.org/linux/man-pages/man5/proc_meminfo.5.html" target="_blank">man7</a></td>
+        </tr>
+        <tr>
+          <td><code>HugePages_Total/Free</code></td>
+          <td>大页池总量/空闲量，需 CONFIG_HUGETLB_PAGE</td>
+          <td><span class="badge badge-yellow">特殊</span></td>
+          <td><a href="https://www.man7.org/linux/man-pages/man5/proc_meminfo.5.html" target="_blank">man7</a></td>
+        </tr>
+        <tr>
+          <td><code>DirectMap4k/2M/1G</code></td>
+          <td>内核以 4k/2M/1G 页大小线性映射的 RAM 字节数（x86）</td>
+          <td><span class="badge badge-blue">内核</span></td>
+          <td><a href="https://www.man7.org/linux/man-pages/man5/proc_meminfo.5.html" target="_blank">man7</a></td>
+        </tr>
+      </tbody>
+    </table>
+  </div>
+
+  <div class="principle-box">
+    <h5>💡 MemAvailable 计算公式（kernel-internals.org 引自内核源码）</h5>
+    <pre style="background:#fff8e1;color:#5c3d00;border:none;padding:8px;margin:0;font-size:12px">MemAvailable ≈ (MemFree - totalreserve_pages)
+             + pagecache - min(pagecache/2, wmark_low)
+             + reclaimable_slab - min(reclaimable_slab/2, wmark_low)</pre>
+    <p style="margin-top:6px;font-size:13px;color:#6c757d">说明：min() 扣除可用缓存或低水位线的较小值，确保估算保守但不过于悲观。这比单纯用 MemFree + Cached 更准确，因为 Cached 包含不可释放的 shmem/tmpfs 页。</p>
+  </div>
+  </div>
+
+  <div id="ch1-zones">
+  <h3 class="section-title">1.2 内存区域（Zones）与物理布局</h3>
+
+  <p>
+    Linux 根据硬件的 DMA 能力及虚拟地址空间限制，将物理内存分为不同区域（Zone）。
+    来源：<a class="src-link" href="https://www.kernel.org/doc/html/latest/admin-guide/mm/concepts.html" target="_blank">kernel.org 内存管理概念文档</a>
+  </p>
+
+  <div class="diagram-wrap">
+    <svg viewBox="0 0 680 260" xmlns="http://www.w3.org/2000/svg" style="width:100%;max-width:680px">
+      <!-- Physical address bar -->
+      <text x="340" y="20" text-anchor="middle" font-size="13" font-weight="bold" fill="#1e2a3a">物理地址空间分区（ARM 32-bit 典型布局）</text>
+
+      <!-- Bars -->
+      <rect x="20" y="36" width="80" height="44" rx="4" fill="#fee2e2" stroke="#fca5a5"/>
+      <text x="60" y="56" text-anchor="middle" font-size="11" font-weight="bold" fill="#991b1b">ZONE_DMA</text>
+      <text x="60" y="70" text-anchor="middle" font-size="10" fill="#b91c1c">0–16 MB</text>
+      <text x="60" y="82" text-anchor="middle" font-size="10" fill="#b91c1c">DMA设备专用</text>
+
+      <rect x="104" y="36" width="200" height="44" rx="4" fill="#dbeafe" stroke="#93c5fd"/>
+      <text x="204" y="56" text-anchor="middle" font-size="11" font-weight="bold" fill="#1d4ed8">ZONE_NORMAL</text>
+      <text x="204" y="70" text-anchor="middle" font-size="10" fill="#1e40af">16 MB – 896 MB（32-bit）</text>
+      <text x="204" y="82" text-anchor="middle" font-size="10" fill="#1e40af">内核直接映射，Slab 从此分配</text>
+
+      <rect x="308" y="36" width="180" height="44" rx="4" fill="#d1fae5" stroke="#6ee7b7"/>
+      <text x="398" y="56" text-anchor="middle" font-size="11" font-weight="bold" fill="#065f46">ZONE_HIGHMEM</text>
+      <text x="398" y="70" text-anchor="middle" font-size="10" fill="#047857">&gt; 896 MB（32-bit 可选）</text>
+      <text x="398" y="82" text-anchor="middle" font-size="10" fill="#047857">用户空间/Page Cache 使用</text>
+
+      <rect x="492" y="36" width="100" height="44" rx="4" fill="#f3e8ff" stroke="#d8b4fe"/>
+      <text x="542" y="56" text-anchor="middle" font-size="11" font-weight="bold" fill="#6b21a8">ZONE_MOVABLE</text>
+      <text x="542" y="70" text-anchor="middle" font-size="10" fill="#7e22ce">可移动页区</text>
+      <text x="542" y="82" text-anchor="middle" font-size="10" fill="#7e22ce">支持内存碎片整理</text>
+
+      <rect x="596" y="36" width="64" height="44" rx="4" fill="#fef3c7" stroke="#fcd34d"/>
+      <text x="628" y="56" text-anchor="middle" font-size="11" font-weight="bold" fill="#92400e">Reserved</text>
+      <text x="628" y="70" text-anchor="middle" font-size="10" fill="#78350f">固件/内核</text>
+      <text x="628" y="82" text-anchor="middle" font-size="10" fill="#78350f">代码区</text>
+
+      <!-- Annotations -->
+      <text x="340" y="108" text-anchor="middle" font-size="11" fill="#495057">▸ 64-bit 系统无 ZONE_HIGHMEM，所有物理内存均可直接映射</text>
+      <text x="340" y="124" text-anchor="middle" font-size="11" fill="#495057">▸ 嵌入式 ARM 32-bit：若 RAM > 896 MB 才出现 HIGHMEM；多数嵌入式设备 RAM ≤ 512 MB，无 HIGHMEM</text>
+      <text x="340" y="140" text-anchor="middle" font-size="11" fill="#495057">▸ 内核直接映射区（lowmem）是 Slab、页表等内核数据结构的来源，耗尽将导致严重问题</text>
+
+      <!-- Zone查看命令 -->
+      <rect x="20" y="156" width="640" height="90" rx="6" fill="#1e2a3a"/>
+      <text x="34" y="176" font-size="11" fill="#7fa8cc" font-family="monospace"># 查看各 Zone 内存统计</text>
+      <text x="34" y="194" font-size="11" fill="#f9ca74" font-family="monospace">cat /proc/zoneinfo | grep -A 20 "zone "</text>
+      <text x="34" y="212" font-size="11" fill="#7fa8cc" font-family="monospace"># 简洁方式：查看各 zone 的 free、min、low、high 水位</text>
+      <text x="34" y="230" font-size="11" fill="#f9ca74" font-family="monospace">grep -E "zone|free|min|low|high|spanned|present" /proc/zoneinfo | head -60</text>
+    </svg>
+    <div class="diagram-caption">图 1-1：Linux 物理内存区域划分（以 32-bit ARM 为例）
+      <a class="src-link" href="https://www.kernel.org/doc/html/latest/admin-guide/mm/concepts.html" target="_blank">kernel.org</a>
+      <a class="src-link" href="https://docs.kernel.org/arch/arm/memory.html" target="_blank">ARM 内存布局</a>
+    </div>
+  </div>
+
+  <div class="info-box warn">
+    <strong>🔴 嵌入式关键告警</strong>
+    在 32-bit 嵌入式系统中，<code>ZONE_NORMAL</code>（lowmem）最大约 896 MB，Slab 分配器只能从此区域分配。
+    若系统 RAM 较小（如 256 MB），则内核数据结构（Slab）与用户进程（Mapped/AnonPages）共享这块空间，极易耗尽。
+    使用 <code>cat /proc/zoneinfo | grep -A5 'Normal'</code> 监控低内存区水位。
+  </div>
+  </div>
+
+  <div id="ch1-summary">
+  <div class="summary-box">
+    <h4>📌 第一章总结 — 第一性原理概述</h4>
+    <ul>
+      <li><strong>第一性原理：</strong>所有 RAM 均以 4K 页帧（page frame）为基本单位管理，任何内存占用最终都可追溯到若干物理页帧的分配。</li>
+      <li><code>/proc/meminfo</code> 是系统级内存诊断的入口，字段定义来自内核官方文档，须严格依照定义理解，不可望文生义。</li>
+      <li><strong>核心判断指标</strong>：优先看 <code>MemAvailable</code>（而非 <code>MemFree</code>），它综合了可回收 Slab 和 Page Cache，是"还能用多少"的最佳估算。</li>
+      <li><code>MemTotal</code> ≠ 各字段之和。重叠、race window 及未单独统计的内核分配（如 vmalloc 背后的物理页）使其无法精确分解。</li>
+      <li>内存区域（Zone）决定了哪类分配从哪里拿页帧，嵌入式 32-bit 设备尤其需要警惕 lowmem 耗尽。</li>
+    </ul>
+  </div>
+  </div>
+</section>
+
+<!-- ══════════════════════════════════════════════════════════════
+     Chapter 2 — User process memory
+═══════════════════════════════════════════════════════════════ -->
+<section class="chapter" id="ch2">
+  <h2 class="chapter-title">
+    <span class="chapter-num">2</span>
+    用户进程内存精确分析
+  </h2>
+
+  <p>
+    用户进程占用的物理内存主要体现在 <code>AnonPages</code>（匿名页）和 <code>Mapped</code>（文件映射）中。
+    要进一步精确到每个进程，需要查看 <code>/proc/PID/</code> 下的各文件。
+  </p>
+
+  <div id="ch2-smaps">
+  <h3 class="section-title">2.1 /proc/PID/smaps 与 smaps_rollup</h3>
+
+  <p>
+    <code>/proc/PID/smaps</code> 是 <code>/proc/PID/maps</code> 的扩展，展示每个 VMA（Virtual Memory Area）的内存消耗和标志位。
+    <code>/proc/PID/smaps_rollup</code> 是将所有 VMA 的 smaps 字段汇总的结果，格式与 smaps 相同但只有一条 <code>[rollup]</code> 记录，查询速度更快。
+    <br>
+    来源：<a class="src-link" href="https://www.kernel.org/doc/Documentation/ABI/testing/procfs-smaps_rollup" target="_blank">kernel.org smaps_rollup ABI</a>
+    <a class="src-link" href="https://www.kernel.org/doc/html/latest/filesystems/proc.html" target="_blank">kernel.org proc 文档</a>
+  </p>
+
+  <pre><span class="comment"># 查看单个进程的内存映射详情（PID 替换为实际进程 ID）</span>
+<span class="cmd">cat /proc/$(pgrep myapp)/smaps</span>
+
+<span class="comment"># 快速汇总：smaps_rollup（Linux kernel.org 官方 ABI，2017 年 8 月引入）</span>
+<span class="cmd">cat /proc/$(pgrep myapp)/smaps_rollup</span></pre>
+
+  <pre><span class="comment"># smaps_rollup 典型输出（来自 kernel.org ABI 文档）</span>
+00100000-ff709000 ---p 00000000 00:00 0      [rollup]
+Size:               1192 kB
+KernelPageSize:        4 kB
+MMUPageSize:           4 kB
+<span class="val">Rss:              884 kB</span>    <span class="comment"># 当前实际驻留物理内存</span>
+<span class="val">Pss:              385 kB</span>    <span class="comment"># Proportional Set Size，共享页按比例摊分</span>
+Pss_Dirty:         68 kB
+Pss_Anon:         301 kB    <span class="comment"># 匿名页的 PSS</span>
+Pss_File:          80 kB    <span class="comment"># 文件映射页的 PSS</span>
+Pss_Shmem:          4 kB    <span class="comment"># 共享内存的 PSS</span>
+Shared_Clean:     696 kB    <span class="comment"># 共享且未脏页（共享库等）</span>
+Shared_Dirty:       0 kB
+Private_Clean:    120 kB    <span class="comment"># 私有且未脏页</span>
+Private_Dirty:     68 kB    <span class="comment"># 私有脏页（进程独占，必须 swap/释放）</span>
+Referenced:       884 kB
+Anonymous:         68 kB
+LazyFree:           0 kB
+AnonHugePages:      0 kB
+Swap:               0 kB
+SwapPss:            0 kB
+Locked:           385 kB</pre>
+
+  <div class="diagram-wrap">
+    <svg viewBox="0 0 640 300" xmlns="http://www.w3.org/2000/svg" style="width:100%;max-width:640px">
+      <text x="320" y="22" text-anchor="middle" font-size="13" font-weight="bold" fill="#1e2a3a">RSS / PSS / USS 关系图（多进程共享库场景）</text>
+
+      <!-- 3 processes -->
+      <rect x="20" y="40" width="160" height="80" rx="6" fill="#dbeafe" stroke="#93c5fd"/>
+      <text x="100" y="62" text-anchor="middle" font-size="12" font-weight="bold" fill="#1d4ed8">进程 A</text>
+      <text x="100" y="78" text-anchor="middle" font-size="11" fill="#1e40af">私有页: 40 KB</text>
+      <text x="100" y="94" text-anchor="middle" font-size="11" fill="#1e40af">共享libc: 300 KB</text>
+      <text x="100" y="110" text-anchor="middle" font-size="11" fill="#1e40af">RSS=340KB, PSS=140KB</text>
+
+      <rect x="240" y="40" width="160" height="80" rx="6" fill="#dbeafe" stroke="#93c5fd"/>
+      <text x="320" y="62" text-anchor="middle" font-size="12" font-weight="bold" fill="#1d4ed8">进程 B</text>
+      <text x="320" y="78" text-anchor="middle" font-size="11" fill="#1e40af">私有页: 60 KB</text>
+      <text x="320" y="94" text-anchor="middle" font-size="11" fill="#1e40af">共享libc: 300 KB</text>
+      <text x="320" y="110" text-anchor="middle" font-size="11" fill="#1e40af">RSS=360KB, PSS=160KB</text>
+
+      <rect x="460" y="40" width="160" height="80" rx="6" fill="#dbeafe" stroke="#93c5fd"/>
+      <text x="540" y="62" text-anchor="middle" font-size="12" font-weight="bold" fill="#1d4ed8">进程 C</text>
+      <text x="540" y="78" text-anchor="middle" font-size="11" fill="#1e40af">私有页: 50 KB</text>
+      <text x="540" y="94" text-anchor="middle" font-size="11" fill="#1e40af">共享libc: 300 KB</text>
+      <text x="540" y="110" text-anchor="middle" font-size="11" fill="#1e40af">RSS=350KB, PSS=150KB</text>
+
+      <!-- Shared lib box -->
+      <rect x="160" y="150" width="320" height="50" rx="6" fill="#d1fae5" stroke="#34d399"/>
+      <text x="320" y="172" text-anchor="middle" font-size="12" font-weight="bold" fill="#065f46">共享物理页：libc.so（300 KB 实际 RAM）</text>
+      <text x="320" y="190" text-anchor="middle" font-size="11" fill="#047857">三进程共享，每进程摊分 100 KB PSS（300/3）</text>
+
+      <!-- Arrows -->
+      <line x1="100" y1="120" x2="240" y2="155" stroke="#93c5fd" stroke-width="1.5" stroke-dasharray="4"/>
+      <line x1="320" y1="120" x2="320" y2="150" stroke="#93c5fd" stroke-width="1.5" stroke-dasharray="4"/>
+      <line x1="540" y1="120" x2="400" y2="155" stroke="#93c5fd" stroke-width="1.5" stroke-dasharray="4"/>
+
+      <!-- Legend -->
+      <rect x="20" y="220" width="600" height="68" rx="6" fill="#f8fafc" stroke="#e2e8f0"/>
+      <text x="34" y="240" font-size="12" font-weight="bold" fill="#1e2a3a">RSS（Resident Set Size）</text>
+      <text x="34" y="256" font-size="11" fill="#495057">= 进程实际驻留物理页总和，共享页重复计算。A+B+C 的 RSS 总和 > 实际物理占用</text>
+      <text x="34" y="272" font-size="12" font-weight="bold" fill="#1e2a3a">PSS（Proportional SS）</text>
+      <text x="34" y="288" font-size="11" fill="#495057">= 私有页 + 共享页/共享进程数。所有进程 PSS 之和 ≈ 实际物理占用（更准确）</text>
+    </svg>
+    <div class="diagram-caption">图 2-1：RSS vs PSS — 共享库场景下的内存计量差异</div>
+  </div>
+
+  <div class="cmd-ref">
+    <div class="cmd-ref-header">🔧 批量分析所有进程 RSS/PSS</div>
+    <div class="cmd-ref-body">
+<pre><span class="comment"># 列出所有进程的 PSS（需要 root）</span>
+<span class="cmd">for pid in /proc/[0-9]*/smaps_rollup; do
+  p=$(echo $pid | cut -d/ -f3)
+  pss=$(grep ^Pss: $pid 2>/dev/null | awk '{sum+=$2} END{print sum}')
+  name=$(cat /proc/$p/comm 2>/dev/null)
+  echo "$pss kB  PID=$p  $name"
+done | sort -rn | head -20</span>
+
+<span class="comment"># 或使用 ps_mem.py（需要 Python）</span>
+<span class="cmd">python3 ps_mem.py</span></pre>
+    </div>
+  </div>
+  </div>
+
+  <div id="ch2-status">
+  <h3 class="section-title">2.2 /proc/PID/status — 进程内存状态</h3>
+
+  <p>
+    <code>/proc/PID/status</code> 提供进程的人类可读内存字段。字段定义来自 kernel.org proc 文档（Table 1-2, 4.19 版本）：
+    <a class="src-link" href="https://www.kernel.org/doc/html/latest/filesystems/proc.html" target="_blank">kernel.org</a>
+  </p>
+
+  <div class="table-wrap">
+    <table>
+      <thead>
+        <tr><th>字段</th><th>含义（官方定义）</th></tr>
+      </thead>
+      <tbody>
+        <tr><td><code>VmPeak</code></td><td>虚拟内存峰值大小</td></tr>
+        <tr><td><code>VmSize</code></td><td>当前虚拟内存总大小（与 statm 的 size 相同）</td></tr>
+        <tr><td><code>VmLck</code></td><td>锁定（mlock）内存大小</td></tr>
+        <tr><td><code>VmPin</code></td><td>pinned 内存大小</td></tr>
+        <tr><td><code>VmHWM</code></td><td>RSS 历史峰值（"高水位"）</td></tr>
+        <tr><td><code>VmRSS</code></td><td>当前驻留集合 = RssAnon + RssFile + RssShmem</td></tr>
+        <tr><td><code>RssAnon</code></td><td>驻留匿名内存大小</td></tr>
+        <tr><td><code>RssFile</code></td><td>驻留文件映射大小</td></tr>
+        <tr><td><code>RssShmem</code></td><td>驻留共享内存大小（含 SysV shm、tmpfs、共享匿名 mmap）</td></tr>
+        <tr><td><code>VmData</code></td><td>私有数据段大小</td></tr>
+        <tr><td><code>VmStk</code></td><td>栈段大小</td></tr>
+        <tr><td><code>VmExe</code></td><td>代码段大小</td></tr>
+        <tr><td><code>VmLib</code></td><td>共享库代码大小</td></tr>
+        <tr><td><code>VmPTE</code></td><td>进程页表条目大小</td></tr>
+        <tr><td><code>VmSwap</code></td><td>匿名私有数据在 swap 中的大小（不含 shmem swap）</td></tr>
+      </tbody>
+    </table>
+  </div>
+
+  <pre><span class="cmd">cat /proc/$(pgrep myapp)/status | grep -E 'VmPeak|VmRSS|VmHWM|VmData|VmStk|RssAnon|RssFile'</span>
+<span class="comment"># 示例输出</span>
+<span class="val">VmPeak:    52480 kB</span>
+<span class="val">VmSize:    48256 kB</span>
+<span class="val">VmHWM:     12800 kB</span>    <span class="comment"># 历史 RSS 峰值，排查内存泄漏时重要</span>
+<span class="val">VmRSS:     11264 kB</span>
+<span class="val">RssAnon:    8192 kB</span>    <span class="comment"># 进程自身匿名内存（堆+栈+私有mmap）</span>
+<span class="val">RssFile:    3072 kB</span>    <span class="comment"># 文件映射（共享库等）</span>
+<span class="val">RssShmem:      0 kB</span></pre>
+  </div>
+
+  <div id="ch2-pagemap">
+  <h3 class="section-title">2.3 /proc/PID/pagemap — 页级物理地址追踪</h3>
+
+  <p>
+    <code>/proc/PID/pagemap</code> 提供进程每个虚拟页到物理页帧的完整映射（PFN）信息，是最精确的物理内存占用分析工具，但需要 root 权限。
+    来源：<a class="src-link" href="https://www.kernel.org/doc/html/latest/filesystems/proc.html" target="_blank">kernel.org proc 文档</a>
+  </p>
+
+  <div class="info-box note">
+    <strong>📌 pagemap 格式（来自 kernel.org）</strong>
+    每个虚拟页对应 8 字节（64-bit）：
+    <ul style="margin-top:6px;margin-left:18px;font-size:13px">
+      <li>Bits 0-54：页帧号（PFN），若页已换出则为 swap 类型和偏移</li>
+      <li>Bit 55：页表项是否 soft-dirty</li>
+      <li>Bit 56：页是否以大页映射</li>
+      <li>Bit 61：页是否在独占使用</li>
+      <li>Bit 62：文件页（1）或匿名页（0）</li>
+      <li>Bit 63：页是否驻留（present）</li>
+    </ul>
+  </div>
+
+  <pre><span class="comment"># 使用内核工具 page-types（来自 tools/vm/page-types.c）统计进程物理页</span>
+<span class="cmd">./page-types -p $(pgrep myapp) -l -N</span>
+
+<span class="comment"># 统计进程实际物理页数（结合 pagemap + kpageflags）</span>
+<span class="cmd">./page-types -p $(pgrep myapp) -a | grep -v "^#" | awk '{sum+=$1} END{print sum*4 " kB"}'</span>
+
+<span class="comment"># 对比进程 maps 与物理占用</span>
+<span class="cmd">cat /proc/$(pgrep myapp)/maps</span></pre>
+  </div>
+
+  <div id="ch2-summary">
+  <div class="summary-box">
+    <h4>📌 第二章总结 — 第一性原理概述</h4>
+    <ul>
+      <li><strong>第一性原理：</strong>用户进程看到的是虚拟内存，实际消耗物理 RAM 的是已分配且驻留（present）的物理页帧。虚拟地址空间（VmSize）远大于实际占用（VmRSS）——这是 Linux 按需分页（demand paging）机制的核心。</li>
+      <li><strong>匿名页（AnonPages/RssAnon）</strong>是进程"真实"占用：堆（malloc）、栈、私有 mmap，这些无法在进程退出后被其他进程直接复用。</li>
+      <li><strong>文件页（RssFile/Mapped）</strong>是可回收的：共享库、mmap 文件，内存压力时内核可驱逐（evict），其他进程也在共享这些物理页。</li>
+      <li>排查进程实际物理占用，应优先看 <code>smaps_rollup</code> 的 <strong>PSS</strong>（比 RSS 更准确反映"该进程造成的物理内存增量"）。</li>
+      <li><code>VmHWM</code>（RSS 高水位）是诊断内存泄漏的重要指标：若持续上升，说明内存未被释放。</li>
+    </ul>
+  </div>
+  </div>
+</section>
+
+<!-- ══════════════════════════════════════════════════════════════
+     Chapter 3 — Kernel memory breakdown
+═══════════════════════════════════════════════════════════════ -->
+<section class="chapter" id="ch3">
+  <h2 class="chapter-title">
+    <span class="chapter-num">3</span>
+    内核内存细分排查
+  </h2>
+
+  <p>
+    内核自身占用的物理内存分散在多个子系统：Slab 分配器、Vmalloc 区域、内核栈、页表等。
+    以下逐一介绍各子系统的查看方法。
+  </p>
+
+  <div id="ch3-slab">
+  <h3 class="section-title">3.1 Slab 分配器 — /proc/slabinfo</h3>
+
+  <p>
+    Linux 从 2.2 版本起使用 Slab 分配器在页级别之上进行内核内存管理。
+    常用对象（如网络缓冲区、目录缓存等）拥有各自的 slab 池。
+    来源：<a class="src-link" href="https://www.kernel.org/doc/Documentation/filesystems/proc.txt" target="_blank">kernel.org proc.txt</a>
+  </p>
+
+  <pre><span class="comment"># 查看 Slab 总体情况（已在 /proc/meminfo 中）</span>
+<span class="cmd">grep -E 'Slab|SReclaimable|SUnreclaim|KReclaimable' /proc/meminfo</span>
+
+<span class="comment"># 查看各 Slab 缓存详情</span>
+<span class="cmd">cat /proc/slabinfo</span>
+
+<span class="comment"># 按占用量排序（需要 root）</span>
+<span class="cmd">slabtop -o</span>
+
+<span class="comment"># 或手动排序（objsize × num_objs）</span>
+<span class="cmd">awk 'NR>2 {print $1, $3*$4/1024 " kB"}' /proc/slabinfo | sort -k2 -rn | head -20</span></pre>
+
+  <pre><span class="comment"># /proc/slabinfo 字段说明（来自 kernel.org proc 文档）</span>
+<span class="comment"># name        active_objs  num_objs  objsize  objperslab  pagesperslab</span>
+ext4_inode_cache   12847   13104      1160        7        2
+dentry              8192    8256       192       21        1
+kmalloc-512         2048    2048       512        8        1
+kmalloc-256          512     512       256       16        1
+mm_struct             96     108       832       39        8
+task_struct           96     124      9344        3        8</pre>
+
+  <div class="diagram-wrap">
+    <svg viewBox="0 0 640 280" xmlns="http://www.w3.org/2000/svg" style="width:100%;max-width:640px">
+      <text x="320" y="22" text-anchor="middle" font-size="13" font-weight="bold" fill="#1e2a3a">Slab 分配器内存组织结构</text>
+
+      <!-- Page level -->
+      <rect x="20" y="36" width="600" height="40" rx="5" fill="#fee2e2" stroke="#fca5a5"/>
+      <text x="320" y="52" text-anchor="middle" font-size="11" font-weight="bold" fill="#991b1b">物理页帧（从 Buddy 分配器获取）- ZONE_NORMAL</text>
+      <text x="320" y="68" text-anchor="middle" font-size="11" fill="#b91c1c">以 pagesperslab 为单位向 Buddy 申请连续物理页</text>
+
+      <!-- Slab caches -->
+      <rect x="20" y="94" width="140" height="100" rx="5" fill="#dbeafe" stroke="#93c5fd"/>
+      <text x="90" y="114" text-anchor="middle" font-size="11" font-weight="bold" fill="#1d4ed8">kmalloc-256</text>
+      <text x="90" y="130" text-anchor="middle" font-size="10" fill="#1e40af">objsize=256B</text>
+      <text x="90" y="146" text-anchor="middle" font-size="10" fill="#1e40af">16 objs/slab</text>
+      <text x="90" y="162" text-anchor="middle" font-size="10" fill="#1e40af">1 page/slab</text>
+      <text x="90" y="180" text-anchor="middle" font-size="10" fill="#1e40af">通用小对象</text>
+
+      <rect x="170" y="94" width="140" height="100" rx="5" fill="#dbeafe" stroke="#93c5fd"/>
+      <text x="240" y="114" text-anchor="middle" font-size="11" font-weight="bold" fill="#1d4ed8">dentry</text>
+      <text x="240" y="130" text-anchor="middle" font-size="10" fill="#1e40af">objsize=192B</text>
+      <text x="240" y="146" text-anchor="middle" font-size="10" fill="#1e40af">21 objs/slab</text>
+      <text x="240" y="162" text-anchor="middle" font-size="10" fill="#1e40af">1 page/slab</text>
+      <text x="240" y="180" text-anchor="middle" font-size="10" fill="#1e40af">目录项缓存</text>
+
+      <rect x="320" y="94" width="140" height="100" rx="5" fill="#d1fae5" stroke="#6ee7b7"/>
+      <text x="390" y="114" text-anchor="middle" font-size="11" font-weight="bold" fill="#065f46">ext4_inode_cache</text>
+      <text x="390" y="130" text-anchor="middle" font-size="10" fill="#047857">objsize=1160B</text>
+      <text x="390" y="146" text-anchor="middle" font-size="10" fill="#047857">7 objs/slab</text>
+      <text x="390" y="162" text-anchor="middle" font-size="10" fill="#047857">2 pages/slab</text>
+      <text x="390" y="180" text-anchor="middle" font-size="10" fill="#047857">inode 缓存</text>
+
+      <rect x="470" y="94" width="150" height="100" rx="5" fill="#fef3c7" stroke="#fcd34d"/>
+      <text x="545" y="114" text-anchor="middle" font-size="11" font-weight="bold" fill="#92400e">task_struct</text>
+      <text x="545" y="130" text-anchor="middle" font-size="10" fill="#78350f">objsize=9344B</text>
+      <text x="545" y="146" text-anchor="middle" font-size="10" fill="#78350f">3 objs/slab</text>
+      <text x="545" y="162" text-anchor="middle" font-size="10" fill="#78350f">8 pages/slab</text>
+      <text x="545" y="180" text-anchor="middle" font-size="10" fill="#78350f">进程描述符</text>
+
+      <!-- Reclaim label -->
+      <rect x="20" y="210" width="290" height="30" rx="4" fill="#d1fae5" stroke="#6ee7b7"/>
+      <text x="165" y="230" text-anchor="middle" font-size="11" fill="#065f46">SReclaimable：dentry, inode, pagecache 相关</text>
+
+      <rect x="320" y="210" width="300" height="30" rx="4" fill="#fee2e2" stroke="#fca5a5"/>
+      <text x="470" y="230" text-anchor="middle" font-size="11" fill="#991b1b">SUnreclaim：task_struct, mm_struct 等不可回收</text>
+
+      <text x="320" y="264" text-anchor="middle" font-size="11" fill="#6c757d">来源：kernel.org proc 文档 | slabinfo(5)</text>
+    </svg>
+    <div class="diagram-caption">图 3-1：Slab 缓存组织结构与可回收性分类</div>
+  </div>
+
+  <div class="info-box tip">
+    <strong>💡 嵌入式优化技巧</strong>
+    若 <code>SReclaimable</code> 占比很大（如超过 50 MB），可主动触发回收：
+    <br><code>echo 2 > /proc/sys/vm/drop_caches</code>（释放 Slab 可回收部分）
+    <br>注意：这会临时降低文件系统缓存命中率，慎用于生产环境。
+  </div>
+  </div>
+
+  <div id="ch3-vmalloc">
+  <h3 class="section-title">3.2 Vmalloc 空间 — /proc/vmallocinfo</h3>
+
+  <p>
+    <code>vmalloc()</code> / <code>ioremap()</code> 在内核虚拟地址空间中分配虚拟上连续但物理上可以不连续的内存区域。
+    自 Linux 4.4 起，<code>/proc/meminfo</code> 中的 <code>VmallocUsed</code> 固定为 0，须改用 <code>/proc/vmallocinfo</code>。
+    来源：<a class="src-link" href="https://www.man7.org/linux/man-pages/man5/proc_meminfo.5.html" target="_blank">man7 proc_meminfo</a>
+    <a class="src-link" href="https://www.kernel.org/doc/html/latest/filesystems/proc.html" target="_blank">kernel.org proc</a>
+  </p>
+
+  <pre><span class="comment"># 查看 vmalloc 区域详情</span>
+<span class="cmd">cat /proc/vmallocinfo</span>
+
+<span class="comment"># 统计各模块/子系统 vmalloc 占用</span>
+<span class="cmd">grep -v "^$" /proc/vmallocinfo | awk '{print $3, $1}' | \
+  awk 'BEGIN{FS="-"}{split($0,a," "); \
+    start=strtonum("0x"substr(a[1],1)); \
+    end=strtonum("0x"substr(a[2],1)); \
+    print end-start, a[3]}' | sort -rn | head -20</span>
+
+<span class="comment"># 按 caller 汇总</span>
+<span class="cmd">awk '{print $NF, $3}' /proc/vmallocinfo | sort | awk '
+{
+  split($2,a,"-"); start=a[1]; end=a[2];
+  key=$1; sizes[key]+=strtonum("0x"end)-strtonum("0x"start)
+} END { for(k in sizes) print sizes[k]/1024 " kB\t" k }
+' | sort -rn | head -20</span></pre>
+
+  <pre><span class="comment"># /proc/vmallocinfo 示例输出（来自 kernel.org proc 文档）</span>
+<span class="val">0xffffc9000000-0xffffca000000  4096 pages  vmalloc  caller=alloc_vmap_area+0x2a/0x60</span>
+<span class="val">0xffffca000000-0xffffcb000000  4096 pages  ioremap  caller=ioremap_nocache+0x7e/0xd0</span>
+<span class="val">0xffffcb001000-0xffffcb003000    2 pages  vmalloc  caller=load_module+0x141/0x1cd0</span>
+<span class="comment"># 字段：起止地址  页数  类型  caller</span></pre>
+
+  <div class="info-box note">
+    <strong>📌 vmalloc 物理内存影响</strong>
+    vmalloc 映射的虚拟地址空间极大（x86-64 为 32 TB），但背后的<strong>物理页</strong>仍从 ZONE_NORMAL 或 ZONE_HIGHMEM 获取。
+    内核模块（insmod）、ioremap（设备寄存器映射）、某些驱动的 DMA 缓冲区均走 vmalloc 路径，其物理内存占用不在 Slab 中统计，而体现在 /proc/meminfo 未被单独列出的"gap"部分。
+  </div>
+  </div>
+
+  <div id="ch3-pt">
+  <h3 class="section-title">3.3 页表与内核栈</h3>
+
+  <div class="flex-gap">
+    <div class="card" style="flex:1 1 220px">
+      <div class="subsection-title">PageTables</div>
+      <p style="font-size:13px">
+        <code>/proc/meminfo</code> 中 <code>PageTables</code> 统计最低级页表（PTE 页）占用的内存，自 Linux 2.6.18 起。
+        来源：<a href="https://www.man7.org/linux/man-pages/man5/proc_meminfo.5.html" target="_blank" class="src-link">man7</a>
+      </p>
+      <pre style="font-size:12px"><span class="cmd">grep PageTables /proc/meminfo</span>
+<span class="val">PageTables:     4096 kB</span>
+
+<span class="comment"># 进程级页表（/proc/PID/status）</span>
+<span class="cmd">grep VmPTE /proc/$(pgrep myapp)/status</span>
+<span class="val">VmPTE:    20 kB</span></pre>
+    </div>
+    <div class="card" style="flex:1 1 220px">
+      <div class="subsection-title">KernelStack</div>
+      <p style="font-size:13px">
+        <code>KernelStack</code> 统计分配给内核线程栈的内存，自 Linux 2.6.32 起。
+        每个线程（含内核线程）都有一个内核栈，通常为 8KB（ARM）或 16KB（x86-64）。
+        来源：<a href="https://www.man7.org/linux/man-pages/man5/proc_meminfo.5.html" target="_blank" class="src-link">man7</a>
+      </p>
+      <pre style="font-size:12px"><span class="cmd">grep KernelStack /proc/meminfo</span>
+<span class="val">KernelStack:    8192 kB</span>
+
+<span class="comment"># 线程数 × 内核栈大小</span>
+<span class="cmd">ps -e --no-headers | wc -l</span>
+<span class="comment"># 进程数 * 8KB ≈ KernelStack</span></pre>
+    </div>
+    <div class="card" style="flex:1 1 220px">
+      <div class="subsection-title">Percpu</div>
+      <p style="font-size:13px">
+        <code>Percpu</code> 字段统计 per-CPU 数据区占用，每个 CPU 有独立副本，用于内核高频访问数据（如调度统计、网络计数器）。
+        来源：<a href="https://www.kernel.org/doc/html/latest/filesystems/proc.html" target="_blank" class="src-link">kernel.org</a>
+      </p>
+      <pre style="font-size:12px"><span class="cmd">grep Percpu /proc/meminfo</span>
+<span class="val">Percpu:     2048 kB</span>
+
+<span class="comment"># 4 核 × 512KB per-cpu ≈ 2048 kB</span></pre>
+    </div>
+  </div>
+  </div>
+
+  <div id="ch3-buddy">
+  <h3 class="section-title">3.4 内核代码与数据段</h3>
+
+  <p>
+    内核代码（text）、只读数据（.rodata）、可读写数据（.data/.bss）等静态部分在启动时就已占用物理内存，
+    <code>MemTotal</code> 的定义为"physical RAM minus a few reserved bits and the kernel binary code"，
+    意味着内核 image 本身不计入 MemTotal。
+    来源：<a class="src-link" href="https://www.man7.org/linux/man-pages/man5/proc_meminfo.5.html" target="_blank">man7 proc_meminfo</a>
+  </p>
+
+  <pre><span class="comment"># 查看内核内存使用（内核 image 大小）</span>
+<span class="cmd">ls -lh /boot/vmlinuz*</span>
+<span class="cmd">size /boot/vmlinux 2>/dev/null || size /proc/kcore 2>/dev/null</span>
+
+<span class="comment"># 内核静态符号和大小（需要 CONFIG_KALLSYMS）</span>
+<span class="cmd">cat /proc/iomem | grep -i kernel</span>
+
+<span class="comment"># 查看保留内存区域</span>
+<span class="cmd">cat /proc/iomem</span>
+<span class="val">00000000-0fffffff : System RAM</span>
+<span class="val">  00008000-00efffff : Kernel code</span>
+<span class="val">  00f00000-00f68fff : Kernel data</span></pre>
+  </div>
+
+  <div id="ch3-summary">
+  <div class="summary-box">
+    <h4>📌 第三章总结 — 第一性原理概述</h4>
+    <ul>
+      <li><strong>第一性原理：</strong>内核内存分配遵循从大到小的层次：物理页帧（Buddy）→ Slab 对象 → 具体数据结构；vmalloc 是旁路机制，用于无法获取连续物理页时的大块分配。</li>
+      <li><strong>Slab</strong> 是内核内存的主要消耗者；可通过 <code>/proc/slabinfo</code> 精确定位哪个缓存（dentry/inode/kmalloc-xxx）占用最多，并区分 SReclaimable 与 SUnreclaim。</li>
+      <li><strong>Vmalloc</strong>（自 Linux 4.4 起须看 <code>/proc/vmallocinfo</code>）主要来源：内核模块、ioremap、驱动大缓冲区。</li>
+      <li><strong>KernelStack</strong> 与系统线程数成正比，线程泄漏会导致此值持续上涨。</li>
+      <li><strong>PageTables</strong> 与进程数及每进程映射范围成正比，大量进程或大型 mmap 会显著增加此开销。</li>
+      <li>内核代码/数据段（kernel image）不计入 MemTotal，其占用物理内存通过 <code>/proc/iomem</code> 查看。</li>
+    </ul>
+  </div>
+  </div>
+</section>
+
+<!-- ══════════════════════════════════════════════════════════════
+     Chapter 4 — Special memory mechanisms
+═══════════════════════════════════════════════════════════════ -->
+<section class="chapter" id="ch4">
+  <h2 class="chapter-title">
+    <span class="chapter-num">4</span>
+    特殊内存机制排查
+  </h2>
+
+  <div id="ch4-cma">
+  <h3 class="section-title">4.1 CMA — 连续内存分配器</h3>
+
+  <p>
+    CMA（Contiguous Memory Allocator）在启动时保留一段连续物理内存，之后将其归还给 Buddy 系统（migrate type 设为 MIGRATE_CMA），
+    使普通可移动页可以使用，但当 DMA 设备需要大块连续内存时可将这些页驱逐并重新分配给 DMA。
+    来源：<a class="src-link" href="https://lwn.net/Articles/486301/" target="_blank">LWN CMA 深度分析</a>
+    <a class="src-link" href="https://www.man7.org/linux/man-pages/man5/proc_meminfo.5.html" target="_blank">man7 proc_meminfo</a>
+  </p>
+
+  <pre><span class="comment"># 查看 CMA 统计（需 CONFIG_CMA）</span>
+<span class="cmd">grep -E 'CmaTotal|CmaFree' /proc/meminfo</span>
+<span class="val">CmaTotal:          65536 kB</span>   <span class="comment"># 系统配置的 CMA 总量</span>
+<span class="val">CmaFree:           32768 kB</span>   <span class="comment"># 当前未被 DMA 使用的 CMA 页</span>
+
+<span class="comment"># 内核启动参数配置 CMA</span>
+<span class="comment"># cma=64M  — 全局 CMA 区域 64 MB</span>
+<span class="comment"># cma=64M@0x10000000  — 在物理地址 256MB 处预留</span>
+
+<span class="comment"># 查看 CMA 区域分布（通过 dmesg 或 /proc/iomem）</span>
+<span class="cmd">dmesg | grep -i cma</span>
+<span class="cmd">cat /proc/iomem | grep CMA</span></pre>
+
+  <div class="diagram-wrap">
+    <svg viewBox="0 0 640 200" xmlns="http://www.w3.org/2000/svg" style="width:100%;max-width:640px">
+      <text x="320" y="20" text-anchor="middle" font-size="13" font-weight="bold" fill="#1e2a3a">CMA 工作原理</text>
+
+      <!-- Normal memory -->
+      <rect x="20" y="36" width="360" height="40" rx="4" fill="#d1fae5" stroke="#6ee7b7"/>
+      <text x="200" y="62" text-anchor="middle" font-size="11" fill="#065f46">普通内存区域（Normal）— 常规分配</text>
+
+      <!-- CMA region -->
+      <rect x="384" y="36" width="236" height="40" rx="4" fill="#fef3c7" stroke="#fcd34d" stroke-dasharray="5,3"/>
+      <text x="502" y="56" text-anchor="middle" font-size="11" font-weight="bold" fill="#92400e">CMA 预留区域（64 MB）</text>
+      <text x="502" y="70" text-anchor="middle" font-size="10" fill="#78350f">MIGRATE_CMA 类型</text>
+
+      <!-- Phase 1 -->
+      <text x="320" y="100" text-anchor="middle" font-size="11" fill="#495057">正常时：CMA 区域作为可移动页（Movable）供普通进程使用</text>
+
+      <!-- Phase 2 -->
+      <rect x="384" y="112" width="236" height="36" rx="4" fill="#fee2e2" stroke="#fca5a5"/>
+      <text x="502" y="128" text-anchor="middle" font-size="11" font-weight="bold" fill="#991b1b">DMA 请求时</text>
+      <text x="502" y="142" text-anchor="middle" font-size="10" fill="#b91c1c">驱逐普通页 → 整理为连续块 → DMA 分配</text>
+
+      <!-- Arrow -->
+      <path d="M 502 84 L 502 110" stroke="#92400e" stroke-width="2" marker-end="url(#arr)" fill="none"/>
+      <defs>
+        <marker id="arr" markerWidth="8" markerHeight="8" refX="4" refY="4" orient="auto">
+          <path d="M0,0 L8,4 L0,8 Z" fill="#92400e"/>
+        </marker>
+      </defs>
+
+      <text x="320" y="168" text-anchor="middle" font-size="11" fill="#6c757d">CmaFree = CMA 中目前未被 DMA 占用的部分（可被普通进程暂时使用）</text>
+      <text x="320" y="184" text-anchor="middle" font-size="11" fill="#1a73e8">来源：lwn.net/Articles/486301 | man7.org proc_meminfo(5)</text>
+    </svg>
+    <div class="diagram-caption">图 4-1：CMA 内存工作原理（平衡 DMA 需求与普通内存使用）</div>
+  </div>
+
+  <div class="info-box warn">
+    <strong>⚠️ 嵌入式 CMA 注意事项</strong>
+    CMA 区域大小须在编译时或启动参数中配置（<code>cma=NM</code>），运行时无法更改。
+    若 CMA 配置过大，将减少普通可用内存；过小则 DMA 分配失败。
+    在多媒体嵌入式（Camera/Video）系统中，CMA 是 DMA-coherent 内存的重要来源。
+  </div>
+  </div>
+
+  <div id="ch4-huge">
+  <h3 class="section-title">4.2 大页（HugeTLB / THP）</h3>
+
+  <p>
+    Linux 提供两种大页机制，用于减少 TLB miss：
+    来源：<a class="src-link" href="https://www.kernel.org/doc/html/latest/admin-guide/mm/concepts.html" target="_blank">kernel.org 内存概念文档</a>
+  </p>
+
+  <div class="table-wrap">
+    <table>
+      <thead>
+        <tr><th>机制</th><th>配置方式</th><th>用户感知</th><th>查看接口</th></tr>
+      </thead>
+      <tbody>
+        <tr>
+          <td><strong>HugeTLB</strong><br><code>HugePages_*</code></td>
+          <td>系统管理员手动预分配</td>
+          <td>需显式使用 hugetlbfs 或 SHM_HUGETLB</td>
+          <td><code>/proc/meminfo</code><br><code>/proc/hugepages/</code></td>
+        </tr>
+        <tr>
+          <td><strong>THP</strong><br>Transparent HugePages</td>
+          <td>内核自动管理（CONFIG_TRANSPARENT_HUGEPAGE）</td>
+          <td>对应用透明，内核自动合并/拆分</td>
+          <td><code>AnonHugePages</code> 在 meminfo<br><code>/sys/kernel/mm/transparent_hugepage/</code></td>
+        </tr>
+      </tbody>
+    </table>
+  </div>
+
+  <pre><span class="comment"># HugeTLB 状态</span>
+<span class="cmd">grep -E 'HugePages|Hugepagesize|Hugetlb' /proc/meminfo</span>
+<span class="val">HugePages_Total:      64</span>
+<span class="val">HugePages_Free:       32</span>
+<span class="val">HugePages_Rsvd:        8</span>
+<span class="val">HugePages_Surp:        0</span>
+<span class="val">Hugepagesize:       2048 kB</span>    <span class="comment"># 每个大页 2 MB</span>
+<span class="val">Hugetlb:          131072 kB</span>   <span class="comment"># 已分配大页物理内存总量</span>
+
+<span class="comment"># THP 状态</span>
+<span class="cmd">grep AnonHugePages /proc/meminfo</span>
+<span class="val">AnonHugePages:   4096 kB</span>
+
+<span class="comment"># 嵌入式通常禁用 THP（减少碎片整理开销）</span>
+<span class="cmd">echo never > /sys/kernel/mm/transparent_hugepage/enabled</span></pre>
+  </div>
+
+  <div id="ch4-percpu">
+  <h3 class="section-title">4.3 Per-CPU 数据与保留内存</h3>
+
+  <div class="card">
+    <div class="subsection-title">保留内存（Reserved）查看方式</div>
+    <pre><span class="comment"># /proc/iomem 显示物理地址空间分配（包含保留区、固件、设备）</span>
+<span class="cmd">cat /proc/iomem</span>
+<span class="val">00000000-0fffffff : System RAM</span>
+<span class="val">  00008000-00efffff : Kernel code</span>
+<span class="val">  00f00000-01068fff : Kernel data</span>
+<span class="val">10000000-1fffffff : Reserved (firmware/DT)</span>
+<span class="val">20000000-3fffffff : CMA region</span>
+
+<span class="comment"># 设备树中的 reserved-memory（嵌入式常用）</span>
+<span class="cmd">cat /proc/device-tree/reserved-memory/*/reg 2>/dev/null | xxd</span>
+<span class="comment"># 或查看 /sys/firmware/devicetree/base/reserved-memory/</span></pre>
+  </div>
+  </div>
+
+  <div id="ch4-summary">
+  <div class="summary-box">
+    <h4>📌 第四章总结 — 第一性原理概述</h4>
+    <ul>
+      <li><strong>第一性原理：</strong>DMA 设备需要物理连续的内存，而通用内存分配器（Buddy）随着运行时间增加难以保证大块连续物理内存，CMA 正是在系统启动时"提前预留"连续内存以解决此矛盾。</li>
+      <li><strong>CMA</strong> 在嵌入式多媒体系统（Camera、Video Codec、Display）中是关键资源，须根据业务峰值正确配置大小，通过 <code>CmaTotal - CmaFree</code> 知悉当前 DMA 实际占用。</li>
+      <li><strong>HugeTLB</strong> 预分配的大页物理内存会从 MemTotal 中"扣除"（体现在 <code>Hugetlb</code> 字段），嵌入式通常不使用。</li>
+      <li><strong>THP</strong>（透明大页）在嵌入式中建议设置为 <code>never</code>，避免内存碎片整理（khugepaged）带来的延迟抖动。</li>
+      <li>设备树 <code>reserved-memory</code> 节点预留的物理内存同样不计入 MemTotal，须通过 <code>/proc/iomem</code> 获取全貌。</li>
+    </ul>
+  </div>
+  </div>
+</section>
+
+<!-- ══════════════════════════════════════════════════════════════
+     Chapter 5 — Memory fragmentation
+═══════════════════════════════════════════════════════════════ -->
+<section class="chapter" id="ch5">
+  <h2 class="chapter-title">
+    <span class="chapter-num">5</span>
+    内存碎片化分析
+  </h2>
+
+  <p>
+    嵌入式系统长期运行后，物理内存碎片化会导致即使 <code>MemFree</code> 充足也无法分配大块连续物理内存，
+    造成内核模块加载失败、DMA 分配失败等问题。
+  </p>
+
+  <div id="ch5-buddy">
+  <h3 class="section-title">5.1 /proc/buddyinfo — Buddy 分配器状态</h3>
+
+  <p>
+    外部碎片化（External Fragmentation）是某些工作负载下的问题，<code>/proc/buddyinfo</code> 是诊断这类问题的有用工具。
+    它显示各 Order（阶）下可用的空闲页块数量，帮助判断可以安全分配多大的连续内存。
+    来源：<a class="src-link" href="https://www.kernel.org/doc/html/latest/filesystems/proc.html" target="_blank">kernel.org proc 文档</a>
+  </p>
+
+  <pre><span class="cmd">cat /proc/buddyinfo</span>
+<span class="comment"># 来自 kernel.org proc 文档的示例</span>
+<span class="val">Node 0, zone      DMA      0      4      5      4      4      3 ...</span>
+<span class="val">Node 0, zone   Normal      1      0      0      1    101      8 ...</span>
+<span class="val">Node 0, zone  HighMem      2      0      0      1      1      0 ...</span>
+<span class="comment"># 每列代表 2^N * PAGE_SIZE 大小的空闲块数量</span>
+<span class="comment"># 列 0: 2^0 * 4kB = 4kB   列 1: 2^1 * 4kB = 8kB</span>
+<span class="comment"># 列 2: 2^2 * 4kB = 16kB  ...  列 10: 2^10 * 4kB = 4MB</span></pre>
+
+  <div class="diagram-wrap">
+    <svg viewBox="0 0 680 280" xmlns="http://www.w3.org/2000/svg" style="width:100%;max-width:680px">
+      <text x="340" y="22" text-anchor="middle" font-size="13" font-weight="bold" fill="#1e2a3a">Buddy 系统各阶空闲块可视化（/proc/buddyinfo）</text>
+
+      <!-- Y axis -->
+      <line x1="50" y1="40" x2="50" y2="220" stroke="#999" stroke-width="1"/>
+      <text x="40" y="44" text-anchor="end" font-size="10" fill="#666">120</text>
+      <text x="40" y="84" text-anchor="end" font-size="10" fill="#666">90</text>
+      <text x="40" y="124" text-anchor="end" font-size="10" fill="#666">60</text>
+      <text x="40" y="164" text-anchor="end" font-size="10" fill="#666">30</text>
+      <text x="40" y="220" text-anchor="end" font-size="10" fill="#666">0</text>
+
+      <!-- X axis -->
+      <line x1="50" y1="220" x2="650" y2="220" stroke="#999" stroke-width="1"/>
+
+      <!-- Data: Normal zone buddyinfo example values: 1,0,0,1,101,8,26,40,13,16,94 -->
+      <!-- Scale: max=101 → height at 180px → factor=1.78 -->
+      <g fill="#1a73e8" opacity=".85">
+        <!-- Order 0: 1 -->
+        <rect x="60" y="218" width="40" height="2" rx="2"/>
+        <text x="80" y="235" text-anchor="middle" font-size="10" fill="#333">0阶</text>
+        <text x="80" y="247" text-anchor="middle" font-size="9" fill="#1a73e8">1</text>
+        <text x="80" y="258" text-anchor="middle" font-size="9" fill="#666">4kB</text>
+
+        <!-- Order 1: 0 -->
+        <rect x="112" y="220" width="40" height="0" rx="2"/>
+        <text x="132" y="235" text-anchor="middle" font-size="10" fill="#333">1阶</text>
+        <text x="132" y="247" text-anchor="middle" font-size="9" fill="#1a73e8">0</text>
+        <text x="132" y="258" text-anchor="middle" font-size="9" fill="#666">8kB</text>
+
+        <!-- Order 2: 0 -->
+        <rect x="164" y="220" width="40" height="0" rx="2"/>
+        <text x="184" y="235" text-anchor="middle" font-size="10" fill="#333">2阶</text>
+        <text x="184" y="247" text-anchor="middle" font-size="9" fill="#1a73e8">0</text>
+        <text x="184" y="258" text-anchor="middle" font-size="9" fill="#666">16kB</text>
+
+        <!-- Order 3: 1 -->
+        <rect x="216" y="218" width="40" height="2" rx="2"/>
+        <text x="236" y="235" text-anchor="middle" font-size="10" fill="#333">3阶</text>
+        <text x="236" y="247" text-anchor="middle" font-size="9" fill="#1a73e8">1</text>
+        <text x="236" y="258" text-anchor="middle" font-size="9" fill="#666">32kB</text>
+
+        <!-- Order 4: 101 - height = 101/120*180 = 151.5 -->
+        <rect x="268" y="52" width="40" height="168" rx="2" fill="#e8f0fe" stroke="#1a73e8"/>
+        <text x="288" y="235" text-anchor="middle" font-size="10" fill="#333">4阶</text>
+        <text x="288" y="247" text-anchor="middle" font-size="9" fill="#1a73e8">101</text>
+        <text x="288" y="258" text-anchor="middle" font-size="9" fill="#666">64kB</text>
+        <text x="288" y="70" text-anchor="middle" font-size="10" font-weight="bold" fill="#1d4ed8">最多！</text>
+
+        <!-- Order 5: 8 -->
+        <rect x="320" y="208" width="40" height="12" rx="2"/>
+        <text x="340" y="235" text-anchor="middle" font-size="10" fill="#333">5阶</text>
+        <text x="340" y="247" text-anchor="middle" font-size="9" fill="#1a73e8">8</text>
+        <text x="340" y="258" text-anchor="middle" font-size="9" fill="#666">128kB</text>
+
+        <!-- Order 6: 26 -->
+        <rect x="372" y="181" width="40" height="39" rx="2"/>
+        <text x="392" y="235" text-anchor="middle" font-size="10" fill="#333">6阶</text>
+        <text x="392" y="247" text-anchor="middle" font-size="9" fill="#1a73e8">26</text>
+        <text x="392" y="258" text-anchor="middle" font-size="9" fill="#666">256kB</text>
+
+        <!-- Order 7: 40 -->
+        <rect x="424" y="160" width="40" height="60" rx="2"/>
+        <text x="444" y="235" text-anchor="middle" font-size="10" fill="#333">7阶</text>
+        <text x="444" y="247" text-anchor="middle" font-size="9" fill="#1a73e8">40</text>
+        <text x="444" y="258" text-anchor="middle" font-size="9" fill="#666">512kB</text>
+
+        <!-- Order 8: 13 -->
+        <rect x="476" y="200" width="40" height="20" rx="2"/>
+        <text x="496" y="235" text-anchor="middle" font-size="10" fill="#333">8阶</text>
+        <text x="496" y="247" text-anchor="middle" font-size="9" fill="#1a73e8">13</text>
+        <text x="496" y="258" text-anchor="middle" font-size="9" fill="#666">1MB</text>
+
+        <!-- Order 9: 16 -->
+        <rect x="528" y="196" width="40" height="24" rx="2"/>
+        <text x="548" y="235" text-anchor="middle" font-size="10" fill="#333">9阶</text>
+        <text x="548" y="247" text-anchor="middle" font-size="9" fill="#1a73e8">16</text>
+        <text x="548" y="258" text-anchor="middle" font-size="9" fill="#666">2MB</text>
+
+        <!-- Order 10: 94 -->
+        <rect x="580" y="80" width="40" height="140" rx="2" fill="#e8f0fe" stroke="#1a73e8"/>
+        <text x="600" y="235" text-anchor="middle" font-size="10" fill="#333">10阶</text>
+        <text x="600" y="247" text-anchor="middle" font-size="9" fill="#1a73e8">94</text>
+        <text x="600" y="258" text-anchor="middle" font-size="9" fill="#666">4MB</text>
+      </g>
+
+      <text x="340" y="275" text-anchor="middle" font-size="10" fill="#6c757d">来源：kernel.org/doc/html/latest/filesystems/proc.html — /proc/buddyinfo 示例数据</text>
+    </svg>
+    <div class="diagram-caption">图 5-1：/proc/buddyinfo Normal Zone 可视化（高阶空闲块越多说明碎片化越低）</div>
+  </div>
+
+  <div class="info-box note">
+    <strong>📌 读取规则（来自 kernel.org 官方文档）</strong>
+    <ul style="margin-top:6px;margin-left:18px;font-size:13px">
+      <li>第 N 列代表阶为 N 的空闲块数量，每个块大小为 <code>2^N × PAGE_SIZE</code></li>
+      <li>ZONE_DMA 中 2^0×4kB=4kB 有 0 块、2^1×4kB=8kB 有 4 块，以此类推</li>
+      <li>ZONE_NORMAL 中 2^4×4kB=64kB 有 101 块说明该阶资源充足</li>
+      <li>若高阶（Order≥6）全为 0，则无法分配 256kB 以上的连续物理内存，即使 MemFree 很高</li>
+    </ul>
+  </div>
+
+  <pre><span class="comment"># 触发内存信息转储到 dmesg（包含更详细的 buddyinfo）</span>
+<span class="cmd">echo m > /proc/sysrq-trigger</span>
+<span class="cmd">dmesg | grep -E 'Normal:|DMA:|HighMem:' | tail -5</span>
+<span class="comment"># 输出示例（来自 kernel.org 文档参考的 StackOverflow 示例）</span>
+<span class="val">Normal: 1046*4kB 527*8kB 128*16kB 36*32kB 17*64kB 5*128kB 26*256kB 40*512kB 13*1024kB 16*2048kB 94*4096kB = 471600kB</span></pre>
+  </div>
+
+  <div id="ch5-pagetype">
+  <h3 class="section-title">5.2 /proc/pagetypeinfo — 页类型详细信息</h3>
+
+  <p>
+    <code>/proc/pagetypeinfo</code> 提供比 buddyinfo 更详细的信息，展示各 migrate type（迁移类型）下各阶的空闲块数量。
+    来源：<a class="src-link" href="https://www.kernel.org/doc/html/latest/filesystems/proc.html" target="_blank">kernel.org proc 文档</a>
+  </p>
+
+  <pre><span class="cmd">cat /proc/pagetypeinfo</span>
+<span class="val">Page block order: 9</span>
+<span class="val">Pages per block:  512</span>
+
+<span class="val">Free pages count per migrate type at order    0    1    2    3    4    5    6    7    8    9   10</span>
+<span class="val">Node    0, zone   Normal, type  Unmovable     1    0    0    0    0    1    1    0    0    0    0</span>
+<span class="val">Node    0, zone   Normal, type    Movable     0    0    0    0    0    0    0    0    0    0    2</span>
+<span class="val">Node    0, zone   Normal, type Reclaimable    0    0    0    0    0    0    0    0    0    0    0</span>
+<span class="val">Node    0, zone   Normal, type       CMA      0    0    0    0    0    0    0    0    0    1    0</span>
+<span class="val">Node    0, zone   Normal, type  HighAtomic    0    0    0    0    0    0    0    0    0    0    0</span>
+<span class="val">Node    0, zone   Normal, type      Isolate   0    0    0    0    0    0    0    0    0    0    0</span>
+
+<span class="comment"># Unmovable: 内核固定分配（Slab、KernelStack 等），无法迁移</span>
+<span class="comment"># Movable:   可以迁移的页（用户匿名页），支持内存碎片整理</span>
+<span class="comment"># Reclaimable: 可回收页（Page Cache 等）</span>
+<span class="comment"># CMA:       CMA 区域（供 DMA 使用）</span>
+<span class="comment"># HighAtomic: 紧急分配保留</span></pre>
+
+  <div class="info-box tip">
+    <strong>💡 碎片整理触发</strong>
+    若 Unmovable 类型高阶块少但 Movable 有大量高阶块，可通过内存紧缩（Compaction）改善：
+    <br><code>echo 1 > /proc/sys/vm/compact_memory</code>（手动触发全局压缩）
+    <br>内核也会通过 kcompactd 守护进程自动进行异步压缩。来源：<a href="https://www.kernel.org/doc/html/latest/admin-guide/mm/concepts.html" target="_blank" class="src-link">kernel.org 内存概念</a>
+  </div>
+  </div>
+
+  <div id="ch5-summary">
+  <div class="summary-box">
+    <h4>📌 第五章总结 — 第一性原理概述</h4>
+    <ul>
+      <li><strong>第一性原理：</strong>物理内存的碎片化是不可避免的——分配与释放的随机性使连续物理块越来越难以找到。Linux Buddy 系统通过"阶（Order）"管理连续块，高阶块稀缺即为碎片化的直接体现。</li>
+      <li><code>/proc/buddyinfo</code> 是碎片化的"快照"——高阶列（Order 6~10）值越低，碎片化越严重。若 Order 10（4MB）全为 0，则系统无法分配 4MB 连续物理内存。</li>
+      <li><code>/proc/pagetypeinfo</code> 进一步区分了不可移动（Unmovable，内核 Slab 等）和可移动（Movable，用户页）类型——Unmovable 无法被整理，是碎片化的"根因"之一。</li>
+      <li>嵌入式系统的对策：减少动态内存分配频率、使用 CMA 保证 DMA 连续内存、在系统空闲时触发 compact_memory、尽量使用 MIGRATE_MOVABLE 类型分配。</li>
+      <li>MemFree 高但 DMA 分配失败 → 必然是高阶连续物理内存不足所致，须查 buddyinfo 而非 meminfo。</li>
+    </ul>
+  </div>
+  </div>
+</section>
+
+<!-- ══════════════════════════════════════════════════════════════
+     Chapter 6 — Advanced tools & workflow
+═══════════════════════════════════════════════════════════════ -->
+<section class="chapter" id="ch6">
+  <h2 class="chapter-title">
+    <span class="chapter-num">6</span>
+    高级分析工具与综合排查流程
+  </h2>
+
+  <div id="ch6-allocinfo">
+  <h3 class="section-title">6.1 /proc/allocinfo — 内核内存分配溯源</h3>
+
+  <p>
+    <code>/proc/allocinfo</code> 是 Linux 内核新引入的<strong>内存分配剖析（Memory Allocation Profiling）</strong>接口，
+    提供按源文件和行号追踪所有内核内存分配的能力，开销低，适用于生产环境。
+    启用条件：内核编译时开启 <code>CONFIG_MEM_ALLOC_PROFILING</code>，运行时 <code>/proc/sys/vm/mem_profiling = 1</code>。
+    来源：<a class="src-link" href="https://www.kernel.org/doc/html/latest/mm/allocation-profiling.html" target="_blank">kernel.org allocation-profiling 文档</a>
+  </p>
+
+  <pre><span class="comment"># 启用内存分配追踪</span>
+<span class="cmd">echo 1 > /proc/sys/vm/mem_profiling</span>
+
+<span class="comment"># 查看按占用排序的分配来源（来自 kernel.org 官方文档示例）</span>
+<span class="cmd">sort -g /proc/allocinfo | tail | numfmt --to=iec</span>
+
+<span class="comment"># 官方文档示例输出：</span>
+<span class="val">  2.8M    22648 fs/kernfs/dir.c:615 func:__kernfs_new_node</span>
+<span class="val">  3.8M      953 mm/memory.c:4214 func:alloc_anon_folio</span>
+<span class="val">  4.0M     1010 drivers/staging/ctagmod/ctagmod.c:20 [ctagmod] func:ctagmod_start</span>
+<span class="val">  4.1M        4 net/netfilter/nf_conntrack_core.c:2567 func:nf_ct_alloc_hashtable</span>
+<span class="val">  6.0M     1532 mm/filemap.c:1919 func:__filemap_get_folio</span>
+<span class="val">  8.8M     2785 kernel/fork.c:307 func:alloc_thread_stack_node</span>
+<span class="val"> 13.0M      234 block/blk-mq.c:3421 func:blk_mq_alloc_rqs</span>
+<span class="val"> 14.0M     3520 mm/mm_init.c:2530 func:alloc_large_system_hash</span>
+<span class="val"> 15.0M     3656 mm/readahead.c:247 func:page_cache_ra_unbounded</span>
+<span class="val"> 55.0M     4887 mm/slub.c:2259 func:alloc_slab_page</span>
+<span class="val">122.0M    31168 mm/page_ext.c:270 func:alloc_page_ext</span>
+
+<span class="comment"># 格式说明：内存量  分配次数  源文件:行号 func:函数名  [模块名]</span></pre>
+
+  <div class="info-box success">
+    <strong>✅ allocinfo 的独特价值</strong>
+    与 slabinfo 不同，allocinfo 能定位到<strong>具体内核代码行</strong>，包括驱动模块（方括号内为模块名），
+    是排查"内核内存被某个驱动/子系统异常占用"时的利器。
+    其追踪通过 <code>alloc_hooks()</code> 宏实现，嵌套时以最近的 hook 生效，对底层分配（如 slab 内部的 page 分配）有独立计数。
+  </div>
+  </div>
+
+  <div id="ch6-memtrack">
+  <h3 class="section-title">6.2 内存压力追踪</h3>
+
+  <div class="flex-gap">
+    <div class="card" style="flex:1 1 220px">
+      <div class="subsection-title">PSI — 压力失速信息 (Linux 4.20+)</div>
+      <pre style="font-size:12px"><span class="cmd">cat /proc/pressure/memory</span>
+<span class="val">some avg10=0.25 avg60=0.12 avg300=0.05 total=123456</span>
+<span class="val">full avg10=0.00 avg60=0.00 avg300=0.00 total=0</span>
+<span class="comment"># some: 至少1个任务等待内存</span>
+<span class="comment"># full: 所有非空闲任务等待内存</span>
+<span class="comment"># avg10/60/300: 10/60/300秒平均占比(%)</span></pre>
+      <p style="font-size:12px;color:var(--text-muted)">来源：<a href="https://www.kernel.org/doc/html/latest/filesystems/proc.html" target="_blank">kernel.org</a></p>
+    </div>
+    <div class="card" style="flex:1 1 220px">
+      <div class="subsection-title">OOM Killer 分析</div>
+      <pre style="font-size:12px"><span class="comment"># 查看 OOM 历史</span>
+<span class="cmd">dmesg | grep -i 'oom\|out of memory\|killed'</span>
+
+<span class="comment"># 查看进程 OOM 分数</span>
+<span class="cmd">cat /proc/$(pgrep myapp)/oom_score</span>
+<span class="cmd">cat /proc/$(pgrep myapp)/oom_score_adj</span>
+
+<span class="comment"># 调整 OOM 保护（-1000=免死）</span>
+<span class="cmd">echo -500 > /proc/$(pgrep critical)/oom_score_adj</span></pre>
+    </div>
+    <div class="card" style="flex:1 1 220px">
+      <div class="subsection-title">vmstat — 内存回收统计</div>
+      <pre style="font-size:12px"><span class="cmd">vmstat -s | head -30</span>
+<span class="cmd">vmstat 1 10</span>
+<span class="comment"># 关注 si/so（swap in/out）</span>
+<span class="comment"># 嵌入式设备通常无swap</span>
+<span class="comment"># 关注 pgpgin/pgpgout（页面进出）</span>
+<span class="comment"># 关注 pgfault/pgmajfault（缺页）</span></pre>
+    </div>
+  </div>
+  </div>
+
+  <div id="ch6-workflow">
+  <h3 class="section-title">6.3 综合排查工作流</h3>
+
+  <div class="diagram-wrap">
+    <svg viewBox="0 0 680 480" xmlns="http://www.w3.org/2000/svg" style="width:100%;max-width:680px">
+      <defs>
+        <marker id="arr2" markerWidth="8" markerHeight="8" refX="6" refY="4" orient="auto">
+          <path d="M1,1 L7,4 L1,7 Z" fill="#1a73e8"/>
+        </marker>
+        <marker id="arr3" markerWidth="8" markerHeight="8" refX="6" refY="4" orient="auto">
+          <path d="M1,1 L7,4 L1,7 Z" fill="#34a853"/>
+        </marker>
+      </defs>
+
+      <text x="340" y="22" text-anchor="middle" font-size="13" font-weight="bold" fill="#1e2a3a">嵌入式 Linux 内存排查决策流程</text>
+
+      <!-- Step 1 -->
+      <rect x="240" y="36" width="200" height="44" rx="8" fill="#1a73e8"/>
+      <text x="340" y="55" text-anchor="middle" font-size="12" font-weight="bold" fill="white">步骤 1</text>
+      <text x="340" y="71" text-anchor="middle" font-size="11" fill="#c5d8f8">cat /proc/meminfo</text>
+      <line x1="340" y1="80" x2="340" y2="100" stroke="#1a73e8" stroke-width="2" marker-end="url(#arr2)"/>
+
+      <!-- Decision 1 -->
+      <polygon points="340,100 460,130 340,160 220,130" fill="#fef3c7" stroke="#f9ca74" stroke-width="1.5"/>
+      <text x="340" y="126" text-anchor="middle" font-size="11" font-weight="bold" fill="#92400e">MemAvailable 是否</text>
+      <text x="340" y="142" text-anchor="middle" font-size="11" font-weight="bold" fill="#92400e">持续下降？</text>
+
+      <!-- Yes branch: User process -->
+      <line x1="460" y1="130" x2="540" y2="130" stroke="#e53e3e" stroke-width="2" marker-end="url(#arr2)"/>
+      <text x="500" y="124" text-anchor="middle" font-size="10" fill="#e53e3e">是</text>
+      <rect x="540" y="110" width="130" height="40" rx="6" fill="#fee2e2" stroke="#fca5a5"/>
+      <text x="605" y="127" text-anchor="middle" font-size="11" fill="#991b1b">步骤 2A</text>
+      <text x="605" y="142" text-anchor="middle" font-size="10" fill="#991b1b">查用户进程</text>
+
+      <!-- No branch: Kernel -->
+      <line x1="220" y1="130" x2="140" y2="130" stroke="#34a853" stroke-width="2" marker-end="url(#arr3)"/>
+      <text x="180" y="124" text-anchor="middle" font-size="10" fill="#34a853">否/稳定</text>
+      <rect x="10" y="110" width="130" height="40" rx="6" fill="#d1fae5" stroke="#6ee7b7"/>
+      <text x="75" y="127" text-anchor="middle" font-size="11" fill="#065f46">步骤 2B</text>
+      <text x="75" y="142" text-anchor="middle" font-size="10" fill="#065f46">查内核内存</text>
+
+      <!-- User process path -->
+      <line x1="605" y1="150" x2="605" y2="186" stroke="#e53e3e" stroke-width="1.5" marker-end="url(#arr2)"/>
+      <rect x="540" y="186" width="130" height="56" rx="6" fill="#fff5f5" stroke="#fca5a5"/>
+      <text x="605" y="205" text-anchor="middle" font-size="10" font-weight="bold" fill="#991b1b">AnonPages 大？</text>
+      <text x="605" y="219" text-anchor="middle" font-size="10" fill="#c53030">→ smaps_rollup PSS</text>
+      <text x="605" y="233" text-anchor="middle" font-size="10" fill="#c53030">→ VmHWM 上涨=泄漏</text>
+
+      <line x1="605" y1="242" x2="605" y2="276" stroke="#e53e3e" stroke-width="1.5" marker-end="url(#arr2)"/>
+      <rect x="540" y="276" width="130" height="56" rx="6" fill="#fff5f5" stroke="#fca5a5"/>
+      <text x="605" y="295" text-anchor="middle" font-size="10" font-weight="bold" fill="#991b1b">Mapped 大？</text>
+      <text x="605" y="309" text-anchor="middle" font-size="10" fill="#c53030">→ 共享库/mmap</text>
+      <text x="605" y="323" text-anchor="middle" font-size="10" fill="#c53030">→ 查 maps 文件</text>
+
+      <line x1="605" y1="332" x2="605" y2="366" stroke="#e53e3e" stroke-width="1.5" marker-end="url(#arr2)"/>
+      <rect x="540" y="366" width="130" height="44" rx="6" fill="#fff5f5" stroke="#fca5a5"/>
+      <text x="605" y="382" text-anchor="middle" font-size="10" font-weight="bold" fill="#991b1b">Shmem 大？</text>
+      <text x="605" y="396" text-anchor="middle" font-size="10" fill="#c53030">→ tmpfs/共享内存</text>
+
+      <!-- Kernel path -->
+      <line x1="75" y1="150" x2="75" y2="186" stroke="#34a853" stroke-width="1.5" marker-end="url(#arr3)"/>
+      <rect x="10" y="186" width="130" height="56" rx="6" fill="#f0fdf4" stroke="#6ee7b7"/>
+      <text x="75" y="205" text-anchor="middle" font-size="10" font-weight="bold" fill="#065f46">Slab 大？</text>
+      <text x="75" y="219" text-anchor="middle" font-size="10" fill="#047857">→ /proc/slabinfo</text>
+      <text x="75" y="233" text-anchor="middle" font-size="10" fill="#047857">→ slabtop -o</text>
+
+      <line x1="75" y1="242" x2="75" y2="276" stroke="#34a853" stroke-width="1.5" marker-end="url(#arr3)"/>
+      <rect x="10" y="276" width="130" height="56" rx="6" fill="#f0fdf4" stroke="#6ee7b7"/>
+      <text x="75" y="295" text-anchor="middle" font-size="10" font-weight="bold" fill="#065f46">Vmalloc 大？</text>
+      <text x="75" y="309" text-anchor="middle" font-size="10" fill="#047857">→ /proc/vmallocinfo</text>
+      <text x="75" y="323" text-anchor="middle" font-size="10" fill="#047857">→ 查驱动模块</text>
+
+      <line x1="75" y1="332" x2="75" y2="366" stroke="#34a853" stroke-width="1.5" marker-end="url(#arr3)"/>
+      <rect x="10" y="366" width="130" height="44" rx="6" fill="#f0fdf4" stroke="#6ee7b7"/>
+      <text x="75" y="382" text-anchor="middle" font-size="10" font-weight="bold" fill="#065f46">精确溯源？</text>
+      <text x="75" y="396" text-anchor="middle" font-size="10" fill="#047857">→ /proc/allocinfo</text>
+
+      <!-- Common step: fragmentation -->
+      <line x1="340" y1="160" x2="340" y2="194" stroke="#1a73e8" stroke-width="1.5" marker-end="url(#arr2)"/>
+      <rect x="230" y="194" width="220" height="44" rx="6" fill="#e8f0fe" stroke="#93c5fd"/>
+      <text x="340" y="213" text-anchor="middle" font-size="11" font-weight="bold" fill="#1d4ed8">步骤 3：碎片化检查</text>
+      <text x="340" y="228" text-anchor="middle" font-size="10" fill="#1e40af">/proc/buddyinfo + /proc/pagetypeinfo</text>
+
+      <line x1="340" y1="238" x2="340" y2="272" stroke="#1a73e8" stroke-width="1.5" marker-end="url(#arr2)"/>
+      <rect x="230" y="272" width="220" height="56" rx="6" fill="#e8f0fe" stroke="#93c5fd"/>
+      <text x="340" y="291" text-anchor="middle" font-size="11" font-weight="bold" fill="#1d4ed8">步骤 4：CMA / HugeTLB</text>
+      <text x="340" y="308" text-anchor="middle" font-size="10" fill="#1e40af">CmaTotal - CmaFree = DMA 占用</text>
+      <text x="340" y="322" text-anchor="middle" font-size="10" fill="#1e40af">Hugetlb = 大页占用</text>
+
+      <line x1="340" y1="328" x2="340" y2="362" stroke="#1a73e8" stroke-width="1.5" marker-end="url(#arr2)"/>
+      <rect x="230" y="362" width="220" height="44" rx="6" fill="#1e2a3a"/>
+      <text x="340" y="380" text-anchor="middle" font-size="11" font-weight="bold" fill="#c9d4e0">步骤 5：综合判断与优化</text>
+      <text x="340" y="396" text-anchor="middle" font-size="10" fill="#7fa8cc">drop_caches / compact_memory / 业务优化</text>
+
+      <!-- PSI box -->
+      <rect x="230" y="426" width="220" height="44" rx="6" fill="#f3e8ff" stroke="#d8b4fe"/>
+      <text x="340" y="444" text-anchor="middle" font-size="11" font-weight="bold" fill="#6b21a8">持续监控：PSI + OOM 日志</text>
+      <text x="340" y="460" text-anchor="middle" font-size="10" fill="#7e22ce">/proc/pressure/memory | dmesg OOM</text>
+    </svg>
+    <div class="diagram-caption">图 6-1：嵌入式 Linux 物理内存排查决策流程图</div>
+  </div>
+
+  <h3 class="section-title" style="margin-top:24px">快速排查命令速查表</h3>
+
+  <div class="cmd-ref">
+    <div class="cmd-ref-header">📋 命令速查 — 按场景分类</div>
+    <div class="cmd-ref-body">
+      <div class="cmd-row">
+        <div class="cmd-code"><code>cat /proc/meminfo</code></div>
+        <div class="cmd-desc">系统内存全局概况，第一步必看</div>
+      </div>
+      <div class="cmd-row">
+        <div class="cmd-code"><code>free -m</code></div>
+        <div class="cmd-desc">简洁的内存/swap 概要（基于 /proc/meminfo）</div>
+      </div>
+      <div class="cmd-row">
+        <div class="cmd-code"><code>cat /proc/PID/smaps_rollup</code></div>
+        <div class="cmd-desc">单进程内存精确统计（PSS/RSS/Private_Dirty）</div>
+      </div>
+      <div class="cmd-row">
+        <div class="cmd-code"><code>cat /proc/PID/status</code></div>
+        <div class="cmd-desc">进程 VmRSS/VmHWM/RssAnon 等状态</div>
+      </div>
+      <div class="cmd-row">
+        <div class="cmd-code"><code>slabtop -o</code></div>
+        <div class="cmd-desc">Slab 缓存一次性排序输出，找出占用最多的缓存</div>
+      </div>
+      <div class="cmd-row">
+        <div class="cmd-code"><code>cat /proc/slabinfo</code></div>
+        <div class="cmd-desc">Slab 详细统计（active_objs, objsize 等）</div>
+      </div>
+      <div class="cmd-row">
+        <div class="cmd-code"><code>cat /proc/vmallocinfo</code></div>
+        <div class="cmd-desc">vmalloc/ioremap 区域详情（Linux≥4.4 替代 VmallocUsed）</div>
+      </div>
+      <div class="cmd-row">
+        <div class="cmd-code"><code>cat /proc/buddyinfo</code></div>
+        <div class="cmd-desc">各 Zone 各阶空闲块数，诊断物理内存碎片化</div>
+      </div>
+      <div class="cmd-row">
+        <div class="cmd-code"><code>cat /proc/pagetypeinfo</code></div>
+        <div class="cmd-desc">各迁移类型各阶空闲块，比 buddyinfo 更详细</div>
+      </div>
+      <div class="cmd-row">
+        <div class="cmd-code"><code>cat /proc/zoneinfo</code></div>
+        <div class="cmd-desc">各 Zone 详细统计（free/min/low/high 水位）</div>
+      </div>
+      <div class="cmd-row">
+        <div class="cmd-code"><code>cat /proc/iomem</code></div>
+        <div class="cmd-desc">物理地址空间分配（固件保留、内核代码/数据、CMA等）</div>
+      </div>
+      <div class="cmd-row">
+        <div class="cmd-code"><code>cat /proc/pressure/memory</code></div>
+        <div class="cmd-desc">内存压力失速信息 PSI（Linux 4.20+）</div>
+      </div>
+      <div class="cmd-row">
+        <div class="cmd-code"><code>sort -g /proc/allocinfo | tail</code></div>
+        <div class="cmd-desc">按内存量排序的内核分配溯源（需 CONFIG_MEM_ALLOC_PROFILING）</div>
+      </div>
+      <div class="cmd-row">
+        <div class="cmd-code"><code>echo m > /proc/sysrq-trigger</code></div>
+        <div class="cmd-desc">触发内存信息转储到 dmesg/kmsg</div>
+      </div>
+      <div class="cmd-row">
+        <div class="cmd-code"><code>echo 1 > /proc/sys/vm/compact_memory</code></div>
+        <div class="cmd-desc">手动触发内存碎片整理（Compaction）</div>
+      </div>
+      <div class="cmd-row">
+        <div class="cmd-code"><code>echo 3 > /proc/sys/vm/drop_caches</code></div>
+        <div class="cmd-desc">释放 Page Cache + Slab 可回收部分（慎用于生产）</div>
+      </div>
+    </div>
+  </div>
+  </div>
+
+  <div id="ch6-summary">
+  <div class="summary-box">
+    <h4>📌 第六章总结 — 第一性原理综述</h4>
+    <ul>
+      <li><strong>第一性原理综述：</strong>物理内存的一切占用，最终都是对某个物理页帧的引用。内核提供了从"全局快照"（/proc/meminfo）到"逐字节溯源"（/proc/allocinfo）的完整工具链，嵌入式工程师需要按问题类型选择合适的粒度。</li>
+      <li><strong>排查层次</strong>：
+        <ol style="margin-left:18px;margin-top:6px;font-size:14px">
+          <li>全局概况：<code>/proc/meminfo</code> — 判断是用户侧还是内核侧问题</li>
+          <li>用户进程：<code>/proc/PID/smaps_rollup</code>、<code>status</code> — 找出最"胖"的进程</li>
+          <li>内核细分：<code>slabinfo</code>、<code>vmallocinfo</code>、<code>meminfo KernelStack/PageTables</code></li>
+          <li>精确溯源：<code>/proc/allocinfo</code> 定位到内核源代码行/驱动模块</li>
+          <li>碎片化：<code>buddyinfo</code>/<code>pagetypeinfo</code></li>
+          <li>持续监控：<code>/proc/pressure/memory</code> PSI + OOM 日志</li>
+        </ol>
+      </li>
+      <li><strong>嵌入式原则</strong>：在资源受限系统中，优先减少 SUnreclaim（不可回收 Slab，通常与进程数成正比）和 AnonPages（进程堆内存），这两者是无法被内核自动回收的"硬性消耗"。</li>
+    </ul>
+
+    <div style="margin-top:16px;padding-top:14px;border-top:1px solid #2d4f6e">
+      <div style="color:#80b3f8;font-size:13px;font-weight:700;margin-bottom:8px">📚 官方参考来源</div>
+      <div style="font-size:13px;line-height:1.8">
+        • <a href="https://www.kernel.org/doc/html/latest/filesystems/proc.html" target="_blank" style="color:#80b3f8">The /proc Filesystem — The Linux Kernel documentation (kernel.org)</a><br>
+        • <a href="https://www.man7.org/linux/man-pages/man5/proc_meminfo.5.html" target="_blank" style="color:#80b3f8">proc_meminfo(5) - Linux manual page (man7.org)</a><br>
+        • <a href="https://www.kernel.org/doc/html/latest/admin-guide/mm/concepts.html" target="_blank" style="color:#80b3f8">Concepts overview — Memory Management (kernel.org)</a><br>
+        • <a href="https://www.kernel.org/doc/html/latest/mm/allocation-profiling.html" target="_blank" style="color:#80b3f8">MEMORY ALLOCATION PROFILING — The Linux Kernel documentation (kernel.org)</a><br>
+        • <a href="https://www.kernel.org/doc/Documentation/ABI/testing/procfs-smaps_rollup" target="_blank" style="color:#80b3f8">procfs-smaps_rollup ABI Documentation (kernel.org)</a><br>
+        • <a href="https://docs.kernel.org/arch/arm/memory.html" target="_blank" style="color:#80b3f8">Kernel Memory Layout on ARM Linux (kernel.org)</a><br>
+        • <a href="https://lwn.net/Articles/486301/" target="_blank" style="color:#80b3f8">A deep dive into CMA (LWN.net)</a><br>
+        • <a href="https://docs.kernel.org/arch/x86/x86_64/mm.html" target="_blank" style="color:#80b3f8">Memory Management — x86_64 (kernel.org)</a>
+      </div>
+    </div>
+  </div>
+  </div>
+</section>
+
+</main>
+
+<script>
+// ── Progress bar ──
+function updateProgress() {
+  const docH = document.documentElement.scrollHeight - window.innerHeight;
+  const pct = docH > 0 ? (window.scrollY / docH) * 100 : 0;
+  document.getElementById('progress-bar').style.width = pct + '%';
+}
+
+// ── Nav active highlight ──
+const navItems = document.querySelectorAll('.nav-item');
+const chapters = document.querySelectorAll('.chapter, [id^="ch"]');
+
+function updateActiveNav() {
+  const scrollY = window.scrollY + 100;
+  let current = '';
+  document.querySelectorAll('[id]').forEach(el => {
+    if (el.offsetTop <= scrollY) current = el.id;
+  });
+  navItems.forEach(a => {
+    const href = a.getAttribute('href').slice(1);
+    a.classList.toggle('active', href === current);
+  });
+}
+
+window.addEventListener('scroll', () => {
+  updateProgress();
+  updateActiveNav();
+}, { passive: true });
+
+// ── Nav group collapse/expand ──
+function toggleGroup(id) {
+  const grp = document.getElementById(id);
+  const items = grp.querySelector('.nav-group-items');
+  grp.classList.toggle('collapsed');
+  if (grp.classList.contains('collapsed')) {
+    items.style.maxHeight = '0px';
+  } else {
+    items.style.maxHeight = items.scrollHeight + 'px';
+  }
+}
+
+// Init group heights
+document.querySelectorAll('.nav-group').forEach(grp => {
+  const items = grp.querySelector('.nav-group-items');
+  items.style.maxHeight = items.scrollHeight + 'px';
+});
+
+// ── Sidebar mobile ──
+function toggleSidebar() {
+  document.getElementById('sidebar').classList.toggle('open');
+  document.getElementById('sidebar-overlay').classList.toggle('open');
+}
+function closeSidebar() {
+  document.getElementById('sidebar').classList.remove('open');
+  document.getElementById('sidebar-overlay').classList.remove('open');
+}
+
+// ── Keyboard navigation ──
+const chapterIds = ['ch0','ch1','ch2','ch3','ch4','ch5','ch6'];
+function getCurrentChapterIndex() {
+  const scrollY = window.scrollY + 80;
+  let idx = 0;
+  chapterIds.forEach((id, i) => {
+    const el = document.getElementById(id);
+    if (el && el.offsetTop <= scrollY) idx = i;
+  });
+  return idx;
+}
+function scrollToChapter(idx) {
+  if (idx < 0) idx = 0;
+  if (idx >= chapterIds.length) idx = chapterIds.length - 1;
+  const el = document.getElementById(chapterIds[idx]);
+  if (el) el.scrollIntoView({ behavior: 'smooth' });
+}
+function prevChapter() { scrollToChapter(getCurrentChapterIndex() - 1); }
+function nextChapter() { scrollToChapter(getCurrentChapterIndex() + 1); }
+
+document.addEventListener('keydown', e => {
+  if (e.target.tagName === 'INPUT' || e.target.tagName === 'TEXTAREA') return;
+  if (e.key === 'ArrowLeft') prevChapter();
+  if (e.key === 'ArrowRight') nextChapter();
+});
+
+// Init
+updateProgress();
+updateActiveNav();
+</script>
+</body>
+</html>

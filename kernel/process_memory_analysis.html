@@ -1,0 +1,1680 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Linux 进程物理内存精确排查指南</title>
+<style>
+  :root {
+    --bg: #0f1117;
+    --bg2: #1a1d27;
+    --bg3: #22263a;
+    --card: #1e2235;
+    --border: #2e3350;
+    --accent: #4f8ef7;
+    --accent2: #7c3aed;
+    --accent3: #10b981;
+    --accent4: #f59e0b;
+    --accent5: #ef4444;
+    --text: #e2e8f0;
+    --text2: #94a3b8;
+    --text3: #64748b;
+    --code-bg: #0d1117;
+    --code-border: #30363d;
+    --nav-width: 270px;
+    --nav-bg: #13161f;
+  }
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  html { scroll-behavior: smooth; font-size: 15px; }
+  body {
+    background: var(--bg);
+    color: var(--text);
+    font-family: 'Segoe UI', system-ui, -apple-system, sans-serif;
+    line-height: 1.7;
+    overflow-x: hidden;
+  }
+
+  /* ── Progress Bar ── */
+  #progress-bar {
+    position: fixed; top: 0; left: 0; height: 3px;
+    background: linear-gradient(90deg, var(--accent), var(--accent2));
+    z-index: 1000; transition: width 0.1s linear;
+    box-shadow: 0 0 8px var(--accent);
+  }
+
+  /* ── Top Header ── */
+  #top-header {
+    position: fixed; top: 3px; left: 0; right: 0; height: 52px;
+    background: rgba(19,22,31,0.95); backdrop-filter: blur(8px);
+    border-bottom: 1px solid var(--border);
+    display: flex; align-items: center; padding: 0 16px;
+    z-index: 900; gap: 12px;
+  }
+  #hamburger {
+    display: none; background: none; border: none;
+    cursor: pointer; padding: 6px; color: var(--text);
+    flex-direction: column; gap: 4px;
+  }
+  #hamburger span {
+    display: block; width: 22px; height: 2px;
+    background: var(--text); border-radius: 2px;
+    transition: all 0.25s;
+  }
+  .header-title {
+    font-size: 0.95rem; font-weight: 600; color: var(--text);
+    white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+  }
+  .header-badge {
+    margin-left: auto; font-size: 0.7rem; padding: 3px 8px;
+    background: var(--bg3); border: 1px solid var(--border);
+    border-radius: 20px; color: var(--text2); white-space: nowrap;
+  }
+
+  /* ── Layout ── */
+  #layout { display: flex; padding-top: 55px; min-height: 100vh; }
+
+  /* ── Sidebar Nav ── */
+  #sidebar {
+    width: var(--nav-width); flex-shrink: 0;
+    background: var(--nav-bg); border-right: 1px solid var(--border);
+    position: fixed; top: 55px; bottom: 0; left: 0;
+    overflow-y: auto; overflow-x: hidden;
+    transition: transform 0.3s ease;
+    z-index: 800;
+    padding-bottom: 24px;
+  }
+  #sidebar::-webkit-scrollbar { width: 4px; }
+  #sidebar::-webkit-scrollbar-thumb { background: var(--border); border-radius: 2px; }
+
+  .nav-section { margin-top: 8px; }
+  .nav-group-header {
+    display: flex; align-items: center; justify-content: space-between;
+    padding: 10px 16px 6px;
+    font-size: 0.7rem; font-weight: 700; letter-spacing: 0.08em;
+    text-transform: uppercase; color: var(--text3);
+    cursor: pointer; user-select: none;
+    transition: color 0.2s;
+  }
+  .nav-group-header:hover { color: var(--text2); }
+  .nav-group-header .chevron {
+    transition: transform 0.25s; font-style: normal; font-size: 0.65rem;
+  }
+  .nav-group-header.collapsed .chevron { transform: rotate(-90deg); }
+  .nav-items { overflow: hidden; transition: max-height 0.3s ease; }
+  .nav-items.collapsed { max-height: 0 !important; }
+  .nav-item {
+    display: block; padding: 6px 16px 6px 24px;
+    font-size: 0.82rem; color: var(--text2); text-decoration: none;
+    transition: all 0.15s; border-left: 2px solid transparent;
+    white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+  }
+  .nav-item:hover { color: var(--text); background: rgba(79,142,247,0.06); }
+  .nav-item.active {
+    color: var(--accent); border-left-color: var(--accent);
+    background: rgba(79,142,247,0.1); font-weight: 600;
+  }
+  .nav-item.sub { padding-left: 36px; font-size: 0.78rem; }
+
+  /* ── Main Content ── */
+  #main {
+    margin-left: var(--nav-width); flex: 1;
+    padding: 40px 48px 80px;
+    max-width: calc(900px + var(--nav-width));
+    min-width: 0;
+  }
+  .content-inner { max-width: 860px; }
+
+  /* ── Sections ── */
+  .section { margin-bottom: 64px; }
+  .section-anchor { display: block; position: relative; top: -70px; visibility: hidden; }
+
+  h1.page-title {
+    font-size: 2rem; font-weight: 800; margin-bottom: 8px;
+    background: linear-gradient(135deg, var(--accent), var(--accent2));
+    -webkit-background-clip: text; -webkit-text-fill-color: transparent;
+    background-clip: text;
+  }
+  .page-subtitle { color: var(--text2); margin-bottom: 32px; font-size: 0.95rem; }
+  .source-link {
+    display: inline-flex; align-items: center; gap: 4px;
+    font-size: 0.75rem; color: var(--accent); text-decoration: none;
+    border: 1px solid rgba(79,142,247,0.3); border-radius: 4px;
+    padding: 2px 8px; margin-bottom: 24px;
+    transition: all 0.2s;
+  }
+  .source-link:hover { background: rgba(79,142,247,0.1); }
+
+  h2.sec-title {
+    font-size: 1.35rem; font-weight: 700; margin-bottom: 16px;
+    color: var(--text); display: flex; align-items: center; gap: 10px;
+    border-bottom: 1px solid var(--border); padding-bottom: 10px;
+  }
+  h2.sec-title .icon { font-size: 1.1rem; }
+  h3.sub-title {
+    font-size: 1.05rem; font-weight: 600; margin: 24px 0 10px;
+    color: var(--text);
+  }
+  p { color: var(--text2); margin-bottom: 12px; }
+  strong { color: var(--text); }
+
+  /* ── Cards ── */
+  .card {
+    background: var(--card); border: 1px solid var(--border);
+    border-radius: 10px; padding: 20px 24px; margin-bottom: 16px;
+  }
+  .card-grid {
+    display: grid; grid-template-columns: repeat(auto-fit, minmax(240px, 1fr));
+    gap: 14px; margin-bottom: 16px;
+  }
+  .metric-card {
+    background: var(--card); border: 1px solid var(--border);
+    border-radius: 10px; padding: 18px 20px;
+    border-top: 3px solid var(--accent);
+    transition: transform 0.15s, box-shadow 0.15s;
+  }
+  .metric-card:hover { transform: translateY(-2px); box-shadow: 0 4px 20px rgba(0,0,0,0.3); }
+  .metric-card.c1 { border-top-color: var(--accent); }
+  .metric-card.c2 { border-top-color: var(--accent2); }
+  .metric-card.c3 { border-top-color: var(--accent3); }
+  .metric-card.c4 { border-top-color: var(--accent4); }
+  .metric-card.c5 { border-top-color: var(--accent5); }
+  .metric-name {
+    font-weight: 700; font-size: 1rem; margin-bottom: 6px;
+    display: flex; align-items: center; gap: 8px;
+  }
+  .metric-badge {
+    font-size: 0.65rem; padding: 2px 6px; border-radius: 4px;
+    font-weight: 600; letter-spacing: 0.04em;
+  }
+  .badge-rss { background: rgba(79,142,247,0.15); color: var(--accent); }
+  .badge-pss { background: rgba(124,58,237,0.15); color: var(--accent2); }
+  .badge-uss { background: rgba(16,185,129,0.15); color: var(--accent3); }
+  .badge-vsz { background: rgba(245,158,11,0.15); color: var(--accent4); }
+  .badge-info { background: rgba(100,116,139,0.2); color: var(--text3); }
+  .metric-desc { font-size: 0.83rem; color: var(--text2); line-height: 1.5; }
+  .metric-formula {
+    margin-top: 8px; font-size: 0.78rem;
+    color: var(--accent3); font-family: monospace;
+    background: rgba(16,185,129,0.07); padding: 4px 8px; border-radius: 4px;
+  }
+
+  /* ── Code Blocks ── */
+  .code-block {
+    background: var(--code-bg); border: 1px solid var(--code-border);
+    border-radius: 8px; overflow-x: auto; margin: 12px 0;
+    font-family: 'Cascadia Code', 'Fira Code', 'JetBrains Mono', Consolas, monospace;
+    font-size: 0.82rem; line-height: 1.6;
+  }
+  .code-header {
+    display: flex; align-items: center; justify-content: space-between;
+    padding: 8px 14px; background: rgba(255,255,255,0.03);
+    border-bottom: 1px solid var(--code-border);
+    font-size: 0.72rem; color: var(--text3);
+  }
+  .code-lang {
+    color: var(--accent4); font-weight: 600; letter-spacing: 0.04em;
+  }
+  .code-body { padding: 14px 18px; white-space: pre; overflow-x: auto; }
+  .code-body::-webkit-scrollbar { height: 4px; }
+  .code-body::-webkit-scrollbar-thumb { background: var(--border); border-radius: 2px; }
+  .hl-cmd { color: #79c0ff; }
+  .hl-comment { color: #6e7681; }
+  .hl-str { color: #a5d6ff; }
+  .hl-num { color: #f2cc60; }
+  .hl-key { color: #ff7b72; }
+  .hl-path { color: #7ee787; }
+  .hl-out { color: #c3d2df; }
+  .hl-field { color: #d2a8ff; }
+  .hl-val { color: #f2cc60; }
+
+  /* ── Table ── */
+  .table-wrap { overflow-x: auto; margin: 14px 0; border-radius: 8px; border: 1px solid var(--border); }
+  table { width: 100%; border-collapse: collapse; font-size: 0.83rem; }
+  th {
+    background: var(--bg3); color: var(--text); font-weight: 600;
+    padding: 10px 14px; text-align: left; white-space: nowrap;
+    border-bottom: 1px solid var(--border);
+  }
+  td {
+    padding: 9px 14px; color: var(--text2); border-bottom: 1px solid rgba(46,51,80,0.5);
+    vertical-align: top;
+  }
+  tr:last-child td { border-bottom: none; }
+  tr:hover td { background: rgba(79,142,247,0.04); }
+  td code, th code {
+    background: var(--bg3); padding: 1px 5px; border-radius: 4px;
+    font-family: monospace; font-size: 0.8rem; color: var(--accent4);
+  }
+
+  /* ── Alert / Tips ── */
+  .alert {
+    border-radius: 8px; padding: 14px 18px; margin: 14px 0;
+    border-left: 3px solid; font-size: 0.85rem;
+  }
+  .alert-info { background: rgba(79,142,247,0.08); border-color: var(--accent); color: var(--text2); }
+  .alert-warn { background: rgba(245,158,11,0.08); border-color: var(--accent4); color: var(--text2); }
+  .alert-tip  { background: rgba(16,185,129,0.08); border-color: var(--accent3); color: var(--text2); }
+  .alert-title { font-weight: 700; margin-bottom: 4px; color: var(--text); }
+
+  /* ── Summary Box ── */
+  .summary-box {
+    background: linear-gradient(135deg, rgba(79,142,247,0.05), rgba(124,58,237,0.08));
+    border: 1px solid rgba(79,142,247,0.2); border-radius: 10px;
+    padding: 20px 24px; margin-top: 28px;
+  }
+  .summary-box h4 {
+    font-size: 0.85rem; font-weight: 700; color: var(--accent);
+    letter-spacing: 0.06em; text-transform: uppercase; margin-bottom: 10px;
+  }
+  .summary-box ul { padding-left: 20px; }
+  .summary-box li { color: var(--text2); margin-bottom: 6px; font-size: 0.88rem; }
+  .summary-box li strong { color: var(--text); }
+
+  /* ── SVG Charts ── */
+  .svg-wrap {
+    background: var(--card); border: 1px solid var(--border);
+    border-radius: 10px; padding: 20px; margin: 16px 0;
+    overflow: hidden;
+  }
+  .svg-title {
+    font-size: 0.8rem; font-weight: 600; color: var(--text3);
+    text-align: center; margin-bottom: 12px; letter-spacing: 0.05em;
+    text-transform: uppercase;
+  }
+  svg text { font-family: 'Segoe UI', system-ui, sans-serif; }
+
+  /* ── Steps ── */
+  .steps { counter-reset: step-counter; padding: 0; list-style: none; }
+  .steps li {
+    display: flex; gap: 14px; margin-bottom: 16px; align-items: flex-start;
+  }
+  .step-num {
+    counter-increment: step-counter;
+    min-width: 28px; height: 28px; border-radius: 50%;
+    background: var(--accent); color: #fff;
+    display: flex; align-items: center; justify-content: center;
+    font-size: 0.75rem; font-weight: 700; flex-shrink: 0; margin-top: 2px;
+  }
+  .step-content { flex: 1; }
+  .step-content p { margin-bottom: 6px; }
+
+  /* ── Tag Pills ── */
+  .tag {
+    display: inline-block; font-size: 0.7rem; padding: 2px 7px;
+    border-radius: 20px; font-weight: 600; margin-right: 4px;
+  }
+  .tag-kernel { background: rgba(79,142,247,0.12); color: var(--accent); border: 1px solid rgba(79,142,247,0.3); }
+  .tag-tool { background: rgba(16,185,129,0.12); color: var(--accent3); border: 1px solid rgba(16,185,129,0.3); }
+  .tag-since { background: rgba(245,158,11,0.1); color: var(--accent4); border: 1px solid rgba(245,158,11,0.25); }
+
+  /* ── Overlay ── */
+  #overlay {
+    display: none; position: fixed; inset: 0; background: rgba(0,0,0,0.5);
+    z-index: 799; backdrop-filter: blur(2px);
+  }
+
+  /* ── Responsive ── */
+  @media (max-width: 900px) {
+    #hamburger { display: flex; }
+    #sidebar {
+      transform: translateX(-100%);
+    }
+    #sidebar.open { transform: translateX(0); }
+    #overlay.open { display: block; }
+    #main { margin-left: 0; padding: 28px 20px 60px; }
+    h1.page-title { font-size: 1.5rem; }
+    .card-grid { grid-template-columns: 1fr; }
+  }
+  @media (max-width: 600px) {
+    #main { padding: 20px 14px 60px; }
+    h2.sec-title { font-size: 1.15rem; }
+  }
+
+  /* ── kbd ── */
+  kbd {
+    display: inline-block; padding: 2px 7px; border-radius: 4px;
+    background: var(--bg3); border: 1px solid var(--border);
+    font-size: 0.75rem; font-family: monospace; color: var(--text2);
+  }
+
+  .inline-code {
+    background: var(--bg3); padding: 1px 6px; border-radius: 4px;
+    font-family: monospace; font-size: 0.84rem; color: var(--accent4);
+  }
+
+  .relation-formula {
+    text-align: center; font-size: 1rem; font-weight: 700;
+    color: var(--accent4); margin: 16px 0; padding: 12px;
+    background: var(--bg3); border-radius: 8px; font-family: monospace;
+  }
+</style>
+</head>
+<body>
+
+<div id="progress-bar" style="width:0%"></div>
+
+<div id="top-header">
+  <button id="hamburger" aria-label="菜单" onclick="toggleNav()">
+    <span></span><span></span><span></span>
+  </button>
+  <span class="header-title">🐧 Linux 进程物理内存精确排查指南</span>
+  <span class="header-badge">基于 Kernel 官方文档</span>
+</div>
+
+<div id="overlay" onclick="toggleNav()"></div>
+
+<div id="layout">
+  <!-- SIDEBAR -->
+  <nav id="sidebar">
+    <div class="nav-section">
+      <div class="nav-group-header" onclick="toggleGroup(this)">
+        <span>概览</span><i class="chevron">▾</i>
+      </div>
+      <div class="nav-items" style="max-height:200px">
+        <a class="nav-item" href="#intro" onclick="navClick()">📖 背景与概念</a>
+        <a class="nav-item" href="#metrics" onclick="navClick()">📊 核心指标总览</a>
+      </div>
+    </div>
+    <div class="nav-section">
+      <div class="nav-group-header" onclick="toggleGroup(this)">
+        <span>procfs 接口</span><i class="chevron">▾</i>
+      </div>
+      <div class="nav-items" style="max-height:400px">
+        <a class="nav-item" href="#proc-status" onclick="navClick()">📄 /proc/pid/status</a>
+        <a class="nav-item sub" href="#vmrss-breakdown" onclick="navClick()">↳ VmRSS 三组分</a>
+        <a class="nav-item" href="#proc-smaps" onclick="navClick()">📄 /proc/pid/smaps</a>
+        <a class="nav-item sub" href="#smaps-fields" onclick="navClick()">↳ 字段详解</a>
+        <a class="nav-item" href="#proc-smaps-rollup" onclick="navClick()">📄 smaps_rollup</a>
+        <a class="nav-item" href="#proc-statm" onclick="navClick()">📄 /proc/pid/statm</a>
+      </div>
+    </div>
+    <div class="nav-section">
+      <div class="nav-group-header" onclick="toggleGroup(this)">
+        <span>用户空间工具</span><i class="chevron">▾</i>
+      </div>
+      <div class="nav-items" style="max-height:400px">
+        <a class="nav-item" href="#tool-ps-top" onclick="navClick()">🔧 ps / top</a>
+        <a class="nav-item" href="#tool-pmap" onclick="navClick()">🔧 pmap</a>
+        <a class="nav-item" href="#tool-smem" onclick="navClick()">🔧 smem</a>
+        <a class="nav-item" href="#tool-awk" onclick="navClick()">🔧 awk 手工汇总</a>
+      </div>
+    </div>
+    <div class="nav-section">
+      <div class="nav-group-header" onclick="toggleGroup(this)">
+        <span>深度分析</span><i class="chevron">▾</i>
+      </div>
+      <div class="nav-items" style="max-height:300px">
+        <a class="nav-item" href="#comparison" onclick="navClick()">⚖️ 指标对比与选择</a>
+        <a class="nav-item" href="#workflow" onclick="navClick()">🗺️ 排查流程</a>
+      </div>
+    </div>
+    <div class="nav-section">
+      <div class="nav-group-header" onclick="toggleGroup(this)">
+        <span>参考</span><i class="chevron">▾</i>
+      </div>
+      <div class="nav-items" style="max-height:200px">
+        <a class="nav-item" href="#refs" onclick="navClick()">🔗 原文链接</a>
+      </div>
+    </div>
+  </nav>
+
+  <!-- MAIN -->
+  <main id="main">
+  <div class="content-inner">
+
+    <!-- ═══ INTRO ═══ -->
+    <span id="intro" class="section-anchor"></span>
+    <div class="section">
+      <h1 class="page-title">Linux 进程物理内存精确排查</h1>
+      <p class="page-subtitle">如何准确测量某个进程占用的物理内存及各部分的构成 —— 基于 Linux 内核官方 proc 文档与 man-pages</p>
+
+      <a class="source-link" href="https://www.kernel.org/doc/Documentation/filesystems/proc.rst" target="_blank">📎 Linux Kernel Documentation: /proc Filesystem</a>
+      <a class="source-link" href="https://man7.org/linux/man-pages/man5/proc_pid_smaps.5.html" target="_blank">📎 man7.org: proc_pid_smaps(5)</a>
+      <a class="source-link" href="https://man7.org/linux/man-pages/man5/proc_pid_status.5.html" target="_blank">📎 man7.org: proc_pid_status(5)</a>
+
+      <h2 class="sec-title"><span class="icon">📖</span>背景与第一性原理</h2>
+      <p>
+        在 Linux 中，进程使用<strong>虚拟内存</strong>（Virtual Memory）。内核通过<strong>页表</strong>（Page Table）将虚拟地址映射到物理页框。
+        物理内存（RAM）中实际驻留的那部分内存才是我们真正关心的"占用"量。
+      </p>
+      <p>
+        "一个进程占多少物理内存"并没有唯一答案，原因是：多个进程可以<strong>共享</strong>同一份物理页（如共享库、共享内存段）。
+        因此，内核提供了多种视角的统计指标，从不同维度反映内存使用情况。
+      </p>
+
+      <!-- SVG: Virtual → Physical mapping -->
+      <div class="svg-wrap">
+        <div class="svg-title">虚拟地址空间 → 物理内存 映射关系示意</div>
+        <svg viewBox="0 0 720 220" width="100%" style="max-width:720px;display:block;margin:0 auto">
+          <!-- Process A -->
+          <rect x="20" y="30" width="130" height="160" rx="6" fill="#1e2235" stroke="#2e3350" stroke-width="1.5"/>
+          <text x="85" y="22" text-anchor="middle" fill="#94a3b8" font-size="11" font-weight="600">进程 A 虚拟空间</text>
+          <rect x="30" y="40" width="110" height="28" rx="4" fill="rgba(79,142,247,0.2)" stroke="#4f8ef7" stroke-width="1"/>
+          <text x="85" y="59" text-anchor="middle" fill="#4f8ef7" font-size="10">代码段 [text]</text>
+          <rect x="30" y="76" width="110" height="28" rx="4" fill="rgba(16,185,129,0.15)" stroke="#10b981" stroke-width="1"/>
+          <text x="85" y="95" text-anchor="middle" fill="#10b981" font-size="10">堆 [heap]</text>
+          <rect x="30" y="112" width="110" height="28" rx="4" fill="rgba(245,158,11,0.15)" stroke="#f59e0b" stroke-width="1"/>
+          <text x="85" y="131" text-anchor="middle" fill="#f59e0b" font-size="10">共享库 libc</text>
+          <rect x="30" y="148" width="110" height="28" rx="4" fill="rgba(124,58,237,0.15)" stroke="#7c3aed" stroke-width="1"/>
+          <text x="85" y="167" text-anchor="middle" fill="#7c3aed" font-size="10">栈 [stack]</text>
+
+          <!-- Process B -->
+          <rect x="570" y="30" width="130" height="160" rx="6" fill="#1e2235" stroke="#2e3350" stroke-width="1.5"/>
+          <text x="635" y="22" text-anchor="middle" fill="#94a3b8" font-size="11" font-weight="600">进程 B 虚拟空间</text>
+          <rect x="580" y="40" width="110" height="28" rx="4" fill="rgba(79,142,247,0.2)" stroke="#4f8ef7" stroke-width="1"/>
+          <text x="635" y="59" text-anchor="middle" fill="#4f8ef7" font-size="10">代码段 [text]</text>
+          <rect x="580" y="76" width="110" height="28" rx="4" fill="rgba(16,185,129,0.15)" stroke="#10b981" stroke-width="1"/>
+          <text x="635" y="95" text-anchor="middle" fill="#10b981" font-size="10">堆 [heap]</text>
+          <rect x="580" y="112" width="110" height="28" rx="4" fill="rgba(245,158,11,0.15)" stroke="#f59e0b" stroke-width="1"/>
+          <text x="635" y="131" text-anchor="middle" fill="#f59e0b" font-size="10">共享库 libc</text>
+          <rect x="580" y="148" width="110" height="28" rx="4" fill="rgba(124,58,237,0.15)" stroke="#7c3aed" stroke-width="1"/>
+          <text x="635" y="167" text-anchor="middle" fill="#7c3aed" font-size="10">栈 [stack]</text>
+
+          <!-- Physical RAM -->
+          <rect x="255" y="20" width="210" height="180" rx="6" fill="#13161f" stroke="#2e3350" stroke-width="1.5"/>
+          <text x="360" y="14" text-anchor="middle" fill="#94a3b8" font-size="11" font-weight="600">物理内存 (RAM)</text>
+          <rect x="265" y="30" width="95" height="28" rx="4" fill="rgba(79,142,247,0.25)" stroke="#4f8ef7" stroke-width="1"/>
+          <text x="312" y="49" text-anchor="middle" fill="#4f8ef7" font-size="10">代码页 (A)</text>
+          <rect x="368" y="30" width="87" height="28" rx="4" fill="rgba(79,142,247,0.25)" stroke="#4f8ef7" stroke-width="1"/>
+          <text x="411" y="49" text-anchor="middle" fill="#4f8ef7" font-size="10">代码页 (B)</text>
+          <rect x="265" y="68" width="95" height="28" rx="4" fill="rgba(16,185,129,0.2)" stroke="#10b981" stroke-width="1"/>
+          <text x="312" y="87" text-anchor="middle" fill="#10b981" font-size="10">堆页 (A私有)</text>
+          <rect x="368" y="68" width="87" height="28" rx="4" fill="rgba(16,185,129,0.2)" stroke="#10b981" stroke-width="1"/>
+          <text x="411" y="87" text-anchor="middle" fill="#10b981" font-size="10">堆页 (B私有)</text>
+          <!-- Shared libc page -->
+          <rect x="290" y="108" width="140" height="30" rx="4" fill="rgba(245,158,11,0.25)" stroke="#f59e0b" stroke-width="1.5" stroke-dasharray="4,2"/>
+          <text x="360" y="128" text-anchor="middle" fill="#f59e0b" font-size="10" font-weight="600">libc 共享页 (A+B共用)</text>
+          <rect x="265" y="150" width="95" height="28" rx="4" fill="rgba(124,58,237,0.2)" stroke="#7c3aed" stroke-width="1"/>
+          <text x="312" y="169" text-anchor="middle" fill="#7c3aed" font-size="10">栈页 (A私有)</text>
+          <rect x="368" y="150" width="87" height="28" rx="4" fill="rgba(124,58,237,0.2)" stroke="#7c3aed" stroke-width="1"/>
+          <text x="411" y="169" text-anchor="middle" fill="#7c3aed" font-size="10">栈页 (B私有)</text>
+
+          <!-- Arrows A -->
+          <line x1="140" y1="54" x2="262" y2="44" stroke="#4f8ef7" stroke-width="1" opacity="0.6" marker-end="url(#arr)"/>
+          <line x1="140" y1="90" x2="262" y2="82" stroke="#10b981" stroke-width="1" opacity="0.6" marker-end="url(#arr)"/>
+          <line x1="140" y1="126" x2="287" y2="122" stroke="#f59e0b" stroke-width="1.5" opacity="0.8" marker-end="url(#arr)"/>
+          <line x1="140" y1="162" x2="262" y2="163" stroke="#7c3aed" stroke-width="1" opacity="0.6" marker-end="url(#arr)"/>
+          <!-- Arrows B -->
+          <line x1="570" y1="54" x2="458" y2="44" stroke="#4f8ef7" stroke-width="1" opacity="0.6" marker-end="url(#arr)"/>
+          <line x1="570" y1="90" x2="458" y2="82" stroke="#10b981" stroke-width="1" opacity="0.6" marker-end="url(#arr)"/>
+          <line x1="570" y1="126" x2="433" y2="122" stroke="#f59e0b" stroke-width="1.5" opacity="0.8" marker-end="url(#arr)"/>
+          <line x1="570" y1="162" x2="458" y2="163" stroke="#7c3aed" stroke-width="1" opacity="0.6" marker-end="url(#arr)"/>
+          <defs>
+            <marker id="arr" markerWidth="6" markerHeight="6" refX="5" refY="3" orient="auto">
+              <path d="M0,0 L0,6 L6,3 z" fill="#64748b"/>
+            </marker>
+          </defs>
+          <!-- Label -->
+          <text x="360" y="210" text-anchor="middle" fill="#64748b" font-size="10">↑ 共享库只在物理内存中存在一份，但会被 RSS 重复计数</text>
+        </svg>
+      </div>
+
+      <div class="summary-box">
+        <h4>📌 第一性原理小结</h4>
+        <ul>
+          <li><strong>虚拟内存 ≠ 物理内存</strong>：进程的地址空间远大于其实际占用的物理 RAM。</li>
+          <li><strong>共享页是核心难题</strong>：同一物理页可被多个进程映射，如何"分摊"决定了 RSS/PSS/USS 的差异。</li>
+          <li><strong>唯一精确来源</strong>：<code class="inline-code">/proc/&lt;pid&gt;/smaps</code> 逐段记录每个内存映射区域 (VMA) 的实际居留量，是最权威的数据源。</li>
+          <li><strong>内核文档警告</strong>：<code class="inline-code">/proc/&lt;pid&gt;/status</code> 中的 RSS 值因内核异步更新，可能不够精确；要获取精确快照，需扫描 smaps 文件（速度较慢但精准）。</li>
+        </ul>
+      </div>
+    </div>
+
+    <!-- ═══ METRICS OVERVIEW ═══ -->
+    <span id="metrics" class="section-anchor"></span>
+    <div class="section">
+      <h2 class="sec-title"><span class="icon">📊</span>核心指标总览</h2>
+      <p>以下五个指标是 Linux 进程内存分析的核心，理解它们的区别是排查的基础：</p>
+
+      <div class="card-grid">
+        <div class="metric-card c4">
+          <div class="metric-name"><span class="metric-badge badge-vsz">VSZ</span> 虚拟内存大小</div>
+          <div class="metric-desc">进程可访问的全部虚拟地址空间大小，包含已分配但未使用的区域、已交换出去的页、共享库全部映射大小。<strong>严重高估实际内存用量</strong>，通常没有实际排查意义。</div>
+          <div class="metric-formula">≈ VmSize in /proc/pid/status</div>
+        </div>
+        <div class="metric-card c1">
+          <div class="metric-name"><span class="metric-badge badge-rss">RSS</span> 驻留集大小</div>
+          <div class="metric-desc">进程当前驻留在物理 RAM 中的页面总量，包含共享库中当前已加载的所有页。<strong>会重复计数共享页</strong>，多进程共享同一库时 RSS 被高估。</div>
+          <div class="metric-formula">= RssAnon + RssFile + RssShmem</div>
+        </div>
+        <div class="metric-card c2">
+          <div class="metric-name"><span class="metric-badge badge-pss">PSS</span> 比例分摊大小</div>
+          <div class="metric-desc">将共享页按共享进程数均摊后的内存量。私有页 100% 计入，共享页按 1/N 计入（N 为共享该页的进程数）。<strong>最能反映单进程实际内存代价</strong>，所有进程 PSS 之和等于系统总内存用量。</div>
+          <div class="metric-formula">Σ (private_pages + shared_pages / N)</div>
+        </div>
+        <div class="metric-card c3">
+          <div class="metric-name"><span class="metric-badge badge-uss">USS</span> 独占集大小</div>
+          <div class="metric-desc">进程完全私有的内存页，即只有该进程映射的页面（Private_Clean + Private_Dirty）。<strong>若该进程退出，USS 就是系统实际回收量</strong>，也是判断内存泄漏的最佳指标。</div>
+          <div class="metric-formula">= Σ (Private_Clean + Private_Dirty)</div>
+        </div>
+        <div class="metric-card c5">
+          <div class="metric-name"><span class="metric-badge badge-info">Swap</span> 交换空间</div>
+          <div class="metric-desc">进程的匿名私有内存被换出到 swap 分区的量。不占用物理 RAM，但属于进程"逻辑内存"的一部分。SwapPss 是按比例分摊的 swap 大小。</div>
+          <div class="metric-formula">VmSwap in /proc/pid/status</div>
+        </div>
+      </div>
+
+      <!-- SVG: Relationship diagram -->
+      <div class="svg-wrap">
+        <div class="svg-title">VSZ / RSS / PSS / USS 大小关系</div>
+        <svg viewBox="0 0 680 160" width="100%" style="max-width:680px;display:block;margin:0 auto">
+          <!-- VSZ bar -->
+          <rect x="20" y="30" width="640" height="32" rx="5" fill="rgba(245,158,11,0.12)" stroke="#f59e0b" stroke-width="1.5"/>
+          <text x="30" y="51" fill="#f59e0b" font-size="11" font-weight="700">VSZ</text>
+          <text x="650" y="51" text-anchor="end" fill="#f59e0b" font-size="10">全部虚拟地址空间</text>
+
+          <!-- RSS bar -->
+          <rect x="20" y="72" width="380" height="32" rx="5" fill="rgba(79,142,247,0.18)" stroke="#4f8ef7" stroke-width="1.5"/>
+          <text x="30" y="93" fill="#4f8ef7" font-size="11" font-weight="700">RSS</text>
+          <!-- PSS bar -->
+          <rect x="20" y="72" width="240" height="32" rx="5" fill="rgba(124,58,237,0.22)" stroke="#7c3aed" stroke-width="1.5"/>
+          <text x="30" y="115" fill="#7c3aed" font-size="11" font-weight="700">PSS</text>
+          <!-- USS bar -->
+          <rect x="20" y="72" width="140" height="32" rx="5" fill="rgba(16,185,129,0.3)" stroke="#10b981" stroke-width="1.5"/>
+          <text x="30" y="74" fill="#10b981" font-size="10" dy="18" font-weight="700">USS</text>
+
+          <!-- Labels -->
+          <text x="90" y="93" fill="#e2e8f0" font-size="10">私有页(USS)</text>
+          <text x="180" y="93" fill="#e2e8f0" font-size="10">+共享页(按比例)</text>
+          <text x="295" y="93" fill="#e2e8f0" font-size="10">+共享页全量</text>
+          <text x="400" y="93" fill="#64748b" font-size="10">未驻留/交换</text>
+          <text x="540" y="93" fill="#64748b" font-size="10">未使用/未分配</text>
+
+          <!-- Arrows between bars -->
+          <line x1="160" y1="108" x2="160" y2="140" stroke="#64748b" stroke-width="1" stroke-dasharray="3,2"/>
+          <line x1="280" y1="108" x2="280" y2="140" stroke="#64748b" stroke-width="1" stroke-dasharray="3,2"/>
+          <line x1="400" y1="108" x2="400" y2="140" stroke="#64748b" stroke-width="1" stroke-dasharray="3,2"/>
+          <text x="360" y="153" text-anchor="middle" fill="#64748b" font-size="10">USS ≤ PSS ≤ RSS ≤ VSZ</text>
+        </svg>
+      </div>
+
+      <div class="relation-formula">USS ≤ PSS ≤ RSS ≤ VSZ</div>
+
+      <div class="summary-box">
+        <h4>📌 本章小结</h4>
+        <ul>
+          <li><strong>不要用 VSZ</strong> 判断实际内存占用，它包含大量未使用的虚拟地址空间。</li>
+          <li><strong>RSS 会高估</strong>：若进程链接了 libssl（10MB），而系统中还有 99 个进程也使用它，每个进程的 RSS 都包含这 10MB，但物理上只有一份。</li>
+          <li><strong>PSS 最均衡</strong>：适合统计整体内存压力；<strong>USS 最保守</strong>：适合定位内存泄漏（退出后真实释放量）。</li>
+          <li>所有精确数据来自 <code class="inline-code">/proc/&lt;pid&gt;/smaps</code>，RSS 快速估算来自 <code class="inline-code">/proc/&lt;pid&gt;/status</code>。</li>
+        </ul>
+      </div>
+    </div>
+
+    <!-- ═══ /proc/pid/status ═══ -->
+    <span id="proc-status" class="section-anchor"></span>
+    <div class="section">
+      <h2 class="sec-title"><span class="icon">📄</span>/proc/&lt;pid&gt;/status</h2>
+      <p>
+        <span class="tag tag-kernel">内核接口</span>
+        <span class="tag tag-since">since Linux 2.x</span>
+        最快速的内存信息查看入口，以人类可读格式提供进程内存统计。
+        内核文档说明：RSS 相关信息以异步方式处理，数值可能不够精确，若需精确快照应扫描 smaps 文件。
+      </p>
+
+      <div class="code-block">
+        <div class="code-header"><span class="code-lang">SHELL</span><span>查看进程内存状态</span></div>
+        <div class="code-body"><span class="hl-comment"># 替换 &lt;PID&gt; 为实际进程ID，例如 1234</span>
+<span class="hl-cmd">cat /proc/&lt;PID&gt;/status</span>
+
+<span class="hl-comment"># 只过滤内存相关字段</span>
+<span class="hl-cmd">grep -E '^(Vm|Rss|Huge)' /proc/&lt;PID&gt;/status</span>
+
+<span class="hl-comment"># 示例输出（内核文档 proc.txt 原文）</span>
+<span class="hl-field">VmPeak</span>:   <span class="hl-num"> 5004</span> kB   <span class="hl-comment"># 虚拟内存峰值</span>
+<span class="hl-field">VmSize</span>:   <span class="hl-num"> 5004</span> kB   <span class="hl-comment"># 当前虚拟内存大小 (VSZ)</span>
+<span class="hl-field">VmLck</span>:    <span class="hl-num">    0</span> kB   <span class="hl-comment"># 锁定在内存中的页（mlock）</span>
+<span class="hl-field">VmPin</span>:    <span class="hl-num">    0</span> kB   <span class="hl-comment"># 固定页（since Linux 3.2）</span>
+<span class="hl-field">VmHWM</span>:    <span class="hl-num">  476</span> kB   <span class="hl-comment"># RSS 历史峰值（high water mark）</span>
+<span class="hl-field">VmRSS</span>:    <span class="hl-num">  476</span> kB   <span class="hl-comment"># 当前驻留物理内存 (RSS)</span>
+<span class="hl-field">RssAnon</span>:  <span class="hl-num">  352</span> kB   <span class="hl-comment"># 匿名内存（堆、栈、私有mmap）</span>
+<span class="hl-field">RssFile</span>:  <span class="hl-num">  120</span> kB   <span class="hl-comment"># 文件映射内存（代码段、共享库）</span>
+<span class="hl-field">RssShmem</span>: <span class="hl-num">    4</span> kB   <span class="hl-comment"># 共享内存（SysV shm, tmpfs, 匿名共享映射）</span>
+<span class="hl-field">VmData</span>:   <span class="hl-num">  156</span> kB   <span class="hl-comment"># 私有数据段大小</span>
+<span class="hl-field">VmStk</span>:    <span class="hl-num">   88</span> kB   <span class="hl-comment"># 栈段大小</span>
+<span class="hl-field">VmExe</span>:    <span class="hl-num">   68</span> kB   <span class="hl-comment"># 代码段（text）大小</span>
+<span class="hl-field">VmLib</span>:    <span class="hl-num"> 1412</span> kB   <span class="hl-comment"># 共享库代码大小</span>
+<span class="hl-field">VmPTE</span>:    <span class="hl-num">   20</span> kB   <span class="hl-comment"># 页表项大小</span>
+<span class="hl-field">VmSwap</span>:   <span class="hl-num">    0</span> kB   <span class="hl-comment"># 匿名私有数据被换出的大小</span>
+<span class="hl-field">HugetlbPages</span>: <span class="hl-num"> 0</span> kB   <span class="hl-comment"># 大页内存大小</span></div>
+      </div>
+
+      <span id="vmrss-breakdown" class="section-anchor"></span>
+      <h3 class="sub-title">VmRSS 三组分详解</h3>
+      <p>
+        自 <strong>Linux 4.5</strong> 起，内核将 VmRSS 分解为三个子字段（由 Jerome Marchand 提交的
+        <a href="https://lkml.iu.edu/hypermail/linux/kernel/1511.2/02256.html" target="_blank" style="color:var(--accent)">内核补丁</a>引入）：
+      </p>
+
+      <div class="table-wrap">
+        <table>
+          <tr>
+            <th>字段</th><th>含义</th><th>典型来源</th><th>内核版本</th>
+          </tr>
+          <tr>
+            <td><code>RssAnon</code></td>
+            <td>居住于 RAM 的<strong>匿名内存</strong>页</td>
+            <td>malloc 分配的堆、栈、私有 mmap(MAP_ANONYMOUS)</td>
+            <td><span class="tag tag-since">since 4.5</span></td>
+          </tr>
+          <tr>
+            <td><code>RssFile</code></td>
+            <td>居住于 RAM 的<strong>文件映射</strong>页</td>
+            <td>可执行文件代码段、共享库 .so 文件</td>
+            <td><span class="tag tag-since">since 4.5</span></td>
+          </tr>
+          <tr>
+            <td><code>RssShmem</code></td>
+            <td>居住于 RAM 的<strong>共享内存</strong>页</td>
+            <td>SysV shm、tmpfs 映射、匿名共享映射</td>
+            <td><span class="tag tag-since">since 4.5</span></td>
+          </tr>
+        </table>
+      </div>
+
+      <div class="relation-formula">VmRSS = RssAnon + RssFile + RssShmem</div>
+
+      <!-- SVG: VmRSS decomposition pie -->
+      <div class="svg-wrap">
+        <div class="svg-title">VmRSS 三组分示意（以 bash 进程为例）</div>
+        <svg viewBox="0 0 520 180" width="100%" style="max-width:520px;display:block;margin:0 auto">
+          <!-- Stacked bar -->
+          <rect x="60" y="50" width="400" height="50" rx="6" fill="#1a1d27" stroke="#2e3350" stroke-width="1"/>
+          <!-- RssAnon: 74% -->
+          <rect x="60" y="50" width="296" height="50" rx="6" fill="rgba(16,185,129,0.4)" stroke="#10b981" stroke-width="1.5"/>
+          <!-- RssFile: 22% -->
+          <rect x="356" y="50" width="88" height="50" fill="rgba(79,142,247,0.4)" stroke="#4f8ef7" stroke-width="1.5"/>
+          <!-- RssShmem: 4% -->
+          <rect x="444" y="50" width="16" height="50" rx="0 6 6 0" fill="rgba(245,158,11,0.4)" stroke="#f59e0b" stroke-width="1.5"/>
+          <!-- fix left radius for last -->
+
+          <!-- Labels above -->
+          <text x="208" y="43" text-anchor="middle" fill="#10b981" font-size="11" font-weight="700">RssAnon ~74%</text>
+          <text x="400" y="43" text-anchor="middle" fill="#4f8ef7" font-size="11" font-weight="700">RssFile ~22%</text>
+          <text x="452" y="43" text-anchor="middle" fill="#f59e0b" font-size="10">~4%</text>
+
+          <!-- Labels below -->
+          <text x="208" y="118" text-anchor="middle" fill="#10b981" font-size="10">堆 / 栈 / 私有匿名映射</text>
+          <text x="400" y="118" text-anchor="middle" fill="#4f8ef7" font-size="10">代码段 / 共享库</text>
+          <text x="452" y="130" text-anchor="middle" fill="#f59e0b" font-size="9">SysV shm</text>
+
+          <text x="260" y="78" text-anchor="middle" fill="#e2e8f0" font-size="13" font-weight="700">VmRSS = RssAnon + RssFile + RssShmem</text>
+
+          <text x="260" y="160" text-anchor="middle" fill="#64748b" font-size="10">比例仅为示意，实际值取决于进程类型</text>
+        </svg>
+      </div>
+
+      <div class="alert alert-warn">
+        <div class="alert-title">⚠️ 精度说明（内核文档原文）</div>
+        对于 SMP（多处理器）配置，RSS 相关信息以异步方式处理，因此数值可能不够精确。
+        若需获取某一时刻的精确快照，应读取 <code class="inline-code">/proc/&lt;pid&gt;/smaps</code> 文件并扫描页表（速度较慢但非常精确）。
+        <br><small style="color:var(--text3)">来源: kernel.org Documentation/filesystems/proc.txt</small>
+      </div>
+
+      <h3 class="sub-title">主要字段参考表</h3>
+      <div class="table-wrap">
+        <table>
+          <tr><th>字段</th><th>说明</th><th>是否物理内存</th></tr>
+          <tr><td><code>VmPeak</code></td><td>虚拟内存使用峰值</td><td>❌ 虚拟</td></tr>
+          <tr><td><code>VmSize</code></td><td>当前虚拟内存总量 (VSZ)</td><td>❌ 虚拟</td></tr>
+          <tr><td><code>VmHWM</code></td><td>RSS 历史高水位（峰值）</td><td>✅ 物理峰值</td></tr>
+          <tr><td><code>VmRSS</code></td><td>当前驻留物理内存 (RSS)</td><td>✅ 物理（含共享）</td></tr>
+          <tr><td><code>RssAnon</code></td><td>匿名驻留页（堆/栈）</td><td>✅ 物理（私有为主）</td></tr>
+          <tr><td><code>RssFile</code></td><td>文件映射驻留页（代码/库）</td><td>✅ 物理（含共享）</td></tr>
+          <tr><td><code>RssShmem</code></td><td>共享内存驻留页</td><td>✅ 物理（含共享）</td></tr>
+          <tr><td><code>VmData</code></td><td>私有数据段（虚拟）</td><td>❌ 虚拟</td></tr>
+          <tr><td><code>VmStk</code></td><td>栈段（虚拟）</td><td>❌ 虚拟</td></tr>
+          <tr><td><code>VmExe</code></td><td>代码段（不含库，虚拟）</td><td>❌ 虚拟</td></tr>
+          <tr><td><code>VmLib</code></td><td>共享库代码（虚拟）</td><td>❌ 虚拟</td></tr>
+          <tr><td><code>VmPTE</code></td><td>页表项占用内存</td><td>✅ 物理（内核态）</td></tr>
+          <tr><td><code>VmSwap</code></td><td>匿名私有数据换出量</td><td>❌ 在交换分区</td></tr>
+          <tr><td><code>HugetlbPages</code></td><td>大页内存大小</td><td>✅ 物理（大页）</td></tr>
+        </table>
+      </div>
+
+      <div class="summary-box">
+        <h4>📌 本章小结</h4>
+        <ul>
+          <li><code class="inline-code">/proc/&lt;pid&gt;/status</code> 是<strong>快速估算</strong>的首选，命令简单，字段人类可读。</li>
+          <li><strong>VmRSS</strong> 是最常用的物理内存指标，但含重复计数的共享页；其三组分（RssAnon/RssFile/RssShmem）可帮助定位内存类型。</li>
+          <li>该文件的 RSS 值由内核异步更新，<strong>不保证实时精确</strong>，生产环境精确排查应配合 smaps。</li>
+        </ul>
+      </div>
+    </div>
+
+    <!-- ═══ /proc/pid/smaps ═══ -->
+    <span id="proc-smaps" class="section-anchor"></span>
+    <div class="section">
+      <h2 class="sec-title"><span class="icon">📄</span>/proc/&lt;pid&gt;/smaps</h2>
+      <p>
+        <span class="tag tag-kernel">内核接口</span>
+        <span class="tag tag-since">since Linux 2.6.14</span>
+        <span class="tag tag-tool">CONFIG_PROC_PAGE_MONITOR</span>
+        smaps 是内存分析的<strong>最权威精确数据源</strong>，为进程的每个虚拟内存区域（VMA / 内存映射段）单独列出物理内存使用情况。
+      </p>
+      <p>
+        根据 <a href="https://man7.org/linux/man-pages/man5/proc_pid_smaps.5.html" target="_blank" style="color:var(--accent)">man7.org: proc_pid_smaps(5)</a>
+        和 <a href="https://www.kernel.org/doc/Documentation/filesystems/proc.rst" target="_blank" style="color:var(--accent)">kernel.org: proc.rst</a>：
+        "此文件展示进程每个内存映射的内存消耗情况"。
+      </p>
+
+      <div class="code-block">
+        <div class="code-header"><span class="code-lang">SHELL</span><span>查看 smaps（以 /bin/bash 为例）</span></div>
+        <div class="code-body"><span class="hl-cmd">cat /proc/&lt;PID&gt;/smaps</span>
+
+<span class="hl-comment"># 典型输出（来自 Linux man-pages 6.18 官方示例）：</span>
+<span class="hl-path">00400000-0048a000 r-xp 00000000 fd:03 960637       /bin/bash</span>
+<span class="hl-field">Size</span>:                <span class="hl-num">552</span> kB  <span class="hl-comment"># 该VMA虚拟地址空间大小</span>
+<span class="hl-field">Rss</span>:                 <span class="hl-num">460</span> kB  <span class="hl-comment"># 当前驻留物理RAM的量</span>
+<span class="hl-field">Pss</span>:                 <span class="hl-num">100</span> kB  <span class="hl-comment"># 比例分摊后的物理内存量</span>
+<span class="hl-field">Shared_Clean</span>:        <span class="hl-num">452</span> kB  <span class="hl-comment"># 共享+未修改（通常是共享库代码）</span>
+<span class="hl-field">Shared_Dirty</span>:          <span class="hl-num">0</span> kB  <span class="hl-comment"># 共享+已修改（被多进程共用的写入页）</span>
+<span class="hl-field">Private_Clean</span>:         <span class="hl-num">8</span> kB  <span class="hl-comment"># 私有+未修改</span>
+<span class="hl-field">Private_Dirty</span>:         <span class="hl-num">0</span> kB  <span class="hl-comment"># 私有+已修改（CoW后的私有副本）</span>
+<span class="hl-field">Referenced</span>:          <span class="hl-num">460</span> kB  <span class="hl-comment"># 被标记为已引用/访问的量</span>
+<span class="hl-field">Anonymous</span>:             <span class="hl-num">0</span> kB  <span class="hl-comment"># 不属于任何文件的匿名内存</span>
+<span class="hl-field">AnonHugePages</span>:         <span class="hl-num">0</span> kB  <span class="hl-comment"># 透明大页（THP）支持的内存</span>
+<span class="hl-field">ShmemHugePages</span>:        <span class="hl-num">0</span> kB  <span class="hl-comment"># 大页支持的共享内存</span>
+<span class="hl-field">ShmemPmdMapped</span>:        <span class="hl-num">0</span> kB  <span class="hl-comment"># PMD级映射的共享大页</span>
+<span class="hl-field">Swap</span>:                  <span class="hl-num">0</span> kB  <span class="hl-comment"># 该VMA被换出到swap的匿名内存量</span>
+<span class="hl-field">SwapPss</span>:               <span class="hl-num">0</span> kB  <span class="hl-comment"># 按比例分摊的swap使用量</span>
+<span class="hl-field">KernelPageSize</span>:        <span class="hl-num">4</span> kB  <span class="hl-comment"># 内核backing此VMA时使用的页大小</span>
+<span class="hl-field">MMUPageSize</span>:           <span class="hl-num">4</span> kB  <span class="hl-comment"># MMU使用的页大小</span>
+<span class="hl-field">Locked</span>:                <span class="hl-num">0</span> kB  <span class="hl-comment"># 是否被mlock锁定在内存中</span>
+<span class="hl-field">THPeligible</span>:           <span class="hl-num">0</span>     <span class="hl-comment"># 是否符合THP分配条件(since 5.4)</span>
+<span class="hl-field">VmFlags</span>: <span class="hl-str">rd ex mr mw me dw</span> <span class="hl-comment"># 内核VMA标志位（since Linux 3.8）</span></div>
+      </div>
+
+      <span id="smaps-fields" class="section-anchor"></span>
+      <h3 class="sub-title">核心字段详解（来自 kernel.org proc.rst 原文）</h3>
+
+      <div class="table-wrap">
+        <table>
+          <tr>
+            <th>字段</th><th>含义（基于官方文档）</th><th>用于计算</th>
+          </tr>
+          <tr>
+            <td><code>Size</code></td>
+            <td>该内存映射段的虚拟地址范围大小（不代表物理占用）</td>
+            <td>VSZ 的组成部分</td>
+          </tr>
+          <tr>
+            <td><code>Rss</code></td>
+            <td>该映射当前驻留在 RAM 中的量，包含共享页全额</td>
+            <td>∑Rss ≈ 进程 RSS</td>
+          </tr>
+          <tr>
+            <td><code>Pss</code></td>
+            <td>进程对此映射的比例分摊量。私有页全算，共享页除以共享进程数 N。官方文档示例：1000个私有页 + 1000个与另1人共享 → PSS = 1500页</td>
+            <td>∑Pss = 进程 PSS</td>
+          </tr>
+          <tr>
+            <td><code>Shared_Clean</code></td>
+            <td>被多个进程共享且未被修改的页（典型：共享库代码段，只读映射）</td>
+            <td rowspan="2">共享部分 = Shared_Clean + Shared_Dirty</td>
+          </tr>
+          <tr>
+            <td><code>Shared_Dirty</code></td>
+            <td>被多个进程共享且已被修改的页</td>
+          </tr>
+          <tr>
+            <td><code>Private_Clean</code></td>
+            <td>仅本进程使用且未被修改的私有页</td>
+            <td rowspan="2">USS = ∑(Private_Clean + Private_Dirty)</td>
+          </tr>
+          <tr>
+            <td><code>Private_Dirty</code></td>
+            <td>仅本进程使用且已修改的私有页（CoW 产生的副本、堆分配等）</td>
+          </tr>
+          <tr>
+            <td><code>Referenced</code></td>
+            <td>当前被内核标记为已引用/已访问的内存量（用于页面回收判断）</td>
+            <td>-</td>
+          </tr>
+          <tr>
+            <td><code>Anonymous</code></td>
+            <td>不属于任何文件的匿名内存。即使是 MAP_PRIVATE 的文件映射，被修改后产生的 CoW 副本也在此计入</td>
+            <td>-</td>
+          </tr>
+          <tr>
+            <td><code>LazyFree</code></td>
+            <td>被 madvise(MADV_FREE) 标记的内存，在内存压力时才真正释放（如页是干净的）</td>
+            <td>-</td>
+          </tr>
+          <tr>
+            <td><code>AnonHugePages</code></td>
+            <td>由透明大页（THP）支持的匿名内存量</td>
+            <td>-</td>
+          </tr>
+          <tr>
+            <td><code>Swap</code></td>
+            <td>本 VMA 中被换出到 swap 的匿名内存量。对 shmem 映射，也包含底层 shmem 对象换出量</td>
+            <td>∑Swap = 进程总换出量</td>
+          </tr>
+          <tr>
+            <td><code>SwapPss</code></td>
+            <td>按比例分摊的 swap 使用量（不含 shmem 底层对象，与 Swap 的统计范围有差别）</td>
+            <td>-</td>
+          </tr>
+          <tr>
+            <td><code>Locked</code></td>
+            <td>该映射是否被 mlock 锁定在物理内存中（不可被换出）</td>
+            <td>-</td>
+          </tr>
+          <tr>
+            <td><code>VmFlags</code></td>
+            <td>内核内部 VMA 标志位的两字母缩写（since Linux 3.8），如 rd=可读、wr=可写、ex=可执行、sh=共享等</td>
+            <td>-</td>
+          </tr>
+        </table>
+      </div>
+
+      <h3 class="sub-title">关键关系式</h3>
+      <div class="card">
+        <p style="margin-bottom:8px"><strong>RSS 的构成：</strong></p>
+        <div class="relation-formula">RSS = Shared_Clean + Shared_Dirty + Private_Clean + Private_Dirty</div>
+        <p style="margin-bottom:8px; margin-top:12px"><strong>PSS 的计算：</strong></p>
+        <div class="relation-formula">PSS = Private_pages + Σ(Shared_page_i / N_i)</div>
+        <p style="margin-bottom:8px; margin-top:12px"><strong>USS 的计算（非内核直接输出，需手工汇总）：</strong></p>
+        <div class="relation-formula">USS = Σ(Private_Clean + Private_Dirty)  &nbsp;across all VMAs</div>
+      </div>
+
+      <h3 class="sub-title">Clean vs Dirty / Private vs Shared</h3>
+      <div class="card-grid">
+        <div class="card">
+          <div class="metric-name">Clean 页（干净页）</div>
+          <div class="metric-desc">自映射以来未被修改的页面。典型例子：共享库的代码段（只从磁盘读取，从不写入），内核可随时丢弃并在需要时重新从文件加载。</div>
+        </div>
+        <div class="card">
+          <div class="metric-name">Dirty 页（脏页）</div>
+          <div class="metric-desc">已被进程修改的页面（相对于磁盘上的原始内容）。不能被简单丢弃，必须写回文件或 swap 才能释放，内存压力下代价更高。</div>
+        </div>
+        <div class="card">
+          <div class="metric-name">Private 页（私有页）</div>
+          <div class="metric-desc">只有当前进程映射到的页，其他进程无法访问。注意：一个"可共享"的页在实际被共享之前，内核仍将其计为私有页。</div>
+        </div>
+        <div class="card">
+          <div class="metric-name">Shared 页（共享页）</div>
+          <div class="metric-desc">被多个进程同时映射的页面，如共享库代码。RSS 对每个进程全额计入，PSS 则按进程数均摊。</div>
+        </div>
+      </div>
+
+      <div class="code-block">
+        <div class="code-header"><span class="code-lang">SHELL</span><span>用 awk 从 smaps 汇总各项指标</span></div>
+        <div class="code-body"><span class="hl-comment"># 汇总进程总 RSS（单位 kB）</span>
+<span class="hl-cmd">awk '/^Rss:/{sum+=$2} END{print "RSS:", sum, "kB"}' /proc/&lt;PID&gt;/smaps</span>
+
+<span class="hl-comment"># 汇总进程总 PSS（比例分摊，最准确的单进程内存占用）</span>
+<span class="hl-cmd">awk '/^Pss:/{sum+=$2} END{print "PSS:", sum, "kB"}' /proc/&lt;PID&gt;/smaps</span>
+
+<span class="hl-comment"># 汇总 USS（独占私有内存，等于退出后真实释放量）</span>
+<span class="hl-cmd">awk '/^Private_(Clean|Dirty):/{sum+=$2} END{print "USS:", sum, "kB"}' /proc/&lt;PID&gt;/smaps</span>
+
+<span class="hl-comment"># 汇总 Swap</span>
+<span class="hl-cmd">awk '/^Swap:/{sum+=$2} END{print "Swap:", sum, "kB"}' /proc/&lt;PID&gt;/smaps</span>
+
+<span class="hl-comment"># 一次性输出所有关键指标</span>
+<span class="hl-cmd">awk '
+  /^Rss:/    { rss+=$2 }
+  /^Pss:/    { pss+=$2 }
+  /^Private_(Clean|Dirty):/ { uss+=$2 }
+  /^Swap:/   { swap+=$2 }
+  END {
+    printf "RSS:  %8d kB\n", rss
+    printf "PSS:  %8d kB\n", pss
+    printf "USS:  %8d kB\n", uss
+    printf "Swap: %8d kB\n", swap
+  }
+' /proc/&lt;PID&gt;/smaps</span></div>
+      </div>
+
+      <div class="summary-box">
+        <h4>📌 本章小结</h4>
+        <ul>
+          <li><code class="inline-code">/proc/&lt;pid&gt;/smaps</code> 是<strong>最精确的内存数据源</strong>，每个 VMA（虚拟内存区域）单独列出，可精确计算 RSS、PSS、USS。</li>
+          <li><strong>Clean 共享页</strong>（如共享库代码）多进程复用，RSS 被高估；<strong>Private Dirty 页</strong>是进程独占并修改的，是内存泄漏排查的焦点。</li>
+          <li>该文件需要 <code class="inline-code">CONFIG_PROC_PAGE_MONITOR</code> 内核配置选项开启（现代发行版默认开启）。</li>
+          <li>读取 smaps 速度较慢（需扫描所有页表项），生产环境可用 smaps_rollup 代替。</li>
+        </ul>
+      </div>
+    </div>
+
+    <!-- ═══ smaps_rollup ═══ -->
+    <span id="proc-smaps-rollup" class="section-anchor"></span>
+    <div class="section">
+      <h2 class="sec-title"><span class="icon">📄</span>/proc/&lt;pid&gt;/smaps_rollup</h2>
+      <p>
+        <span class="tag tag-kernel">内核接口</span>
+        <span class="tag tag-since">since Linux 4.14 (2017年8月)</span>
+        由 Daniel Colascione 贡献，文档位于
+        <a href="https://mjmwired.net/kernel/Documentation/ABI/testing/procfs-smaps_rollup" target="_blank" style="color:var(--accent)">Documentation/ABI/testing/procfs-smaps_rollup</a>。
+      </p>
+      <p>
+        smaps_rollup 提供的是<strong>整个进程所有 VMA 的汇总值</strong>，等价于手工 awk 累加 smaps 中每一行，但速度快得多。
+        格式与 smaps 几乎相同，只是只有一条记录（标注为 <code class="inline-code">[rollup]</code>），并额外提供三个 smaps 中没有的分组字段。
+      </p>
+
+      <div class="code-block">
+        <div class="code-header"><span class="code-lang">SHELL</span><span>smaps_rollup 典型输出（来自内核 ABI 文档原文）</span></div>
+        <div class="code-body"><span class="hl-cmd">cat /proc/&lt;PID&gt;/smaps_rollup</span>
+
+<span class="hl-path">00100000-ff709000 ---p 00000000 00:00 0    [rollup]</span>
+<span class="hl-field">Size</span>:               <span class="hl-num">1192</span> kB
+<span class="hl-field">KernelPageSize</span>:        <span class="hl-num">4</span> kB
+<span class="hl-field">MMUPageSize</span>:           <span class="hl-num">4</span> kB
+<span class="hl-field">Rss</span>:                 <span class="hl-num">884</span> kB
+<span class="hl-field">Pss</span>:                 <span class="hl-num">385</span> kB
+<span class="hl-field">Pss_Dirty</span>:            <span class="hl-num">68</span> kB  <span class="hl-comment"># PSS 中脏页部分</span>
+<span class="hl-field">Pss_Anon</span>:            <span class="hl-num">301</span> kB  <span class="hl-comment"># ★ 匿名内存的比例分摊 (smaps中无此字段)</span>
+<span class="hl-field">Pss_File</span>:             <span class="hl-num">80</span> kB  <span class="hl-comment"># ★ 文件映射的比例分摊 (smaps中无此字段)</span>
+<span class="hl-field">Pss_Shmem</span>:             <span class="hl-num">4</span> kB  <span class="hl-comment"># ★ 共享内存的比例分摊 (smaps中无此字段)</span>
+<span class="hl-field">Shared_Clean</span>:        <span class="hl-num">696</span> kB
+<span class="hl-field">Shared_Dirty</span>:          <span class="hl-num">0</span> kB
+<span class="hl-field">Private_Clean</span>:       <span class="hl-num">120</span> kB
+<span class="hl-field">Private_Dirty</span>:        <span class="hl-num">68</span> kB
+<span class="hl-field">Referenced</span>:          <span class="hl-num">884</span> kB
+<span class="hl-field">Anonymous</span>:            <span class="hl-num">68</span> kB
+<span class="hl-field">LazyFree</span>:              <span class="hl-num">0</span> kB
+<span class="hl-field">AnonHugePages</span>:         <span class="hl-num">0</span> kB
+<span class="hl-field">ShmemPmdMapped</span>:        <span class="hl-num">0</span> kB
+<span class="hl-field">Shared_Hugetlb</span>:        <span class="hl-num">0</span> kB
+<span class="hl-field">Private_Hugetlb</span>:       <span class="hl-num">0</span> kB
+<span class="hl-field">Swap</span>:                  <span class="hl-num">0</span> kB
+<span class="hl-field">SwapPss</span>:               <span class="hl-num">0</span> kB
+<span class="hl-field">Locked</span>:              <span class="hl-num">385</span> kB</div>
+      </div>
+
+      <div class="alert alert-tip">
+        <div class="alert-title">💡 smaps_rollup 独有的三个字段</div>
+        内核 ABI 文档说明：<code class="inline-code">Pss_Anon</code>、<code class="inline-code">Pss_File</code>、<code class="inline-code">Pss_Shmem</code> 在 smaps 中不存在（因为 smaps 中每段 VMA 的内存类型可以直接从映射信息判断），
+        但在 smaps_rollup 的汇总条目中提供这三个分类汇总，便于快速了解 PSS 的构成。
+        <br><small style="color:var(--text3)">来源: Documentation/ABI/testing/procfs-smaps_rollup</small>
+      </div>
+
+      <h3 class="sub-title">smaps vs smaps_rollup 对比</h3>
+      <div class="table-wrap">
+        <table>
+          <tr><th>特性</th><th>/proc/pid/smaps</th><th>/proc/pid/smaps_rollup</th></tr>
+          <tr><td>数据粒度</td><td>每个 VMA 单独一条记录</td><td>全进程汇总，单条记录</td></tr>
+          <tr><td>速度</td><td>慢（VMA 多时尤其慢）</td><td>快（内核直接汇总，无需用户空间 awk）</td></tr>
+          <tr><td>Pss_Anon/File/Shmem</td><td>❌ 无</td><td>✅ 有</td></tr>
+          <tr><td>定位具体映射段</td><td>✅ 可以</td><td>❌ 不能</td></tr>
+          <tr><td>适用场景</td><td>深度分析、定位哪个 so/堆段占用高</td><td>快速获取进程全局 RSS/PSS/USS 汇总</td></tr>
+          <tr><td>内核版本要求</td><td>2.6.14+</td><td>4.14+</td></tr>
+        </table>
+      </div>
+
+      <div class="code-block">
+        <div class="code-header"><span class="code-lang">SHELL</span><span>快速获取进程内存摘要（推荐生产环境使用）</span></div>
+        <div class="code-body"><span class="hl-comment"># 一行命令获取 RSS/PSS/USS/Swap（优先用 smaps_rollup，回退到 smaps）</span>
+<span class="hl-cmd">PID=&lt;PID&gt;</span>
+<span class="hl-cmd">FILE=/proc/$PID/smaps_rollup</span>
+<span class="hl-cmd">[ -f "$FILE" ] || FILE=/proc/$PID/smaps</span>
+<span class="hl-cmd">awk '/^(Rss|Pss|Private_Clean|Private_Dirty|Swap):/{
+  if($1=="Rss:")    rss+=$2
+  if($1=="Pss:")    pss+=$2
+  if($1~/Private/)  uss+=$2
+  if($1=="Swap:")   swap+=$2
+} END {
+  printf "RSS:  %6d kB\nPSS:  %6d kB\nUSS:  %6d kB\nSwap: %6d kB\n", rss,pss,uss,swap
+}' "$FILE"</span></div>
+      </div>
+
+      <div class="summary-box">
+        <h4>📌 本章小结</h4>
+        <ul>
+          <li><code class="inline-code">smaps_rollup</code> 是 smaps 的<strong>高性能汇总版本</strong>，适合监控脚本和自动化工具（如 psutil 就从 smaps 改用 smaps_rollup 以提升性能）。</li>
+          <li>独有的 <strong>Pss_Anon / Pss_File / Pss_Shmem</strong> 字段可直接分辨 PSS 中匿名内存与文件映射各占多少比例。</li>
+          <li>若需了解<strong>哪个具体库或堆段</strong>占用高，仍需使用完整 smaps 文件。</li>
+        </ul>
+      </div>
+    </div>
+
+    <!-- ═══ statm ═══ -->
+    <span id="proc-statm" class="section-anchor"></span>
+    <div class="section">
+      <h2 class="sec-title"><span class="icon">📄</span>/proc/&lt;pid&gt;/statm</h2>
+      <p>
+        <span class="tag tag-kernel">内核接口</span>
+        机器可读格式的内存统计，以<strong>页面数</strong>为单位（而非 kB），适合程序解析。
+        内容等同于 status 文件中的 VmSize 和 VmRSS，但格式更紧凑。
+      </p>
+
+      <div class="code-block">
+        <div class="code-header"><span class="code-lang">SHELL</span><span>/proc/pid/statm 格式说明（来自 kernel.org proc.txt）</span></div>
+        <div class="code-body"><span class="hl-cmd">cat /proc/&lt;PID&gt;/statm</span>
+<span class="hl-out">49829626 5213229 1212275 1 0 5773980 0</span>
+<span class="hl-comment"># 七列含义：</span>
+<span class="hl-comment"># 1. size    - 虚拟内存总页数 (= VmSize in status)</span>
+<span class="hl-comment"># 2. resident- 驻留物理内存页数 (= VmRSS in status)</span>
+<span class="hl-comment"># 3. shared  - 共享页数 (= RssFile+RssShmem in status)</span>
+<span class="hl-comment"># 4. trs     - 代码页数（已废弃，包含数据段，不准确）</span>
+<span class="hl-comment"># 5. lrs     - 库页数（2.6后始终为0）</span>
+<span class="hl-comment"># 6. drs     - 数据+栈页数（包含库，不准确）</span>
+<span class="hl-comment"># 7. dt      - 脏页数（2.6后始终为0）</span>
+
+<span class="hl-comment"># 转换页数为 kB（Linux 默认页大小 4096 字节）</span>
+<span class="hl-cmd">pagesize=$(getconf PAGESIZE)</span>
+<span class="hl-cmd">resident=$(awk '{print $2}' /proc/&lt;PID&gt;/statm)</span>
+<span class="hl-cmd">echo "RSS: $((resident * pagesize / 1024)) kB"</span></div>
+      </div>
+
+      <div class="alert alert-warn">
+        <div class="alert-title">⚠️ 注意事项</div>
+        根据内核文档（proc.txt Table 1-3），statm 的第 4 列（trs，代码页数）和第 6 列（drs，数据+栈页数）的统计范围已知存在缺陷（broken），
+        不能准确反映各段实际大小。第 5 列（lrs，库页数）在 Linux 2.6+ 上始终为 0。
+        建议仅使用前 3 列（size、resident、shared）。
+      </div>
+
+      <div class="summary-box">
+        <h4>📌 本章小结</h4>
+        <ul>
+          <li><code class="inline-code">statm</code> 是最轻量的内存查询接口，适合程序解析，但精度低于 smaps。</li>
+          <li>仅第 1-3 列（虚拟大小、驻留量、共享量）可靠；其余列在现代内核中已废弃或数据不准确。</li>
+          <li>单位是<strong>页面数</strong>，需乘以页大小（通常 4096 字节）转换为字节数。</li>
+        </ul>
+      </div>
+    </div>
+
+    <!-- ═══ TOOLS ═══ -->
+    <span id="tool-ps-top" class="section-anchor"></span>
+    <div class="section">
+      <h2 class="sec-title"><span class="icon">🔧</span>用户空间工具：ps / top</h2>
+      <p>
+        <span class="tag tag-tool">ps</span><span class="tag tag-tool">top</span><span class="tag tag-tool">htop</span>
+        <code class="inline-code">ps</code> 和 <code class="inline-code">top</code> 从 <code class="inline-code">/proc/&lt;pid&gt;/stat</code> 和 <code class="inline-code">/proc/&lt;pid&gt;/status</code> 读取数据，
+        只能看到 VSZ（虚拟内存）和 RSS，<strong>不能直接显示 PSS 和 USS</strong>。
+      </p>
+
+      <div class="code-block">
+        <div class="code-header"><span class="code-lang">SHELL</span><span>ps / top 内存相关命令</span></div>
+        <div class="code-body"><span class="hl-comment"># ps 查看 VSZ 和 RSS（单位 kB）</span>
+<span class="hl-cmd">ps -p &lt;PID&gt; -o pid,comm,vsz,rss</span>
+<span class="hl-out">  PID COMMAND          VSZ   RSS
+ 1234 nginx          10240  4096</span>
+
+<span class="hl-comment"># 以人类可读格式显示</span>
+<span class="hl-cmd">ps -p &lt;PID&gt; -o pid,comm,vsz=VSZ_kB,rss=RSS_kB</span>
+
+<span class="hl-comment"># top 交互模式：按 M 按内存排序，RES 列即 RSS</span>
+<span class="hl-comment"># VIRT = VSZ（虚拟），RES = RSS（驻留物理），SHR = 共享内存</span>
+<span class="hl-cmd">top -p &lt;PID&gt;</span>
+
+<span class="hl-comment"># top 批处理模式输出一次结果</span>
+<span class="hl-cmd">top -b -n 1 -p &lt;PID&gt;</span>
+
+<span class="hl-comment"># htop（如已安装）支持更丰富的内存列显示</span>
+<span class="hl-cmd">htop -p &lt;PID&gt;</span></div>
+      </div>
+
+      <div class="table-wrap">
+        <table>
+          <tr><th>工具</th><th>列名</th><th>对应指标</th><th>说明</th></tr>
+          <tr><td>ps/top</td><td>VSZ / VIRT</td><td>VSZ</td><td>虚拟内存大小，极度高估</td></tr>
+          <tr><td>ps/top</td><td>RSS / RES</td><td>RSS</td><td>驻留物理内存，含共享页全额</td></tr>
+          <tr><td>top</td><td>SHR</td><td>RssFile+RssShmem</td><td>共享内存量</td></tr>
+          <tr><td>ps/top</td><td>-</td><td>PSS/USS</td><td>❌ 不支持，需用 smem 或手工 awk</td></tr>
+        </table>
+      </div>
+
+      <div class="summary-box">
+        <h4>📌 本章小结</h4>
+        <ul>
+          <li>ps / top 是<strong>快速概览</strong>工具，适合初步判断进程内存量级，不适合精确排查。</li>
+          <li>RSS 可能因共享库被高估；若多个进程使用同一个大型库，每个进程的 RSS 都会包含该库的全部内存。</li>
+          <li>精确排查需要 smaps 或 smem 工具。</li>
+        </ul>
+      </div>
+    </div>
+
+    <span id="tool-pmap" class="section-anchor"></span>
+    <div class="section">
+      <h2 class="sec-title"><span class="icon">🔧</span>用户空间工具：pmap</h2>
+      <p>
+        <span class="tag tag-tool">pmap</span>
+        <code class="inline-code">pmap</code> 命令以更易于人类阅读的格式展示 <code class="inline-code">/proc/&lt;pid&gt;/smaps</code> 中的内容，
+        可逐段查看每个内存映射的 RSS。根据 man-pages 官方文档，pmap 显示的信息与 smaps 来源相同。
+      </p>
+
+      <div class="code-block">
+        <div class="code-header"><span class="code-lang">SHELL</span><span>pmap 命令用法</span></div>
+        <div class="code-body"><span class="hl-comment"># 基础用法：显示各内存段地址、大小、RSS、权限、名称</span>
+<span class="hl-cmd">pmap -x &lt;PID&gt;</span>
+<span class="hl-out">Address           Kbytes     RSS   Dirty Mode  Mapping
+0000000000400000     552     460       0 r-x-- bash
+0000000000688000      36      36      36 rw--- bash
+00007f8a2c000000 1024000   12288   12288 rw--- [ anon ]
+00007f8a38000000  131072    4096       0 r-x-- libc-2.31.so
+...
+----------------  ------  ------  ------
+total kB           8224    4532     340</span>
+
+<span class="hl-comment"># -X 选项：显示更多字段（Pss, Swap等，需要内核支持）</span>
+<span class="hl-cmd">pmap -XX &lt;PID&gt;</span>
+
+<span class="hl-comment"># 只显示汇总行</span>
+<span class="hl-cmd">pmap &lt;PID&gt; | tail -1</span></div>
+      </div>
+
+      <h3 class="sub-title">pmap 输出字段说明</h3>
+      <div class="table-wrap">
+        <table>
+          <tr><th>列</th><th>含义</th></tr>
+          <tr><td>Address</td><td>VMA 起始虚拟地址</td></tr>
+          <tr><td>Kbytes</td><td>该段虚拟地址空间大小（对应 smaps Size 字段）</td></tr>
+          <tr><td>RSS</td><td>该段当前驻留物理内存量</td></tr>
+          <tr><td>Dirty</td><td>该段脏页总量（Shared_Dirty + Private_Dirty）</td></tr>
+          <tr><td>Mode</td><td>权限标志：r=读、w=写、x=执行、p=私有、s=共享</td></tr>
+          <tr><td>Mapping</td><td>对应文件路径，或 [anon]、[stack]、[heap] 等特殊区域</td></tr>
+        </table>
+      </div>
+
+      <div class="summary-box">
+        <h4>📌 本章小结</h4>
+        <ul>
+          <li><code class="inline-code">pmap -x</code> 是查看进程<strong>各内存段 RSS 分布</strong>的便捷工具，适合定位哪个共享库或堆段占用高。</li>
+          <li>pmap 数据直接来源于 smaps，无需自行解析 smaps 文件。</li>
+          <li><code class="inline-code">pmap -XX</code> 可展示更多 smaps 字段（PSS、Swap 等），但格式较宽，终端可能需要横向滚动。</li>
+        </ul>
+      </div>
+    </div>
+
+    <span id="tool-smem" class="section-anchor"></span>
+    <div class="section">
+      <h2 class="sec-title"><span class="icon">🔧</span>用户空间工具：smem</h2>
+      <p>
+        <span class="tag tag-tool">smem</span>
+        <code class="inline-code">smem</code> 由 Matt Mackall 开发，是专门用于展示 PSS 和 USS 的工具，直接读取 <code class="inline-code">/proc/&lt;pid&gt;/smaps</code>。
+        它是第一个将 PSS/USS 以友好界面展示的工具，为 Linux 内存分析领域做出了重要贡献。
+      </p>
+
+      <div class="code-block">
+        <div class="code-header"><span class="code-lang">SHELL</span><span>smem 命令用法</span></div>
+        <div class="code-body"><span class="hl-comment"># 安装（各发行版）</span>
+<span class="hl-cmd">apt install smem      </span><span class="hl-comment"># Debian/Ubuntu</span>
+<span class="hl-cmd">yum install smem      </span><span class="hl-comment"># RHEL/CentOS</span>
+
+<span class="hl-comment"># 查看指定进程的 VSS/RSS/PSS/USS</span>
+<span class="hl-cmd">smem -P &lt;进程名&gt;</span>
+<span class="hl-cmd">smem -p &lt;PID&gt;</span>
+<span class="hl-out">  PID User     Command                         Swap      USS      PSS      RSS
+ 1234 root     nginx: master process           0     1024     1280     5120</span>
+
+<span class="hl-comment"># 显示系统所有进程的 PSS/USS（按 USS 降序排列）</span>
+<span class="hl-cmd">smem -s uss -r</span>
+
+<span class="hl-comment"># 显示共享库各自的 PSS 占用</span>
+<span class="hl-cmd">smem -m</span>
+
+<span class="hl-comment"># 生成饼图（需要 matplotlib）</span>
+<span class="hl-cmd">smem --pie name -s pss</span></div>
+      </div>
+
+      <div class="table-wrap">
+        <table>
+          <tr><th>smem 列</th><th>含义</th><th>说明</th></tr>
+          <tr><td>VSS</td><td>虚拟内存大小</td><td>= VSZ，最大，最不准</td></tr>
+          <tr><td>RSS</td><td>驻留集大小</td><td>含共享页全额，偏高</td></tr>
+          <tr><td>PSS</td><td>比例分摊大小</td><td>最能反映单进程内存代价</td></tr>
+          <tr><td>USS</td><td>独占集大小</td><td>进程退出后真实释放量，排查泄漏首选</td></tr>
+        </table>
+      </div>
+
+      <div class="summary-box">
+        <h4>📌 本章小结</h4>
+        <ul>
+          <li><code class="inline-code">smem</code> 是 Linux 上<strong>直接展示 PSS 和 USS</strong> 的最方便工具，无需手工 awk。</li>
+          <li>USS（独占集）= 进程退出后真实释放的内存，是排查内存泄漏的<strong>最佳指标</strong>。</li>
+          <li>PSS 汇总 = 系统所有进程 PSS 之和 ≈ 系统实际物理内存总占用量。</li>
+        </ul>
+      </div>
+    </div>
+
+    <span id="tool-awk" class="section-anchor"></span>
+    <div class="section">
+      <h2 class="sec-title"><span class="icon">🔧</span>awk 手工汇总（无需额外工具）</h2>
+      <p>在没有 smem 等工具的环境中，可直接用 awk/grep 从 smaps 或 smaps_rollup 提取各项指标：</p>
+
+      <div class="code-block">
+        <div class="code-header"><span class="code-lang">SHELL</span><span>完整内存排查脚本</span></div>
+        <div class="code-body"><span class="hl-comment">#!/bin/bash</span>
+<span class="hl-comment"># 用法: ./memcheck.sh &lt;PID&gt;</span>
+<span class="hl-key">PID</span>=<span class="hl-str">${1:?需要提供PID}</span>
+
+<span class="hl-comment"># 1. 快速概览（来自 status，可能略不精确）</span>
+<span class="hl-cmd">echo "=== 快速概览 (/proc/$PID/status) ==="</span>
+<span class="hl-cmd">grep -E '^(Name|Vm(RSS|Peak|Size|HWM|Swap)|Rss(Anon|File|Shmem))' /proc/$PID/status</span>
+
+<span class="hl-comment"># 2. 精确汇总（来自 smaps_rollup 或 smaps）</span>
+<span class="hl-cmd">echo ""</span>
+<span class="hl-cmd">echo "=== 精确汇总 (smaps_rollup/smaps) ==="</span>
+<span class="hl-key">SRC</span>=<span class="hl-str">"/proc/$PID/smaps_rollup"</span>
+<span class="hl-cmd">[ -f "$SRC" ] || SRC="/proc/$PID/smaps"</span>
+<span class="hl-cmd">awk '
+  /^Rss:/                { rss+=$2 }
+  /^Pss:/                { pss+=$2 }
+  /^Pss_Anon:/           { pss_anon+=$2 }
+  /^Pss_File:/           { pss_file+=$2 }
+  /^Pss_Shmem:/          { pss_shmem+=$2 }
+  /^Private_(Clean|Dirty):/ { uss+=$2 }
+  /^Shared_(Clean|Dirty):/  { shared+=$2 }
+  /^Swap:/               { swap+=$2 }
+  /^Anonymous:/          { anon+=$2 }
+  END {
+    printf "RSS:       %8d kB  (驻留物理内存，含共享页全额)\n", rss
+    printf "PSS:       %8d kB  (比例分摊，最准确单进程占用)\n", pss
+    printf "USS:       %8d kB  (独占私有，进程退出真实释放量)\n", uss
+    printf "Shared:    %8d kB  (共享部分总量)\n", shared
+    printf "Swap:      %8d kB  (换出量)\n", swap
+    if(pss_anon+pss_file+pss_shmem > 0) {
+      printf "  PSS_Anon: %6d kB  (匿名内存比例分摊)\n", pss_anon
+      printf "  PSS_File: %6d kB  (文件映射比例分摊)\n", pss_file
+      printf "  PSS_Shmem:%6d kB  (共享内存比例分摊)\n", pss_shmem
+    }
+  }
+' "$SRC"
+
+<span class="hl-comment"># 3. 查找 RSS 最大的前10个内存段</span>
+<span class="hl-cmd">echo ""</span>
+<span class="hl-cmd">echo "=== RSS 最大的内存段 TOP 10 (/proc/$PID/smaps) ==="</span>
+<span class="hl-cmd">awk '/^[0-9a-f]/{vma=$0} /^Rss:/{print $2, vma}' /proc/$PID/smaps \
+  | sort -rn | head -10 \
+  | awk '{printf "%8d kB  %s\n", $1, substr($0, index($0,$2))}'</span></div>
+      </div>
+
+      <div class="summary-box">
+        <h4>📌 本章小结</h4>
+        <ul>
+          <li>不依赖任何外部工具，只用系统自带的 <strong>awk/grep/bash</strong> 即可从 smaps 提取全部关键指标。</li>
+          <li>优先读取 <code class="inline-code">smaps_rollup</code>（速度快）；若内核版本较旧（&lt;4.14）则回退到 smaps。</li>
+          <li>"找出 RSS 最大的内存段"功能可快速定位<strong>哪个共享库或堆分配段</strong>是内存大户。</li>
+        </ul>
+      </div>
+    </div>
+
+    <!-- ═══ COMPARISON ═══ -->
+    <span id="comparison" class="section-anchor"></span>
+    <div class="section">
+      <h2 class="sec-title"><span class="icon">⚖️</span>指标对比与选择建议</h2>
+
+      <!-- SVG: Decision chart -->
+      <div class="svg-wrap">
+        <div class="svg-title">内存指标选择与对比总览</div>
+        <svg viewBox="0 0 700 280" width="100%" style="max-width:700px;display:block;margin:0 auto">
+          <!-- Columns -->
+          <text x="70" y="24" text-anchor="middle" fill="#94a3b8" font-size="11" font-weight="700">指标</text>
+          <text x="200" y="24" text-anchor="middle" fill="#94a3b8" font-size="11" font-weight="700">共享页计法</text>
+          <text x="350" y="24" text-anchor="middle" fill="#94a3b8" font-size="11" font-weight="700">精确度</text>
+          <text x="490" y="24" text-anchor="middle" fill="#94a3b8" font-size="11" font-weight="700">最佳用途</text>
+          <text x="630" y="24" text-anchor="middle" fill="#94a3b8" font-size="11" font-weight="700">数据来源</text>
+          <line x1="10" y1="30" x2="690" y2="30" stroke="#2e3350" stroke-width="1"/>
+
+          <!-- VSZ row -->
+          <rect x="10" y="35" width="680" height="44" rx="4" fill="rgba(245,158,11,0.05)"/>
+          <text x="70" y="62" text-anchor="middle" fill="#f59e0b" font-size="13" font-weight="700">VSZ</text>
+          <text x="200" y="57" text-anchor="middle" fill="#64748b" font-size="10">全额计入（含未使用）</text>
+          <text x="200" y="72" text-anchor="middle" fill="#64748b" font-size="10">最大值，严重高估</text>
+          <rect x="280" y="47" width="140" height="12" rx="3" fill="#ef4444" opacity="0.3"/>
+          <rect x="280" y="47" width="20" height="12" rx="3" fill="#ef4444"/>
+          <text x="350" y="74" text-anchor="middle" fill="#ef4444" font-size="10">极低</text>
+          <text x="490" y="57" text-anchor="middle" fill="#94a3b8" font-size="10">内存地址空间规划</text>
+          <text x="490" y="72" text-anchor="middle" fill="#94a3b8" font-size="10">不适合内存排查</text>
+          <text x="630" y="62" text-anchor="middle" fill="#64748b" font-size="10">VmSize (status/ps)</text>
+
+          <!-- RSS row -->
+          <rect x="10" y="83" width="680" height="44" rx="4" fill="rgba(79,142,247,0.05)"/>
+          <text x="70" y="110" text-anchor="middle" fill="#4f8ef7" font-size="13" font-weight="700">RSS</text>
+          <text x="200" y="105" text-anchor="middle" fill="#64748b" font-size="10">全额计入（只含已驻留）</text>
+          <text x="200" y="120" text-anchor="middle" fill="#64748b" font-size="10">多进程时重复计数</text>
+          <rect x="280" y="95" width="140" height="12" rx="3" fill="#f59e0b" opacity="0.3"/>
+          <rect x="280" y="95" width="60" height="12" rx="3" fill="#f59e0b"/>
+          <text x="350" y="122" text-anchor="middle" fill="#f59e0b" font-size="10">中</text>
+          <text x="490" y="105" text-anchor="middle" fill="#94a3b8" font-size="10">快速查看单进程内存</text>
+          <text x="490" y="120" text-anchor="middle" fill="#94a3b8" font-size="10">物理占用概览</text>
+          <text x="630" y="110" text-anchor="middle" fill="#64748b" font-size="10">VmRSS/smaps Rss:</text>
+
+          <!-- PSS row -->
+          <rect x="10" y="131" width="680" height="44" rx="4" fill="rgba(124,58,237,0.05)"/>
+          <text x="70" y="158" text-anchor="middle" fill="#7c3aed" font-size="13" font-weight="700">PSS</text>
+          <text x="200" y="153" text-anchor="middle" fill="#64748b" font-size="10">按共享进程数均摊 1/N</text>
+          <text x="200" y="168" text-anchor="middle" fill="#64748b" font-size="10">最公平的单进程代价</text>
+          <rect x="280" y="143" width="140" height="12" rx="3" fill="#10b981" opacity="0.3"/>
+          <rect x="280" y="143" width="115" height="12" rx="3" fill="#10b981"/>
+          <text x="350" y="170" text-anchor="middle" fill="#10b981" font-size="10">高</text>
+          <text x="490" y="153" text-anchor="middle" fill="#94a3b8" font-size="10">系统整体内存分析</text>
+          <text x="490" y="168" text-anchor="middle" fill="#94a3b8" font-size="10">∑PSS ≈ 系统总占用</text>
+          <text x="630" y="158" text-anchor="middle" fill="#64748b" font-size="10">smaps Pss:/smaps_rollup</text>
+
+          <!-- USS row -->
+          <rect x="10" y="179" width="680" height="44" rx="4" fill="rgba(16,185,129,0.05)"/>
+          <text x="70" y="206" text-anchor="middle" fill="#10b981" font-size="13" font-weight="700">USS</text>
+          <text x="200" y="201" text-anchor="middle" fill="#64748b" font-size="10">不含共享页（只算私有）</text>
+          <text x="200" y="216" text-anchor="middle" fill="#64748b" font-size="10">最保守的真实成本</text>
+          <rect x="280" y="191" width="140" height="12" rx="3" fill="#10b981" opacity="0.3"/>
+          <rect x="280" y="191" width="130" height="12" rx="3" fill="#10b981"/>
+          <text x="350" y="218" text-anchor="middle" fill="#10b981" font-size="10">最高（无共享歧义）</text>
+          <text x="490" y="201" text-anchor="middle" fill="#94a3b8" font-size="10">内存泄漏排查</text>
+          <text x="490" y="216" text-anchor="middle" fill="#94a3b8" font-size="10">精确计算退出释放量</text>
+          <text x="630" y="206" text-anchor="middle" fill="#64748b" font-size="10">smaps Private_*汇总</text>
+
+          <!-- Swap row -->
+          <rect x="10" y="227" width="680" height="44" rx="4" fill="rgba(239,68,68,0.04)"/>
+          <text x="70" y="254" text-anchor="middle" fill="#ef4444" font-size="13" font-weight="700">Swap</text>
+          <text x="200" y="249" text-anchor="middle" fill="#64748b" font-size="10">匿名私有内存换出量</text>
+          <text x="200" y="264" text-anchor="middle" fill="#64748b" font-size="10">不占 RAM</text>
+          <rect x="280" y="239" width="140" height="12" rx="3" fill="#4f8ef7" opacity="0.3"/>
+          <rect x="280" y="239" width="90" height="12" rx="3" fill="#4f8ef7"/>
+          <text x="350" y="266" text-anchor="middle" fill="#4f8ef7" font-size="10">较高</text>
+          <text x="490" y="249" text-anchor="middle" fill="#94a3b8" font-size="10">排查内存溢出、</text>
+          <text x="490" y="264" text-anchor="middle" fill="#94a3b8" font-size="10">swap 压力分析</text>
+          <text x="630" y="254" text-anchor="middle" fill="#64748b" font-size="10">VmSwap/smaps Swap:</text>
+        </svg>
+      </div>
+
+      <h3 class="sub-title">各场景推荐选择</h3>
+      <div class="table-wrap">
+        <table>
+          <tr><th>排查场景</th><th>推荐指标</th><th>推荐命令/文件</th></tr>
+          <tr><td>快速查看进程大致内存</td><td>RSS</td><td><code>ps aux</code> / <code>top</code> / <code>grep VmRSS /proc/PID/status</code></td></tr>
+          <tr><td>精确排查单进程物理内存</td><td>PSS</td><td><code>smem -p PID</code> / awk 汇总 smaps Pss:</td></tr>
+          <tr><td>排查内存泄漏（私有堆增长）</td><td>USS</td><td>awk 汇总 smaps Private_Clean + Private_Dirty</td></tr>
+          <tr><td>分析系统整体内存压力</td><td>∑PSS</td><td><code>smem -s pss -r</code></td></tr>
+          <tr><td>查看各内存段分布（哪个 .so 最大）</td><td>RSS（分段）</td><td><code>pmap -x PID</code> / 完整 smaps</td></tr>
+          <tr><td>脚本自动化监控</td><td>PSS</td><td><code>cat /proc/PID/smaps_rollup</code></td></tr>
+          <tr><td>分析 swap 压力</td><td>Swap</td><td><code>grep VmSwap /proc/PID/status</code> / smaps Swap:</td></tr>
+          <tr><td>RssAnon 分类（堆 vs 库 vs 共享内存）</td><td>RssAnon/RssFile/RssShmem</td><td><code>grep '^Rss' /proc/PID/status</code></td></tr>
+        </table>
+      </div>
+
+      <div class="summary-box">
+        <h4>📌 本章小结 —— 第一性原理总结</h4>
+        <ul>
+          <li>物理内存排查的根本问题是：<strong>"共享页如何归属？"</strong> 不同指标给出了不同的答案：RSS（全归自己）→ PSS（按比例分摊）→ USS（只算私有）。</li>
+          <li><strong>没有完美的唯一答案</strong>：根据排查目的选择合适指标。泄漏排查用 USS，系统压力分析用 PSS，粗略概览用 RSS。</li>
+          <li>所有数据最终来源于内核维护的<strong>页表（page table）</strong>和 VMA 链表，<code class="inline-code">smaps</code> 是对这些内核数据结构的直接暴露。</li>
+        </ul>
+      </div>
+    </div>
+
+    <!-- ═══ WORKFLOW ═══ -->
+    <span id="workflow" class="section-anchor"></span>
+    <div class="section">
+      <h2 class="sec-title"><span class="icon">🗺️</span>完整排查流程</h2>
+      <p>以下是一个系统化的进程内存排查流程，从快到精逐步深入：</p>
+
+      <ol class="steps">
+        <li>
+          <div class="step-num"></div>
+          <div class="step-content">
+            <p><strong>第一步：用 ps/top 获取初始概览</strong></p>
+            <div class="code-block">
+              <div class="code-body"><span class="hl-cmd">ps aux | grep &lt;进程名&gt;</span>
+<span class="hl-comment"># 查看 VSZ（第5列）和 RSS（第6列），单位 kB</span>
+<span class="hl-comment"># 若 RSS 异常大（如超过可用内存的 10%），进入下一步精查</span></div>
+            </div>
+          </div>
+        </li>
+        <li>
+          <div class="step-num"></div>
+          <div class="step-content">
+            <p><strong>第二步：用 /proc/pid/status 查看 RSS 三组分</strong></p>
+            <div class="code-block">
+              <div class="code-body"><span class="hl-cmd">grep -E '^(VmRSS|RssAnon|RssFile|RssShmem|VmSwap|VmHWM)' /proc/&lt;PID&gt;/status</span>
+<span class="hl-comment"># 判断内存类型：RssAnon 大 → 堆泄漏？RssShmem 大 → 共享内存问题？</span></div>
+            </div>
+          </div>
+        </li>
+        <li>
+          <div class="step-num"></div>
+          <div class="step-content">
+            <p><strong>第三步：用 smaps_rollup 获取精确 PSS/USS 汇总</strong></p>
+            <div class="code-block">
+              <div class="code-body"><span class="hl-cmd">awk '/^(Rss|Pss|Private_|Swap):/{print}' /proc/&lt;PID&gt;/smaps_rollup</span>
+<span class="hl-comment"># PSS = 真实物理内存代价；USS = 私有独占内存量</span></div>
+            </div>
+          </div>
+        </li>
+        <li>
+          <div class="step-num"></div>
+          <div class="step-content">
+            <p><strong>第四步：用 pmap 或完整 smaps 定位具体内存段</strong></p>
+            <div class="code-block">
+              <div class="code-body"><span class="hl-cmd">pmap -x &lt;PID&gt; | sort -k3 -rn | head -20</span>
+<span class="hl-comment"># 找出 RSS 最大的前20个内存段</span>
+<span class="hl-comment"># 若 [anon] 段持续增长 → 堆内存泄漏</span>
+<span class="hl-comment"># 若共享库段很大但只有1个进程用 → 考虑共享</span></div>
+            </div>
+          </div>
+        </li>
+        <li>
+          <div class="step-num"></div>
+          <div class="step-content">
+            <p><strong>第五步（可选）：监控 USS 随时间的变化趋势</strong></p>
+            <div class="code-block">
+              <div class="code-body"><span class="hl-comment"># 每5秒采样一次 USS，观察是否持续增长</span>
+<span class="hl-cmd">while true; do
+  USS=$(awk '/^Private_/{s+=$2} END{print s}' /proc/&lt;PID&gt;/smaps)
+  echo "$(date +%H:%M:%S) USS: $USS kB"
+  sleep 5
+done</span>
+<span class="hl-comment"># USS 持续上涨且不回落 → 内存泄漏的强烈信号</span></div>
+            </div>
+          </div>
+        </li>
+      </ol>
+
+      <!-- SVG: Flowchart -->
+      <div class="svg-wrap">
+        <div class="svg-title">排查决策流程图</div>
+        <svg viewBox="0 0 680 340" width="100%" style="max-width:680px;display:block;margin:0 auto">
+          <defs>
+            <marker id="arr2" markerWidth="8" markerHeight="8" refX="6" refY="4" orient="auto">
+              <path d="M1,1 L1,7 L7,4 z" fill="#4f8ef7"/>
+            </marker>
+          </defs>
+          <!-- Start -->
+          <rect x="260" y="10" width="160" height="34" rx="17" fill="rgba(79,142,247,0.2)" stroke="#4f8ef7" stroke-width="1.5"/>
+          <text x="340" y="32" text-anchor="middle" fill="#4f8ef7" font-size="12" font-weight="700">发现内存异常</text>
+
+          <!-- Box 1: ps/top -->
+          <rect x="220" y="64" width="240" height="40" rx="6" fill="#1e2235" stroke="#2e3350" stroke-width="1.5"/>
+          <text x="340" y="82" text-anchor="middle" fill="#e2e8f0" font-size="11">① ps/top 查看 VSZ/RSS</text>
+          <text x="340" y="97" text-anchor="middle" fill="#94a3b8" font-size="10">粗略定位，判断量级</text>
+          <line x1="340" y1="44" x2="340" y2="64" stroke="#4f8ef7" stroke-width="1.5" marker-end="url(#arr2)"/>
+
+          <!-- Decision 1 -->
+          <polygon points="340,118 420,138 340,158 260,138" fill="#13161f" stroke="#f59e0b" stroke-width="1.5"/>
+          <text x="340" y="142" text-anchor="middle" fill="#f59e0b" font-size="10">RSS 异常大？</text>
+          <line x1="340" y1="104" x2="340" y2="118" stroke="#4f8ef7" stroke-width="1.5" marker-end="url(#arr2)"/>
+
+          <!-- No -->
+          <text x="520" y="133" text-anchor="middle" fill="#64748b" font-size="10">否</text>
+          <line x1="420" y1="138" x2="540" y2="138" stroke="#64748b" stroke-width="1.2" stroke-dasharray="4,2"/>
+          <rect x="540" y="122" width="120" height="32" rx="6" fill="#1e2235" stroke="#2e3350"/>
+          <text x="600" y="143" text-anchor="middle" fill="#64748b" font-size="10">可能是共享库被高估</text>
+
+          <!-- Yes -->
+          <text x="355" y="170" fill="#64748b" font-size="10">是</text>
+          <line x1="340" y1="158" x2="340" y2="178" stroke="#4f8ef7" stroke-width="1.5" marker-end="url(#arr2)"/>
+
+          <!-- Box 2: status -->
+          <rect x="200" y="178" width="280" height="40" rx="6" fill="#1e2235" stroke="#2e3350" stroke-width="1.5"/>
+          <text x="340" y="196" text-anchor="middle" fill="#e2e8f0" font-size="11">② /proc/pid/status 查 RssAnon/File/Shmem</text>
+          <text x="340" y="211" text-anchor="middle" fill="#94a3b8" font-size="10">定位内存类型（堆/库/共享内存）</text>
+          <line x1="340" y1="218" x2="340" y2="238" stroke="#4f8ef7" stroke-width="1.5" marker-end="url(#arr2)"/>
+
+          <!-- Box 3: smaps_rollup -->
+          <rect x="200" y="238" width="280" height="40" rx="6" fill="#1e2235" stroke="#7c3aed" stroke-width="1.5"/>
+          <text x="340" y="256" text-anchor="middle" fill="#e2e8f0" font-size="11">③ smaps_rollup 获取 PSS/USS</text>
+          <text x="340" y="271" text-anchor="middle" fill="#94a3b8" font-size="10">确认真实内存代价，USS 是关键指标</text>
+          <line x1="340" y1="278" x2="340" y2="298" stroke="#4f8ef7" stroke-width="1.5" marker-end="url(#arr2)"/>
+
+          <!-- Box 4: pmap/smaps -->
+          <rect x="200" y="298" width="280" height="40" rx="6" fill="#1e2235" stroke="#10b981" stroke-width="1.5"/>
+          <text x="340" y="316" text-anchor="middle" fill="#e2e8f0" font-size="11">④ pmap -x 或完整 smaps 定位具体段</text>
+          <text x="340" y="331" text-anchor="middle" fill="#94a3b8" font-size="10">[anon] 段增长 → 堆泄漏 → 进一步用 valgrind</text>
+        </svg>
+      </div>
+
+      <div class="summary-box">
+        <h4>📌 排查总结 —— 一图记忆</h4>
+        <ul>
+          <li><strong>初步判断</strong>：<code class="inline-code">ps aux</code> 或 <code class="inline-code">top</code> → 看 RSS 量级</li>
+          <li><strong>分类定位</strong>：<code class="inline-code">/proc/pid/status</code> → RssAnon / RssFile / RssShmem</li>
+          <li><strong>精确测量</strong>：<code class="inline-code">/proc/pid/smaps_rollup</code> → PSS（公平代价）、USS（独占量）</li>
+          <li><strong>段级分析</strong>：<code class="inline-code">pmap -x</code> 或 <code class="inline-code">/proc/pid/smaps</code> → 找出最大内存段</li>
+          <li><strong>泄漏监控</strong>：周期性采样 USS，持续增长则为泄漏信号</li>
+        </ul>
+      </div>
+    </div>
+
+    <!-- ═══ REFS ═══ -->
+    <span id="refs" class="section-anchor"></span>
+    <div class="section">
+      <h2 class="sec-title"><span class="icon">🔗</span>原文参考链接</h2>
+      <p>本文严格基于以下官方权威来源编写，所有技术描述均有据可查：</p>
+
+      <div class="card">
+        <div class="metric-name" style="margin-bottom:12px">内核官方文档</div>
+        <ul style="list-style:none; padding:0">
+          <li style="margin-bottom:10px">
+            <a href="https://www.kernel.org/doc/Documentation/filesystems/proc.rst" target="_blank" style="color:var(--accent)">
+              📄 kernel.org — Documentation/filesystems/proc.rst
+            </a>
+            <br><span style="font-size:0.8rem;color:var(--text3)">Linux /proc 文件系统官方文档，包含 smaps、status、statm 字段完整说明（Table 1-2, 1-3）</span>
+          </li>
+          <li style="margin-bottom:10px">
+            <a href="https://www.kernel.org/doc/Documentation/filesystems/proc.txt" target="_blank" style="color:var(--accent)">
+              📄 kernel.org — Documentation/filesystems/proc.txt
+            </a>
+            <br><span style="font-size:0.8rem;color:var(--text3)">proc.txt 历史版本，包含各字段说明和 VmRSS = RssAnon + RssFile + RssShmem 的权威定义</span>
+          </li>
+          <li style="margin-bottom:10px">
+            <a href="https://mjmwired.net/kernel/Documentation/ABI/testing/procfs-smaps_rollup" target="_blank" style="color:var(--accent)">
+              📄 kernel.org — Documentation/ABI/testing/procfs-smaps_rollup
+            </a>
+            <br><span style="font-size:0.8rem;color:var(--text3)">smaps_rollup 接口规范，包含 Pss_Anon/Pss_File/Pss_Shmem 字段说明（2017年8月）</span>
+          </li>
+        </ul>
+      </div>
+
+      <div class="card">
+        <div class="metric-name" style="margin-bottom:12px">Linux man-pages（官方手册）</div>
+        <ul style="list-style:none; padding:0">
+          <li style="margin-bottom:10px">
+            <a href="https://man7.org/linux/man-pages/man5/proc_pid_smaps.5.html" target="_blank" style="color:var(--accent)">
+              📄 man7.org — proc_pid_smaps(5)
+            </a>
+            <br><span style="font-size:0.8rem;color:var(--text3)">smaps 各字段官方手册页，man-pages 6.18 版本（2026-02-08）</span>
+          </li>
+          <li style="margin-bottom:10px">
+            <a href="https://man7.org/linux/man-pages/man5/proc_pid_status.5.html" target="_blank" style="color:var(--accent)">
+              📄 man7.org — proc_pid_status(5)
+            </a>
+            <br><span style="font-size:0.8rem;color:var(--text3)">proc/pid/status 各字段官方手册页，包含 VmRSS、RssAnon 等完整说明</span>
+          </li>
+        </ul>
+      </div>
+
+      <div class="card">
+        <div class="metric-name" style="margin-bottom:12px">内核邮件列表（补丁来源）</div>
+        <ul style="list-style:none; padding:0">
+          <li style="margin-bottom:10px">
+            <a href="https://lkml.iu.edu/hypermail/linux/kernel/1511.2/02256.html" target="_blank" style="color:var(--accent)">
+              📄 LKML — [PATCH v5 6/6] mm, procfs: breakdown RSS into RssAnon, RssFile and RssShmem
+            </a>
+            <br><span style="font-size:0.8rem;color:var(--text3)">Jerome Marchand 提交的内核补丁，引入 RssAnon/RssFile/RssShmem 三分法（2015年11月，合入 Linux 4.5）</span>
+          </li>
+        </ul>
+      </div>
+
+      <div class="alert alert-info">
+        <div class="alert-title">📌 关于数据精确度的官方说明（原文）</div>
+        <em>"For making accounting scalable, RSS related information are handled in an asynchronous manner and the value may not be very precise. To see a precise snapshot of a moment, you can see /proc/&lt;pid&gt;/smaps file and scan page table. It's slow but very precise."</em>
+        <br><small style="color:var(--text3)">— kernel.org, Documentation/filesystems/proc.txt</small>
+      </div>
+    </div>
+
+  </div>
+  </main>
+</div>
+
+<script>
+// ── Progress Bar ──
+function updateProgress() {
+  const el = document.documentElement;
+  const scrolled = el.scrollTop || document.body.scrollTop;
+  const total = el.scrollHeight - el.clientHeight;
+  const pct = total > 0 ? (scrolled / total * 100).toFixed(1) : 0;
+  document.getElementById('progress-bar').style.width = pct + '%';
+}
+window.addEventListener('scroll', updateProgress, { passive: true });
+
+// ── Nav Highlight ──
+const navItems = document.querySelectorAll('.nav-item');
+const anchors = [...document.querySelectorAll('.section-anchor')].filter(a => a.id);
+
+function updateNav() {
+  const scrollY = window.scrollY + 90;
+  let current = '';
+  for (const a of anchors) {
+    if (a.getBoundingClientRect().top + window.scrollY <= scrollY) current = a.id;
+  }
+  navItems.forEach(item => {
+    const href = item.getAttribute('href');
+    item.classList.toggle('active', href === '#' + current);
+  });
+}
+window.addEventListener('scroll', updateNav, { passive: true });
+updateNav();
+
+// ── Nav Group Toggle ──
+function toggleGroup(header) {
+  header.classList.toggle('collapsed');
+  const items = header.nextElementSibling;
+  if (header.classList.contains('collapsed')) {
+    items.classList.add('collapsed');
+  } else {
+    items.classList.remove('collapsed');
+  }
+}
+
+// ── Mobile Nav ──
+function toggleNav() {
+  const sidebar = document.getElementById('sidebar');
+  const overlay = document.getElementById('overlay');
+  sidebar.classList.toggle('open');
+  overlay.classList.toggle('open');
+}
+function navClick() {
+  if (window.innerWidth <= 900) {
+    document.getElementById('sidebar').classList.remove('open');
+    document.getElementById('overlay').classList.remove('open');
+  }
+}
+
+// ── Keyboard Navigation ──
+const chapterIds = anchors.map(a => a.id);
+function getCurrentChapterIdx() {
+  const scrollY = window.scrollY + 90;
+  let idx = 0;
+  for (let i = 0; i < anchors.length; i++) {
+    if (anchors[i].getBoundingClientRect().top + window.scrollY <= scrollY) idx = i;
+  }
+  return idx;
+}
+document.addEventListener('keydown', (e) => {
+  if (e.target.tagName === 'INPUT' || e.target.tagName === 'TEXTAREA') return;
+  if (e.key === 'ArrowRight') {
+    const idx = getCurrentChapterIdx();
+    const next = anchors[Math.min(idx + 1, anchors.length - 1)];
+    if (next) next.scrollIntoView({ behavior: 'smooth' });
+  } else if (e.key === 'ArrowLeft') {
+    const idx = getCurrentChapterIdx();
+    const prev = anchors[Math.max(idx - 1, 0)];
+    if (prev) prev.scrollIntoView({ behavior: 'smooth' });
+  }
+});
+</script>
+</body>
+</html>
