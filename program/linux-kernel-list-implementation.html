@@ -1,0 +1,2623 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Linux 内核双向链表：原理、实现与应用层移植</title>
+<style>
+  /* ===== 基础重置 ===== */
+  *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+  html { scroll-behavior: smooth; font-size: 16px; }
+  body {
+    font-family: 'Segoe UI', 'PingFang SC', 'Microsoft YaHei', sans-serif;
+    background: #0f1117;
+    color: #c9d1d9;
+    line-height: 1.75;
+    overflow-x: hidden;
+  }
+
+  /* ===== 进度条 ===== */
+  #progress-bar {
+    position: fixed; top: 0; left: 0; height: 3px; width: 0%;
+    background: linear-gradient(90deg, #58a6ff, #3fb950, #f78166);
+    z-index: 9999;
+    transition: width 0.1s linear;
+    border-radius: 0 2px 2px 0;
+  }
+
+  /* ===== 顶部导航 ===== */
+  #topbar {
+    position: fixed; top: 0; left: 0; right: 0; height: 52px;
+    background: rgba(13,17,23,0.95);
+    border-bottom: 1px solid #21262d;
+    display: flex; align-items: center;
+    padding: 0 1rem;
+    z-index: 1000;
+    backdrop-filter: blur(10px);
+  }
+  #topbar h1 {
+    font-size: 0.95rem; color: #58a6ff; font-weight: 600;
+    white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+    flex: 1; min-width: 0;
+  }
+  #hamburger {
+    display: none; background: none; border: none;
+    color: #8b949e; cursor: pointer; padding: 6px;
+    flex-shrink: 0;
+  }
+  #hamburger svg { display: block; }
+
+  /* ===== 布局 ===== */
+  #layout {
+    display: flex;
+    padding-top: 52px;
+    min-height: 100vh;
+  }
+
+  /* ===== 侧边导航 ===== */
+  #sidebar {
+    width: 270px;
+    flex-shrink: 0;
+    background: #0d1117;
+    border-right: 1px solid #21262d;
+    position: fixed;
+    top: 52px; left: 0; bottom: 0;
+    overflow-y: auto;
+    overflow-x: hidden;
+    z-index: 900;
+    transition: transform 0.3s ease;
+    scrollbar-width: thin;
+    scrollbar-color: #30363d transparent;
+  }
+  #sidebar::-webkit-scrollbar { width: 4px; }
+  #sidebar::-webkit-scrollbar-thumb { background: #30363d; border-radius: 4px; }
+  #sidebar-inner { padding: 1rem 0 2rem; }
+
+  .nav-group { margin-bottom: 0.25rem; }
+  .nav-group-header {
+    display: flex; align-items: center; justify-content: space-between;
+    padding: 0.5rem 1rem;
+    cursor: pointer;
+    font-size: 0.72rem;
+    font-weight: 700;
+    text-transform: uppercase;
+    letter-spacing: 0.08em;
+    color: #58a6ff;
+    user-select: none;
+  }
+  .nav-group-header:hover { background: #161b22; }
+  .nav-group-toggle { font-size: 0.65rem; color: #8b949e; transition: transform 0.2s; }
+  .nav-group.collapsed .nav-group-toggle { transform: rotate(-90deg); }
+  .nav-group-items { overflow: hidden; transition: max-height 0.3s ease; }
+  .nav-group.collapsed .nav-group-items { max-height: 0 !important; }
+
+  .nav-item {
+    display: block; padding: 0.38rem 1rem 0.38rem 1.5rem;
+    font-size: 0.82rem; color: #8b949e;
+    text-decoration: none;
+    cursor: pointer;
+    border-left: 2px solid transparent;
+    transition: all 0.15s;
+    line-height: 1.4;
+  }
+  .nav-item:hover { color: #c9d1d9; background: #161b22; border-left-color: #30363d; }
+  .nav-item.active { color: #58a6ff; background: #161b22; border-left-color: #58a6ff; font-weight: 600; }
+
+  /* ===== 主内容 ===== */
+  #main {
+    margin-left: 270px;
+    flex: 1;
+    min-width: 0;
+    padding: 2.5rem 1.5rem 4rem;
+    max-width: 900px;
+  }
+  @media (max-width: 960px) {
+    #main { max-width: 100%; }
+  }
+
+  /* ===== 章节 ===== */
+  .chapter {
+    margin-bottom: 5rem;
+    scroll-margin-top: 68px;
+  }
+  .chapter-header {
+    border-bottom: 1px solid #21262d;
+    padding-bottom: 0.75rem;
+    margin-bottom: 2rem;
+  }
+  .chapter-num {
+    font-size: 0.78rem; color: #3fb950; font-weight: 700;
+    text-transform: uppercase; letter-spacing: 0.1em;
+    margin-bottom: 0.25rem;
+  }
+  .chapter-title {
+    font-size: 1.8rem; font-weight: 700;
+    color: #e6edf3;
+    line-height: 1.3;
+  }
+
+  .section {
+    margin-bottom: 3rem;
+    scroll-margin-top: 68px;
+  }
+  .section-title {
+    font-size: 1.25rem; font-weight: 600;
+    color: #cae8ff;
+    margin-bottom: 1rem;
+    display: flex; align-items: center; gap: 0.5rem;
+  }
+  .section-title::before {
+    content: ''; display: inline-block;
+    width: 4px; height: 1.1em;
+    background: #58a6ff;
+    border-radius: 2px;
+  }
+  .subsection-title {
+    font-size: 1rem; font-weight: 600;
+    color: #79c0ff;
+    margin: 1.5rem 0 0.75rem;
+  }
+
+  p { margin-bottom: 1rem; color: #c9d1d9; }
+  ul, ol { margin: 0.75rem 0 1rem 1.5rem; }
+  li { margin-bottom: 0.4rem; color: #c9d1d9; }
+  strong { color: #e6edf3; }
+
+  /* ===== 代码块 ===== */
+  pre {
+    background: #161b22;
+    border: 1px solid #30363d;
+    border-radius: 8px;
+    padding: 1.25rem;
+    overflow-x: auto;
+    margin: 1rem 0 1.5rem;
+    position: relative;
+    font-size: 0.83rem;
+    line-height: 1.6;
+  }
+  pre::-webkit-scrollbar { height: 6px; }
+  pre::-webkit-scrollbar-thumb { background: #30363d; border-radius: 4px; }
+  code {
+    font-family: 'Cascadia Code', 'Fira Code', 'Consolas', 'Monaco', monospace;
+  }
+  pre code { color: #c9d1d9; }
+  .kw { color: #ff7b72; }   /* keyword */
+  .ty { color: #ffa657; }   /* type */
+  .fn { color: #d2a8ff; }   /* function */
+  .cm { color: #8b949e; font-style: italic; } /* comment */
+  .st { color: #a5d6ff; }   /* string */
+  .nm { color: #79c0ff; }   /* number/macro name */
+  .pp { color: #3fb950; }   /* preprocessor */
+  .op { color: #ff7b72; }   /* operator */
+
+  .code-label {
+    position: absolute; top: 0.5rem; right: 0.75rem;
+    font-size: 0.7rem; color: #484f58;
+    font-family: monospace; text-transform: uppercase;
+  }
+
+  /* ===== 提示框 ===== */
+  .callout {
+    border-radius: 8px;
+    padding: 1rem 1.25rem;
+    margin: 1.25rem 0;
+    border-left: 4px solid;
+    font-size: 0.9rem;
+  }
+  .callout-info { background: #0c2d6b33; border-color: #58a6ff; }
+  .callout-warn { background: #5a1e0233; border-color: #f78166; }
+  .callout-tip  { background: #033a1633; border-color: #3fb950; }
+  .callout-title { font-weight: 700; margin-bottom: 0.4rem; font-size: 0.82rem; text-transform: uppercase; }
+  .callout-info .callout-title { color: #58a6ff; }
+  .callout-warn .callout-title { color: #f78166; }
+  .callout-tip  .callout-title { color: #3fb950; }
+
+  /* ===== 总结框 ===== */
+  .summary-box {
+    background: linear-gradient(135deg, #161b22 0%, #0d1117 100%);
+    border: 1px solid #30363d;
+    border-top: 3px solid #3fb950;
+    border-radius: 8px;
+    padding: 1.5rem;
+    margin: 2.5rem 0 1rem;
+  }
+  .summary-box h4 {
+    color: #3fb950; font-size: 0.9rem;
+    text-transform: uppercase; letter-spacing: 0.08em;
+    margin-bottom: 0.75rem;
+  }
+  .summary-box ul { margin-left: 1.25rem; }
+  .summary-box li { color: #c9d1d9; margin-bottom: 0.4rem; font-size: 0.9rem; }
+
+  /* ===== 表格 ===== */
+  .table-wrap { overflow-x: auto; margin: 1rem 0 1.5rem; border-radius: 8px; border: 1px solid #30363d; }
+  table { width: 100%; border-collapse: collapse; font-size: 0.85rem; }
+  th {
+    background: #161b22; color: #79c0ff;
+    padding: 0.65rem 1rem; text-align: left;
+    font-weight: 600; white-space: nowrap;
+    border-bottom: 1px solid #30363d;
+  }
+  td {
+    padding: 0.6rem 1rem;
+    border-bottom: 1px solid #21262d;
+    color: #c9d1d9;
+    vertical-align: top;
+  }
+  tr:last-child td { border-bottom: none; }
+  tr:hover td { background: #161b22; }
+  td code, th code {
+    background: #1f2937; padding: 0.1em 0.4em;
+    border-radius: 4px; font-size: 0.82em;
+    color: #d2a8ff;
+  }
+
+  /* ===== 链接 ===== */
+  a { color: #58a6ff; text-decoration: none; }
+  a:hover { text-decoration: underline; }
+  .ref-link {
+    display: inline-flex; align-items: center; gap: 0.25rem;
+    font-size: 0.8rem;
+    background: #161b22;
+    border: 1px solid #30363d;
+    border-radius: 4px;
+    padding: 0.15rem 0.5rem;
+    color: #58a6ff;
+  }
+  .ref-link:hover { background: #21262d; }
+
+  /* ===== SVG 图表 ===== */
+  .svg-wrap {
+    background: #161b22;
+    border: 1px solid #30363d;
+    border-radius: 10px;
+    padding: 1.25rem;
+    margin: 1.25rem 0 1.75rem;
+    overflow-x: auto;
+    text-align: center;
+  }
+  .svg-caption {
+    text-align: center;
+    font-size: 0.78rem;
+    color: #8b949e;
+    margin-top: 0.5rem;
+    font-style: italic;
+  }
+
+  /* ===== 移动端 ===== */
+  #overlay {
+    display: none;
+    position: fixed; inset: 0;
+    background: rgba(0,0,0,0.5);
+    z-index: 800;
+  }
+  @media (max-width: 768px) {
+    #sidebar {
+      transform: translateX(-100%);
+      width: 280px;
+    }
+    #sidebar.open { transform: translateX(0); }
+    #overlay.open { display: block; }
+    #main { margin-left: 0; padding: 1.5rem 1rem 4rem; }
+    #hamburger { display: flex; align-items: center; margin-right: 0.75rem; }
+    .chapter-title { font-size: 1.4rem; }
+    #topbar h1 { font-size: 0.82rem; }
+  }
+
+  /* ===== 键盘导航提示 ===== */
+  #key-hint {
+    position: fixed; bottom: 1.25rem; right: 1.25rem;
+    background: #161b22;
+    border: 1px solid #30363d;
+    border-radius: 8px;
+    padding: 0.5rem 0.75rem;
+    font-size: 0.72rem; color: #8b949e;
+    display: flex; align-items: center; gap: 0.4rem;
+    z-index: 500;
+    opacity: 0.7;
+  }
+  kbd {
+    background: #21262d;
+    border: 1px solid #444c56;
+    border-radius: 4px;
+    padding: 0.1em 0.4em;
+    font-size: 0.78rem;
+    color: #c9d1d9;
+    font-family: monospace;
+  }
+
+  /* ===== 章节导航按钮 ===== */
+  .chapter-nav {
+    display: flex; justify-content: space-between;
+    margin-top: 3rem;
+    padding-top: 1.5rem;
+    border-top: 1px solid #21262d;
+    gap: 1rem;
+  }
+  .chapter-nav button {
+    background: #161b22;
+    border: 1px solid #30363d;
+    color: #8b949e;
+    padding: 0.5rem 1rem;
+    border-radius: 6px;
+    cursor: pointer;
+    font-size: 0.85rem;
+    transition: all 0.15s;
+    flex: 1; max-width: 180px;
+  }
+  .chapter-nav button:hover { background: #21262d; color: #c9d1d9; border-color: #58a6ff; }
+  .chapter-nav button:disabled { opacity: 0.3; cursor: default; }
+
+  /* ===== 高亮 ===== */
+  .badge {
+    display: inline-block;
+    padding: 0.1em 0.55em;
+    border-radius: 100px;
+    font-size: 0.72rem; font-weight: 700;
+    vertical-align: middle;
+    margin-left: 0.3em;
+  }
+  .badge-blue { background: #1f3358; color: #58a6ff; }
+  .badge-green { background: #12261e; color: #3fb950; }
+  .badge-orange { background: #3d1f00; color: #ffa657; }
+  .badge-red { background: #3d0c00; color: #f78166; }
+</style>
+</head>
+<body>
+
+<!-- 进度条 -->
+<div id="progress-bar"></div>
+
+<!-- 顶部导航 -->
+<div id="topbar">
+  <button id="hamburger" aria-label="菜单" onclick="toggleSidebar()">
+    <svg width="20" height="20" viewBox="0 0 20 20" fill="currentColor">
+      <rect y="3" width="20" height="2" rx="1"/>
+      <rect y="9" width="20" height="2" rx="1"/>
+      <rect y="15" width="20" height="2" rx="1"/>
+    </svg>
+  </button>
+  <h1>Linux 内核双向链表 · 原理、实现与应用层移植</h1>
+</div>
+
+<!-- 遮罩 -->
+<div id="overlay" onclick="toggleSidebar()"></div>
+
+<div id="layout">
+  <!-- 侧边导航 -->
+  <nav id="sidebar">
+    <div id="sidebar-inner"></div>
+  </nav>
+
+  <!-- 主内容 -->
+  <main id="main">
+
+    <!-- ==================== 第一章 ==================== -->
+    <article class="chapter" id="ch1">
+      <div class="chapter-header">
+        <div class="chapter-num">第 1 章</div>
+        <h2 class="chapter-title">背景与设计哲学</h2>
+      </div>
+
+      <section class="section" id="ch1-s1">
+        <h3 class="section-title">为什么内核要定制链表？</h3>
+        <p>
+          链表是操作系统内核中最广泛使用的数据结构之一。然而，与应用层不同，内核需要一个
+          <strong>零运行时开销、类型无关、可嵌入任意结构体</strong>的链表实现。
+          传统 C 链表将 <code>data + next/prev</code> 放在同一个节点结构中，而内核的设计走了截然不同的路——
+          <strong>侵入式链表（Intrusive List）</strong>。
+        </p>
+        <p>
+          官方文档明确指出：
+          <em>"Linux 内核的双向链表是循环链表（circular in nature）"</em>，
+          并在 <code>include/linux/list.h</code> 中提供了完整实现。
+          官方文档链接：
+          <a class="ref-link" href="https://docs.kernel.org/core-api/list.html" target="_blank">
+            ↗ docs.kernel.org/core-api/list.html
+          </a>
+          &nbsp;
+          <a class="ref-link" href="https://github.com/torvalds/linux/blob/master/include/linux/list.h" target="_blank">
+            ↗ torvalds/linux: include/linux/list.h
+          </a>
+        </p>
+
+        <div class="svg-wrap">
+          <svg viewBox="0 0 700 200" width="100%" style="max-width:680px">
+            <!-- 传统链表 -->
+            <text x="10" y="25" fill="#8b949e" font-size="13" font-family="monospace">传统链表（数据与指针耦合）</text>
+            <!-- Node 1 -->
+            <rect x="10" y="40" width="150" height="70" rx="6" fill="#1a2233" stroke="#30363d"/>
+            <text x="85" y="65" fill="#ffa657" font-size="11" text-anchor="middle" font-family="monospace">data</text>
+            <line x1="10" y1="75" x2="160" y2="75" stroke="#30363d"/>
+            <text x="50" y="100" fill="#79c0ff" font-size="10" text-anchor="middle" font-family="monospace">prev</text>
+            <text x="120" y="100" fill="#79c0ff" font-size="10" text-anchor="middle" font-family="monospace">next</text>
+            <!-- Node 2 -->
+            <rect x="220" y="40" width="150" height="70" rx="6" fill="#1a2233" stroke="#30363d"/>
+            <text x="295" y="65" fill="#ffa657" font-size="11" text-anchor="middle" font-family="monospace">data</text>
+            <line x1="220" y1="75" x2="370" y2="75" stroke="#30363d"/>
+            <text x="260" y="100" fill="#79c0ff" font-size="10" text-anchor="middle" font-family="monospace">prev</text>
+            <text x="330" y="100" fill="#79c0ff" font-size="10" text-anchor="middle" font-family="monospace">next</text>
+            <!-- arrows -->
+            <defs>
+              <marker id="arrowBlue" markerWidth="8" markerHeight="8" refX="6" refY="3" orient="auto">
+                <path d="M0,0 L8,3 L0,6 Z" fill="#58a6ff"/>
+              </marker>
+              <marker id="arrowGreen" markerWidth="8" markerHeight="8" refX="6" refY="3" orient="auto">
+                <path d="M0,0 L8,3 L0,6 Z" fill="#3fb950"/>
+              </marker>
+              <marker id="arrowOrange" markerWidth="8" markerHeight="8" refX="6" refY="3" orient="auto">
+                <path d="M0,0 L8,3 L0,6 Z" fill="#ffa657"/>
+              </marker>
+            </defs>
+            <line x1="165" y1="93" x2="215" y2="93" stroke="#58a6ff" stroke-width="1.5" marker-end="url(#arrowBlue)"/>
+            <line x1="215" y1="82" x2="165" y2="82" stroke="#3fb950" stroke-width="1.5" marker-end="url(#arrowGreen)"/>
+            <text x="420" y="80" fill="#8b949e" font-size="11" font-family="sans-serif">类型固定，每种类型需单独实现</text>
+
+            <!-- 侵入式链表 -->
+            <text x="10" y="155" fill="#8b949e" font-size="13" font-family="monospace">侵入式链表（内核方式，list_head 嵌入数据结构）</text>
+            <!-- Node A big box -->
+            <rect x="10" y="163" width="180" height="32" rx="6" fill="#1f2937" stroke="#30363d"/>
+            <text x="55" y="182" fill="#ffa657" font-size="10" text-anchor="middle" font-family="monospace">data fields</text>
+            <rect x="108" y="166" width="76" height="26" rx="4" fill="#1a2d1a" stroke="#3fb950" stroke-width="1.5"/>
+            <text x="146" y="181" fill="#3fb950" font-size="9" text-anchor="middle" font-family="monospace">list_head</text>
+            <!-- Node B big box -->
+            <rect x="260" y="163" width="180" height="32" rx="6" fill="#1f2937" stroke="#30363d"/>
+            <text x="305" y="182" fill="#ffa657" font-size="10" text-anchor="middle" font-family="monospace">data fields</text>
+            <rect x="358" y="166" width="76" height="26" rx="4" fill="#1a2d1a" stroke="#3fb950" stroke-width="1.5"/>
+            <text x="396" y="181" fill="#3fb950" font-size="9" text-anchor="middle" font-family="monospace">list_head</text>
+            <!-- arrows between list_heads -->
+            <line x1="186" y1="182" x2="254" y2="175" stroke="#58a6ff" stroke-width="1.5" marker-end="url(#arrowBlue)"/>
+            <line x1="254" y1="186" x2="186" y2="191" stroke="#3fb950" stroke-width="1.5" marker-end="url(#arrowGreen)"/>
+            <text x="475" y="182" fill="#8b949e" font-size="11" font-family="sans-serif">通用！任意类型均可使用</text>
+          </svg>
+          <p class="svg-caption">图1-1 传统链表 vs 侵入式链表（内核设计）</p>
+        </div>
+      </section>
+
+      <section class="section" id="ch1-s2">
+        <h3 class="section-title">侵入式设计的第一性原理</h3>
+        <p>
+          <strong>第一性原理：</strong>链表操作（插入、删除、遍历）与节点内数据的具体类型无关。
+          只需知道"前一节点"和"后一节点"的位置即可完成所有链表操作。
+        </p>
+        <p>
+          因此，内核将 <code>struct list_head { next, prev }</code> 作为一个
+          <strong>可嵌入的锚点（anchor）</strong> 放进任意用户数据结构中，
+          链表代码只操作这个锚点，通过
+          <code>container_of</code> 宏从锚点地址反算出宿主结构体地址，从而访问实际数据。
+        </p>
+        <ul>
+          <li><strong>零开销抽象</strong>：所有函数均为 <code>static inline</code>，无函数调用开销</li>
+          <li><strong>无内存分配</strong>：节点内嵌，无需额外 malloc</li>
+          <li><strong>类型泛化</strong>：一套代码服务所有数据类型</li>
+          <li><strong>循环链表</strong>：头节点（head）自身参与环形结构，判空只需检查 <code>head.next == head</code></li>
+        </ul>
+
+        <div class="callout callout-info">
+          <div class="callout-title">官方原文</div>
+          Linux's doubly-linked list is <em>circular in nature</em>. This means that to get from the head node to the tail, we can just travel one edge backwards. Similarly, to get from the tail node to the head, we can simply travel forwards "beyond" the tail and arrive back at the head.
+          —— <a href="https://docs.kernel.org/core-api/list.html" target="_blank">Linux Kernel Documentation: Linked Lists in Linux</a>
+        </div>
+      </section>
+
+      <section class="section" id="ch1-s3">
+        <h3 class="section-title">循环双向链表结构示意</h3>
+        <div class="svg-wrap">
+          <svg viewBox="0 0 660 180" width="100%" style="max-width:640px">
+            <defs>
+              <marker id="ah1" markerWidth="9" markerHeight="9" refX="7" refY="3" orient="auto">
+                <path d="M0,0 L9,3 L0,6 Z" fill="#58a6ff"/>
+              </marker>
+              <marker id="ah2" markerWidth="9" markerHeight="9" refX="7" refY="3" orient="auto">
+                <path d="M0,0 L9,3 L0,6 Z" fill="#3fb950"/>
+              </marker>
+            </defs>
+            <!-- HEAD -->
+            <rect x="20" y="70" width="100" height="46" rx="6" fill="#0c2d6b" stroke="#58a6ff" stroke-width="2"/>
+            <text x="70" y="88" fill="#58a6ff" font-size="11" text-anchor="middle" font-weight="bold" font-family="monospace">HEAD</text>
+            <text x="70" y="106" fill="#79c0ff" font-size="9" text-anchor="middle" font-family="monospace">list_head</text>
+            <!-- Node A -->
+            <rect x="180" y="55" width="120" height="72" rx="6" fill="#1f2937" stroke="#30363d" stroke-width="1.5"/>
+            <text x="240" y="76" fill="#ffa657" font-size="10" text-anchor="middle" font-family="monospace">struct foo</text>
+            <line x1="180" y1="88" x2="300" y2="88" stroke="#30363d"/>
+            <rect x="185" y="92" width="110" height="28" rx="4" fill="#1a2d1a" stroke="#3fb950"/>
+            <text x="240" y="110" fill="#3fb950" font-size="9" text-anchor="middle" font-family="monospace">list_head</text>
+            <!-- Node B -->
+            <rect x="365" y="55" width="120" height="72" rx="6" fill="#1f2937" stroke="#30363d" stroke-width="1.5"/>
+            <text x="425" y="76" fill="#ffa657" font-size="10" text-anchor="middle" font-family="monospace">struct bar</text>
+            <line x1="365" y1="88" x2="485" y2="88" stroke="#30363d"/>
+            <rect x="370" y="92" width="110" height="28" rx="4" fill="#1a2d1a" stroke="#3fb950"/>
+            <text x="425" y="110" fill="#3fb950" font-size="9" text-anchor="middle" font-family="monospace">list_head</text>
+            <!-- Node C -->
+            <rect x="550" y="70" width="95" height="46" rx="6" fill="#1f2937" stroke="#30363d" stroke-width="1.5"/>
+            <text x="598" y="89" fill="#ffa657" font-size="10" text-anchor="middle" font-family="monospace">struct baz</text>
+            <text x="598" y="106" fill="#3fb950" font-size="9" text-anchor="middle" font-family="monospace">list_head</text>
+
+            <!-- next arrows (top, blue) -->
+            <path d="M120,80 Q150,55 180,80" fill="none" stroke="#58a6ff" stroke-width="1.5" marker-end="url(#ah1)"/>
+            <path d="M300,80 Q332,55 365,80" fill="none" stroke="#58a6ff" stroke-width="1.5" marker-end="url(#ah1)"/>
+            <path d="M485,80 Q516,55 550,80" fill="none" stroke="#58a6ff" stroke-width="1.5" marker-end="url(#ah1)"/>
+            <!-- wrap next arrow -->
+            <path d="M645,93 Q648,160 10,160 Q5,160 5,93 L20,93" fill="none" stroke="#58a6ff" stroke-width="1.5" stroke-dasharray="4,3" marker-end="url(#ah1)"/>
+
+            <!-- prev arrows (bottom, green) -->
+            <path d="M180,103 Q150,128 120,103" fill="none" stroke="#3fb950" stroke-width="1.5" marker-end="url(#ah2)"/>
+            <path d="M365,103 Q332,128 300,103" fill="none" stroke="#3fb950" stroke-width="1.5" marker-end="url(#ah2)"/>
+            <path d="M550,103 Q516,128 485,103" fill="none" stroke="#3fb950" stroke-width="1.5" marker-end="url(#ah2)"/>
+
+            <!-- legend -->
+            <line x1="30" y1="25" x2="60" y2="25" stroke="#58a6ff" stroke-width="1.5" marker-end="url(#ah1)"/>
+            <text x="65" y="29" fill="#8b949e" font-size="10" font-family="sans-serif">next 指针</text>
+            <line x1="160" y1="25" x2="190" y2="25" stroke="#3fb950" stroke-width="1.5" marker-end="url(#ah2)"/>
+            <text x="195" y="29" fill="#8b949e" font-size="10" font-family="sans-serif">prev 指针</text>
+            <text x="350" y="29" fill="#8b949e" font-size="10" font-family="sans-serif">虚线 = 跨越尾部回到HEAD（循环）</text>
+          </svg>
+          <p class="svg-caption">图1-2 内核循环双向链表全局结构（HEAD 自身也在环中）</p>
+        </div>
+      </section>
+
+      <div class="summary-box">
+        <h4>📌 第一章总结</h4>
+        <ul>
+          <li>内核链表采用<strong>侵入式设计</strong>：<code>struct list_head</code> 嵌入用户数据结构，而非包裹数据</li>
+          <li>本质是<strong>循环双向链表</strong>，头节点（HEAD）自身参与环形，使边界判断统一</li>
+          <li>所有 API 均为 <code>static inline</code>，无类型依赖，无动态分配，零额外开销</li>
+          <li><strong>第一性原理</strong>：链表操作只需 prev/next 两个指针，与数据类型解耦，通过 <code>container_of</code> 桥接数据与链表锚点</li>
+        </ul>
+      </div>
+    </article>
+
+    <!-- ==================== 第二章 ==================== -->
+    <article class="chapter" id="ch2">
+      <div class="chapter-header">
+        <div class="chapter-num">第 2 章</div>
+        <h2 class="chapter-title">核心数据结构与宏</h2>
+      </div>
+
+      <section class="section" id="ch2-s1">
+        <h3 class="section-title">struct list_head —— 最小链表节点</h3>
+        <p>
+          定义在
+          <a class="ref-link" href="https://elixir.bootlin.com/linux/latest/source/include/linux/types.h#L178" target="_blank">
+            ↗ include/linux/types.h
+          </a>，仅包含两个自引用指针：
+        </p>
+        <pre><code><span class="cm">/**
+ * struct list_head - 内核双向链表节点/头节点
+ *
+ * 这是一个"锚点"结构，嵌入到任意用户数据结构中。
+ * 当 next == prev == &amp;self 时，表示该节点处于空链表状态（仅含自身）。
+ */</span>
+<span class="kw">struct</span> <span class="ty">list_head</span> {
+    <span class="kw">struct</span> <span class="ty">list_head</span> *next;   <span class="cm">/* 指向下一个节点 */</span>
+    <span class="kw">struct</span> <span class="ty">list_head</span> *prev;   <span class="cm">/* 指向上一个节点 */</span>
+};</code></pre>
+
+        <div class="callout callout-tip">
+          <div class="callout-title">关键点</div>
+          <code>struct list_head</code> 没有数据字段。它是纯粹的"链接器"，通过 <code>container_of</code> 反推出宿主结构。这也意味着同一个结构体可以同时加入多个不同的链表——只需嵌入多个 <code>list_head</code>。
+        </div>
+
+        <h4 class="subsection-title">container_of 与 offsetof 宏</h4>
+        <p>
+          这两个宏是从 <code>list_head *</code> 还原宿主结构体指针的核心机制，
+          源自内核
+          <a class="ref-link" href="https://elixir.bootlin.com/linux/latest/source/include/linux/container_of.h" target="_blank">
+            ↗ include/linux/container_of.h
+          </a>：
+        </p>
+        <pre><code><span class="cm">/**
+ * offsetof(TYPE, MEMBER)
+ * 计算结构体 TYPE 中成员 MEMBER 的字节偏移量。
+ * 原理：将地址 0 强转为 TYPE*，取 MEMBER 的地址即为偏移值。
+ *
+ * 来源：C标准 &lt;stddef.h&gt; 提供，内核自行实现以保证可移植性。
+ */</span>
+<span class="pp">#define</span> <span class="fn">offsetof</span>(TYPE, MEMBER) \
+    ((<span class="ty">size_t</span>) &amp;((<span class="ty">TYPE</span> *)0)->MEMBER)
+
+<span class="cm">/**
+ * container_of(ptr, type, member)
+ * 从成员指针反推出宿主结构体指针。
+ *
+ * @ptr:    指向结构体成员的指针（如 list_head *）
+ * @type:   宿主结构体类型（如 struct foo）
+ * @member: 该成员在宿主结构体中的名称（如 node）
+ *
+ * 原理：ptr 减去 member 在 type 中的偏移量，得到 type 的起始地址。
+ * typeof() 用于编译期类型检查（GCC 扩展）。
+ */</span>
+<span class="pp">#define</span> <span class="fn">container_of</span>(ptr, type, member) ({ \
+    <span class="kw">const</span> <span class="kw">typeof</span>( ((<span class="ty">type</span> *)0)->member ) *__mptr = (ptr); \
+    (<span class="ty">type</span> *)( (<span class="kw">char</span> *)__mptr - <span class="fn">offsetof</span>(<span class="ty">type</span>, member) ); \
+})</code></pre>
+
+        <div class="svg-wrap">
+          <svg viewBox="0 0 620 200" width="100%" style="max-width:600px">
+            <defs>
+              <marker id="ao1" markerWidth="8" markerHeight="8" refX="6" refY="3" orient="auto">
+                <path d="M0,0 L8,3 L0,6 Z" fill="#ffa657"/>
+              </marker>
+              <marker id="ao2" markerWidth="8" markerHeight="8" refX="6" refY="3" orient="auto">
+                <path d="M0,0 L8,3 L0,6 Z" fill="#3fb950"/>
+              </marker>
+            </defs>
+            <!-- Memory block -->
+            <rect x="60" y="30" width="300" height="140" rx="8" fill="#161b22" stroke="#30363d" stroke-width="1.5"/>
+            <text x="210" y="20" fill="#8b949e" font-size="11" text-anchor="middle" font-family="sans-serif">内存中的 struct foo</text>
+            <!-- Fields -->
+            <rect x="60" y="30" width="300" height="35" rx="0" fill="#2a1e00"/>
+            <text x="210" y="52" fill="#ffa657" font-size="11" text-anchor="middle" font-family="monospace">int id   （偏移 0）</text>
+            <rect x="60" y="65" width="300" height="35" fill="#1a1a2e"/>
+            <text x="210" y="87" fill="#79c0ff" font-size="11" text-anchor="middle" font-family="monospace">char name[16]   （偏移 4）</text>
+            <rect x="60" y="100" width="300" height="40" fill="#1a2d1a" stroke="#3fb950" stroke-width="1.5"/>
+            <text x="210" y="118" fill="#3fb950" font-size="11" text-anchor="middle" font-family="monospace" font-weight="bold">struct list_head node</text>
+            <text x="210" y="133" fill="#3fb950" font-size="9" text-anchor="middle" font-family="monospace">（偏移 offsetof(foo, node)）</text>
+            <rect x="60" y="140" width="300" height="30" rx="0" fill="#2a1a2a"/>
+            <text x="210" y="159" fill="#d2a8ff" font-size="11" text-anchor="middle" font-family="monospace">...其他字段...</text>
+
+            <!-- pointer annotations -->
+            <!-- struct foo* -->
+            <line x1="15" y1="47" x2="58" y2="47" stroke="#ffa657" stroke-width="1.5" marker-end="url(#ao1)"/>
+            <text x="5" y="42" fill="#ffa657" font-size="9" font-family="monospace">foo*</text>
+            <text x="5" y="55" fill="#ffa657" font-size="9" font-family="monospace">(结果)</text>
+
+            <!-- list_head* ptr -->
+            <line x1="15" y1="120" x2="58" y2="120" stroke="#3fb950" stroke-width="1.5" marker-end="url(#ao2)"/>
+            <text x="2" y="115" fill="#3fb950" font-size="9" font-family="monospace">ptr</text>
+            <text x="2" y="127" fill="#3fb950" font-size="9" font-family="monospace">(输入)</text>
+
+            <!-- offset brace -->
+            <line x1="375" y1="47" x2="375" y2="120" stroke="#58a6ff" stroke-width="1.5"/>
+            <line x1="375" y1="47" x2="385" y2="47" stroke="#58a6ff" stroke-width="1.5"/>
+            <line x1="375" y1="120" x2="385" y2="120" stroke="#58a6ff" stroke-width="1.5"/>
+            <text x="390" y="87" fill="#58a6ff" font-size="10" font-family="monospace">offset</text>
+            <text x="390" y="100" fill="#58a6ff" font-size="10" font-family="monospace">= offsetof</text>
+            <text x="390" y="113" fill="#58a6ff" font-size="10" font-family="monospace">(foo, node)</text>
+
+            <!-- formula -->
+            <text x="60" y="185" fill="#8b949e" font-size="10" font-family="monospace">container_of(ptr, struct foo, node)  =  (struct foo*)((char*)ptr  -  offset)</text>
+          </svg>
+          <p class="svg-caption">图2-1 container_of 原理：从成员指针减去偏移量还原宿主结构体地址</p>
+        </div>
+      </section>
+
+      <section class="section" id="ch2-s2">
+        <h3 class="section-title">初始化宏</h3>
+        <p>
+          内核提供三种等价的初始化方式，来源：
+          <a class="ref-link" href="https://github.com/torvalds/linux/blob/master/include/linux/list.h" target="_blank">
+            ↗ include/linux/list.h
+          </a>
+        </p>
+        <pre><code><span class="cm">/**
+ * LIST_HEAD_INIT(name)
+ * 静态初始化器，用于全局/静态变量声明时初始化链表头。
+ * 使 next 和 prev 均指向自身，形成空的循环链表。
+ *
+ * 原文：LIST_HEAD_INIT - initialize a &amp;struct list_head's links to point to itself
+ */</span>
+<span class="pp">#define</span> <span class="nm">LIST_HEAD_INIT</span>(name) { &amp;(name), &amp;(name) }
+
+<span class="cm">/**
+ * LIST_HEAD(name)
+ * 声明并静态初始化一个链表头变量（一步完成）。
+ * 等价于：struct list_head name = LIST_HEAD_INIT(name)
+ *
+ * 原文：LIST_HEAD - definition of a &amp;struct list_head with initialization values
+ */</span>
+<span class="pp">#define</span> <span class="nm">LIST_HEAD</span>(name) \
+    <span class="kw">struct</span> <span class="ty">list_head</span> name = <span class="fn">LIST_HEAD_INIT</span>(name)
+
+<span class="cm">/**
+ * INIT_LIST_HEAD(list)
+ * 运行时初始化，适用于动态分配的链表头或结构体成员。
+ * 将 next 和 prev 都指向自身，使其成为空链表。
+ *
+ * 原文（内核源码注释）：
+ * Initializes the list_head to point to itself. If it is a list header,
+ * the result is an empty list.
+ */</span>
+<span class="kw">static</span> <span class="kw">inline</span> <span class="ty">void</span> <span class="fn">INIT_LIST_HEAD</span>(<span class="kw">struct</span> <span class="ty">list_head</span> *list)
+{
+    list->next = list;  <span class="cm">/* 指向自身 */</span>
+    list->prev = list;  <span class="cm">/* 指向自身 */</span>
+}</code></pre>
+
+        <div class="callout callout-info">
+          <div class="callout-title">空链表的几何意义</div>
+          初始化后，HEAD.next == HEAD.prev == HEAD（自环）。这是循环链表空状态的正确表示。
+          <code>list_empty(head)</code> 只需判断 <code>head->next == head</code>。
+        </div>
+      </section>
+
+      <section class="section" id="ch2-s3">
+        <h3 class="section-title">list_entry / list_first_entry / list_last_entry</h3>
+        <pre><code><span class="cm">/**
+ * list_entry(ptr, type, member)
+ * 从 list_head 指针获取宿主结构体指针。
+ * 本质是 container_of 的别名，语义更贴近"取链表节点对应的数据结构"。
+ *
+ * @ptr:    指向 struct list_head 的指针
+ * @type:   宿主结构体类型
+ * @member: list_head 在宿主结构中的字段名
+ *
+ * 原文：get the struct for this entry
+ */</span>
+<span class="pp">#define</span> <span class="nm">list_entry</span>(ptr, type, member) \
+    <span class="fn">container_of</span>(ptr, type, member)
+
+<span class="cm">/**
+ * list_first_entry(ptr, type, member)
+ * 获取链表中第一个元素（head->next 对应的宿主结构体）。
+ * 注意：调用前必须确认链表非空，否则行为未定义。
+ *
+ * 原文：get the first element from a list
+ * Note, that list is expected to be not empty.
+ */</span>
+<span class="pp">#define</span> <span class="nm">list_first_entry</span>(ptr, type, member) \
+    <span class="fn">list_entry</span>((ptr)->next, type, member)
+
+<span class="cm">/**
+ * list_last_entry(ptr, type, member)
+ * 获取链表中最后一个元素（head->prev 对应的宿主结构体）。
+ * 注意：调用前必须确认链表非空。
+ *
+ * 原文：get the last element from a list
+ */</span>
+<span class="pp">#define</span> <span class="nm">list_last_entry</span>(ptr, type, member) \
+    <span class="fn">list_entry</span>((ptr)->prev, type, member)</code></pre>
+      </section>
+
+      <div class="summary-box">
+        <h4>📌 第二章总结</h4>
+        <ul>
+          <li><code>struct list_head</code> 是内核链表的最小单元，仅含 next/prev，通过嵌入实现类型无关</li>
+          <li><code>offsetof</code> 在编译期计算字段偏移，<code>container_of</code> 在运行期从成员指针反推宿主地址</li>
+          <li>初始化的本质是"自环"：空链表 = HEAD.next == HEAD.prev == HEAD</li>
+          <li><strong>第一性原理</strong>：所有宏的设计目标是"用地址算术替代类型耦合"，在 C 类型系统外实现泛型</li>
+        </ul>
+      </div>
+    </article>
+
+    <!-- ==================== 第三章 ==================== -->
+    <article class="chapter" id="ch3">
+      <div class="chapter-header">
+        <div class="chapter-num">第 3 章</div>
+        <h2 class="chapter-title">插入与删除操作</h2>
+      </div>
+
+      <section class="section" id="ch3-s1">
+        <h3 class="section-title">内部插入函数 __list_add</h3>
+        <p>
+          所有插入操作的核心，在两个已知相邻节点之间插入新节点。
+          为双下划线前缀（<code>__</code>），表示仅供内部使用。
+        </p>
+        <pre><code><span class="cm">/*
+ * 在两个已知相邻节点 prev 和 next 之间插入新节点 new。
+ *
+ * 内部函数，调用者必须已知 prev/next，不做边界检查。
+ *
+ * 来源：include/linux/list.h - __list_add()
+ * 原文注释：
+ * This is only for internal list manipulation where we know
+ * the prev/next entries already!
+ */</span>
+<span class="kw">static</span> <span class="kw">inline</span> <span class="ty">void</span> <span class="fn">__list_add</span>(<span class="kw">struct</span> <span class="ty">list_head</span> *new,
+                              <span class="kw">struct</span> <span class="ty">list_head</span> *prev,
+                              <span class="kw">struct</span> <span class="ty">list_head</span> *next)
+{
+    next->prev = new;   <span class="cm">/* ① next 的前驱改为 new */</span>
+    new->next  = next;  <span class="cm">/* ② new 的后继指向 next */</span>
+    new->prev  = prev;  <span class="cm">/* ③ new 的前驱指向 prev */</span>
+    prev->next = new;   <span class="cm">/* ④ prev 的后继改为 new */</span>
+}
+
+<span class="cm">/**
+ * list_add(new, head)
+ * 在链表头之后插入新节点（头插法），适合实现栈（LIFO）。
+ *
+ * @new:  待插入的新节点
+ * @head: 链表头节点
+ *
+ * 原文：Insert a new entry after the specified head.
+ *       This is good for implementing stacks.
+ */</span>
+<span class="kw">static</span> <span class="kw">inline</span> <span class="ty">void</span> <span class="fn">list_add</span>(<span class="kw">struct</span> <span class="ty">list_head</span> *new,
+                             <span class="kw">struct</span> <span class="ty">list_head</span> *head)
+{
+    <span class="fn">__list_add</span>(new, head, head->next); <span class="cm">/* 插在 head 与 head->next 之间 */</span>
+}
+
+<span class="cm">/**
+ * list_add_tail(new, head)
+ * 在链表尾部插入新节点（尾插法），适合实现队列（FIFO）。
+ *
+ * @new:  待插入的新节点
+ * @head: 链表头节点
+ *
+ * 原文：Insert a new entry before the specified head.
+ *       This is useful for implementing queues.
+ *
+ * 解释：由于是循环链表，head->prev 就是当前尾节点，
+ *        将 new 插入 head->prev 与 head 之间即为尾插。
+ */</span>
+<span class="kw">static</span> <span class="kw">inline</span> <span class="ty">void</span> <span class="fn">list_add_tail</span>(<span class="kw">struct</span> <span class="ty">list_head</span> *new,
+                                  <span class="kw">struct</span> <span class="ty">list_head</span> *head)
+{
+    <span class="fn">__list_add</span>(new, head->prev, head); <span class="cm">/* 插在尾节点与 head 之间 */</span>
+}</code></pre>
+
+        <div class="svg-wrap">
+          <svg viewBox="0 0 660 230" width="100%" style="max-width:640px">
+            <defs>
+              <marker id="ins1" markerWidth="8" markerHeight="8" refX="6" refY="3" orient="auto">
+                <path d="M0,0 L8,3 L0,6 Z" fill="#58a6ff"/>
+              </marker>
+              <marker id="ins2" markerWidth="8" markerHeight="8" refX="6" refY="3" orient="auto">
+                <path d="M0,0 L8,3 L0,6 Z" fill="#f78166"/>
+              </marker>
+            </defs>
+            <!-- Before -->
+            <text x="10" y="18" fill="#8b949e" font-size="11" font-family="sans-serif">插入前：HEAD → A → B</text>
+            <rect x="10" y="28" width="75" height="36" rx="5" fill="#0c2d6b" stroke="#58a6ff"/>
+            <text x="47" y="51" fill="#58a6ff" font-size="11" text-anchor="middle" font-family="monospace">HEAD</text>
+            <rect x="150" y="28" width="75" height="36" rx="5" fill="#1f2937" stroke="#30363d"/>
+            <text x="187" y="51" fill="#c9d1d9" font-size="11" text-anchor="middle" font-family="monospace">A</text>
+            <rect x="290" y="28" width="75" height="36" rx="5" fill="#1f2937" stroke="#30363d"/>
+            <text x="327" y="51" fill="#c9d1d9" font-size="11" text-anchor="middle" font-family="monospace">B</text>
+            <line x1="85" y1="43" x2="145" y2="43" stroke="#58a6ff" stroke-width="1.5" marker-end="url(#ins1)"/>
+            <line x1="225" y1="43" x2="285" y2="43" stroke="#58a6ff" stroke-width="1.5" marker-end="url(#ins1)"/>
+            <!-- wrap -->
+            <path d="M365,43 Q420,15 420,15 Q10,15 10,43" fill="none" stroke="#58a6ff" stroke-width="1" stroke-dasharray="4,3" marker-end="url(#ins1)"/>
+
+            <!-- After list_add -->
+            <text x="10" y="115" fill="#8b949e" font-size="11" font-family="sans-serif">list_add(new, head) 之后：HEAD → NEW → A → B</text>
+            <rect x="10" y="125" width="75" height="36" rx="5" fill="#0c2d6b" stroke="#58a6ff"/>
+            <text x="47" y="148" fill="#58a6ff" font-size="11" text-anchor="middle" font-family="monospace">HEAD</text>
+            <rect x="130" y="125" width="75" height="36" rx="5" fill="#033a16" stroke="#3fb950" stroke-width="2"/>
+            <text x="167" y="148" fill="#3fb950" font-size="11" text-anchor="middle" font-family="monospace">NEW</text>
+            <rect x="270" y="125" width="75" height="36" rx="5" fill="#1f2937" stroke="#30363d"/>
+            <text x="307" y="148" fill="#c9d1d9" font-size="11" text-anchor="middle" font-family="monospace">A</text>
+            <rect x="410" y="125" width="75" height="36" rx="5" fill="#1f2937" stroke="#30363d"/>
+            <text x="447" y="148" fill="#c9d1d9" font-size="11" text-anchor="middle" font-family="monospace">B</text>
+            <line x1="85" y1="140" x2="125" y2="140" stroke="#58a6ff" stroke-width="1.5" marker-end="url(#ins1)"/>
+            <line x1="205" y1="140" x2="265" y2="140" stroke="#58a6ff" stroke-width="1.5" marker-end="url(#ins1)"/>
+            <line x1="345" y1="140" x2="405" y2="140" stroke="#58a6ff" stroke-width="1.5" marker-end="url(#ins1)"/>
+            <path d="M485,140 Q560,105 560,105 Q10,105 10,140" fill="none" stroke="#58a6ff" stroke-width="1" stroke-dasharray="4,3" marker-end="url(#ins1)"/>
+
+            <!-- step labels -->
+            <text x="80" y="175" fill="#8b949e" font-size="10" font-family="sans-serif">① next-&gt;prev=new</text>
+            <text x="195" y="195" fill="#8b949e" font-size="10" font-family="sans-serif">② new-&gt;next=next</text>
+            <text x="80" y="210" fill="#8b949e" font-size="10" font-family="sans-serif">③ new-&gt;prev=prev</text>
+            <text x="5" y="225" fill="#8b949e" font-size="10" font-family="sans-serif">④ prev-&gt;next=new</text>
+          </svg>
+          <p class="svg-caption">图3-1 list_add 头插法步骤（HEAD 后插入 NEW）</p>
+        </div>
+      </section>
+
+      <section class="section" id="ch3-s2">
+        <h3 class="section-title">删除操作</h3>
+        <pre><code><span class="cm">/*
+ * 内部删除函数：让 prev 和 next 互相指向，绕过被删除节点。
+ *
+ * 来源：include/linux/list.h - __list_del()
+ */</span>
+<span class="kw">static</span> <span class="kw">inline</span> <span class="ty">void</span> <span class="fn">__list_del</span>(<span class="kw">struct</span> <span class="ty">list_head</span> *prev,
+                              <span class="kw">struct</span> <span class="ty">list_head</span> *next)
+{
+    next->prev = prev;  <span class="cm">/* next 的前驱跳过被删节点 */</span>
+    prev->next = next;  <span class="cm">/* prev 的后继跳过被删节点 */</span>
+}
+
+<span class="cm">/**
+ * list_del(entry)
+ * 将节点从链表中摘除，并将其指针设为 LIST_POISON（毒化值）。
+ *
+ * @entry: 要删除的节点
+ *
+ * 原文（内核注释）：
+ * Note: list_empty() on entry does not return true after this, the entry is
+ * in an undefined state.
+ *
+ * 毒化指针（LIST_POISON1/2）是内核特有机制，应用层可改为 NULL 或保留原值，
+ * 本移植版使用 NULL 作为简化处理。
+ */</span>
+<span class="pp">#define</span> <span class="nm">LIST_POISON1</span> ((<span class="ty">void</span> *) 0x00100100) <span class="cm">/* 应用层可改为 NULL */</span>
+<span class="pp">#define</span> <span class="nm">LIST_POISON2</span> ((<span class="ty">void</span> *) 0x00200200) <span class="cm">/* 应用层可改为 NULL */</span>
+
+<span class="kw">static</span> <span class="kw">inline</span> <span class="ty">void</span> <span class="fn">list_del</span>(<span class="kw">struct</span> <span class="ty">list_head</span> *entry)
+{
+    <span class="fn">__list_del</span>(entry->prev, entry->next);
+    entry->next = (<span class="kw">struct</span> <span class="ty">list_head</span> *)<span class="nm">LIST_POISON1</span>; <span class="cm">/* 防止悬挂指针访问 */</span>
+    entry->prev = (<span class="kw">struct</span> <span class="ty">list_head</span> *)<span class="nm">LIST_POISON2</span>; <span class="cm">/* 使用会触发段错误 */</span>
+}
+
+<span class="cm">/**
+ * list_del_init(entry)
+ * 将节点从链表中摘除，并重新初始化为空链表头（自环）。
+ *
+ * @entry: 要删除的节点
+ *
+ * 与 list_del 的区别：删除后节点仍可安全使用（可重新加入其他链表）。
+ * 原文：deletes entry from list and reinitialize it.
+ */</span>
+<span class="kw">static</span> <span class="kw">inline</span> <span class="ty">void</span> <span class="fn">list_del_init</span>(<span class="kw">struct</span> <span class="ty">list_head</span> *entry)
+{
+    <span class="fn">__list_del</span>(entry->prev, entry->next);
+    <span class="fn">INIT_LIST_HEAD</span>(entry);  <span class="cm">/* 重新初始化为自环 */</span>
+}</code></pre>
+      </section>
+
+      <section class="section" id="ch3-s3">
+        <h3 class="section-title">替换、移动操作</h3>
+        <pre><code><span class="cm">/**
+ * list_replace(old, new)
+ * 用新节点替换链表中的旧节点，旧节点位置由 new 占据。
+ *
+ * @old: 被替换的节点（仍在链表中）
+ * @new: 替换进来的新节点
+ *
+ * 原文：replace old entry by new one
+ * Note: If @old was empty, it will be overwritten.
+ */</span>
+<span class="kw">static</span> <span class="kw">inline</span> <span class="ty">void</span> <span class="fn">list_replace</span>(<span class="kw">struct</span> <span class="ty">list_head</span> *old,
+                                 <span class="kw">struct</span> <span class="ty">list_head</span> *new)
+{
+    new->next       = old->next;
+    new->next->prev = new;
+    new->prev       = old->prev;
+    new->prev->next = new;
+}
+
+<span class="cm">/**
+ * list_replace_init(old, new)
+ * 替换旧节点后，将旧节点初始化为空链表头。
+ */</span>
+<span class="kw">static</span> <span class="kw">inline</span> <span class="ty">void</span> <span class="fn">list_replace_init</span>(<span class="kw">struct</span> <span class="ty">list_head</span> *old,
+                                      <span class="kw">struct</span> <span class="ty">list_head</span> *new)
+{
+    <span class="fn">list_replace</span>(old, new);
+    <span class="fn">INIT_LIST_HEAD</span>(old);
+}
+
+<span class="cm">/**
+ * list_move(list, head)
+ * 将节点从当前链表中摘除，并插入到 head 之后（成为新的第一个元素）。
+ *
+ * @list: 要移动的节点
+ * @head: 目标链表头
+ *
+ * 原文：delete from one list and add as another's head
+ */</span>
+<span class="kw">static</span> <span class="kw">inline</span> <span class="ty">void</span> <span class="fn">list_move</span>(<span class="kw">struct</span> <span class="ty">list_head</span> *list,
+                              <span class="kw">struct</span> <span class="ty">list_head</span> *head)
+{
+    <span class="fn">__list_del</span>(list->prev, list->next);
+    <span class="fn">list_add</span>(list, head);
+}
+
+<span class="cm">/**
+ * list_move_tail(list, head)
+ * 将节点从当前链表摘除，插入到 head 之前（成为最后一个元素）。
+ *
+ * 原文：delete from one list and add as another's tail
+ */</span>
+<span class="kw">static</span> <span class="kw">inline</span> <span class="ty">void</span> <span class="fn">list_move_tail</span>(<span class="kw">struct</span> <span class="ty">list_head</span> *list,
+                                   <span class="kw">struct</span> <span class="ty">list_head</span> *head)
+{
+    <span class="fn">__list_del</span>(list->prev, list->next);
+    <span class="fn">list_add_tail</span>(list, head);
+}</code></pre>
+
+        <div class="svg-wrap">
+          <svg viewBox="0 0 660 140" width="100%" style="max-width:640px">
+            <defs>
+              <marker id="del1" markerWidth="8" markerHeight="8" refX="6" refY="3" orient="auto">
+                <path d="M0,0 L8,3 L0,6 Z" fill="#58a6ff"/>
+              </marker>
+            </defs>
+            <text x="10" y="18" fill="#8b949e" font-size="11" font-family="sans-serif">list_del(B) 之后：A → C，B 的指针被毒化</text>
+            <!-- HEAD -->
+            <rect x="10" y="28" width="70" height="36" rx="5" fill="#0c2d6b" stroke="#58a6ff"/>
+            <text x="45" y="51" fill="#58a6ff" font-size="11" text-anchor="middle" font-family="monospace">HEAD</text>
+            <!-- A -->
+            <rect x="140" y="28" width="70" height="36" rx="5" fill="#1f2937" stroke="#30363d"/>
+            <text x="175" y="51" fill="#c9d1d9" font-size="11" text-anchor="middle" font-family="monospace">A</text>
+            <!-- B deleted -->
+            <rect x="270" y="28" width="70" height="36" rx="5" fill="#3d0c00" stroke="#f78166" stroke-dasharray="5,3"/>
+            <text x="305" y="47" fill="#f78166" font-size="10" text-anchor="middle" font-family="monospace">B</text>
+            <text x="305" y="59" fill="#f78166" font-size="8" text-anchor="middle" font-family="monospace">POISON</text>
+            <!-- C -->
+            <rect x="400" y="28" width="70" height="36" rx="5" fill="#1f2937" stroke="#30363d"/>
+            <text x="435" y="51" fill="#c9d1d9" font-size="11" text-anchor="middle" font-family="monospace">C</text>
+            <!-- arrows HEAD -> A -> C (bypassing B) -->
+            <line x1="80" y1="43" x2="135" y2="43" stroke="#58a6ff" stroke-width="1.5" marker-end="url(#del1)"/>
+            <path d="M215,43 C242,20 368,20 395,43" fill="none" stroke="#3fb950" stroke-width="1.5" marker-end="url(#del1)"/>
+            <text x="300" y="16" fill="#3fb950" font-size="10" text-anchor="middle" font-family="sans-serif">绕过 B 直接连接</text>
+            <line x1="470" y1="43" x2="550" y2="43" stroke="#58a6ff" stroke-width="1" stroke-dasharray="4,3" marker-end="url(#del1)"/>
+            <!-- cross on B arrows -->
+            <line x1="340" y1="30" x2="270" y2="62" stroke="#f78166" stroke-width="2"/>
+            <line x1="270" y1="30" x2="340" y2="62" stroke="#f78166" stroke-width="2"/>
+
+            <text x="10" y="105" fill="#8b949e" font-size="10" font-family="sans-serif">• list_del：next/prev 设为毒化值（LIST_POISON），访问会立即段错误，有助于调试</text>
+            <text x="10" y="122" fill="#8b949e" font-size="10" font-family="sans-serif">• list_del_init：next/prev 回到自环，节点可重新入链</text>
+          </svg>
+          <p class="svg-caption">图3-2 list_del 删除节点后的链表状态（B被摘出，指针毒化）</p>
+        </div>
+      </section>
+
+      <div class="summary-box">
+        <h4>📌 第三章总结</h4>
+        <ul>
+          <li>所有插入操作最终收敛到 <code>__list_add(new, prev, next)</code>，4步原子修改</li>
+          <li><code>list_add</code> = 头插（栈），<code>list_add_tail</code> = 尾插（队列），区别仅在传入的 prev/next 不同</li>
+          <li>删除操作分两种：<code>list_del</code>（毒化，防止重用）和 <code>list_del_init</code>（初始化，允许重用）</li>
+          <li><strong>第一性原理</strong>：插入 = 修改4个指针；删除 = 修改2个指针。循环链表无需特殊处理边界节点</li>
+        </ul>
+      </div>
+    </article>
+
+    <!-- ==================== 第四章 ==================== -->
+    <article class="chapter" id="ch4">
+      <div class="chapter-header">
+        <div class="chapter-num">第 4 章</div>
+        <h2 class="chapter-title">遍历宏详解</h2>
+      </div>
+
+      <section class="section" id="ch4-s1">
+        <h3 class="section-title">基础遍历宏</h3>
+        <pre><code><span class="cm">/**
+ * list_for_each(pos, head)
+ * 正向遍历链表，pos 依次指向每个 struct list_head 节点。
+ *
+ * @pos:  循环游标（struct list_head *），每次迭代指向当前节点
+ * @head: 链表头（循环起点，不参与业务数据访问）
+ *
+ * 原文：iterate over a list
+ * 注意：遍历期间不可删除 pos 节点，否则需使用 _safe 变体。
+ */</span>
+<span class="pp">#define</span> <span class="nm">list_for_each</span>(pos, head) \
+    <span class="kw">for</span> (pos = (head)->next; pos != (head); pos = pos->next)
+
+<span class="cm">/**
+ * list_for_each_prev(pos, head)
+ * 反向遍历链表（从尾到头）。
+ *
+ * 原文：iterate over a list backwards
+ */</span>
+<span class="pp">#define</span> <span class="nm">list_for_each_prev</span>(pos, head) \
+    <span class="kw">for</span> (pos = (head)->prev; pos != (head); pos = pos->prev)
+
+<span class="cm">/**
+ * list_for_each_entry(pos, head, member)
+ * 正向遍历链表，pos 直接指向宿主数据结构（更常用的版本）。
+ *
+ * @pos:    循环游标（宿主结构体指针，如 struct foo *）
+ * @head:   链表头
+ * @member: list_head 在宿主结构体中的字段名
+ *
+ * 原文：iterate over list of given type
+ * 内部通过 list_entry(pos-&gt;member.next, ...) 推进游标。
+ */</span>
+<span class="pp">#define</span> <span class="nm">list_for_each_entry</span>(pos, head, member) \
+    <span class="kw">for</span> (pos = <span class="fn">list_entry</span>((head)->next, <span class="kw">typeof</span>(*pos), member); \
+         &amp;pos->member != (head); \
+         pos = <span class="fn">list_entry</span>(pos->member.next, <span class="kw">typeof</span>(*pos), member))
+
+<span class="cm">/**
+ * list_for_each_entry_reverse(pos, head, member)
+ * 反向遍历链表（宿主结构体版本）。
+ *
+ * 原文：iterate backwards over list of given type.
+ */</span>
+<span class="pp">#define</span> <span class="nm">list_for_each_entry_reverse</span>(pos, head, member) \
+    <span class="kw">for</span> (pos = <span class="fn">list_entry</span>((head)->prev, <span class="kw">typeof</span>(*pos), member); \
+         &amp;pos->member != (head); \
+         pos = <span class="fn">list_entry</span>(pos->member.prev, <span class="kw">typeof</span>(*pos), member))</code></pre>
+      </section>
+
+      <section class="section" id="ch4-s2">
+        <h3 class="section-title">安全遍历宏（支持删除）</h3>
+        <p>
+          遍历中删除节点会破坏迭代器，<code>_safe</code> 变体提前保存 next/prev 指针来规避此问题。
+        </p>
+        <pre><code><span class="cm">/**
+ * list_for_each_safe(pos, n, head)
+ * 安全遍历：遍历期间可删除当前节点 pos。
+ *
+ * @pos: 循环游标（struct list_head *）
+ * @n:   临时存储下一节点（struct list_head *），防止被删除后丢失
+ * @head: 链表头
+ *
+ * 原文：iterate over a list safe against removal of list entry
+ * 原理：在每次迭代开始时，先将 pos->next 保存到 n，
+ *        即使 pos 被删除，下一迭代仍从 n 继续。
+ */</span>
+<span class="pp">#define</span> <span class="nm">list_for_each_safe</span>(pos, n, head) \
+    <span class="kw">for</span> (pos = (head)->next, n = pos->next; \
+         pos != (head); \
+         pos = n, n = pos->next)
+
+<span class="cm">/**
+ * list_for_each_entry_safe(pos, n, head, member)
+ * 安全遍历（宿主结构体版本），遍历期间可删除当前节点。
+ *
+ * @pos:    循环游标（宿主结构体指针）
+ * @n:      临时存储下一个宿主结构体指针
+ * @head:   链表头
+ * @member: list_head 在宿主结构体中的字段名
+ *
+ * 原文：iterate over list of given type safe against removal of list entry
+ *
+ * 注意：n 只是用来保存下一步的地址，不应在循环体内修改 n。
+ */</span>
+<span class="pp">#define</span> <span class="nm">list_for_each_entry_safe</span>(pos, n, head, member) \
+    <span class="kw">for</span> (pos = <span class="fn">list_entry</span>((head)->next, <span class="kw">typeof</span>(*pos), member), \
+         n   = <span class="fn">list_entry</span>(pos->member.next, <span class="kw">typeof</span>(*pos), member); \
+         &amp;pos->member != (head); \
+         pos = n, n = <span class="fn">list_entry</span>(n->member.next, <span class="kw">typeof</span>(*n), member))
+
+<span class="cm">/**
+ * list_for_each_entry_safe_reverse(pos, n, head, member)
+ * 安全反向遍历，遍历期间可删除当前节点。
+ *
+ * 原文：iterate backwards over list safe against removal
+ */</span>
+<span class="pp">#define</span> <span class="nm">list_for_each_entry_safe_reverse</span>(pos, n, head, member) \
+    <span class="kw">for</span> (pos = <span class="fn">list_entry</span>((head)->prev, <span class="kw">typeof</span>(*pos), member), \
+         n   = <span class="fn">list_entry</span>(pos->member.prev, <span class="kw">typeof</span>(*pos), member); \
+         &amp;pos->member != (head); \
+         pos = n, n = <span class="fn">list_entry</span>(n->member.prev, <span class="kw">typeof</span>(*n), member))</code></pre>
+
+        <div class="callout callout-warn">
+          <div class="callout-title">⚠️ 常见错误</div>
+          在 <code>list_for_each_entry</code> 循环体内调用 <code>list_del(pos)</code> 会导致 pos->member.next
+          变成毒化指针，下一轮迭代将崩溃。<strong>必须</strong>使用 <code>list_for_each_entry_safe</code>。
+        </div>
+      </section>
+
+      <section class="section" id="ch4-s3">
+        <h3 class="section-title">遍历宏对比</h3>
+        <div class="table-wrap">
+          <table>
+            <thead>
+              <tr>
+                <th>宏名</th>
+                <th>游标类型</th>
+                <th>方向</th>
+                <th>删除安全</th>
+                <th>适用场景</th>
+              </tr>
+            </thead>
+            <tbody>
+              <tr><td><code>list_for_each</code></td><td><code>list_head *</code></td><td>正向</td><td>❌</td><td>只读遍历，需手动 list_entry</td></tr>
+              <tr><td><code>list_for_each_prev</code></td><td><code>list_head *</code></td><td>反向</td><td>❌</td><td>只读反向遍历</td></tr>
+              <tr><td><code>list_for_each_entry</code></td><td>宿主结构体 *</td><td>正向</td><td>❌</td><td>最常用，直接操作数据</td></tr>
+              <tr><td><code>list_for_each_entry_reverse</code></td><td>宿主结构体 *</td><td>反向</td><td>❌</td><td>逆序访问数据</td></tr>
+              <tr><td><code>list_for_each_safe</code></td><td><code>list_head *</code></td><td>正向</td><td>✅</td><td>遍历中删除节点</td></tr>
+              <tr><td><code>list_for_each_entry_safe</code></td><td>宿主结构体 *</td><td>正向</td><td>✅</td><td>最常用的安全删除遍历</td></tr>
+              <tr><td><code>list_for_each_entry_safe_reverse</code></td><td>宿主结构体 *</td><td>反向</td><td>✅</td><td>反向安全遍历</td></tr>
+            </tbody>
+          </table>
+        </div>
+      </section>
+
+      <div class="summary-box">
+        <h4>📌 第四章总结</h4>
+        <ul>
+          <li>遍历宏本质是 <code>for</code> 循环的封装，终止条件为 <code>pos == head</code>（回到哨兵节点）</li>
+          <li><code>list_for_each_entry</code> 是最高频使用的宏，隐藏了 <code>list_entry</code> 调用</li>
+          <li><code>_safe</code> 变体的原理：提前保存 next/prev，使当前节点被删不影响迭代推进</li>
+          <li><strong>第一性原理</strong>：循环链表的遍历终止条件天然统一（回到HEAD），无需 NULL 检查，边界处理零成本</li>
+        </ul>
+      </div>
+    </article>
+
+    <!-- ==================== 第五章 ==================== -->
+    <article class="chapter" id="ch5">
+      <div class="chapter-header">
+        <div class="chapter-num">第 5 章</div>
+        <h2 class="chapter-title">辅助操作：判空、拼接、切割</h2>
+      </div>
+
+      <section class="section" id="ch5-s1">
+        <h3 class="section-title">状态查询</h3>
+        <pre><code><span class="cm">/**
+ * list_empty(head)
+ * 判断链表是否为空（没有任何数据节点）。
+ *
+ * @head: 链表头节点
+ * @return: 非零（真）表示链表为空
+ *
+ * 原理：空链表时 head->next == head（自环），否则指向第一个数据节点。
+ * 原文：tests whether a list is empty
+ */</span>
+<span class="kw">static</span> <span class="kw">inline</span> <span class="ty">int</span> <span class="fn">list_empty</span>(<span class="kw">const</span> <span class="kw">struct</span> <span class="ty">list_head</span> *head)
+{
+    <span class="kw">return</span> head->next == head;
+}
+
+<span class="cm">/**
+ * list_is_singular(head)
+ * 判断链表是否恰好只有一个数据节点。
+ *
+ * 原理：head->next != head（非空）且 head->next == head->prev（只有一个）
+ * 原文：tests whether a list has just one entry.
+ */</span>
+<span class="kw">static</span> <span class="kw">inline</span> <span class="ty">int</span> <span class="fn">list_is_singular</span>(<span class="kw">const</span> <span class="kw">struct</span> <span class="ty">list_head</span> *head)
+{
+    <span class="kw">return</span> !<span class="fn">list_empty</span>(head) &amp;&amp; (head->next == head->prev);
+}
+
+<span class="cm">/**
+ * list_is_head(list, head)
+ * 判断 list 是否就是链表头 head（用于循环终止判断）。
+ *
+ * 原文：tests whether @list is the list @head
+ */</span>
+<span class="kw">static</span> <span class="kw">inline</span> <span class="ty">int</span> <span class="fn">list_is_head</span>(<span class="kw">const</span> <span class="kw">struct</span> <span class="ty">list_head</span> *list,
+                                 <span class="kw">const</span> <span class="kw">struct</span> <span class="ty">list_head</span> *head)
+{
+    <span class="kw">return</span> list == head;
+}</code></pre>
+      </section>
+
+      <section class="section" id="ch5-s2">
+        <h3 class="section-title">链表拼接（splice）</h3>
+        <pre><code><span class="cm">/*
+ * 内部拼接函数：将 [first, last] 段插入 head 与 at 之间。
+ *
+ * @list:  待插入链表的第一个实际节点
+ * @last:  待插入链表的最后一个实际节点
+ * @head:  目标链表插入位置的前驱节点
+ * @at:    目标链表插入位置的后继节点
+ */</span>
+<span class="kw">static</span> <span class="kw">inline</span> <span class="ty">void</span> <span class="fn">__list_splice</span>(<span class="kw">const</span> <span class="kw">struct</span> <span class="ty">list_head</span> *list,
+                                  <span class="kw">struct</span> <span class="ty">list_head</span> *head,
+                                  <span class="kw">struct</span> <span class="ty">list_head</span> *at)
+{
+    <span class="kw">struct</span> <span class="ty">list_head</span> *first = list->next;
+    <span class="kw">struct</span> <span class="ty">list_head</span> *last  = list->prev;
+
+    first->prev = head;
+    head->next  = first;
+    last->next  = at;
+    at->prev    = last;
+}
+
+<span class="cm">/**
+ * list_splice(list, head)
+ * 将 list 链表中的所有节点移接到 head 之后（head 的前面）。
+ * list 链表本身在操作后处于未定义状态（需自行初始化）。
+ *
+ * @list: 待拼入的源链表头
+ * @head: 目标链表头（节点插入此头之后）
+ *
+ * 原文：join two lists, this is designed for stacks
+ */</span>
+<span class="kw">static</span> <span class="kw">inline</span> <span class="ty">void</span> <span class="fn">list_splice</span>(<span class="kw">const</span> <span class="kw">struct</span> <span class="ty">list_head</span> *list,
+                                <span class="kw">struct</span> <span class="ty">list_head</span> *head)
+{
+    <span class="kw">if</span> (!<span class="fn">list_empty</span>(list))
+        <span class="fn">__list_splice</span>(list, head, head->next);
+}
+
+<span class="cm">/**
+ * list_splice_tail(list, head)
+ * 将 list 链表中的所有节点追加到 head 链表的尾部。
+ *
+ * 原文：join two lists, each list being a queue
+ */</span>
+<span class="kw">static</span> <span class="kw">inline</span> <span class="ty">void</span> <span class="fn">list_splice_tail</span>(<span class="kw">struct</span> <span class="ty">list_head</span> *list,
+                                      <span class="kw">struct</span> <span class="ty">list_head</span> *head)
+{
+    <span class="kw">if</span> (!<span class="fn">list_empty</span>(list))
+        <span class="fn">__list_splice</span>(list, head->prev, head);
+}
+
+<span class="cm">/**
+ * list_splice_init(list, head)
+ * 拼接后将 list 重新初始化为空链表头，避免悬挂引用。
+ *
+ * 原文：join two lists and reinitialise the emptied list.
+ */</span>
+<span class="kw">static</span> <span class="kw">inline</span> <span class="ty">void</span> <span class="fn">list_splice_init</span>(<span class="kw">struct</span> <span class="ty">list_head</span> *list,
+                                      <span class="kw">struct</span> <span class="ty">list_head</span> *head)
+{
+    <span class="kw">if</span> (!<span class="fn">list_empty</span>(list)) {
+        <span class="fn">__list_splice</span>(list, head, head->next);
+        <span class="fn">INIT_LIST_HEAD</span>(list);
+    }
+}</code></pre>
+      </section>
+
+      <section class="section" id="ch5-s3">
+        <h3 class="section-title">链表切割（cut）</h3>
+        <p>
+          内核官方文档描述了两个切割函数，参见
+          <a class="ref-link" href="https://docs.kernel.org/core-api/list.html#cutting-a-list" target="_blank">
+            ↗ docs.kernel.org - Cutting a list
+          </a>：
+        </p>
+        <pre><code><span class="cm">/**
+ * list_cut_position(list, head, entry)
+ * 从 head 链表中切出前段（从第一个节点到 entry，含 entry），
+ * 移入 list 链表（list 原有内容会被覆盖）。
+ *
+ * @list:  接收切出节点的目标链表头（调用前应为空或内容可丢弃）
+ * @head:  源链表头
+ * @entry: 切割点（此节点及其之前的所有节点将被切出）
+ *
+ * 原文（官方文档）：
+ * list_cut_position() removes all list entries from head up to
+ * and including entry, placing them in list instead.
+ */</span>
+<span class="kw">static</span> <span class="kw">inline</span> <span class="ty">void</span> <span class="fn">list_cut_position</span>(<span class="kw">struct</span> <span class="ty">list_head</span> *list,
+                                       <span class="kw">struct</span> <span class="ty">list_head</span> *head,
+                                       <span class="kw">struct</span> <span class="ty">list_head</span> *entry)
+{
+    <span class="kw">if</span> (<span class="fn">list_empty</span>(head))
+        <span class="kw">return</span>;
+    <span class="kw">if</span> (<span class="fn">list_is_singular</span>(head) &amp;&amp; head->next != entry)
+        <span class="kw">return</span>;
+    <span class="kw">if</span> (entry == head)
+        <span class="fn">INIT_LIST_HEAD</span>(list);
+    <span class="kw">else</span> {
+        <span class="kw">struct</span> <span class="ty">list_head</span> *new_first = entry->next;
+        list->next        = head->next;
+        list->next->prev  = list;
+        list->prev        = entry;
+        entry->next       = list;
+        head->next        = new_first;
+        new_first->prev   = head;
+    }
+}
+
+<span class="cm">/**
+ * list_cut_before(list, head, entry)
+ * 类似 list_cut_position，但不含 entry 节点本身（切到 entry 之前）。
+ *
+ * 原文（官方文档）：
+ * list_cut_before() removes all list entries from head up to
+ * but excluding entry, placing them in list instead.
+ */</span>
+<span class="kw">static</span> <span class="kw">inline</span> <span class="ty">void</span> <span class="fn">list_cut_before</span>(<span class="kw">struct</span> <span class="ty">list_head</span> *list,
+                                     <span class="kw">struct</span> <span class="ty">list_head</span> *head,
+                                     <span class="kw">struct</span> <span class="ty">list_head</span> *entry)
+{
+    <span class="kw">if</span> (head->next == entry) {
+        <span class="fn">INIT_LIST_HEAD</span>(list);
+        <span class="kw">return</span>;
+    }
+    list->next        = head->next;
+    list->next->prev  = list;
+    list->prev        = entry->prev;
+    list->prev->next  = list;
+    head->next        = entry;
+    entry->prev       = head;
+}</code></pre>
+      </section>
+
+      <div class="summary-box">
+        <h4>📌 第五章总结</h4>
+        <ul>
+          <li><code>list_empty</code> 利用自环特性 O(1) 判空，无需计数器</li>
+          <li>拼接操作 <code>list_splice*</code> 是批量插入，时间复杂度 O(1)（不论两个链表长度）</li>
+          <li>切割操作将链表原地分段，全程无内存分配，仅修改指针</li>
+          <li><strong>第一性原理</strong>：链表的所有批量操作（拼接、切割）都归结为"修改头尾节点的 prev/next 指针"，O(1) 完成，与节点数量无关</li>
+        </ul>
+      </div>
+    </article>
+
+    <!-- ==================== 第六章 ==================== -->
+    <article class="chapter" id="ch6">
+      <div class="chapter-header">
+        <div class="chapter-num">第 6 章</div>
+        <h2 class="chapter-title">完整 user_list.h 实现</h2>
+      </div>
+
+      <section class="section" id="ch6-s1">
+        <h3 class="section-title">设计说明</h3>
+        <p>
+          以下 <code>user_list.h</code> 严格遵循内核 <code>include/linux/list.h</code> 的逻辑，
+          去除内核专用依赖（<code>WRITE_ONCE</code>、<code>prefetch</code>、<code>CONFIG_*</code> 宏、RCU 等），
+          补充 <code>offsetof</code>/<code>container_of</code>，
+          并为每个接口加上中文注释。原始来源：
+          <a class="ref-link" href="https://github.com/torvalds/linux/blob/master/include/linux/list.h" target="_blank">
+            ↗ torvalds/linux: include/linux/list.h
+          </a>
+        </p>
+
+        <div class="table-wrap">
+          <table>
+            <thead>
+              <tr><th>改动项</th><th>内核原版</th><th>user_list.h 处理方式</th></tr>
+            </thead>
+            <tbody>
+              <tr><td><code>WRITE_ONCE</code></td><td>防止编译器优化造成的并发问题</td><td>直接赋值（应用层无需此保障，若有需要加 <code>volatile</code>）</td></tr>
+              <tr><td><code>LIST_POISON1/2</code></td><td>内核特定的页错误地址</td><td>保留毒化机制，改为 <code>0xDEAD0001/0xDEAD0002</code>（段错误可捕获）</td></tr>
+              <tr><td><code>typeof()</code></td><td>GCC/Clang 扩展</td><td>保留（GCC/Clang 均支持）</td></tr>
+              <tr><td><code>prefetch()</code></td><td>CPU 硬件预取</td><td>移除（应用层无意义）</td></tr>
+              <tr><td>RCU 相关函数</td><td>内核并发原语</td><td>移除（应用层不适用）</td></tr>
+              <tr><td><code>CONFIG_DEBUG_LIST</code></td><td>内核配置宏</td><td>提供编译开关 <code>USER_LIST_DEBUG</code> 替代</td></tr>
+            </tbody>
+          </table>
+        </div>
+      </section>
+
+      <section class="section" id="ch6-s2">
+        <h3 class="section-title">user_list.h 完整代码</h3>
+        <pre><code><span class="cm">/**
+ * user_list.h — Linux 内核双向链表的应用层移植版本
+ *
+ * 原始来源（必须遵守 GPL-2.0 许可证）：
+ *   https://github.com/torvalds/linux/blob/master/include/linux/list.h
+ *   https://docs.kernel.org/core-api/list.html
+ *
+ * 本文件从内核 include/linux/list.h 提取核心思想，
+ * 移除内核专用依赖，适配 POSIX 用户空间 C 程序（C99/C11+GCC扩展）。
+ *
+ * 主要改动：
+ *   1. 添加 offsetof / container_of（原位于 include/linux/stddef.h 等）
+ *   2. 移除 WRITE_ONCE、prefetch()、RCU 相关函数
+ *   3. 毒化指针改为用户空间安全的调试值
+ *   4. 所有注释改为中文，便于阅读
+ *
+ * 使用限制：
+ *   - 非线程安全，多线程访问需自行加锁
+ *   - 需要 GCC 或 Clang 编译器（依赖 typeof() 扩展）
+ *
+ * SPDX-License-Identifier: GPL-2.0
+ */</span>
+
+<span class="pp">#ifndef</span> <span class="nm">_USER_LIST_H</span>
+<span class="pp">#define</span> <span class="nm">_USER_LIST_H</span>
+
+<span class="pp">#include</span> <span class="st">&lt;stddef.h&gt;</span>  <span class="cm">/* size_t */</span>
+
+<span class="cm">/* ================================================================
+ * §1  基础宏：内存偏移与宿主结构体还原
+ * ================================================================ */</span>
+
+<span class="pp">#ifndef</span> <span class="nm">offsetof</span>
+<span class="cm">/**
+ * offsetof(TYPE, MEMBER)
+ * 计算结构体成员的字节偏移量（C 标准已提供，此处作为备用）。
+ * 原理：将地址 0 当作 TYPE 的起始地址，&amp;(0)-&gt;MEMBER 的值即为偏移。
+ */</span>
+<span class="pp">#define</span> <span class="fn">offsetof</span>(TYPE, MEMBER) \
+    ((<span class="ty">size_t</span>)((<span class="ty">char</span> *) &amp;((<span class="ty">TYPE</span> *)0)->MEMBER))
+<span class="pp">#endif</span>
+
+<span class="cm">/**
+ * container_of(ptr, type, member)
+ * 通过结构体成员指针反推宿主结构体的起始指针。
+ *
+ * @ptr:    指向 struct list_head（或其他成员）的指针
+ * @type:   宿主结构体类型（如 struct my_node）
+ * @member: ptr 对应成员在 type 中的字段名（如 list）
+ *
+ * 原理：宿主地址 = 成员地址 - 成员偏移量
+ *
+ * typeof(*ptr) 编译期类型检查：若 ptr 类型与 member 类型不符，
+ * 编译器会产生警告，有助于发现错误。
+ *
+ * 来源：内核 include/linux/container_of.h
+ */</span>
+<span class="pp">#define</span> <span class="fn">container_of</span>(ptr, type, member) ({          \
+    <span class="kw">const</span> <span class="kw">typeof</span>(((type *)0)->member) *__mptr = (ptr); \
+    (type *)((char *)__mptr - <span class="fn">offsetof</span>(type, member)); \
+})
+
+<span class="cm">/* ================================================================
+ * §2  链表节点结构体
+ * ================================================================ */</span>
+
+<span class="cm">/**
+ * struct list_head - 双向链表节点/头节点
+ *
+ * 这是内核链表设计的核心：不包含任何数据，只有两个指针。
+ * 将此结构体嵌入到任意用户数据结构中，即可将该数据结构加入链表。
+ *
+ * 空链表（或独立节点）的状态：next == prev == &amp;self（自环）
+ *
+ * 来源：include/linux/types.h (struct list_head)
+ */</span>
+<span class="kw">struct</span> <span class="ty">list_head</span> {
+    <span class="kw">struct</span> <span class="ty">list_head</span> *next; <span class="cm">/* 指向下一个节点；空链表时指向自身 */</span>
+    <span class="kw">struct</span> <span class="ty">list_head</span> *prev; <span class="cm">/* 指向上一个节点；空链表时指向自身 */</span>
+};
+
+<span class="cm">/* ================================================================
+ * §3  初始化
+ * ================================================================ */</span>
+
+<span class="cm">/**
+ * LIST_HEAD_INIT(name) — 静态初始化器
+ * 用于在声明时直接初始化 struct list_head（全局/静态变量）。
+ * 使 next 和 prev 均指向 name 自身，形成空的自环链表。
+ *
+ * 来源：include/linux/list.h #define LIST_HEAD_INIT
+ * 原文：initialize a &amp;struct list_head's links to point to itself
+ *
+ * 用法：
+ *   static struct list_head my_list = LIST_HEAD_INIT(my_list);
+ */</span>
+<span class="pp">#define</span> <span class="nm">LIST_HEAD_INIT</span>(name) { &amp;(name), &amp;(name) }
+
+<span class="cm">/**
+ * LIST_HEAD(name) — 声明并初始化链表头（一步完成）
+ * 等价于：struct list_head name = LIST_HEAD_INIT(name)
+ *
+ * 来源：include/linux/list.h #define LIST_HEAD
+ * 原文：definition of a &amp;struct list_head with initialization values
+ *
+ * 用法：
+ *   LIST_HEAD(my_list);  // 等价于 struct list_head my_list = {...}
+ */</span>
+<span class="pp">#define</span> <span class="nm">LIST_HEAD</span>(name) \
+    <span class="kw">struct</span> <span class="ty">list_head</span> name = <span class="nm">LIST_HEAD_INIT</span>(name)
+
+<span class="cm">/**
+ * INIT_LIST_HEAD(list) — 运行时初始化
+ * 将 list 指向的节点初始化为空链表头（next = prev = self）。
+ * 适用于动态分配的链表头或结构体成员在运行时初始化。
+ *
+ * 来源：include/linux/list.h - INIT_LIST_HEAD()
+ * 原文：Initializes the list_head to point to itself.
+ *       If it is a list header, the result is an empty list.
+ *
+ * @list: 指向 struct list_head 的指针
+ */</span>
+<span class="kw">static</span> <span class="kw">inline</span> <span class="ty">void</span> <span class="fn">INIT_LIST_HEAD</span>(<span class="kw">struct</span> <span class="ty">list_head</span> *list)
+{
+    list->next = list; <span class="cm">/* next 指向自身 */</span>
+    list->prev = list; <span class="cm">/* prev 指向自身 */</span>
+}
+
+<span class="cm">/* ================================================================
+ * §4  毒化指针（调试辅助）
+ *
+ * 被 list_del 删除的节点，其 next/prev 设为这两个非法地址。
+ * 应用层访问这些地址会立即触发段错误（SIGSEGV），便于调试。
+ * 如不需要此功能，可将其定义为 NULL。
+ *
+ * 来源：内核 include/linux/poison.h (LIST_POISON1/2)
+ * ================================================================ */</span>
+<span class="pp">#define</span> <span class="nm">LIST_POISON1</span>  ((<span class="kw">struct</span> <span class="ty">list_head</span> *) 0xDEAD0001)
+<span class="pp">#define</span> <span class="nm">LIST_POISON2</span>  ((<span class="kw">struct</span> <span class="ty">list_head</span> *) 0xDEAD0002)
+
+<span class="cm">/* ================================================================
+ * §5  内部低层操作（双下划线前缀 = 内部使用，不直接调用）
+ * ================================================================ */</span>
+
+<span class="cm">/*
+ * __list_add(new, prev, next)
+ * 在已知相邻的 prev 和 next 节点之间插入 new 节点。
+ * 是所有插入操作的底层实现，顺序依次修改4个指针。
+ *
+ * 来源：include/linux/list.h - __list_add()
+ * 原文注释：
+ *   This is only for internal list manipulation where we know
+ *   the prev/next entries already!
+ *
+ * 步骤（每步操作均以注释标注）：
+ *   ① next->prev = new   先让后继节点的 prev 指向新节点
+ *   ② new->next  = next  新节点的 next 指向后继
+ *   ③ new->prev  = prev  新节点的 prev 指向前驱
+ *   ④ prev->next = new   前驱节点的 next 指向新节点（最后修改，完成插入）
+ */</span>
+<span class="kw">static</span> <span class="kw">inline</span> <span class="ty">void</span> <span class="fn">__list_add</span>(<span class="kw">struct</span> <span class="ty">list_head</span> *new,
+                               <span class="kw">struct</span> <span class="ty">list_head</span> *prev,
+                               <span class="kw">struct</span> <span class="ty">list_head</span> *next)
+{
+    next->prev = new;   <span class="cm">/* ① */</span>
+    new->next  = next;  <span class="cm">/* ② */</span>
+    new->prev  = prev;  <span class="cm">/* ③ */</span>
+    prev->next = new;   <span class="cm">/* ④ */</span>
+}
+
+<span class="cm">/*
+ * __list_del(prev, next)
+ * 将 prev 和 next 直接相连，从而绕过（摘除）两者之间的节点。
+ * 被摘除节点的指针不在此函数中处理，由调用方负责（置NULL或毒化）。
+ *
+ * 来源：include/linux/list.h - __list_del()
+ */</span>
+<span class="kw">static</span> <span class="kw">inline</span> <span class="ty">void</span> <span class="fn">__list_del</span>(<span class="kw">struct</span> <span class="ty">list_head</span> *prev,
+                               <span class="kw">struct</span> <span class="ty">list_head</span> *next)
+{
+    next->prev = prev;  <span class="cm">/* next 的前驱改为 prev（跳过被删节点）*/</span>
+    prev->next = next;  <span class="cm">/* prev 的后继改为 next（跳过被删节点）*/</span>
+}
+
+<span class="cm">/* ================================================================
+ * §6  公开接口：插入操作
+ * ================================================================ */</span>
+
+<span class="cm">/**
+ * list_add(new, head)
+ * 在 head 之后插入新节点（头插法）。
+ *
+ * @new:  待插入的新节点（需已初始化，或至少 next/prev 可覆盖）
+ * @head: 链表头节点（新节点将成为 head 的下一个节点）
+ *
+ * 特性：多次 list_add 后，最后加入的节点最先被遍历（LIFO/栈语义）。
+ *
+ * 来源：include/linux/list.h - list_add()
+ * 原文：Insert a new entry after the specified head.
+ *       This is good for implementing stacks.
+ */</span>
+<span class="kw">static</span> <span class="kw">inline</span> <span class="ty">void</span> <span class="fn">list_add</span>(<span class="kw">struct</span> <span class="ty">list_head</span> *new,
+                              <span class="kw">struct</span> <span class="ty">list_head</span> *head)
+{
+    <span class="fn">__list_add</span>(new, head, head->next);
+}
+
+<span class="cm">/**
+ * list_add_tail(new, head)
+ * 在 head 之前插入新节点（尾插法）。
+ * 由于是循环链表，head->prev 就是当前尾节点，
+ * 因此等同于在链表末尾追加节点。
+ *
+ * @new:  待插入的新节点
+ * @head: 链表头节点（新节点将成为 head 的上一个节点，即尾节点）
+ *
+ * 特性：多次 list_add_tail 后，最先加入的节点最先被遍历（FIFO/队列语义）。
+ *
+ * 来源：include/linux/list.h - list_add_tail()
+ * 原文：Insert a new entry before the specified head.
+ *       This is useful for implementing queues.
+ */</span>
+<span class="kw">static</span> <span class="kw">inline</span> <span class="ty">void</span> <span class="fn">list_add_tail</span>(<span class="kw">struct</span> <span class="ty">list_head</span> *new,
+                                   <span class="kw">struct</span> <span class="ty">list_head</span> *head)
+{
+    <span class="fn">__list_add</span>(new, head->prev, head);
+}
+
+<span class="cm">/* ================================================================
+ * §7  公开接口：删除操作
+ * ================================================================ */</span>
+
+<span class="cm">/**
+ * list_del(entry)
+ * 将节点从链表中摘除，并将其 next/prev 设为毒化指针。
+ *
+ * @entry: 要删除的节点
+ *
+ * 注意事项：
+ *   - 删除后 list_empty(entry) 不会返回真（节点处于毒化状态）
+ *   - 不要访问被删除节点的 next/prev，会触发段错误
+ *   - 若需删除后继续使用该节点，请用 list_del_init()
+ *
+ * 来源：include/linux/list.h - list_del()
+ * 原文：Note: list_empty() on entry does not return true after this,
+ *       the entry is in an undefined state.
+ */</span>
+<span class="kw">static</span> <span class="kw">inline</span> <span class="ty">void</span> <span class="fn">list_del</span>(<span class="kw">struct</span> <span class="ty">list_head</span> *entry)
+{
+    <span class="fn">__list_del</span>(entry->prev, entry->next);
+    entry->next = <span class="nm">LIST_POISON1</span>; <span class="cm">/* 毒化 next，防止悬挂访问 */</span>
+    entry->prev = <span class="nm">LIST_POISON2</span>; <span class="cm">/* 毒化 prev，防止悬挂访问 */</span>
+}
+
+<span class="cm">/**
+ * list_del_init(entry)
+ * 将节点从链表中摘除，并重新初始化为空节点（自环）。
+ *
+ * @entry: 要删除的节点
+ *
+ * 与 list_del 的区别：
+ *   - list_del：删除后节点处于毒化状态，不可安全使用
+ *   - list_del_init：删除后节点重置为空链表头状态，可再次入链
+ *
+ * 来源：include/linux/list.h - list_del_init()
+ * 原文：deletes entry from list and reinitialize it.
+ */</span>
+<span class="kw">static</span> <span class="kw">inline</span> <span class="ty">void</span> <span class="fn">list_del_init</span>(<span class="kw">struct</span> <span class="ty">list_head</span> *entry)
+{
+    <span class="fn">__list_del</span>(entry->prev, entry->next);
+    <span class="fn">INIT_LIST_HEAD</span>(entry); <span class="cm">/* 重新自环，可重用 */</span>
+}
+
+<span class="cm">/* ================================================================
+ * §8  公开接口：替换操作
+ * ================================================================ */</span>
+
+<span class="cm">/**
+ * list_replace(old, new)
+ * 用 new 节点原地替换链表中的 old 节点。
+ * old 的所有邻居关系转移到 new；old 本身处于游离状态（需调用者处理）。
+ *
+ * @old: 被替换的节点（仍在链表中）
+ * @new: 替换进来的新节点
+ *
+ * 来源：include/linux/list.h - list_replace()
+ * 原文：replace old entry by new one
+ */</span>
+<span class="kw">static</span> <span class="kw">inline</span> <span class="ty">void</span> <span class="fn">list_replace</span>(<span class="kw">struct</span> <span class="ty">list_head</span> *old,
+                                  <span class="kw">struct</span> <span class="ty">list_head</span> *new)
+{
+    new->next       = old->next;
+    new->next->prev = new;
+    new->prev       = old->prev;
+    new->prev->next = new;
+}
+
+<span class="cm">/**
+ * list_replace_init(old, new)
+ * 替换 old 节点后，将 old 重新初始化为空节点，确保其可安全使用。
+ *
+ * 来源：include/linux/list.h - list_replace_init()
+ */</span>
+<span class="kw">static</span> <span class="kw">inline</span> <span class="ty">void</span> <span class="fn">list_replace_init</span>(<span class="kw">struct</span> <span class="ty">list_head</span> *old,
+                                       <span class="kw">struct</span> <span class="ty">list_head</span> *new)
+{
+    <span class="fn">list_replace</span>(old, new);
+    <span class="fn">INIT_LIST_HEAD</span>(old);
+}
+
+<span class="cm">/* ================================================================
+ * §9  公开接口：节点移动
+ * ================================================================ */</span>
+
+<span class="cm">/**
+ * list_move(list, head)
+ * 将 list 节点从其当前链表中摘除，并插入到 head 之后（成为新的第一个元素）。
+ *
+ * @list: 要移动的节点
+ * @head: 目标链表头
+ *
+ * 来源：include/linux/list.h - list_move()
+ * 原文：delete from one list and add as another's head
+ */</span>
+<span class="kw">static</span> <span class="kw">inline</span> <span class="ty">void</span> <span class="fn">list_move</span>(<span class="kw">struct</span> <span class="ty">list_head</span> *list,
+                               <span class="kw">struct</span> <span class="ty">list_head</span> *head)
+{
+    <span class="fn">__list_del</span>(list->prev, list->next); <span class="cm">/* 从原链表摘除 */</span>
+    <span class="fn">list_add</span>(list, head);               <span class="cm">/* 插入目标链表头之后 */</span>
+}
+
+<span class="cm">/**
+ * list_move_tail(list, head)
+ * 将 list 节点从其当前链表中摘除，并追加到 head 链表的尾部。
+ *
+ * @list: 要移动的节点
+ * @head: 目标链表头
+ *
+ * 来源：include/linux/list.h - list_move_tail()
+ * 原文：delete from one list and add as another's tail
+ */</span>
+<span class="kw">static</span> <span class="kw">inline</span> <span class="ty">void</span> <span class="fn">list_move_tail</span>(<span class="kw">struct</span> <span class="ty">list_head</span> *list,
+                                    <span class="kw">struct</span> <span class="ty">list_head</span> *head)
+{
+    <span class="fn">__list_del</span>(list->prev, list->next);
+    <span class="fn">list_add_tail</span>(list, head);
+}
+
+<span class="cm">/* ================================================================
+ * §10  公开接口：状态查询
+ * ================================================================ */</span>
+
+<span class="cm">/**
+ * list_empty(head)
+ * 判断链表是否为空（无数据节点）。
+ *
+ * @head: 链表头节点指针
+ * @return: 非零（真）表示链表为空
+ *
+ * 原理：空链表时 head->next == head（自环），否则指向第一个数据节点。
+ *
+ * 来源：include/linux/list.h - list_empty()
+ * 原文：tests whether a list is empty
+ */</span>
+<span class="kw">static</span> <span class="kw">inline</span> <span class="ty">int</span> <span class="fn">list_empty</span>(<span class="kw">const</span> <span class="kw">struct</span> <span class="ty">list_head</span> *head)
+{
+    <span class="kw">return</span> head->next == head;
+}
+
+<span class="cm">/**
+ * list_is_singular(head)
+ * 判断链表中是否恰好只有一个数据节点。
+ *
+ * @head: 链表头节点指针
+ * @return: 非零（真）表示链表只有一个节点
+ *
+ * 原理：head->next != head（非空）且 head->next == head->prev（只有一个节点时两端相同）
+ *
+ * 来源：include/linux/list.h - list_is_singular()
+ * 原文：tests whether a list has just one entry.
+ */</span>
+<span class="kw">static</span> <span class="kw">inline</span> <span class="ty">int</span> <span class="fn">list_is_singular</span>(<span class="kw">const</span> <span class="kw">struct</span> <span class="ty">list_head</span> *head)
+{
+    <span class="kw">return</span> !<span class="fn">list_empty</span>(head) &amp;&amp; (head->next == head->prev);
+}
+
+<span class="cm">/**
+ * list_is_head(list, head)
+ * 判断 list 节点是否就是链表头 head。
+ * 常用于遍历宏的循环终止判断。
+ *
+ * @list: 待检查的节点
+ * @head: 链表头节点
+ * @return: 非零（真）表示 list 即为 head
+ *
+ * 来源：include/linux/list.h - list_is_head()
+ */</span>
+<span class="kw">static</span> <span class="kw">inline</span> <span class="ty">int</span> <span class="fn">list_is_head</span>(<span class="kw">const</span> <span class="kw">struct</span> <span class="ty">list_head</span> *list,
+                                  <span class="kw">const</span> <span class="kw">struct</span> <span class="ty">list_head</span> *head)
+{
+    <span class="kw">return</span> list == head;
+}
+
+<span class="cm">/* ================================================================
+ * §11  公开接口：获取节点数据（entry 宏）
+ * ================================================================ */</span>
+
+<span class="cm">/**
+ * list_entry(ptr, type, member)
+ * 从 struct list_head 指针获取宿主结构体指针。
+ * 是 container_of 的别名，语义更贴近"链表节点取数据"。
+ *
+ * @ptr:    指向 struct list_head 的指针
+ * @type:   宿主结构体类型
+ * @member: list_head 在宿主结构体中的字段名
+ *
+ * 来源：include/linux/list.h - list_entry()
+ * 原文：get the struct for this entry
+ *
+ * 示例：
+ *   struct my_node { int val; struct list_head link; };
+ *   struct list_head *p = ...;
+ *   struct my_node *n = list_entry(p, struct my_node, link);
+ */</span>
+<span class="pp">#define</span> <span class="fn">list_entry</span>(ptr, type, member) \
+    <span class="fn">container_of</span>(ptr, type, member)
+
+<span class="cm">/**
+ * list_first_entry(ptr, type, member)
+ * 获取链表中第一个节点的宿主结构体指针（head->next 对应的数据结构）。
+ *
+ * @ptr:    链表头指针
+ * @type:   宿主结构体类型
+ * @member: list_head 字段名
+ *
+ * ⚠️  调用前必须确认链表非空！空链表时行为未定义。
+ *
+ * 来源：include/linux/list.h - list_first_entry()
+ * 原文：get the first element from a list
+ *       Note, that list is expected to be not empty.
+ */</span>
+<span class="pp">#define</span> <span class="fn">list_first_entry</span>(ptr, type, member) \
+    <span class="fn">list_entry</span>((ptr)->next, type, member)
+
+<span class="cm">/**
+ * list_last_entry(ptr, type, member)
+ * 获取链表中最后一个节点的宿主结构体指针（head->prev 对应的数据结构）。
+ *
+ * ⚠️  调用前必须确认链表非空！
+ *
+ * 来源：include/linux/list.h - list_last_entry()
+ * 原文：get the last element from a list
+ */</span>
+<span class="pp">#define</span> <span class="fn">list_last_entry</span>(ptr, type, member) \
+    <span class="fn">list_entry</span>((ptr)->prev, type, member)
+
+<span class="cm">/**
+ * list_next_entry(pos, member)
+ * 获取链表中 pos 之后的节点（宿主结构体）。
+ *
+ * @pos:    当前节点的宿主结构体指针
+ * @member: list_head 字段名
+ *
+ * 来源：include/linux/list.h - list_next_entry()
+ */</span>
+<span class="pp">#define</span> <span class="fn">list_next_entry</span>(pos, member) \
+    <span class="fn">list_entry</span>((pos)->member.next, <span class="kw">typeof</span>(*(pos)), member)
+
+<span class="cm">/**
+ * list_prev_entry(pos, member)
+ * 获取链表中 pos 之前的节点（宿主结构体）。
+ *
+ * @pos:    当前节点的宿主结构体指针
+ * @member: list_head 字段名
+ *
+ * 来源：include/linux/list.h - list_prev_entry()
+ */</span>
+<span class="pp">#define</span> <span class="fn">list_prev_entry</span>(pos, member) \
+    <span class="fn">list_entry</span>((pos)->member.prev, <span class="kw">typeof</span>(*(pos)), member)
+
+<span class="cm">/* ================================================================
+ * §12  遍历宏
+ * ================================================================ */</span>
+
+<span class="cm">/**
+ * list_for_each(pos, head)
+ * 正向遍历链表中所有节点，pos 为 struct list_head * 游标。
+ *
+ * @pos:  循环游标（struct list_head *）
+ * @head: 链表头节点
+ *
+ * ⚠️  遍历过程中不可删除 pos 节点，否则请使用 list_for_each_safe。
+ *
+ * 来源：include/linux/list.h - list_for_each()
+ * 原文：iterate over a list
+ */</span>
+<span class="pp">#define</span> <span class="nm">list_for_each</span>(pos, head) \
+    <span class="kw">for</span> (pos = (head)->next; pos != (head); pos = pos->next)
+
+<span class="cm">/**
+ * list_for_each_prev(pos, head)
+ * 反向遍历链表（从尾节点到头节点方向）。
+ *
+ * @pos:  循环游标（struct list_head *）
+ * @head: 链表头节点
+ *
+ * ⚠️  遍历过程中不可删除 pos 节点。
+ *
+ * 来源：include/linux/list.h - list_for_each_prev()
+ * 原文：iterate over a list backwards
+ */</span>
+<span class="pp">#define</span> <span class="nm">list_for_each_prev</span>(pos, head) \
+    <span class="kw">for</span> (pos = (head)->prev; pos != (head); pos = pos->prev)
+
+<span class="cm">/**
+ * list_for_each_safe(pos, n, head)
+ * 正向遍历链表，遍历过程中可安全删除当前节点 pos。
+ *
+ * @pos:  循环游标（struct list_head *）
+ * @n:    临时保存 pos->next 的辅助指针（struct list_head *）
+ * @head: 链表头节点
+ *
+ * 原理：每次迭代开始前预先保存 pos->next 到 n，
+ *        即使 pos 从链表中删除，迭代器仍可从 n 继续推进。
+ *
+ * 来源：include/linux/list.h - list_for_each_safe()
+ * 原文：iterate over a list safe against removal of list entry
+ */</span>
+<span class="pp">#define</span> <span class="nm">list_for_each_safe</span>(pos, n, head) \
+    <span class="kw">for</span> (pos = (head)->next, n = pos->next; \
+         pos != (head); \
+         pos = n, n = pos->next)
+
+<span class="cm">/**
+ * list_for_each_entry(pos, head, member)
+ * 正向遍历链表，pos 直接是宿主结构体指针（最常用的遍历宏）。
+ *
+ * @pos:    循环游标（宿主结构体指针，如 struct foo *）
+ * @head:   链表头节点
+ * @member: struct list_head 在宿主结构体中的字段名
+ *
+ * ⚠️  遍历过程中不可删除 pos 节点，请使用 list_for_each_entry_safe。
+ *
+ * 来源：include/linux/list.h - list_for_each_entry()
+ * 原文：iterate over list of given type
+ */</span>
+<span class="pp">#define</span> <span class="nm">list_for_each_entry</span>(pos, head, member)                         \
+    <span class="kw">for</span> (pos = <span class="fn">list_entry</span>((head)->next, <span class="kw">typeof</span>(*pos), member);       \
+         &amp;pos->member != (head);                                       \
+         pos = <span class="fn">list_entry</span>(pos->member.next, <span class="kw">typeof</span>(*pos), member))
+
+<span class="cm">/**
+ * list_for_each_entry_reverse(pos, head, member)
+ * 反向遍历链表，pos 为宿主结构体指针。
+ *
+ * @pos:    循环游标（宿主结构体指针）
+ * @head:   链表头节点
+ * @member: struct list_head 字段名
+ *
+ * ⚠️  遍历过程中不可删除 pos 节点。
+ *
+ * 来源：include/linux/list.h - list_for_each_entry_reverse()
+ * 原文：iterate backwards over list of given type.
+ */</span>
+<span class="pp">#define</span> <span class="nm">list_for_each_entry_reverse</span>(pos, head, member)                 \
+    <span class="kw">for</span> (pos = <span class="fn">list_entry</span>((head)->prev, <span class="kw">typeof</span>(*pos), member);       \
+         &amp;pos->member != (head);                                       \
+         pos = <span class="fn">list_entry</span>(pos->member.prev, <span class="kw">typeof</span>(*pos), member))
+
+<span class="cm">/**
+ * list_for_each_entry_safe(pos, n, head, member)
+ * 正向安全遍历，遍历过程中可删除当前节点 pos。
+ *
+ * @pos:    循环游标（宿主结构体指针）
+ * @n:      临时存储下一个宿主结构体指针（同 pos 类型）
+ * @head:   链表头节点
+ * @member: struct list_head 字段名
+ *
+ * ⚠️  不要在循环体中修改 n。
+ * ⚠️  仅保护当前 pos 被删除的情况，并发修改仍需外部同步。
+ *
+ * 来源：include/linux/list.h - list_for_each_entry_safe()
+ * 原文：iterate over list of given type safe against removal of list entry
+ */</span>
+<span class="pp">#define</span> <span class="nm">list_for_each_entry_safe</span>(pos, n, head, member)                 \
+    <span class="kw">for</span> (pos = <span class="fn">list_entry</span>((head)->next, <span class="kw">typeof</span>(*pos), member),       \
+         n   = <span class="fn">list_entry</span>(pos->member.next, <span class="kw">typeof</span>(*pos), member);   \
+         &amp;pos->member != (head);                                       \
+         pos = n, n = <span class="fn">list_entry</span>(n->member.next, <span class="kw">typeof</span>(*n), member))
+
+<span class="cm">/**
+ * list_for_each_entry_safe_reverse(pos, n, head, member)
+ * 反向安全遍历，遍历过程中可删除当前节点 pos。
+ *
+ * @pos:    循环游标（宿主结构体指针）
+ * @n:      临时存储上一个宿主结构体指针
+ * @head:   链表头节点
+ * @member: struct list_head 字段名
+ *
+ * 来源：include/linux/list.h - list_for_each_entry_safe_reverse()
+ * 原文：iterate backwards over list safe against removal
+ */</span>
+<span class="pp">#define</span> <span class="nm">list_for_each_entry_safe_reverse</span>(pos, n, head, member)         \
+    <span class="kw">for</span> (pos = <span class="fn">list_entry</span>((head)->prev, <span class="kw">typeof</span>(*pos), member),       \
+         n   = <span class="fn">list_entry</span>(pos->member.prev, <span class="kw">typeof</span>(*pos), member);   \
+         &amp;pos->member != (head);                                       \
+         pos = n, n = <span class="fn">list_entry</span>(n->member.prev, <span class="kw">typeof</span>(*n), member))
+
+<span class="cm">/* ================================================================
+ * §13  拼接操作
+ * ================================================================ */</span>
+
+<span class="cm">/*
+ * __list_splice(list, prev, next)
+ * 将 list 链表的所有节点移接到 prev 与 next 之间（内部函数）。
+ * 调用方需确认 list 非空。
+ *
+ * 来源：include/linux/list.h - __list_splice()
+ */</span>
+<span class="kw">static</span> <span class="kw">inline</span> <span class="ty">void</span> <span class="fn">__list_splice</span>(<span class="kw">const</span> <span class="kw">struct</span> <span class="ty">list_head</span> *list,
+                                   <span class="kw">struct</span> <span class="ty">list_head</span> *prev,
+                                   <span class="kw">struct</span> <span class="ty">list_head</span> *next)
+{
+    <span class="kw">struct</span> <span class="ty">list_head</span> *first = list->next; <span class="cm">/* list 的第一个实际节点 */</span>
+    <span class="kw">struct</span> <span class="ty">list_head</span> *last  = list->prev; <span class="cm">/* list 的最后一个实际节点 */</span>
+
+    first->prev = prev;  <span class="cm">/* 第一节点的前驱连接到 prev */</span>
+    prev->next  = first; <span class="cm">/* prev 的后继连接到第一节点 */</span>
+
+    last->next  = next;  <span class="cm">/* 最后节点的后继连接到 next */</span>
+    next->prev  = last;  <span class="cm">/* next 的前驱连接到最后节点 */</span>
+}
+
+<span class="cm">/**
+ * list_splice(list, head)
+ * 将 list 链表的全部节点插入到 head 之后（作为 head 的新的第一批节点）。
+ * 操作完成后 list 处于未定义状态，如需继续使用应调用 list_splice_init。
+ *
+ * @list: 源链表头（其节点将被移走）
+ * @head: 目标链表头（节点插入此头之后）
+ *
+ * 来源：include/linux/list.h - list_splice()
+ * 原文：join two lists, this is designed for stacks
+ */</span>
+<span class="kw">static</span> <span class="kw">inline</span> <span class="ty">void</span> <span class="fn">list_splice</span>(<span class="kw">const</span> <span class="kw">struct</span> <span class="ty">list_head</span> *list,
+                                 <span class="kw">struct</span> <span class="ty">list_head</span> *head)
+{
+    <span class="kw">if</span> (!<span class="fn">list_empty</span>(list))
+        <span class="fn">__list_splice</span>(list, head, head->next);
+}
+
+<span class="cm">/**
+ * list_splice_tail(list, head)
+ * 将 list 链表的全部节点追加到 head 链表的尾部。
+ *
+ * @list: 源链表头
+ * @head: 目标链表头
+ *
+ * 来源：include/linux/list.h - list_splice_tail()
+ * 原文：join two lists, each list being a queue
+ */</span>
+<span class="kw">static</span> <span class="kw">inline</span> <span class="ty">void</span> <span class="fn">list_splice_tail</span>(<span class="kw">struct</span> <span class="ty">list_head</span> *list,
+                                       <span class="kw">struct</span> <span class="ty">list_head</span> *head)
+{
+    <span class="kw">if</span> (!<span class="fn">list_empty</span>(list))
+        <span class="fn">__list_splice</span>(list, head->prev, head);
+}
+
+<span class="cm">/**
+ * list_splice_init(list, head)
+ * 拼接后将 list 重新初始化为空链表头，避免 list 成为悬挂头节点。
+ *
+ * @list: 源链表头（操作后被重置为空）
+ * @head: 目标链表头
+ *
+ * 来源：include/linux/list.h - list_splice_init()
+ * 原文：join two lists and reinitialise the emptied list.
+ *       The list at list is reinitialised.
+ */</span>
+<span class="kw">static</span> <span class="kw">inline</span> <span class="ty">void</span> <span class="fn">list_splice_init</span>(<span class="kw">struct</span> <span class="ty">list_head</span> *list,
+                                       <span class="kw">struct</span> <span class="ty">list_head</span> *head)
+{
+    <span class="kw">if</span> (!<span class="fn">list_empty</span>(list)) {
+        <span class="fn">__list_splice</span>(list, head, head->next);
+        <span class="fn">INIT_LIST_HEAD</span>(list); <span class="cm">/* list 清空，避免悬挂 */</span>
+    }
+}
+
+<span class="cm">/**
+ * list_splice_tail_init(list, head)
+ * 拼接到尾部后，将 list 重新初始化为空。
+ *
+ * 来源：include/linux/list.h - list_splice_tail_init()
+ */</span>
+<span class="kw">static</span> <span class="kw">inline</span> <span class="ty">void</span> <span class="fn">list_splice_tail_init</span>(<span class="kw">struct</span> <span class="ty">list_head</span> *list,
+                                            <span class="kw">struct</span> <span class="ty">list_head</span> *head)
+{
+    <span class="kw">if</span> (!<span class="fn">list_empty</span>(list)) {
+        <span class="fn">__list_splice</span>(list, head->prev, head);
+        <span class="fn">INIT_LIST_HEAD</span>(list);
+    }
+}
+
+<span class="cm">/* ================================================================
+ * §14  切割操作
+ * ================================================================ */</span>
+
+<span class="cm">/**
+ * list_cut_position(list, head, entry)
+ * 从 head 链表切出前段（从第一个节点到 entry，含 entry），移入 list 链表。
+ * head 链表剩余 entry 之后的节点；list 原有内容被覆盖。
+ *
+ * @list:  目标链表头（接收切出的节点）
+ * @head:  源链表头
+ * @entry: 切割点（此节点及其之前所有节点移入 list）
+ *
+ * 来源：include/linux/list.h - list_cut_position()
+ * 原文（官方文档）：
+ *   list_cut_position() removes all list entries from head up to
+ *   and including entry, placing them in list instead.
+ *   参见：https://docs.kernel.org/core-api/list.html#cutting-a-list
+ */</span>
+<span class="kw">static</span> <span class="kw">inline</span> <span class="ty">void</span> <span class="fn">list_cut_position</span>(<span class="kw">struct</span> <span class="ty">list_head</span> *list,
+                                        <span class="kw">struct</span> <span class="ty">list_head</span> *head,
+                                        <span class="kw">struct</span> <span class="ty">list_head</span> *entry)
+{
+    <span class="kw">if</span> (<span class="fn">list_empty</span>(head))
+        <span class="kw">return</span>;
+    <span class="kw">if</span> (<span class="fn">list_is_singular</span>(head) &amp;&amp; head->next != entry)
+        <span class="kw">return</span>;
+    <span class="kw">if</span> (entry == head) {
+        <span class="fn">INIT_LIST_HEAD</span>(list); <span class="cm">/* entry 就是 head，切出空段 */</span>
+    } <span class="kw">else</span> {
+        <span class="kw">struct</span> <span class="ty">list_head</span> *new_first = entry->next;
+        list->next       = head->next;
+        list->next->prev = list;
+        list->prev       = entry;
+        entry->next      = list;
+        head->next       = new_first;
+        new_first->prev  = head;
+    }
+}
+
+<span class="cm">/**
+ * list_cut_before(list, head, entry)
+ * 从 head 链表切出前段（不含 entry 本身），移入 list 链表。
+ * head 链表从 entry 开始保留；list 接收 entry 之前的所有节点。
+ *
+ * @list:  目标链表头（接收切出的节点）
+ * @head:  源链表头
+ * @entry: 切割点（此节点保留在 head 中，之前的节点移入 list）
+ *
+ * 来源：include/linux/list.h - list_cut_before()
+ * 原文（官方文档）：
+ *   list_cut_before() removes all list entries from head up to
+ *   but excluding entry, placing them in list instead.
+ *   参见：https://docs.kernel.org/core-api/list.html#cutting-a-list
+ */</span>
+<span class="kw">static</span> <span class="kw">inline</span> <span class="ty">void</span> <span class="fn">list_cut_before</span>(<span class="kw">struct</span> <span class="ty">list_head</span> *list,
+                                      <span class="kw">struct</span> <span class="ty">list_head</span> *head,
+                                      <span class="kw">struct</span> <span class="ty">list_head</span> *entry)
+{
+    <span class="kw">if</span> (head->next == entry) {
+        <span class="fn">INIT_LIST_HEAD</span>(list); <span class="cm">/* entry 是第一个节点，没有"之前"的节点 */</span>
+        <span class="kw">return</span>;
+    }
+    list->next       = head->next;
+    list->next->prev = list;
+    list->prev       = entry->prev;
+    list->prev->next = list;
+    head->next       = entry;
+    entry->prev      = head;
+}
+
+<span class="pp">#endif</span> <span class="cm">/* _USER_LIST_H */</span></code></pre>
+        <div class="code-label">user_list.h</div>
+      </section>
+
+      <div class="summary-box">
+        <h4>📌 第六章总结</h4>
+        <ul>
+          <li>共 <strong>14 个功能段</strong>，覆盖内核 list.h 的全部核心接口</li>
+          <li>仅移除内核专用特性（WRITE_ONCE/RCU/prefetch），保留全部算法逻辑</li>
+          <li>毒化指针改为用户空间可触发段错误的地址，保留调试价值</li>
+          <li>每个接口均标注来源文件、原文注释及中文说明</li>
+        </ul>
+      </div>
+    </article>
+
+    <!-- ==================== 第七章 ==================== -->
+    <article class="chapter" id="ch7">
+      <div class="chapter-header">
+        <div class="chapter-num">第 7 章</div>
+        <h2 class="chapter-title">使用示例与最佳实践</h2>
+      </div>
+
+      <section class="section" id="ch7-s1">
+        <h3 class="section-title">基本使用：嵌入、初始化、遍历</h3>
+        <pre><code><span class="pp">#include</span> <span class="st">"user_list.h"</span>
+<span class="pp">#include</span> <span class="st">&lt;stdio.h&gt;</span>
+<span class="pp">#include</span> <span class="st">&lt;stdlib.h&gt;</span>
+
+<span class="cm">/* Step 1：在用户数据结构中嵌入 struct list_head */</span>
+<span class="kw">struct</span> <span class="ty">student</span> {
+    <span class="ty">int</span>  id;
+    <span class="ty">char</span> name[32];
+    <span class="kw">struct</span> <span class="ty">list_head</span> node; <span class="cm">/* 链表锚点，可放在结构体任意位置 */</span>
+};
+
+<span class="ty">int</span> <span class="fn">main</span>(<span class="ty">void</span>)
+{
+    <span class="cm">/* Step 2：声明并初始化链表头（栈上静态声明）*/</span>
+    <span class="nm">LIST_HEAD</span>(class_list);          <span class="cm">/* 等价于 struct list_head class_list = {&amp;class_list, &amp;class_list} */</span>
+
+    <span class="cm">/* Step 3：动态创建节点并加入链表（尾插，保持顺序）*/</span>
+    <span class="kw">for</span> (<span class="ty">int</span> i = 1; i &lt;= 3; i++) {
+        <span class="kw">struct</span> <span class="ty">student</span> *s = malloc(<span class="kw">sizeof</span>(*s));
+        s->id = i;
+        <span class="fn">snprintf</span>(s->name, <span class="kw">sizeof</span>(s->name), <span class="st">"Student_%d"</span>, i);
+        <span class="fn">INIT_LIST_HEAD</span>(&amp;s->node);    <span class="cm">/* 初始化节点（非必须，但建议）*/</span>
+        <span class="fn">list_add_tail</span>(&amp;s->node, &amp;class_list); <span class="cm">/* 尾插：顺序 1→2→3 */</span>
+    }
+
+    <span class="cm">/* Step 4：正向遍历（最常用）*/</span>
+    <span class="kw">struct</span> <span class="ty">student</span> *pos;
+    <span class="nm">list_for_each_entry</span>(pos, &amp;class_list, node) {
+        <span class="fn">printf</span>(<span class="st">"id=%d name=%s\n"</span>, pos->id, pos->name);
+    }
+
+    <span class="cm">/* Step 5：安全删除所有节点（遍历中 free）*/</span>
+    <span class="kw">struct</span> <span class="ty">student</span> *tmp;
+    <span class="nm">list_for_each_entry_safe</span>(pos, tmp, &amp;class_list, node) {
+        <span class="fn">list_del</span>(&amp;pos->node); <span class="cm">/* 从链表摘除 */</span>
+        <span class="fn">free</span>(pos);             <span class="cm">/* 释放内存 */</span>
+    }
+
+    <span class="fn">printf</span>(<span class="st">"链表是否为空: %s\n"</span>, <span class="fn">list_empty</span>(&amp;class_list) ? <span class="st">"是"</span> : <span class="st">"否"</span>);
+    <span class="kw">return</span> 0;
+}</code></pre>
+      </section>
+
+      <section class="section" id="ch7-s2">
+        <h3 class="section-title">一个结构体加入多个链表</h3>
+        <pre><code><span class="cm">/* 侵入式链表的独特优势：一个节点同时属于多个链表 */</span>
+<span class="kw">struct</span> <span class="ty">task</span> {
+    <span class="ty">int</span>  pid;
+    <span class="ty">int</span>  priority;
+    <span class="kw">struct</span> <span class="ty">list_head</span> all_tasks;   <span class="cm">/* 全局任务链表的锚点 */</span>
+    <span class="kw">struct</span> <span class="ty">list_head</span> run_queue;   <span class="cm">/* 运行队列的锚点 */</span>
+    <span class="kw">struct</span> <span class="ty">list_head</span> wait_queue;  <span class="cm">/* 等待队列的锚点 */</span>
+};
+
+<span class="nm">LIST_HEAD</span>(global_tasks);
+<span class="nm">LIST_HEAD</span>(runnable);
+<span class="nm">LIST_HEAD</span>(waiting);
+
+<span class="ty">void</span> <span class="fn">add_task</span>(<span class="kw">struct</span> <span class="ty">task</span> *t, <span class="ty">int</span> runnable_flag)
+{
+    <span class="fn">list_add_tail</span>(&amp;t->all_tasks, &amp;global_tasks); <span class="cm">/* 始终加入全局链表 */</span>
+    <span class="kw">if</span> (runnable_flag)
+        <span class="fn">list_add_tail</span>(&amp;t->run_queue, &amp;runnable);   <span class="cm">/* 按需加入运行队列 */</span>
+    <span class="kw">else</span>
+        <span class="fn">list_add_tail</span>(&amp;t->wait_queue, &amp;waiting);   <span class="cm">/* 或等待队列 */</span>
+}
+
+<span class="cm">/* 从运行队列取出 task，通过 run_queue 成员还原 task 指针 */</span>
+<span class="kw">struct</span> <span class="ty">task</span> *<span class="fn">schedule_next</span>(<span class="ty">void</span>)
+{
+    <span class="kw">if</span> (<span class="fn">list_empty</span>(&amp;runnable))
+        <span class="kw">return</span> NULL;
+    <span class="kw">return</span> <span class="fn">list_first_entry</span>(&amp;runnable, <span class="kw">struct</span> <span class="ty">task</span>, run_queue);
+}</code></pre>
+
+        <div class="callout callout-tip">
+          <div class="callout-title">💡 最佳实践</div>
+          <ul style="margin-left:1rem;margin-top:0.3rem;">
+            <li>总是用 <code>list_for_each_entry_safe</code> 进行删除操作，哪怕暂时不需要，养成习惯</li>
+            <li>链表头节点（HEAD）不携带业务数据，不要用 <code>list_entry</code> 访问 HEAD 自身</li>
+            <li>用 <code>list_empty</code> 判空后再调用 <code>list_first_entry</code>，避免空链表访问 HEAD.next</li>
+            <li>多线程访问同一链表时，需在外部加互斥锁（<code>pthread_mutex_t</code>）</li>
+          </ul>
+        </div>
+      </section>
+
+      <section class="section" id="ch7-s3">
+        <h3 class="section-title">接口速查表</h3>
+        <div class="table-wrap">
+          <table>
+            <thead>
+              <tr>
+                <th>接口</th><th>类型</th><th>功能简述</th><th>复杂度</th>
+              </tr>
+            </thead>
+            <tbody>
+              <tr><td><code>INIT_LIST_HEAD(list)</code></td><td>函数</td><td>运行时初始化为空链表头</td><td>O(1)</td></tr>
+              <tr><td><code>LIST_HEAD(name)</code></td><td>宏</td><td>声明并静态初始化链表头</td><td>—</td></tr>
+              <tr><td><code>list_add(new, head)</code></td><td>函数</td><td>头插法（栈）</td><td>O(1)</td></tr>
+              <tr><td><code>list_add_tail(new, head)</code></td><td>函数</td><td>尾插法（队列）</td><td>O(1)</td></tr>
+              <tr><td><code>list_del(entry)</code></td><td>函数</td><td>删除节点（指针毒化）</td><td>O(1)</td></tr>
+              <tr><td><code>list_del_init(entry)</code></td><td>函数</td><td>删除节点并重置为空</td><td>O(1)</td></tr>
+              <tr><td><code>list_replace(old, new)</code></td><td>函数</td><td>原地替换节点</td><td>O(1)</td></tr>
+              <tr><td><code>list_move(list, head)</code></td><td>函数</td><td>移动节点到另一链表头部</td><td>O(1)</td></tr>
+              <tr><td><code>list_move_tail(list, head)</code></td><td>函数</td><td>移动节点到另一链表尾部</td><td>O(1)</td></tr>
+              <tr><td><code>list_empty(head)</code></td><td>函数</td><td>判断链表是否为空</td><td>O(1)</td></tr>
+              <tr><td><code>list_is_singular(head)</code></td><td>函数</td><td>判断链表是否只有一个节点</td><td>O(1)</td></tr>
+              <tr><td><code>list_entry(ptr, type, member)</code></td><td>宏</td><td>从 list_head* 获取宿主结构体</td><td>O(1)</td></tr>
+              <tr><td><code>list_first_entry(...)</code></td><td>宏</td><td>获取第一个节点数据（非空前提）</td><td>O(1)</td></tr>
+              <tr><td><code>list_last_entry(...)</code></td><td>宏</td><td>获取最后一个节点数据（非空前提）</td><td>O(1)</td></tr>
+              <tr><td><code>list_for_each_entry(...)</code></td><td>宏</td><td>正向遍历（不可删除）</td><td>O(n)</td></tr>
+              <tr><td><code>list_for_each_entry_reverse(...)</code></td><td>宏</td><td>反向遍历（不可删除）</td><td>O(n)</td></tr>
+              <tr><td><code>list_for_each_entry_safe(...)</code></td><td>宏</td><td>正向安全遍历（可删除）</td><td>O(n)</td></tr>
+              <tr><td><code>list_for_each_entry_safe_reverse(...)</code></td><td>宏</td><td>反向安全遍历（可删除）</td><td>O(n)</td></tr>
+              <tr><td><code>list_splice(list, head)</code></td><td>函数</td><td>将 list 拼接到 head 之后</td><td>O(1)</td></tr>
+              <tr><td><code>list_splice_tail(list, head)</code></td><td>函数</td><td>将 list 拼接到 head 尾部</td><td>O(1)</td></tr>
+              <tr><td><code>list_splice_init(list, head)</code></td><td>函数</td><td>拼接并重置 list 为空</td><td>O(1)</td></tr>
+              <tr><td><code>list_cut_position(...)</code></td><td>函数</td><td>切出前段（含切割点）</td><td>O(1)</td></tr>
+              <tr><td><code>list_cut_before(...)</code></td><td>函数</td><td>切出前段（不含切割点）</td><td>O(1)</td></tr>
+            </tbody>
+          </table>
+        </div>
+      </section>
+
+      <div class="summary-box">
+        <h4>📌 第七章总结</h4>
+        <ul>
+          <li>使用链表的三步范式：<strong>嵌入</strong> list_head → <strong>初始化</strong> INIT_LIST_HEAD → <strong>操作</strong> list_add/del/for_each</li>
+          <li>侵入式设计允许同一节点同时属于多个链表，无需额外内存</li>
+          <li>所有操作均为 O(1)（遍历除外），无隐藏的内存分配</li>
+          <li><strong>第一性原理</strong>：内核链表 API 的本质是"指针代数"——所有操作都是在修改 prev/next 这两个字段，其他一切都是对此的封装与命名</li>
+        </ul>
+      </div>
+
+      <!-- 章节导航 -->
+      <div class="chapter-nav">
+        <button id="prev-btn" onclick="navigateChapter(-1)">← 上一章</button>
+        <button id="next-btn" onclick="navigateChapter(1)">下一章 →</button>
+      </div>
+    </article>
+
+  </main><!-- /#main -->
+</div><!-- /#layout -->
+
+<!-- 键盘提示 -->
+<div id="key-hint">
+  <kbd>←</kbd><kbd>→</kbd> 翻章导航
+</div>
+
+<script>
+// =====================================================================
+// 导航数据
+// =====================================================================
+const chapters = [
+  {
+    id: 'ch1', label: '第1章 背景与设计哲学',
+    sections: [
+      { id: 'ch1-s1', label: '为什么内核要定制链表？' },
+      { id: 'ch1-s2', label: '侵入式设计的第一性原理' },
+      { id: 'ch1-s3', label: '循环双向链表结构示意' },
+    ]
+  },
+  {
+    id: 'ch2', label: '第2章 核心数据结构与宏',
+    sections: [
+      { id: 'ch2-s1', label: 'struct list_head 结构体' },
+      { id: 'ch2-s2', label: '初始化宏详解' },
+      { id: 'ch2-s3', label: 'list_entry / first / last' },
+    ]
+  },
+  {
+    id: 'ch3', label: '第3章 插入与删除操作',
+    sections: [
+      { id: 'ch3-s1', label: '内部插入函数 __list_add' },
+      { id: 'ch3-s2', label: '删除操作' },
+      { id: 'ch3-s3', label: '替换、移动操作' },
+    ]
+  },
+  {
+    id: 'ch4', label: '第4章 遍历宏详解',
+    sections: [
+      { id: 'ch4-s1', label: '基础遍历宏' },
+      { id: 'ch4-s2', label: '安全遍历宏（支持删除）' },
+      { id: 'ch4-s3', label: '遍历宏对比表' },
+    ]
+  },
+  {
+    id: 'ch5', label: '第5章 辅助操作',
+    sections: [
+      { id: 'ch5-s1', label: '状态查询' },
+      { id: 'ch5-s2', label: '链表拼接（splice）' },
+      { id: 'ch5-s3', label: '链表切割（cut）' },
+    ]
+  },
+  {
+    id: 'ch6', label: '第6章 完整 user_list.h',
+    sections: [
+      { id: 'ch6-s1', label: '设计说明与改动对比' },
+      { id: 'ch6-s2', label: 'user_list.h 完整代码' },
+    ]
+  },
+  {
+    id: 'ch7', label: '第7章 使用示例与最佳实践',
+    sections: [
+      { id: 'ch7-s1', label: '基本使用示例' },
+      { id: 'ch7-s2', label: '一个结构体加入多个链表' },
+      { id: 'ch7-s3', label: '接口速查表' },
+    ]
+  },
+];
+
+let currentChapter = 0;
+
+// =====================================================================
+// 构建侧边导航
+// =====================================================================
+function buildNav() {
+  const inner = document.getElementById('sidebar-inner');
+  inner.innerHTML = '';
+  chapters.forEach((ch, ci) => {
+    const group = document.createElement('div');
+    group.className = 'nav-group';
+    group.id = 'nav-group-' + ci;
+
+    const header = document.createElement('div');
+    header.className = 'nav-group-header';
+    header.innerHTML = `<span>${ch.label}</span><span class="nav-group-toggle">▾</span>`;
+    header.onclick = () => toggleGroup(ci);
+
+    const items = document.createElement('div');
+    items.className = 'nav-group-items';
+    // set max-height for animation
+    items.style.maxHeight = '500px';
+
+    // Chapter link
+    const chLink = document.createElement('a');
+    chLink.className = 'nav-item';
+    chLink.dataset.target = ch.id;
+    chLink.dataset.ci = ci;
+    chLink.textContent = '▸ 章节概览';
+    chLink.onclick = (e) => { e.preventDefault(); scrollToSection(ch.id); closeSidebarMobile(); };
+    items.appendChild(chLink);
+
+    ch.sections.forEach(sec => {
+      const a = document.createElement('a');
+      a.className = 'nav-item';
+      a.dataset.target = sec.id;
+      a.dataset.ci = ci;
+      a.textContent = sec.label;
+      a.onclick = (e) => { e.preventDefault(); scrollToSection(sec.id); closeSidebarMobile(); };
+      items.appendChild(a);
+    });
+
+    group.appendChild(header);
+    group.appendChild(items);
+    inner.appendChild(group);
+  });
+}
+
+function toggleGroup(ci) {
+  const group = document.getElementById('nav-group-' + ci);
+  const items = group.querySelector('.nav-group-items');
+  if (group.classList.contains('collapsed')) {
+    group.classList.remove('collapsed');
+    items.style.maxHeight = '500px';
+  } else {
+    group.classList.add('collapsed');
+    items.style.maxHeight = '0';
+  }
+}
+
+function scrollToSection(id) {
+  const el = document.getElementById(id);
+  if (el) el.scrollIntoView({ behavior: 'smooth', block: 'start' });
+}
+
+// =====================================================================
+// 进度条
+// =====================================================================
+function updateProgress() {
+  const scrollTop = window.scrollY;
+  const docHeight = document.documentElement.scrollHeight - window.innerHeight;
+  const pct = docHeight > 0 ? (scrollTop / docHeight) * 100 : 0;
+  document.getElementById('progress-bar').style.width = pct + '%';
+}
+
+// =====================================================================
+// 导航高亮跟踪
+// =====================================================================
+const allSectionIds = [];
+chapters.forEach(ch => {
+  allSectionIds.push(ch.id);
+  ch.sections.forEach(s => allSectionIds.push(s.id));
+});
+
+function updateNavHighlight() {
+  let active = null;
+  for (const id of allSectionIds) {
+    const el = document.getElementById(id);
+    if (!el) continue;
+    const rect = el.getBoundingClientRect();
+    if (rect.top <= 90) active = id;
+  }
+  document.querySelectorAll('.nav-item').forEach(a => {
+    a.classList.toggle('active', a.dataset.target === active);
+  });
+  // Update current chapter for keyboard nav
+  if (active) {
+    chapters.forEach((ch, ci) => {
+      if (ch.id === active || ch.sections.some(s => s.id === active)) {
+        currentChapter = ci;
+      }
+    });
+  }
+  updatePrevNext();
+}
+
+function updatePrevNext() {
+  const prev = document.getElementById('prev-btn');
+  const next = document.getElementById('next-btn');
+  if (prev) prev.disabled = currentChapter === 0;
+  if (next) next.disabled = currentChapter === chapters.length - 1;
+}
+
+// =====================================================================
+// 键盘翻章导航
+// =====================================================================
+function navigateChapter(delta) {
+  const newIdx = Math.max(0, Math.min(chapters.length - 1, currentChapter + delta));
+  if (newIdx !== currentChapter) {
+    currentChapter = newIdx;
+    scrollToSection(chapters[currentChapter].id);
+    updatePrevNext();
+  }
+}
+
+document.addEventListener('keydown', (e) => {
+  if (e.target.tagName === 'INPUT' || e.target.tagName === 'TEXTAREA') return;
+  if (e.key === 'ArrowRight') navigateChapter(1);
+  if (e.key === 'ArrowLeft')  navigateChapter(-1);
+});
+
+// =====================================================================
+// 汉堡菜单（移动端）
+// =====================================================================
+function toggleSidebar() {
+  const sidebar = document.getElementById('sidebar');
+  const overlay = document.getElementById('overlay');
+  sidebar.classList.toggle('open');
+  overlay.classList.toggle('open');
+}
+
+function closeSidebarMobile() {
+  if (window.innerWidth <= 768) {
+    document.getElementById('sidebar').classList.remove('open');
+    document.getElementById('overlay').classList.remove('open');
+  }
+}
+
+// =====================================================================
+// 初始化
+// =====================================================================
+buildNav();
+updatePrevNext();
+
+window.addEventListener('scroll', () => {
+  updateProgress();
+  updateNavHighlight();
+}, { passive: true });
+
+// 初次高亮
+updateNavHighlight();
+</script>
+</body>
+</html>

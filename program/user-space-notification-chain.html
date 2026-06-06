@@ -1,0 +1,2134 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Linux 内核通知链移植到应用层 — user_notifier</title>
+<style>
+  :root {
+    --bg: #0f1117;
+    --bg2: #161b22;
+    --bg3: #1c2333;
+    --bg4: #21262d;
+    --border: #30363d;
+    --text: #e6edf3;
+    --text2: #8b949e;
+    --accent: #58a6ff;
+    --accent2: #79c0ff;
+    --green: #3fb950;
+    --yellow: #e3b341;
+    --red: #f85149;
+    --purple: #bc8cff;
+    --orange: #ffa657;
+    --sidebar-w: 270px;
+    --header-h: 48px;
+    --progress-h: 3px;
+  }
+  *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+  html { scroll-behavior: smooth; }
+  body {
+    background: var(--bg);
+    color: var(--text);
+    font-family: 'Segoe UI', system-ui, -apple-system, sans-serif;
+    font-size: 15px;
+    line-height: 1.7;
+    overflow-x: hidden;
+  }
+
+  /* ── Progress Bar ── */
+  #progress-bar {
+    position: fixed; top: 0; left: 0; height: var(--progress-h);
+    width: 0%; background: linear-gradient(90deg, #58a6ff, #bc8cff);
+    z-index: 1000; transition: width .1s;
+  }
+
+  /* ── Top Header ── */
+  #top-header {
+    position: fixed; top: var(--progress-h); left: 0; right: 0;
+    height: var(--header-h);
+    background: rgba(15,17,23,.92); backdrop-filter: blur(10px);
+    border-bottom: 1px solid var(--border);
+    display: flex; align-items: center; justify-content: space-between;
+    padding: 0 20px; z-index: 900;
+  }
+  #top-header .logo { font-weight: 700; font-size: 14px; color: var(--accent); letter-spacing: .5px; }
+  #top-header .logo span { color: var(--text2); font-weight: 400; }
+  #hamburger {
+    display: none; flex-direction: column; gap: 5px; cursor: pointer;
+    background: none; border: none; padding: 6px;
+  }
+  #hamburger span { display: block; width: 22px; height: 2px; background: var(--text); border-radius: 2px; transition: .3s; }
+  #hamburger.open span:nth-child(1) { transform: translateY(7px) rotate(45deg); }
+  #hamburger.open span:nth-child(2) { opacity: 0; }
+  #hamburger.open span:nth-child(3) { transform: translateY(-7px) rotate(-45deg); }
+
+  /* ── Layout ── */
+  #layout {
+    display: flex;
+    padding-top: calc(var(--header-h) + var(--progress-h));
+    min-height: 100vh;
+  }
+
+  /* ── Sidebar ── */
+  #sidebar {
+    width: var(--sidebar-w); flex-shrink: 0;
+    background: var(--bg2);
+    border-right: 1px solid var(--border);
+    position: fixed; top: calc(var(--header-h) + var(--progress-h));
+    bottom: 0; left: 0;
+    overflow-y: auto; overflow-x: hidden;
+    z-index: 800;
+    transition: transform .3s ease;
+  }
+  #sidebar::-webkit-scrollbar { width: 4px; }
+  #sidebar::-webkit-scrollbar-track { background: transparent; }
+  #sidebar::-webkit-scrollbar-thumb { background: var(--border); border-radius: 2px; }
+
+  #sidebar-overlay {
+    display: none; position: fixed; inset: 0; background: rgba(0,0,0,.6);
+    z-index: 799;
+  }
+
+  .nav-group { padding: 12px 0 4px; }
+  .nav-group-title {
+    font-size: 10px; font-weight: 700; letter-spacing: 1px;
+    text-transform: uppercase; color: var(--text2);
+    padding: 0 16px 6px;
+  }
+  .nav-item {
+    display: flex; align-items: center; gap: 8px;
+    padding: 6px 16px; cursor: pointer;
+    color: var(--text2); font-size: 13px;
+    border-left: 2px solid transparent;
+    transition: all .15s; text-decoration: none;
+    border-radius: 0 4px 4px 0; margin-right: 8px;
+    white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+  }
+  .nav-item:hover { background: var(--bg4); color: var(--text); }
+  .nav-item.active {
+    background: rgba(88,166,255,.1); color: var(--accent);
+    border-left-color: var(--accent);
+  }
+  .nav-item .nav-icon { font-size: 14px; flex-shrink: 0; }
+
+  /* ── Main Content ── */
+  #main {
+    margin-left: var(--sidebar-w);
+    flex: 1; min-width: 0;
+    padding: 40px 48px 80px;
+    max-width: 900px;
+  }
+
+  /* ── Sections ── */
+  .section { margin-bottom: 80px; scroll-margin-top: calc(var(--header-h) + var(--progress-h) + 24px); }
+  .section-label {
+    font-size: 11px; font-weight: 600; letter-spacing: 1.5px;
+    text-transform: uppercase; color: var(--accent); margin-bottom: 8px;
+  }
+  h1 { font-size: 2rem; font-weight: 800; line-height: 1.3; margin-bottom: 16px; color: var(--text); }
+  h2 { font-size: 1.4rem; font-weight: 700; margin: 40px 0 16px; color: var(--text);
+       padding-bottom: 8px; border-bottom: 1px solid var(--border); }
+  h3 { font-size: 1.1rem; font-weight: 600; margin: 28px 0 12px; color: var(--accent2); }
+  h4 { font-size: .95rem; font-weight: 600; margin: 20px 0 8px; color: var(--yellow); }
+  p { margin-bottom: 14px; color: var(--text); }
+  a { color: var(--accent); text-decoration: none; }
+  a:hover { text-decoration: underline; }
+  ul, ol { padding-left: 20px; margin-bottom: 14px; }
+  li { margin-bottom: 6px; color: var(--text); }
+  strong { color: var(--accent2); }
+
+  /* ── Code blocks ── */
+  pre {
+    background: var(--bg3); border: 1px solid var(--border);
+    border-radius: 8px; padding: 20px; overflow-x: auto;
+    font-size: 13px; line-height: 1.6; margin: 16px 0;
+    max-width: 100%;
+  }
+  pre::-webkit-scrollbar { height: 6px; }
+  pre::-webkit-scrollbar-track { background: transparent; }
+  pre::-webkit-scrollbar-thumb { background: var(--border); border-radius: 3px; }
+  code {
+    font-family: 'Consolas','JetBrains Mono','Fira Code',monospace;
+  }
+  p code, li code {
+    background: var(--bg4); border: 1px solid var(--border);
+    border-radius: 4px; padding: 1px 6px; font-size: 12.5px;
+    color: var(--orange);
+  }
+
+  /* Syntax highlight helpers */
+  .kw { color: #ff7b72; }       /* keywords */
+  .ty { color: #79c0ff; }       /* types */
+  .fn { color: #d2a8ff; }       /* functions */
+  .cm { color: #6a737d; font-style: italic; } /* comments */
+  .st { color: #a5d6ff; }       /* strings */
+  .nm { color: #e3b341; }       /* numbers/macros */
+  .pp { color: #f0883e; }       /* preprocessor */
+
+  /* ── Info/Warning/Note boxes ── */
+  .callout {
+    border-left: 3px solid; border-radius: 0 8px 8px 0;
+    padding: 14px 18px; margin: 18px 0; font-size: 14px;
+  }
+  .callout-info { border-color: var(--accent); background: rgba(88,166,255,.08); }
+  .callout-warn { border-color: var(--yellow); background: rgba(227,179,65,.08); }
+  .callout-danger { border-color: var(--red); background: rgba(248,81,73,.08); }
+  .callout-green { border-color: var(--green); background: rgba(63,185,80,.08); }
+  .callout-title { font-weight: 700; margin-bottom: 6px; font-size: 13px; letter-spacing: .5px; }
+  .callout-info .callout-title { color: var(--accent); }
+  .callout-warn .callout-title { color: var(--yellow); }
+  .callout-danger .callout-title { color: var(--red); }
+  .callout-green .callout-title { color: var(--green); }
+
+  /* ── Tables ── */
+  .table-wrap { overflow-x: auto; margin: 16px 0; border-radius: 8px; border: 1px solid var(--border); }
+  table { width: 100%; border-collapse: collapse; font-size: 13.5px; }
+  th { background: var(--bg3); color: var(--text); font-weight: 600; padding: 10px 14px;
+       text-align: left; border-bottom: 1px solid var(--border); }
+  td { padding: 9px 14px; border-bottom: 1px solid var(--border); color: var(--text); }
+  tr:last-child td { border-bottom: none; }
+  tr:hover td { background: var(--bg4); }
+
+  /* ── Badges ── */
+  .badge {
+    display: inline-block; font-size: 10px; font-weight: 700;
+    letter-spacing: .5px; text-transform: uppercase;
+    padding: 2px 7px; border-radius: 20px; vertical-align: middle; margin-left: 6px;
+  }
+  .badge-blue { background: rgba(88,166,255,.2); color: var(--accent); }
+  .badge-green { background: rgba(63,185,80,.2); color: var(--green); }
+  .badge-yellow { background: rgba(227,179,65,.2); color: var(--yellow); }
+  .badge-red { background: rgba(248,81,73,.2); color: var(--red); }
+  .badge-purple { background: rgba(188,140,255,.2); color: var(--purple); }
+
+  /* ── Chapter navigation ── */
+  #chapter-nav {
+    display: flex; justify-content: space-between; align-items: center;
+    margin-top: 60px; padding-top: 24px; border-top: 1px solid var(--border);
+  }
+  .ch-btn {
+    display: flex; align-items: center; gap: 8px;
+    background: var(--bg3); border: 1px solid var(--border);
+    border-radius: 8px; padding: 10px 18px; cursor: pointer;
+    color: var(--text2); font-size: 13px; transition: all .15s;
+    text-decoration: none;
+  }
+  .ch-btn:hover { border-color: var(--accent); color: var(--accent); background: rgba(88,166,255,.06); }
+  .ch-btn:disabled, .ch-btn.disabled { opacity: .3; pointer-events: none; }
+
+  /* ── Keyboard hint ── */
+  .kbd-hint {
+    position: fixed; bottom: 24px; right: 24px;
+    background: var(--bg3); border: 1px solid var(--border);
+    border-radius: 8px; padding: 8px 14px; font-size: 12px; color: var(--text2);
+    display: flex; gap: 8px; align-items: center; z-index: 700;
+  }
+  kbd {
+    background: var(--bg4); border: 1px solid var(--border);
+    border-radius: 4px; padding: 1px 7px; font-size: 11px;
+    font-family: monospace; color: var(--text);
+  }
+
+  /* ── SVG diagrams ── */
+  .svg-wrap { margin: 24px 0; overflow-x: auto; }
+  .svg-wrap svg { display: block; max-width: 100%; height: auto; }
+  .diagram-caption {
+    text-align: center; font-size: 12px; color: var(--text2);
+    margin-top: 8px; font-style: italic;
+  }
+
+  /* ── Source ref ── */
+  .source-ref {
+    display: inline-flex; align-items: center; gap: 5px;
+    font-size: 12px; color: var(--text2); background: var(--bg3);
+    border: 1px solid var(--border); border-radius: 20px;
+    padding: 2px 10px; margin: 4px 0;
+  }
+  .source-ref::before { content: '🔗'; font-size: 11px; }
+
+  /* ── Scenario cards ── */
+  .scenario-card {
+    background: var(--bg2); border: 1px solid var(--border);
+    border-radius: 10px; padding: 20px; margin: 20px 0;
+    position: relative; overflow: hidden;
+  }
+  .scenario-card::before {
+    content: ''; position: absolute; top: 0; left: 0;
+    width: 4px; height: 100%; border-radius: 2px 0 0 2px;
+  }
+  .scenario-thread::before { background: var(--green); }
+  .scenario-process::before { background: var(--yellow); }
+  .scenario-card h4 { margin-top: 0; }
+  .tag-list { display: flex; flex-wrap: wrap; gap: 6px; margin: 8px 0; }
+  .tag {
+    font-size: 11px; padding: 2px 8px; border-radius: 12px; font-weight: 600;
+  }
+  .tag-fit { background: rgba(63,185,80,.2); color: var(--green); }
+  .tag-nofit { background: rgba(248,81,73,.2); color: var(--red); }
+  .tag-neutral { background: rgba(139,148,158,.2); color: var(--text2); }
+
+  /* ── Comparison grid ── */
+  .cmp-grid {
+    display: grid; grid-template-columns: 1fr 1fr; gap: 16px; margin: 20px 0;
+  }
+  .cmp-card {
+    background: var(--bg3); border: 1px solid var(--border);
+    border-radius: 8px; padding: 16px;
+  }
+  .cmp-card h4 { margin-top: 0; font-size: .9rem; }
+
+  /* ── Responsive ── */
+  @media (max-width: 768px) {
+    :root { --sidebar-w: 270px; }
+    #sidebar {
+      transform: translateX(-100%);
+    }
+    #sidebar.open {
+      transform: translateX(0);
+    }
+    #sidebar-overlay.open { display: block; }
+    #hamburger { display: flex; }
+    #main {
+      margin-left: 0;
+      padding: 24px 18px 80px;
+    }
+    h1 { font-size: 1.5rem; }
+    h2 { font-size: 1.2rem; }
+    .cmp-grid { grid-template-columns: 1fr; }
+    #chapter-nav { flex-direction: column; gap: 12px; }
+    .kbd-hint { display: none; }
+  }
+  @media (max-width: 480px) {
+    #main { padding: 16px 12px 80px; }
+    pre { padding: 12px; font-size: 12px; }
+  }
+</style>
+</head>
+<body>
+
+<div id="progress-bar"></div>
+
+<header id="top-header">
+  <div class="logo">user_notifier <span>· Linux 内核通知链移植</span></div>
+  <button id="hamburger" aria-label="菜单" onclick="toggleSidebar()">
+    <span></span><span></span><span></span>
+  </button>
+</header>
+
+<div id="sidebar-overlay" onclick="toggleSidebar()"></div>
+
+<aside id="sidebar">
+  <nav>
+    <div class="nav-group">
+      <div class="nav-group-title">背景与原理</div>
+      <a class="nav-item" data-section="s0" href="#s0"><span class="nav-icon">📖</span>概述与官方来源</a>
+      <a class="nav-item" data-section="s1" href="#s1"><span class="nav-icon">🔬</span>内核原始数据结构</a>
+      <a class="nav-item" data-section="s2" href="#s2"><span class="nav-icon">⚙️</span>四种链类型详解</a>
+      <a class="nav-item" data-section="s3" href="#s3"><span class="nav-icon">🔄</span>返回值与控制流</a>
+    </div>
+    <div class="nav-group">
+      <div class="nav-group-title">应用层移植</div>
+      <a class="nav-item" data-section="s4" href="#s4"><span class="nav-icon">🏗️</span>移植设计原则</a>
+      <a class="nav-item" data-section="s5" href="#s5"><span class="nav-icon">📄</span>user_notifier.h</a>
+      <a class="nav-item" data-section="s6" href="#s6"><span class="nav-icon">📝</span>user_notifier.c</a>
+      <a class="nav-item" data-section="s7" href="#s7"><span class="nav-icon">🧪</span>使用示例</a>
+    </div>
+    <div class="nav-group">
+      <div class="nav-group-title">场景分析</div>
+      <a class="nav-item" data-section="s8" href="#s8"><span class="nav-icon">⚖️</span>多线程 vs 多进程</a>
+      <a class="nav-item" data-section="s9" href="#s9"><span class="nav-icon">🟢</span>多线程适用场景</a>
+      <a class="nav-item" data-section="s10" href="#s10"><span class="nav-icon">🟡</span>多进程适用场景</a>
+      <a class="nav-item" data-section="s11" href="#s11"><span class="nav-icon">📊</span>综合对比图表</a>
+    </div>
+  </nav>
+</aside>
+
+<div id="layout">
+  <main id="main">
+
+    <!-- ═══════════════════ S0 概述 ═══════════════════ -->
+    <section class="section" id="s0">
+      <div class="section-label">第 1 章</div>
+      <h1>Linux 内核通知链<br>移植到应用层</h1>
+      <p>
+        Linux 内核通知链（Notifier Chain）是一种轻量级的<strong>发布–订阅</strong>机制，
+        用于内核子系统之间异步事件通知。本文基于官方内核源码
+        (<a href="https://elixir.bootlin.com/linux/v6.19.6/source/include/linux/notifier.h" target="_blank">include/linux/notifier.h</a>、
+        <a href="https://codebrowser.dev/linux/linux/kernel/notifier.c.html" target="_blank">kernel/notifier.c</a>)
+        将其完整移植到用户空间，实现 <code>user_notifier.h / user_notifier.c</code>，
+        并详细分析在多线程与多进程两种场景下的适用性。
+      </p>
+
+      <div class="callout callout-info">
+        <div class="callout-title">📌 官方来源声明</div>
+        本文所有数据结构定义、宏常量、函数接口及注释均严格源自：<br>
+        • <a href="https://elixir.bootlin.com/linux/v6.19.6/source/include/linux/notifier.h" target="_blank">Linux v6.19.6 — include/linux/notifier.h</a>（elixir.bootlin.com）<br>
+        • <a href="https://codebrowser.dev/linux/linux/kernel/notifier.c.html" target="_blank">Linux kernel/notifier.c — codebrowser.dev</a><br>
+        • <a href="https://github.com/torvalds/linux/blob/5bfc75d92efd494db37f5c4c173d3639d4772966/kernel/notifier.c" target="_blank">torvalds/linux kernel/notifier.c — GitHub</a><br>
+        • <a href="https://lwn.net/Articles/160501/" target="_blank">Making notifiers safe — LWN.net</a><br>
+        • <a href="https://0xax.gitbooks.io/linux-insides/content/Concepts/linux-cpu-4.html" target="_blank">Notification Chains — linux-insides (0xax)</a>
+      </div>
+
+      <h2>原始作者与设计背景</h2>
+      <p>
+        内核通知链由 <strong>Alan Cox &lt;Alan.Cox@linux.org&gt;</strong> 设计，
+        原始注释写道：
+      </p>
+      <pre><code><span class="cm">/*
+ * Routines to manage notifier chains for passing status changes to any
+ * interested routines. We need this instead of hard coded call lists so
+ * that modules can poke their nose into the innards. The network devices
+ * needed them so here they are for the rest of you.
+ *
+ *                      Alan Cox &lt;Alan.Cox@linux.org&gt;
+ */</span></code></pre>
+
+      <p>
+        核心思想：<strong>避免硬编码调用列表</strong>，让内核模块能动态注册对特定事件的兴趣，
+        当事件发生时，按优先级依次调用所有已注册回调。
+      </p>
+
+      <div class="svg-wrap">
+        <svg viewBox="0 0 700 220" xmlns="http://www.w3.org/2000/svg" style="max-width:700px;width:100%">
+          <defs>
+            <marker id="arr" markerWidth="8" markerHeight="8" refX="6" refY="3" orient="auto">
+              <path d="M0,0 L0,6 L8,3 z" fill="#58a6ff"/>
+            </marker>
+          </defs>
+          <!-- Background -->
+          <rect width="700" height="220" fill="#161b22" rx="10"/>
+          <!-- Publisher box -->
+          <rect x="20" y="80" width="130" height="60" rx="8" fill="#1c2333" stroke="#58a6ff" stroke-width="1.5"/>
+          <text x="85" y="106" text-anchor="middle" fill="#79c0ff" font-size="13" font-weight="600">事件发布者</text>
+          <text x="85" y="124" text-anchor="middle" fill="#8b949e" font-size="11">Publisher</text>
+          <!-- Arrow to chain -->
+          <line x1="150" y1="110" x2="210" y2="110" stroke="#58a6ff" stroke-width="1.5" marker-end="url(#arr)"/>
+          <text x="180" y="103" text-anchor="middle" fill="#8b949e" font-size="10">call_chain</text>
+          <!-- Chain head -->
+          <rect x="210" y="80" width="100" height="60" rx="8" fill="#1c2333" stroke="#3fb950" stroke-width="1.5"/>
+          <text x="260" y="106" text-anchor="middle" fill="#3fb950" font-size="13" font-weight="600">链头</text>
+          <text x="260" y="124" text-anchor="middle" fill="#8b949e" font-size="11">head</text>
+          <!-- Arrow to nb1 -->
+          <line x1="310" y1="110" x2="355" y2="110" stroke="#3fb950" stroke-width="1.5" marker-end="url(#arr)"/>
+          <!-- nb1 -->
+          <rect x="355" y="70" width="90" height="80" rx="8" fill="#1c2333" stroke="#e3b341" stroke-width="1.5"/>
+          <text x="400" y="100" text-anchor="middle" fill="#e3b341" font-size="12" font-weight="600">nb #1</text>
+          <text x="400" y="116" text-anchor="middle" fill="#8b949e" font-size="10">prio=100</text>
+          <text x="400" y="132" text-anchor="middle" fill="#d2a8ff" font-size="10">callback_A</text>
+          <!-- Arrow to nb2 -->
+          <line x1="445" y1="110" x2="490" y2="110" stroke="#e3b341" stroke-width="1.5" marker-end="url(#arr)"/>
+          <!-- nb2 -->
+          <rect x="490" y="70" width="90" height="80" rx="8" fill="#1c2333" stroke="#e3b341" stroke-width="1.5"/>
+          <text x="535" y="100" text-anchor="middle" fill="#e3b341" font-size="12" font-weight="600">nb #2</text>
+          <text x="535" y="116" text-anchor="middle" fill="#8b949e" font-size="10">prio=50</text>
+          <text x="535" y="132" text-anchor="middle" fill="#d2a8ff" font-size="10">callback_B</text>
+          <!-- Arrow to null -->
+          <line x1="580" y1="110" x2="640" y2="110" stroke="#e3b341" stroke-width="1.5" marker-end="url(#arr)"/>
+          <rect x="640" y="95" width="45" height="30" rx="5" fill="#1c2333" stroke="#30363d"/>
+          <text x="662" y="115" text-anchor="middle" fill="#6a737d" font-size="12">NULL</text>
+          <!-- Labels -->
+          <text x="350" y="185" text-anchor="middle" fill="#8b949e" font-size="12">按优先级降序排列，priority 高者先调用</text>
+          <text x="350" y="205" text-anchor="middle" fill="#6a737d" font-size="11">任意 callback 返回 NOTIFY_STOP_MASK 时链断</text>
+        </svg>
+        <div class="diagram-caption">图 1-1：通知链基本结构（链表按 priority 降序排列）</div>
+      </div>
+    </section>
+
+    <!-- ═══════════════════ S1 内核数据结构 ═══════════════════ -->
+    <section class="section" id="s1">
+      <div class="section-label">第 2 章</div>
+      <h1>内核原始数据结构</h1>
+      <p>
+        以下代码直接摘录自官方源码
+        <a class="source-ref" href="https://elixir.bootlin.com/linux/v6.19.6/source/include/linux/notifier.h" target="_blank">include/linux/notifier.h (v6.19.6)</a>
+      </p>
+
+      <h2>notifier_block — 核心节点</h2>
+      <pre><code><span class="kw">typedef</span> <span class="ty">int</span> (*<span class="fn">notifier_fn_t</span>)(<span class="kw">struct</span> <span class="ty">notifier_block</span> *nb,
+                <span class="kw">unsigned long</span> action, <span class="kw">void</span> *data);
+
+<span class="kw">struct</span> <span class="ty">notifier_block</span> {
+    <span class="fn">notifier_fn_t</span>               notifier_call;  <span class="cm">/* 回调函数指针 */</span>
+    <span class="kw">struct</span> <span class="ty">notifier_block</span> __rcu *next;          <span class="cm">/* 下一个节点（链表） */</span>
+    <span class="kw">int</span>                          priority;       <span class="cm">/* 优先级，越大越先调用 */</span>
+};</code></pre>
+
+      <div class="callout callout-info">
+        <div class="callout-title">🔑 三个参数的含义</div>
+        <strong>nb</strong>：指向当前 notifier_block 自身，允许回调访问扩展字段（通过 container_of）<br>
+        <strong>action</strong>：事件类型码（unsigned long），一条链可以承载多种事件<br>
+        <strong>data</strong>：事件附带的私有数据指针，回调自行解析
+      </div>
+
+      <h2>四种链头结构</h2>
+      <pre><code><span class="cm">/* 原子链头：spinlock + RCU 保护 */</span>
+<span class="kw">struct</span> <span class="ty">atomic_notifier_head</span> {
+    <span class="ty">spinlock_t</span>                   lock;
+    <span class="kw">struct</span> <span class="ty">notifier_block</span> __rcu *head;
+};
+
+<span class="cm">/* 阻塞链头：读写信号量保护 */</span>
+<span class="kw">struct</span> <span class="ty">blocking_notifier_head</span> {
+    <span class="kw">struct</span> <span class="ty">rw_semaphore</span>          rwsem;
+    <span class="kw">struct</span> <span class="ty">notifier_block</span> __rcu *head;
+};
+
+<span class="cm">/* 原始链头：无内置保护，调用者自行负责 */</span>
+<span class="kw">struct</span> <span class="ty">raw_notifier_head</span> {
+    <span class="kw">struct</span> <span class="ty">notifier_block</span> __rcu *head;
+};
+
+<span class="cm">/* SRCU 链头：可睡眠 RCU，适合高频调用 */</span>
+<span class="kw">struct</span> <span class="ty">srcu_notifier_head</span> {
+    <span class="kw">struct</span> <span class="ty">mutex</span>                 mutex;
+    <span class="kw">struct</span> <span class="ty">srcu_usage</span>             srcuu;
+    <span class="kw">struct</span> <span class="ty">srcu_struct</span>            srcu;
+    <span class="kw">struct</span> <span class="ty">notifier_block</span> __rcu *head;
+};</code></pre>
+
+      <h2>静态初始化宏</h2>
+      <pre><code><span class="pp">#define</span> <span class="fn">ATOMIC_INIT_NOTIFIER_HEAD</span>(name) <span class="kw">do</span> {   \
+        spin_lock_init(&amp;(name)-&gt;lock);            \
+        (name)-&gt;head = <span class="nm">NULL</span>;                      \
+    } <span class="kw">while</span> (<span class="nm">0</span>)
+
+<span class="pp">#define</span> <span class="fn">BLOCKING_INIT_NOTIFIER_HEAD</span>(name) <span class="kw">do</span> { \
+        init_rwsem(&amp;(name)-&gt;rwsem);               \
+        (name)-&gt;head = <span class="nm">NULL</span>;                      \
+    } <span class="kw">while</span> (<span class="nm">0</span>)
+
+<span class="pp">#define</span> <span class="fn">RAW_INIT_NOTIFIER_HEAD</span>(name) <span class="kw">do</span> {       \
+        (name)-&gt;head = <span class="nm">NULL</span>;                      \
+    } <span class="kw">while</span> (<span class="nm">0</span>)</code></pre>
+    </section>
+
+    <!-- ═══════════════════ S2 四种链 ═══════════════════ -->
+    <section class="section" id="s2">
+      <div class="section-label">第 3 章</div>
+      <h1>四种通知链类型详解</h1>
+      <p>
+        来源：
+        <a class="source-ref" href="https://elixir.bootlin.com/linux/v6.19.6/source/include/linux/notifier.h" target="_blank">include/linux/notifier.h 注释</a>
+      </p>
+      <pre><code><span class="cm">/*
+ * Notifier chains are of four types:
+ *
+ *  Atomic notifier chains: Chain callbacks run in interrupt/atomic
+ *      context. Callouts are not allowed to block.
+ *  Blocking notifier chains: Chain callbacks run in process context.
+ *      Callouts are allowed to block.
+ *  Raw notifier chains: There are no restrictions on callbacks,
+ *      registration, or unregistration. All locking and protection
+ *      must be provided by the caller.
+ *  SRCU notifier chains: A variant of blocking notifier chains, with
+ *      the same restrictions.
+ *
+ * atomic_notifier_chain_register() may be called from an atomic context,
+ * but blocking_notifier_chain_register() and srcu_notifier_chain_register()
+ * must be called from a process context. Ditto for the corresponding
+ * _unregister() routines.
+ *
+ * atomic_notifier_chain_unregister(), blocking_notifier_chain_unregister(),
+ * and srcu_notifier_chain_unregister() _must not_ be called from within
+ * the call chain.
+ *
+ * SRCU notifier chains are an alternative form of blocking notifier chains.
+ * They use SRCU (Sleepable Read-Copy Update) instead of rw-semaphores for
+ * protection of the chain links. This means there is _very_ low overhead
+ * in srcu_notifier_call_chain(): no cache bounces and no memory barriers.
+ * As compensation, srcu_notifier_chain_unregister() is rather expensive.
+ * SRCU notifier chains should be used when the chain will be called very
+ * often but notifier_blocks will seldom be removed.
+ */</span></code></pre>
+
+      <div class="svg-wrap">
+        <svg viewBox="0 0 700 320" xmlns="http://www.w3.org/2000/svg" style="max-width:700px;width:100%">
+          <rect width="700" height="320" fill="#161b22" rx="10"/>
+          <text x="350" y="30" text-anchor="middle" fill="#e6edf3" font-size="14" font-weight="700">四种通知链类型对比</text>
+
+          <!-- Atomic -->
+          <rect x="20" y="50" width="150" height="240" rx="8" fill="#1c2333" stroke="#58a6ff" stroke-width="1.5"/>
+          <rect x="20" y="50" width="150" height="36" rx="8" fill="#58a6ff" fill-opacity=".2"/>
+          <text x="95" y="74" text-anchor="middle" fill="#58a6ff" font-size="13" font-weight="700">Atomic</text>
+          <text x="95" y="108" text-anchor="middle" fill="#8b949e" font-size="11">上下文</text>
+          <text x="95" y="124" text-anchor="middle" fill="#e6edf3" font-size="11">中断 / 原子</text>
+          <text x="95" y="155" text-anchor="middle" fill="#8b949e" font-size="11">可阻塞</text>
+          <text x="95" y="171" text-anchor="middle" fill="#f85149" font-size="12">✗ 不可</text>
+          <text x="95" y="202" text-anchor="middle" fill="#8b949e" font-size="11">同步机制</text>
+          <text x="95" y="218" text-anchor="middle" fill="#e6edf3" font-size="11">spinlock+RCU</text>
+          <text x="95" y="249" text-anchor="middle" fill="#8b949e" font-size="11">性能</text>
+          <text x="95" y="265" text-anchor="middle" fill="#3fb950" font-size="12">极高</text>
+
+          <!-- Blocking -->
+          <rect x="185" y="50" width="150" height="240" rx="8" fill="#1c2333" stroke="#3fb950" stroke-width="1.5"/>
+          <rect x="185" y="50" width="150" height="36" rx="8" fill="#3fb950" fill-opacity=".2"/>
+          <text x="260" y="74" text-anchor="middle" fill="#3fb950" font-size="13" font-weight="700">Blocking</text>
+          <text x="260" y="108" text-anchor="middle" fill="#8b949e" font-size="11">上下文</text>
+          <text x="260" y="124" text-anchor="middle" fill="#e6edf3" font-size="11">进程上下文</text>
+          <text x="260" y="155" text-anchor="middle" fill="#8b949e" font-size="11">可阻塞</text>
+          <text x="260" y="171" text-anchor="middle" fill="#3fb950" font-size="12">✓ 允许</text>
+          <text x="260" y="202" text-anchor="middle" fill="#8b949e" font-size="11">同步机制</text>
+          <text x="260" y="218" text-anchor="middle" fill="#e6edf3" font-size="11">rwsem</text>
+          <text x="260" y="249" text-anchor="middle" fill="#8b949e" font-size="11">性能</text>
+          <text x="260" y="265" text-anchor="middle" fill="#e3b341" font-size="12">中等</text>
+
+          <!-- Raw -->
+          <rect x="350" y="50" width="150" height="240" rx="8" fill="#1c2333" stroke="#e3b341" stroke-width="1.5"/>
+          <rect x="350" y="50" width="150" height="36" rx="8" fill="#e3b341" fill-opacity=".2"/>
+          <text x="425" y="74" text-anchor="middle" fill="#e3b341" font-size="13" font-weight="700">Raw</text>
+          <text x="425" y="108" text-anchor="middle" fill="#8b949e" font-size="11">上下文</text>
+          <text x="425" y="124" text-anchor="middle" fill="#e6edf3" font-size="11">无限制</text>
+          <text x="425" y="155" text-anchor="middle" fill="#8b949e" font-size="11">可阻塞</text>
+          <text x="425" y="171" text-anchor="middle" fill="#e3b341" font-size="12">调用者决定</text>
+          <text x="425" y="202" text-anchor="middle" fill="#8b949e" font-size="11">同步机制</text>
+          <text x="425" y="218" text-anchor="middle" fill="#e6edf3" font-size="11">调用者自行实现</text>
+          <text x="425" y="249" text-anchor="middle" fill="#8b949e" font-size="11">性能</text>
+          <text x="425" y="265" text-anchor="middle" fill="#3fb950" font-size="12">最高（无锁）</text>
+
+          <!-- SRCU -->
+          <rect x="515" y="50" width="165" height="240" rx="8" fill="#1c2333" stroke="#bc8cff" stroke-width="1.5"/>
+          <rect x="515" y="50" width="165" height="36" rx="8" fill="#bc8cff" fill-opacity=".2"/>
+          <text x="597" y="74" text-anchor="middle" fill="#bc8cff" font-size="13" font-weight="700">SRCU</text>
+          <text x="597" y="108" text-anchor="middle" fill="#8b949e" font-size="11">上下文</text>
+          <text x="597" y="124" text-anchor="middle" fill="#e6edf3" font-size="11">进程上下文</text>
+          <text x="597" y="155" text-anchor="middle" fill="#8b949e" font-size="11">可阻塞</text>
+          <text x="597" y="171" text-anchor="middle" fill="#3fb950" font-size="12">✓ 允许</text>
+          <text x="597" y="202" text-anchor="middle" fill="#8b949e" font-size="11">同步机制</text>
+          <text x="597" y="218" text-anchor="middle" fill="#e6edf3" font-size="11">mutex+SRCU</text>
+          <text x="597" y="249" text-anchor="middle" fill="#8b949e" font-size="11">注销代价</text>
+          <text x="597" y="265" text-anchor="middle" fill="#f85149" font-size="12">高（synchronize）</text>
+
+          <text x="350" y="308" text-anchor="middle" fill="#6a737d" font-size="11">SRCU 适合高频调用但极少注销的场景</text>
+        </svg>
+        <div class="diagram-caption">图 3-1：四种内核通知链类型横向对比</div>
+      </div>
+
+      <h2>核心函数一览</h2>
+      <div class="table-wrap">
+        <table>
+          <thead>
+            <tr><th>函数</th><th>说明</th><th>链类型</th></tr>
+          </thead>
+          <tbody>
+            <tr><td><code>atomic_notifier_chain_register</code></td><td>注册到原子链，spinlock 保护</td><td><span class="badge badge-blue">Atomic</span></td></tr>
+            <tr><td><code>atomic_notifier_chain_unregister</code></td><td>从原子链移除，调用 synchronize_rcu</td><td><span class="badge badge-blue">Atomic</span></td></tr>
+            <tr><td><code>atomic_notifier_call_chain</code></td><td>rcu_read_lock 保护遍历</td><td><span class="badge badge-blue">Atomic</span></td></tr>
+            <tr><td><code>blocking_notifier_chain_register</code></td><td>注册到阻塞链，down_write</td><td><span class="badge badge-green">Blocking</span></td></tr>
+            <tr><td><code>blocking_notifier_chain_unregister</code></td><td>从阻塞链移除，down_write</td><td><span class="badge badge-green">Blocking</span></td></tr>
+            <tr><td><code>blocking_notifier_call_chain</code></td><td>down_read 保护遍历，可睡眠</td><td><span class="badge badge-green">Blocking</span></td></tr>
+            <tr><td><code>raw_notifier_chain_register</code></td><td>无锁注册，调用者负责互斥</td><td><span class="badge badge-yellow">Raw</span></td></tr>
+            <tr><td><code>raw_notifier_call_chain</code></td><td>无锁遍历</td><td><span class="badge badge-yellow">Raw</span></td></tr>
+            <tr><td><code>blocking_notifier_call_chain_robust</code></td><td>回滚版本，val_up 失败时调用 val_down</td><td><span class="badge badge-green">Blocking</span></td></tr>
+          </tbody>
+        </table>
+      </div>
+    </section>
+
+    <!-- ═══════════════════ S3 返回值 ═══════════════════ -->
+    <section class="section" id="s3">
+      <div class="section-label">第 4 章</div>
+      <h1>返回值与控制流</h1>
+      <p>
+        来源：
+        <a class="source-ref" href="https://elixir.bootlin.com/linux/v6.19.6/source/include/linux/notifier.h" target="_blank">include/linux/notifier.h</a>
+      </p>
+      <pre><code><span class="pp">#define</span> <span class="nm">NOTIFY_DONE</span>         <span class="nm">0x0000</span>  <span class="cm">/* Don't care */</span>
+<span class="pp">#define</span> <span class="nm">NOTIFY_OK</span>           <span class="nm">0x0001</span>  <span class="cm">/* Suits me */</span>
+<span class="pp">#define</span> <span class="nm">NOTIFY_STOP_MASK</span>    <span class="nm">0x8000</span>  <span class="cm">/* Don't call further */</span>
+<span class="pp">#define</span> <span class="nm">NOTIFY_BAD</span>          (<span class="nm">NOTIFY_STOP_MASK</span>|<span class="nm">0x0002</span>)
+                                    <span class="cm">/* Bad/Veto action */</span>
+<span class="cm">/*
+ * Clean way to return from the notifier and stop further calls.
+ */</span>
+<span class="pp">#define</span> <span class="nm">NOTIFY_STOP</span>         (<span class="nm">NOTIFY_OK</span>|<span class="nm">NOTIFY_STOP_MASK</span>)</code></pre>
+
+      <div class="table-wrap">
+        <table>
+          <thead>
+            <tr><th>宏</th><th>值</th><th>含义</th><th>是否继续链</th></tr>
+          </thead>
+          <tbody>
+            <tr><td><code>NOTIFY_DONE</code></td><td>0x0000</td><td>订阅者对此事件不感兴趣（无关）</td><td>✅ 继续</td></tr>
+            <tr><td><code>NOTIFY_OK</code></td><td>0x0001</td><td>事件被正确处理</td><td>✅ 继续</td></tr>
+            <tr><td><code>NOTIFY_STOP</code></td><td>0x8001</td><td>处理成功，但不再通知后续节点</td><td>❌ 停止</td></tr>
+            <tr><td><code>NOTIFY_BAD</code></td><td>0x8002</td><td>处理出错 / 否决，停止链</td><td>❌ 停止</td></tr>
+          </tbody>
+        </table>
+      </div>
+
+      <div class="svg-wrap">
+        <svg viewBox="0 0 680 280" xmlns="http://www.w3.org/2000/svg" style="max-width:680px;width:100%">
+          <defs>
+            <marker id="arr2" markerWidth="8" markerHeight="8" refX="6" refY="3" orient="auto">
+              <path d="M0,0 L0,6 L8,3 z" fill="#58a6ff"/>
+            </marker>
+            <marker id="arr-stop" markerWidth="8" markerHeight="8" refX="6" refY="3" orient="auto">
+              <path d="M0,0 L0,6 L8,3 z" fill="#f85149"/>
+            </marker>
+          </defs>
+          <rect width="680" height="280" fill="#161b22" rx="10"/>
+          <text x="340" y="26" text-anchor="middle" fill="#e6edf3" font-size="13" font-weight="700">notifier_call_chain 控制流（源自 kernel/notifier.c）</text>
+
+          <!-- notifier_call_chain box -->
+          <rect x="20" y="45" width="160" height="40" rx="6" fill="#1c2333" stroke="#58a6ff" stroke-width="1.5"/>
+          <text x="100" y="70" text-anchor="middle" fill="#79c0ff" font-size="12">notifier_call_chain()</text>
+
+          <line x1="180" y1="65" x2="220" y2="65" stroke="#58a6ff" stroke-width="1.5" marker-end="url(#arr2)"/>
+
+          <!-- nb loop -->
+          <rect x="220" y="45" width="100" height="40" rx="6" fill="#1c2333" stroke="#3fb950" stroke-width="1.5"/>
+          <text x="270" y="62" text-anchor="middle" fill="#3fb950" font-size="11">nb != NULL</text>
+          <text x="270" y="76" text-anchor="middle" fill="#3fb950" font-size="11">nr_to_call > 0</text>
+
+          <line x1="320" y1="65" x2="360" y2="65" stroke="#58a6ff" stroke-width="1.5" marker-end="url(#arr2)"/>
+
+          <!-- call -->
+          <rect x="360" y="45" width="110" height="40" rx="6" fill="#1c2333" stroke="#d2a8ff" stroke-width="1.5"/>
+          <text x="415" y="62" text-anchor="middle" fill="#d2a8ff" font-size="11">nb-&gt;notifier_call</text>
+          <text x="415" y="76" text-anchor="middle" fill="#d2a8ff" font-size="11">(nb, val, v)</text>
+
+          <line x1="470" y1="65" x2="510" y2="65" stroke="#58a6ff" stroke-width="1.5" marker-end="url(#arr2)"/>
+
+          <!-- check STOP_MASK -->
+          <rect x="510" y="45" width="140" height="40" rx="6" fill="#1c2333" stroke="#e3b341" stroke-width="1.5"/>
+          <text x="580" y="62" text-anchor="middle" fill="#e3b341" font-size="11">ret &amp; NOTIFY_STOP_MASK</text>
+          <text x="580" y="76" text-anchor="middle" fill="#8b949e" font-size="10">?</text>
+
+          <!-- YES -> break -->
+          <line x1="580" y1="85" x2="580" y2="125" stroke="#f85149" stroke-width="1.5" marker-end="url(#arr-stop)"/>
+          <text x="590" y="108" fill="#f85149" font-size="11">YES</text>
+          <rect x="510" y="125" width="140" height="32" rx="6" fill="#1c2333" stroke="#f85149" stroke-width="1.5"/>
+          <text x="580" y="146" text-anchor="middle" fill="#f85149" font-size="12">break — 链断</text>
+
+          <!-- NO -> next nb -->
+          <line x1="510" y1="65" x2="510" y2="185" stroke="#3fb950" stroke-width="1.2" stroke-dasharray="4,3"/>
+          <line x1="510" y1="185" x2="270" y2="185" stroke="#3fb950" stroke-width="1.2" stroke-dasharray="4,3"/>
+          <line x1="270" y1="185" x2="270" y2="90" stroke="#3fb950" stroke-width="1.2" stroke-dasharray="4,3" marker-end="url(#arr2)"/>
+          <text x="390" y="200" text-anchor="middle" fill="#3fb950" font-size="10">NO → nb = next_nb，继续循环</text>
+
+          <!-- return -->
+          <rect x="20" y="215" width="160" height="40" rx="6" fill="#1c2333" stroke="#79c0ff" stroke-width="1.5"/>
+          <text x="100" y="232" text-anchor="middle" fill="#79c0ff" font-size="11">return ret</text>
+          <text x="100" y="248" text-anchor="middle" fill="#8b949e" font-size="10">（最后调用的返回值）</text>
+          <line x1="270" y1="85" x2="270" y2="230" stroke="#8b949e" stroke-width="1" stroke-dasharray="3,3"/>
+          <line x1="270" y1="230" x2="180" y2="235" stroke="#8b949e" stroke-width="1" stroke-dasharray="3,3" marker-end="url(#arr2)"/>
+          <text x="200" y="212" fill="#8b949e" font-size="10">nb == NULL</text>
+        </svg>
+        <div class="diagram-caption">图 4-1：notifier_call_chain 控制流程（源自 kernel/notifier.c 65-96 行）</div>
+      </div>
+
+      <h2>robust 版本 — 回滚机制</h2>
+      <pre><code><span class="cm">/**
+ * notifier_call_chain_robust - Inform the registered notifiers about an event
+ *                              and rollback on error.
+ * @nl:      Pointer to head of the blocking notifier chain
+ * @val_up:  Value passed unmodified to the notifier function
+ * @val_down: Value passed unmodified to the notifier function when recovering
+ *             from an error on @val_up
+ *
+ * NOTE: It is important the @nl chain doesn't change between the two
+ *       invocations of notifier_call_chain() such that we visit the
+ *       exact same notifier callbacks; this rules out any RCU usage.
+ *
+ * Return: the return value of the @val_up call.
+ */</span>
+<span class="kw">static int</span> <span class="fn">notifier_call_chain_robust</span>(<span class="kw">struct</span> <span class="ty">notifier_block</span> **nl,
+                    <span class="kw">unsigned long</span> val_up, <span class="kw">unsigned long</span> val_down,
+                    <span class="kw">void</span> *v)
+{
+    <span class="kw">int</span> ret, nr = <span class="nm">0</span>;
+
+    ret = <span class="fn">notifier_call_chain</span>(nl, val_up, v, -<span class="nm">1</span>, &amp;nr);
+    <span class="kw">if</span> (ret &amp; <span class="nm">NOTIFY_STOP_MASK</span>)
+        <span class="fn">notifier_call_chain</span>(nl, val_down, v, nr-<span class="nm">1</span>, <span class="nm">NULL</span>);
+
+    <span class="kw">return</span> ret;
+}</code></pre>
+    </section>
+
+    <!-- ═══════════════════ S4 移植设计 ═══════════════════ -->
+    <section class="section" id="s4">
+      <div class="section-label">第 5 章</div>
+      <h1>应用层移植设计原则</h1>
+
+      <h2>内核机制 vs 用户空间映射</h2>
+      <div class="table-wrap">
+        <table>
+          <thead>
+            <tr><th>内核机制</th><th>用户空间替代</th><th>说明</th></tr>
+          </thead>
+          <tbody>
+            <tr><td>spinlock</td><td>pthread_spinlock_t / pthread_mutex_t</td><td>原子链注册/注销保护</td></tr>
+            <tr><td>rw_semaphore（rwsem）</td><td>pthread_rwlock_t</td><td>阻塞链读写保护</td></tr>
+            <tr><td>mutex</td><td>pthread_mutex_t</td><td>SRCU 链注册保护</td></tr>
+            <tr><td>RCU</td><td>pthread_rwlock_t（读锁）</td><td>用户空间无 RCU，用读写锁近似</td></tr>
+            <tr><td>__rcu 指针</td><td>普通指针 + 锁</td><td>用户空间无内存语义注解</td></tr>
+            <tr><td>EXPORT_SYMBOL_GPL</td><td>普通函数，.h 声明</td><td>用户空间无模块系统</td></tr>
+          </tbody>
+        </table>
+      </div>
+
+      <div class="svg-wrap">
+        <svg viewBox="0 0 700 260" xmlns="http://www.w3.org/2000/svg" style="max-width:700px;width:100%">
+          <rect width="700" height="260" fill="#161b22" rx="10"/>
+          <text x="350" y="28" text-anchor="middle" fill="#e6edf3" font-size="14" font-weight="700">内核 → 用户空间移植映射</text>
+
+          <!-- Kernel side -->
+          <rect x="20" y="50" width="300" height="185" rx="8" fill="#1c2333" stroke="#58a6ff" stroke-width="1"/>
+          <text x="170" y="72" text-anchor="middle" fill="#58a6ff" font-size="12" font-weight="700">内核空间 (Kernel Space)</text>
+          <text x="50" y="100" fill="#e3b341" font-size="11">Atomic</text><text x="130" y="100" fill="#8b949e" font-size="11">→ spinlock + RCU</text>
+          <text x="50" y="122" fill="#3fb950" font-size="11">Blocking</text><text x="130" y="122" fill="#8b949e" font-size="11">→ down_read/write (rwsem)</text>
+          <text x="50" y="144" fill="#e3b341" font-size="11">Raw</text><text x="130" y="144" fill="#8b949e" font-size="11">→ 无保护</text>
+          <text x="50" y="166" fill="#bc8cff" font-size="11">SRCU</text><text x="130" y="166" fill="#8b949e" font-size="11">→ mutex + srcu_read_lock</text>
+          <text x="50" y="200" fill="#8b949e" font-size="10">__rcu 指针 / synchronize_rcu</text>
+          <text x="50" y="218" fill="#8b949e" font-size="10">NOKPROBE_SYMBOL / EXPORT_SYMBOL_GPL</text>
+
+          <!-- Arrow -->
+          <text x="350" y="148" text-anchor="middle" fill="#f0883e" font-size="26">⇒</text>
+          <text x="350" y="168" text-anchor="middle" fill="#8b949e" font-size="10">移植</text>
+
+          <!-- User side -->
+          <rect x="380" y="50" width="300" height="185" rx="8" fill="#1c2333" stroke="#3fb950" stroke-width="1"/>
+          <text x="530" y="72" text-anchor="middle" fill="#3fb950" font-size="12" font-weight="700">用户空间 (User Space)</text>
+          <text x="410" y="100" fill="#e3b341" font-size="11">Atomic</text><text x="490" y="100" fill="#8b949e" font-size="11">→ pthread_spinlock_t + rwlock</text>
+          <text x="410" y="122" fill="#3fb950" font-size="11">Blocking</text><text x="490" y="122" fill="#8b949e" font-size="11">→ pthread_rwlock_t</text>
+          <text x="410" y="144" fill="#e3b341" font-size="11">Raw</text><text x="490" y="144" fill="#8b949e" font-size="11">→ 无保护（调用者负责）</text>
+          <text x="410" y="166" fill="#bc8cff" font-size="11">Blocking</text><text x="490" y="166" fill="#8b949e" font-size="11">（SRCU 合并到 Blocking）</text>
+          <text x="410" y="200" fill="#8b949e" font-size="10">普通指针 + pthread_rwlock_t 读保护</text>
+          <text x="410" y="218" fill="#8b949e" font-size="10">普通 .h 声明 + .c 实现</text>
+        </svg>
+        <div class="diagram-caption">图 5-1：内核机制与用户空间实现的映射关系</div>
+      </div>
+
+      <h2>移植决策</h2>
+      <ul>
+        <li>保留 <strong>三种链</strong>：Atomic（spinlock）、Blocking（rwlock）、Raw（无锁）；SRCU 合并入 Blocking。</li>
+        <li>保留所有 <strong>NOTIFY_XXX 宏常量</strong>，与内核完全一致。</li>
+        <li>保留 <strong>优先级链表插入</strong>逻辑（高优先级排前）。</li>
+        <li>保留 <strong>robust 变体</strong>（val_up / val_down 回滚）。</li>
+        <li>移除 RCU、kprobes、trace 等纯内核依赖，用 POSIX 线程原语替代。</li>
+      </ul>
+    </section>
+
+    <!-- ═══════════════════ S5 header ═══════════════════ -->
+    <section class="section" id="s5">
+      <div class="section-label">第 6 章</div>
+      <h1>user_notifier.h</h1>
+      <p>完整头文件，接口与内核保持最大兼容性：</p>
+      <pre><code><span class="cm">/*
+ * user_notifier.h — Linux 内核通知链移植到应用层
+ *
+ * 严格对应 Linux 官方源码：
+ *   include/linux/notifier.h  (v6.19.6)
+ *   kernel/notifier.c
+ *   https://elixir.bootlin.com/linux/v6.19.6/source/include/linux/notifier.h
+ *   https://codebrowser.dev/linux/linux/kernel/notifier.c.html
+ *
+ * 内核原始注释（Alan Cox &lt;Alan.Cox@linux.org&gt;）：
+ *   "Routines to manage notifier chains for passing status changes to any
+ *    interested routines. We need this instead of hard coded call lists so
+ *    that modules can poke their nose into the innards."
+ *
+ * 移植说明：
+ *   Atomic  链 → pthread_rwlock_t 读写锁（保护注册/注销）+ 读锁（遍历）
+ *   Blocking 链 → pthread_rwlock_t（与内核 rwsem 语义对应）
+ *   Raw      链 → 无内置保护，调用者全权负责（对应 raw_notifier_*）
+ *   SRCU     链 → 合并到 Blocking 实现（用户空间无 SRCU 原语）
+ */</span>
+<span class="pp">#ifndef</span> <span class="nm">USER_NOTIFIER_H</span>
+<span class="pp">#define</span> <span class="nm">USER_NOTIFIER_H</span>
+
+<span class="pp">#include</span> <span class="st">&lt;pthread.h&gt;</span>
+<span class="pp">#include</span> <span class="st">&lt;errno.h&gt;</span>
+<span class="pp">#include</span> <span class="st">&lt;stddef.h&gt;</span>
+<span class="pp">#include</span> <span class="st">&lt;stdint.h&gt;</span>
+
+<span class="cm">/* ── 返回值宏（完全对应内核 include/linux/notifier.h）─────────────────
+ *
+ * 原始定义来源：
+ *   https://elixir.bootlin.com/linux/v6.19.6/source/include/linux/notifier.h
+ *
+ * #define NOTIFY_DONE       0x0000   // Don't care
+ * #define NOTIFY_OK         0x0001   // Suits me
+ * #define NOTIFY_STOP_MASK  0x8000   // Don't call further
+ * #define NOTIFY_BAD        (NOTIFY_STOP_MASK|0x0002)  // Bad/Veto action
+ * #define NOTIFY_STOP       (NOTIFY_OK|NOTIFY_STOP_MASK)
+ */</span>
+<span class="pp">#define</span> <span class="nm">NOTIFY_DONE</span>         <span class="nm">0x0000</span>  <span class="cm">/* 不感兴趣 */</span>
+<span class="pp">#define</span> <span class="nm">NOTIFY_OK</span>           <span class="nm">0x0001</span>  <span class="cm">/* 处理成功 */</span>
+<span class="pp">#define</span> <span class="nm">NOTIFY_STOP_MASK</span>    <span class="nm">0x8000</span>  <span class="cm">/* 停止标志位 */</span>
+<span class="pp">#define</span> <span class="nm">NOTIFY_BAD</span>          (<span class="nm">NOTIFY_STOP_MASK</span> | <span class="nm">0x0002</span>)  <span class="cm">/* 否决/错误 */</span>
+<span class="pp">#define</span> <span class="nm">NOTIFY_STOP</span>         (<span class="nm">NOTIFY_OK</span> | <span class="nm">NOTIFY_STOP_MASK</span>)  <span class="cm">/* 成功但停止 */</span>
+
+<span class="cm">/* ── notifier_block（对应内核 struct notifier_block）────────────────── */</span>
+<span class="kw">struct</span> <span class="ty">user_notifier_block</span>;
+
+<span class="cm">/* 回调函数类型（对应内核 notifier_fn_t）*/</span>
+<span class="kw">typedef</span> <span class="ty">int</span> (*<span class="fn">user_notifier_fn_t</span>)(
+    <span class="kw">struct</span> <span class="ty">user_notifier_block</span> *nb,
+    <span class="kw">unsigned long</span>               action,
+    <span class="kw">void</span>                       *data
+);
+
+<span class="kw">struct</span> <span class="ty">user_notifier_block</span> {
+    <span class="fn">user_notifier_fn_t</span>          notifier_call;  <span class="cm">/* 回调函数 */</span>
+    <span class="kw">struct</span> <span class="ty">user_notifier_block</span> *next;           <span class="cm">/* 链表下一节点 */</span>
+    <span class="ty">int</span>                         priority;       <span class="cm">/* 优先级，越大越先调用 */</span>
+};
+
+<span class="cm">/* ── 链头结构 ───────────────────────────────────────────────────────── */</span>
+
+<span class="cm">/* Atomic 链头（注册用 write-lock，遍历用 read-lock）*/</span>
+<span class="kw">struct</span> <span class="ty">user_atomic_notifier_head</span> {
+    <span class="ty">pthread_rwlock_t</span>            lock;
+    <span class="kw">struct</span> <span class="ty">user_notifier_block</span> *head;
+};
+
+<span class="cm">/* Blocking 链头（对应内核 struct blocking_notifier_head，rwsem→rwlock）*/</span>
+<span class="kw">struct</span> <span class="ty">user_blocking_notifier_head</span> {
+    <span class="ty">pthread_rwlock_t</span>            rwlock;
+    <span class="kw">struct</span> <span class="ty">user_notifier_block</span> *head;
+};
+
+<span class="cm">/* Raw 链头（无任何内置保护，对应内核 struct raw_notifier_head）*/</span>
+<span class="kw">struct</span> <span class="ty">user_raw_notifier_head</span> {
+    <span class="kw">struct</span> <span class="ty">user_notifier_block</span> *head;
+};
+
+<span class="cm">/* ── 初始化宏（对应内核 ATOMIC_INIT_NOTIFIER_HEAD 等）────────────────── */</span>
+<span class="pp">#define</span> <span class="fn">USER_ATOMIC_INIT_NOTIFIER_HEAD</span>(nh)   \
+    <span class="kw">do</span> {                                     \
+        pthread_rwlock_init(&amp;(nh)-&gt;lock, NULL); \
+        (nh)-&gt;head = <span class="nm">NULL</span>;                   \
+    } <span class="kw">while</span> (<span class="nm">0</span>)
+
+<span class="pp">#define</span> <span class="fn">USER_BLOCKING_INIT_NOTIFIER_HEAD</span>(nh) \
+    <span class="kw">do</span> {                                     \
+        pthread_rwlock_init(&amp;(nh)-&gt;rwlock, NULL); \
+        (nh)-&gt;head = <span class="nm">NULL</span>;                   \
+    } <span class="kw">while</span> (<span class="nm">0</span>)
+
+<span class="pp">#define</span> <span class="fn">USER_RAW_INIT_NOTIFIER_HEAD</span>(nh)     \
+    <span class="kw">do</span> { (nh)-&gt;head = <span class="nm">NULL</span>; } <span class="kw">while</span> (<span class="nm">0</span>)
+
+<span class="cm">/* ── 销毁宏 ─────────────────────────────────────────────────────────── */</span>
+<span class="pp">#define</span> <span class="fn">USER_ATOMIC_DESTROY_NOTIFIER_HEAD</span>(nh)   \
+    pthread_rwlock_destroy(&amp;(nh)-&gt;lock)
+<span class="pp">#define</span> <span class="fn">USER_BLOCKING_DESTROY_NOTIFIER_HEAD</span>(nh) \
+    pthread_rwlock_destroy(&amp;(nh)-&gt;rwlock)
+
+<span class="cm">/* ── Atomic 链 API ──────────────────────────────────────────────────── */</span>
+<span class="ty">int</span> <span class="fn">user_atomic_notifier_chain_register</span>(
+    <span class="kw">struct</span> <span class="ty">user_atomic_notifier_head</span> *nh,
+    <span class="kw">struct</span> <span class="ty">user_notifier_block</span>       *n);
+
+<span class="ty">int</span> <span class="fn">user_atomic_notifier_chain_unregister</span>(
+    <span class="kw">struct</span> <span class="ty">user_atomic_notifier_head</span> *nh,
+    <span class="kw">struct</span> <span class="ty">user_notifier_block</span>       *n);
+
+<span class="ty">int</span> <span class="fn">user_atomic_notifier_call_chain</span>(
+    <span class="kw">struct</span> <span class="ty">user_atomic_notifier_head</span> *nh,
+    <span class="kw">unsigned long</span>                     val,
+    <span class="kw">void</span>                             *v);
+
+<span class="cm">/* ── Blocking 链 API ────────────────────────────────────────────────── */</span>
+<span class="ty">int</span> <span class="fn">user_blocking_notifier_chain_register</span>(
+    <span class="kw">struct</span> <span class="ty">user_blocking_notifier_head</span> *nh,
+    <span class="kw">struct</span> <span class="ty">user_notifier_block</span>         *n);
+
+<span class="ty">int</span> <span class="fn">user_blocking_notifier_chain_unregister</span>(
+    <span class="kw">struct</span> <span class="ty">user_blocking_notifier_head</span> *nh,
+    <span class="kw">struct</span> <span class="ty">user_notifier_block</span>         *n);
+
+<span class="ty">int</span> <span class="fn">user_blocking_notifier_call_chain</span>(
+    <span class="kw">struct</span> <span class="ty">user_blocking_notifier_head</span> *nh,
+    <span class="kw">unsigned long</span>                       val,
+    <span class="kw">void</span>                               *v);
+
+<span class="ty">int</span> <span class="fn">user_blocking_notifier_call_chain_robust</span>(
+    <span class="kw">struct</span> <span class="ty">user_blocking_notifier_head</span> *nh,
+    <span class="kw">unsigned long</span>                       val_up,
+    <span class="kw">unsigned long</span>                       val_down,
+    <span class="kw">void</span>                               *v);
+
+<span class="cm">/* ── Raw 链 API ─────────────────────────────────────────────────────── */</span>
+<span class="ty">int</span> <span class="fn">user_raw_notifier_chain_register</span>(
+    <span class="kw">struct</span> <span class="ty">user_raw_notifier_head</span> *nh,
+    <span class="kw">struct</span> <span class="ty">user_notifier_block</span>    *n);
+
+<span class="ty">int</span> <span class="fn">user_raw_notifier_chain_unregister</span>(
+    <span class="kw">struct</span> <span class="ty">user_raw_notifier_head</span> *nh,
+    <span class="kw">struct</span> <span class="ty">user_notifier_block</span>    *n);
+
+<span class="ty">int</span> <span class="fn">user_raw_notifier_call_chain</span>(
+    <span class="kw">struct</span> <span class="ty">user_raw_notifier_head</span> *nh,
+    <span class="kw">unsigned long</span>                  val,
+    <span class="kw">void</span>                          *v);
+
+<span class="ty">int</span> <span class="fn">user_raw_notifier_call_chain_robust</span>(
+    <span class="kw">struct</span> <span class="ty">user_raw_notifier_head</span> *nh,
+    <span class="kw">unsigned long</span>                  val_up,
+    <span class="kw">unsigned long</span>                  val_down,
+    <span class="kw">void</span>                          *v);
+
+<span class="pp">#endif</span> <span class="cm">/* USER_NOTIFIER_H */</span></code></pre>
+    </section>
+
+    <!-- ═══════════════════ S6 实现 ═══════════════════ -->
+    <section class="section" id="s6">
+      <div class="section-label">第 7 章</div>
+      <h1>user_notifier.c</h1>
+      <p>完整实现文件，逻辑与内核 <code>kernel/notifier.c</code> 严格对应：</p>
+      <pre><code><span class="cm">/*
+ * user_notifier.c — Linux 内核通知链移植到应用层
+ *
+ * 对应内核源码：kernel/notifier.c
+ * 参考：https://codebrowser.dev/linux/linux/kernel/notifier.c.html
+ *
+ * 编译：gcc -o demo demo.c user_notifier.c -lpthread
+ */</span>
+<span class="pp">#include</span> <span class="st">"user_notifier.h"</span>
+<span class="pp">#include</span> <span class="st">&lt;errno.h&gt;</span>
+<span class="pp">#include</span> <span class="st">&lt;stddef.h&gt;</span>
+
+<span class="cm">/* ═══════════════════════════════════════════════════════════════════════
+ * 内部核心函数（对应内核 static 函数）
+ * ═══════════════════════════════════════════════════════════════════════ */</span>
+
+<span class="cm">/**
+ * notifier_chain_register_internal - 按优先级插入链表
+ *
+ * 对应内核：
+ *   static int notifier_chain_register(struct notifier_block **nl,
+ *                                      struct notifier_block *n,
+ *                                      bool unique_priority)
+ *   kernel/notifier.c:17-37
+ *
+ * 内核原始逻辑：
+ *   while ((*nl) != NULL) {
+ *       if (n->priority > (*nl)->priority)
+ *           break;
+ *       nl = &((*nl)->next);
+ *   }
+ *   n->next = *nl;
+ *   rcu_assign_pointer(*nl, n);
+ *   return 0;
+ *
+ * 用户空间：去掉 RCU，直接指针赋值（受外部锁保护）
+ */</span>
+<span class="kw">static int</span> <span class="fn">notifier_chain_register_internal</span>(
+    <span class="kw">struct</span> <span class="ty">user_notifier_block</span> **nl,
+    <span class="kw">struct</span> <span class="ty">user_notifier_block</span>  *n)
+{
+    <span class="kw">while</span> (*nl != <span class="nm">NULL</span>) {
+        <span class="kw">if</span> (*nl == n)           <span class="cm">/* 已注册（对应内核 WARN -EEXIST）*/</span>
+            <span class="kw">return</span> -<span class="nm">EEXIST</span>;
+        <span class="kw">if</span> (n-&gt;priority &gt; (*nl)-&gt;priority)
+            <span class="kw">break</span>;              <span class="cm">/* 找到插入位置 */</span>
+        nl = &amp;((*nl)-&gt;next);
+    }
+    n-&gt;next = *nl;
+    *nl = n;                    <span class="cm">/* 替代 rcu_assign_pointer */</span>
+    <span class="kw">return</span> <span class="nm">0</span>;
+}
+
+<span class="cm">/**
+ * notifier_chain_unregister_internal - 从链表移除节点
+ *
+ * 对应内核：
+ *   static int notifier_chain_unregister(struct notifier_block **nl,
+ *                                        struct notifier_block *n)
+ *   kernel/notifier.c:39-51
+ *
+ * 返回 0 成功，-ENOENT 未找到
+ */</span>
+<span class="kw">static int</span> <span class="fn">notifier_chain_unregister_internal</span>(
+    <span class="kw">struct</span> <span class="ty">user_notifier_block</span> **nl,
+    <span class="kw">struct</span> <span class="ty">user_notifier_block</span>  *n)
+{
+    <span class="kw">while</span> (*nl != <span class="nm">NULL</span>) {
+        <span class="kw">if</span> (*nl == n) {
+            *nl = n-&gt;next;      <span class="cm">/* 替代 rcu_assign_pointer */</span>
+            <span class="kw">return</span> <span class="nm">0</span>;
+        }
+        nl = &amp;((*nl)-&gt;next);
+    }
+    <span class="kw">return</span> -<span class="nm">ENOENT</span>;
+}
+
+<span class="cm">/**
+ * notifier_call_chain_internal - 遍历通知链，依次调用回调
+ *
+ * 对应内核：
+ *   static int notifier_call_chain(struct notifier_block **nl,
+ *                                  unsigned long val, void *v,
+ *                                  int nr_to_call, int *nr_calls)
+ *   kernel/notifier.c:65-96
+ *
+ * 核心逻辑（内核原文）：
+ *   ret = nb->notifier_call(nb, val, v);
+ *   if (ret &amp; NOTIFY_STOP_MASK)
+ *       break;
+ *
+ * @nr_to_call: 最多调用数，-1 表示全部
+ * @nr_calls:   记录实际调用次数，NULL 忽略
+ * @return:     最后一个被调用的回调的返回值
+ */</span>
+<span class="kw">static int</span> <span class="fn">notifier_call_chain_internal</span>(
+    <span class="kw">struct</span> <span class="ty">user_notifier_block</span> **nl,
+    <span class="kw">unsigned long</span>                val,
+    <span class="kw">void</span>                        *v,
+    <span class="ty">int</span>                          nr_to_call,
+    <span class="ty">int</span>                         *nr_calls)
+{
+    <span class="ty">int</span> ret = <span class="nm">NOTIFY_DONE</span>;
+    <span class="kw">struct</span> <span class="ty">user_notifier_block</span> *nb, *next_nb;
+
+    nb = *nl;
+
+    <span class="kw">while</span> (nb &amp;&amp; nr_to_call) {
+        next_nb = nb-&gt;next;         <span class="cm">/* 替代 rcu_dereference_raw */</span>
+
+        ret = nb-&gt;notifier_call(nb, val, v);
+
+        <span class="kw">if</span> (nr_calls)
+            (*nr_calls)++;
+
+        <span class="kw">if</span> (ret &amp; <span class="nm">NOTIFY_STOP_MASK</span>)  <span class="cm">/* 内核原文条件完全一致 */</span>
+            <span class="kw">break</span>;
+
+        nb = next_nb;
+        nr_to_call--;
+    }
+    <span class="kw">return</span> ret;
+}
+
+<span class="cm">/**
+ * notifier_call_chain_robust_internal - 带回滚的通知链调用
+ *
+ * 对应内核：
+ *   static int notifier_call_chain_robust(struct notifier_block **nl,
+ *                                         unsigned long val_up,
+ *                                         unsigned long val_down,
+ *                                         void *v)
+ *   kernel/notifier.c:114-125
+ *
+ * 内核注释原文：
+ *   "NOTE: It is important the @nl chain doesn't change between the two
+ *    invocations of notifier_call_chain() such that we visit the
+ *    exact same notifier callbacks; this rules out any RCU usage."
+ */</span>
+<span class="kw">static int</span> <span class="fn">notifier_call_chain_robust_internal</span>(
+    <span class="kw">struct</span> <span class="ty">user_notifier_block</span> **nl,
+    <span class="kw">unsigned long</span>                val_up,
+    <span class="kw">unsigned long</span>                val_down,
+    <span class="kw">void</span>                        *v)
+{
+    <span class="ty">int</span> ret, nr = <span class="nm">0</span>;
+
+    ret = <span class="fn">notifier_call_chain_internal</span>(nl, val_up, v, -<span class="nm">1</span>, &amp;nr);
+    <span class="kw">if</span> (ret &amp; <span class="nm">NOTIFY_STOP_MASK</span>)
+        <span class="fn">notifier_call_chain_internal</span>(nl, val_down, v, nr - <span class="nm">1</span>, <span class="nm">NULL</span>);
+    <span class="kw">return</span> ret;
+}
+
+<span class="cm">/* ═══════════════════════════════════════════════════════════════════════
+ * Atomic 链（对应内核 atomic_notifier_chain_*）
+ * 注册/注销：write-lock；遍历：read-lock
+ * ═══════════════════════════════════════════════════════════════════════ */</span>
+
+<span class="cm">/**
+ * user_atomic_notifier_chain_register
+ *
+ * 对应内核：
+ *   int atomic_notifier_chain_register(struct atomic_notifier_head *nh,
+ *                                      struct notifier_block *n)
+ *   kernel/notifier.c:141-151
+ *
+ * 内核用 spin_lock_irqsave，用户空间用 pthread_rwlock_wrlock
+ * Returns 0 on success, -EEXIST if already registered
+ */</span>
+<span class="ty">int</span> <span class="fn">user_atomic_notifier_chain_register</span>(
+    <span class="kw">struct</span> <span class="ty">user_atomic_notifier_head</span> *nh,
+    <span class="kw">struct</span> <span class="ty">user_notifier_block</span>       *n)
+{
+    <span class="ty">int</span> ret;
+    pthread_rwlock_wrlock(&amp;nh-&gt;lock);
+    ret = <span class="fn">notifier_chain_register_internal</span>(&amp;nh-&gt;head, n);
+    pthread_rwlock_unlock(&amp;nh-&gt;lock);
+    <span class="kw">return</span> ret;
+}
+
+<span class="cm">/**
+ * user_atomic_notifier_chain_unregister
+ *
+ * 对应内核：
+ *   int atomic_notifier_chain_unregister(struct atomic_notifier_head *nh,
+ *                                        struct notifier_block *n)
+ *   kernel/notifier.c:186-198
+ *
+ * 内核调用 synchronize_rcu()，用户空间无需此步（无 RCU 读者）
+ * Returns 0 on success, -ENOENT on failure
+ */</span>
+<span class="ty">int</span> <span class="fn">user_atomic_notifier_chain_unregister</span>(
+    <span class="kw">struct</span> <span class="ty">user_atomic_notifier_head</span> *nh,
+    <span class="kw">struct</span> <span class="ty">user_notifier_block</span>       *n)
+{
+    <span class="ty">int</span> ret;
+    pthread_rwlock_wrlock(&amp;nh-&gt;lock);
+    ret = <span class="fn">notifier_chain_unregister_internal</span>(&amp;nh-&gt;head, n);
+    pthread_rwlock_unlock(&amp;nh-&gt;lock);
+    <span class="kw">return</span> ret;
+}
+
+<span class="cm">/**
+ * user_atomic_notifier_call_chain
+ *
+ * 对应内核：
+ *   int atomic_notifier_call_chain(struct atomic_notifier_head *nh,
+ *                                  unsigned long val, void *v)
+ *   kernel/notifier.c:217-228
+ *
+ * 内核用 rcu_read_lock/unlock，用户空间用 read-lock（允许并发读）
+ */</span>
+<span class="ty">int</span> <span class="fn">user_atomic_notifier_call_chain</span>(
+    <span class="kw">struct</span> <span class="ty">user_atomic_notifier_head</span> *nh,
+    <span class="kw">unsigned long</span>                     val,
+    <span class="kw">void</span>                             *v)
+{
+    <span class="ty">int</span> ret;
+    pthread_rwlock_rdlock(&amp;nh-&gt;lock);
+    ret = <span class="fn">notifier_call_chain_internal</span>(&amp;nh-&gt;head, val, v, -<span class="nm">1</span>, <span class="nm">NULL</span>);
+    pthread_rwlock_unlock(&amp;nh-&gt;lock);
+    <span class="kw">return</span> ret;
+}
+
+<span class="cm">/* ═══════════════════════════════════════════════════════════════════════
+ * Blocking 链（对应内核 blocking_notifier_chain_*）
+ * 注册/注销：write-lock（rwlock）；遍历：read-lock
+ * ═══════════════════════════════════════════════════════════════════════ */</span>
+
+<span class="cm">/**
+ * user_blocking_notifier_chain_register
+ *
+ * 对应内核：
+ *   int blocking_notifier_chain_register(struct blocking_notifier_head *nh,
+ *                                        struct notifier_block *n)
+ *   kernel/notifier.c:279-283
+ *
+ * 内核用 down_write(&amp;nh->rwsem)，用户空间对应 pthread_rwlock_wrlock
+ */</span>
+<span class="ty">int</span> <span class="fn">user_blocking_notifier_chain_register</span>(
+    <span class="kw">struct</span> <span class="ty">user_blocking_notifier_head</span> *nh,
+    <span class="kw">struct</span> <span class="ty">user_notifier_block</span>         *n)
+{
+    <span class="ty">int</span> ret;
+    pthread_rwlock_wrlock(&amp;nh-&gt;rwlock);
+    ret = <span class="fn">notifier_chain_register_internal</span>(&amp;nh-&gt;head, n);
+    pthread_rwlock_unlock(&amp;nh-&gt;rwlock);
+    <span class="kw">return</span> ret;
+}
+
+<span class="cm">/**
+ * user_blocking_notifier_chain_unregister
+ *
+ * 对应内核：
+ *   int blocking_notifier_chain_unregister(struct blocking_notifier_head *nh,
+ *                                          struct notifier_block *n)
+ *   kernel/notifier.c:313-330
+ *
+ * 内核用 down_write(&amp;nh->rwsem)，用户空间对应 pthread_rwlock_wrlock
+ */</span>
+<span class="ty">int</span> <span class="fn">user_blocking_notifier_chain_unregister</span>(
+    <span class="kw">struct</span> <span class="ty">user_blocking_notifier_head</span> *nh,
+    <span class="kw">struct</span> <span class="ty">user_notifier_block</span>         *n)
+{
+    <span class="ty">int</span> ret;
+    pthread_rwlock_wrlock(&amp;nh-&gt;rwlock);
+    ret = <span class="fn">notifier_chain_unregister_internal</span>(&amp;nh-&gt;head, n);
+    pthread_rwlock_unlock(&amp;nh-&gt;rwlock);
+    <span class="kw">return</span> ret;
+}
+
+<span class="cm">/**
+ * user_blocking_notifier_call_chain
+ *
+ * 对应内核：
+ *   int blocking_notifier_call_chain(struct blocking_notifier_head *nh,
+ *                                    unsigned long val, void *v)
+ *   kernel/notifier.c:368-384
+ *
+ * 内核注释：
+ *   "Calls each function in a notifier chain in turn. The functions
+ *    run in a process context, so they are allowed to block."
+ *
+ * 内核用 down_read(&amp;nh->rwsem)，用户空间对应 pthread_rwlock_rdlock
+ */</span>
+<span class="ty">int</span> <span class="fn">user_blocking_notifier_call_chain</span>(
+    <span class="kw">struct</span> <span class="ty">user_blocking_notifier_head</span> *nh,
+    <span class="kw">unsigned long</span>                       val,
+    <span class="kw">void</span>                               *v)
+{
+    <span class="ty">int</span> ret = <span class="nm">NOTIFY_DONE</span>;
+    <span class="kw">if</span> (nh-&gt;head) {                 <span class="cm">/* 对应内核 rcu_access_pointer 检查 */</span>
+        pthread_rwlock_rdlock(&amp;nh-&gt;rwlock);
+        ret = <span class="fn">notifier_call_chain_internal</span>(&amp;nh-&gt;head, val, v, -<span class="nm">1</span>, <span class="nm">NULL</span>);
+        pthread_rwlock_unlock(&amp;nh-&gt;rwlock);
+    }
+    <span class="kw">return</span> ret;
+}
+
+<span class="cm">/**
+ * user_blocking_notifier_call_chain_robust
+ *
+ * 对应内核：
+ *   int blocking_notifier_call_chain_robust(
+ *       struct blocking_notifier_head *nh,
+ *       unsigned long val_up, unsigned long val_down, void *v)
+ *   kernel/notifier.c:333-350
+ */</span>
+<span class="ty">int</span> <span class="fn">user_blocking_notifier_call_chain_robust</span>(
+    <span class="kw">struct</span> <span class="ty">user_blocking_notifier_head</span> *nh,
+    <span class="kw">unsigned long</span>                       val_up,
+    <span class="kw">unsigned long</span>                       val_down,
+    <span class="kw">void</span>                               *v)
+{
+    <span class="ty">int</span> ret = <span class="nm">NOTIFY_DONE</span>;
+    <span class="kw">if</span> (nh-&gt;head) {
+        pthread_rwlock_rdlock(&amp;nh-&gt;rwlock);
+        ret = <span class="fn">notifier_call_chain_robust_internal</span>(
+            &amp;nh-&gt;head, val_up, val_down, v);
+        pthread_rwlock_unlock(&amp;nh-&gt;rwlock);
+    }
+    <span class="kw">return</span> ret;
+}
+
+<span class="cm">/* ═══════════════════════════════════════════════════════════════════════
+ * Raw 链（对应内核 raw_notifier_chain_*）
+ * 完全无内置保护，调用者全权负责互斥
+ * ═══════════════════════════════════════════════════════════════════════ */</span>
+
+<span class="cm">/**
+ * user_raw_notifier_chain_register
+ *
+ * 对应内核：
+ *   int raw_notifier_chain_register(struct raw_notifier_head *nh,
+ *                                   struct notifier_block *n)
+ *   kernel/notifier.c:402-406
+ *
+ * 内核注释：
+ *   "Adds a notifier to a raw notifier chain.
+ *    All locking must be provided by the caller."
+ */</span>
+<span class="ty">int</span> <span class="fn">user_raw_notifier_chain_register</span>(
+    <span class="kw">struct</span> <span class="ty">user_raw_notifier_head</span> *nh,
+    <span class="kw">struct</span> <span class="ty">user_notifier_block</span>    *n)
+{
+    <span class="kw">return</span> <span class="fn">notifier_chain_register_internal</span>(&amp;nh-&gt;head, n);
+}
+
+<span class="cm">/**
+ * user_raw_notifier_chain_unregister
+ *
+ * 对应内核：
+ *   int raw_notifier_chain_unregister(struct raw_notifier_head *nh,
+ *                                     struct notifier_block *n)
+ *   kernel/notifier.c:419-423
+ */</span>
+<span class="ty">int</span> <span class="fn">user_raw_notifier_chain_unregister</span>(
+    <span class="kw">struct</span> <span class="ty">user_raw_notifier_head</span> *nh,
+    <span class="kw">struct</span> <span class="ty">user_notifier_block</span>    *n)
+{
+    <span class="kw">return</span> <span class="fn">notifier_chain_unregister_internal</span>(&amp;nh-&gt;head, n);
+}
+
+<span class="cm">/**
+ * user_raw_notifier_call_chain
+ *
+ * 对应内核：
+ *   int raw_notifier_call_chain(struct raw_notifier_head *nh,
+ *                               unsigned long val, void *v)
+ *   kernel/notifier.c:450-454
+ *
+ * 内核注释：
+ *   "Calls each function in a notifier chain in turn. The functions
+ *    run in an undefined context.
+ *    All locking must be provided by the caller."
+ */</span>
+<span class="ty">int</span> <span class="fn">user_raw_notifier_call_chain</span>(
+    <span class="kw">struct</span> <span class="ty">user_raw_notifier_head</span> *nh,
+    <span class="kw">unsigned long</span>                  val,
+    <span class="kw">void</span>                          *v)
+{
+    <span class="kw">return</span> <span class="fn">notifier_call_chain_internal</span>(&amp;nh-&gt;head, val, v, -<span class="nm">1</span>, <span class="nm">NULL</span>);
+}
+
+<span class="ty">int</span> <span class="fn">user_raw_notifier_call_chain_robust</span>(
+    <span class="kw">struct</span> <span class="ty">user_raw_notifier_head</span> *nh,
+    <span class="kw">unsigned long</span>                  val_up,
+    <span class="kw">unsigned long</span>                  val_down,
+    <span class="kw">void</span>                          *v)
+{
+    <span class="kw">return</span> <span class="fn">notifier_call_chain_robust_internal</span>(
+        &amp;nh-&gt;head, val_up, val_down, v);
+}</code></pre>
+    </section>
+
+    <!-- ═══════════════════ S7 使用示例 ═══════════════════ -->
+    <section class="section" id="s7">
+      <div class="section-label">第 8 章</div>
+      <h1>使用示例</h1>
+
+      <h2>示例 1：多线程阻塞链（类比内核 reboot_notifier）</h2>
+      <pre><code><span class="pp">#include</span> <span class="st">"user_notifier.h"</span>
+<span class="pp">#include</span> <span class="st">&lt;stdio.h&gt;</span>
+<span class="pp">#include</span> <span class="st">&lt;pthread.h&gt;</span>
+
+<span class="cm">/* 事件类型定义（类比内核 sys_down 事件码）*/</span>
+<span class="pp">#define</span> <span class="nm">EVT_SHUTDOWN</span>  <span class="nm">0x01</span>
+<span class="pp">#define</span> <span class="nm">EVT_CONFIG</span>    <span class="nm">0x02</span>
+
+<span class="cm">/* 全局阻塞链（对应内核 BLOCKING_NOTIFIER_HEAD(reboot_notifier_list)）*/</span>
+<span class="kw">static struct</span> <span class="ty">user_blocking_notifier_head</span> my_chain;
+
+<span class="cm">/* 回调函数 A（高优先级）*/</span>
+<span class="kw">static int</span> <span class="fn">handler_a</span>(<span class="kw">struct</span> <span class="ty">user_notifier_block</span> *nb,
+                     <span class="kw">unsigned long</span> action, <span class="kw">void</span> *data)
+{
+    <span class="kw">if</span> (action == <span class="nm">EVT_SHUTDOWN</span>)
+        printf(<span class="st">"[A] 收到 SHUTDOWN 事件，执行清理...\n"</span>);
+    <span class="kw">return</span> <span class="nm">NOTIFY_OK</span>;
+}
+
+<span class="cm">/* 回调函数 B（低优先级），否决某事件 */</span>
+<span class="kw">static int</span> <span class="fn">handler_b</span>(<span class="kw">struct</span> <span class="ty">user_notifier_block</span> *nb,
+                     <span class="kw">unsigned long</span> action, <span class="kw">void</span> *data)
+{
+    <span class="kw">if</span> (action == <span class="nm">EVT_CONFIG</span>) {
+        printf(<span class="st">"[B] 拒绝配置变更！\n"</span>);
+        <span class="kw">return</span> <span class="nm">NOTIFY_BAD</span>;   <span class="cm">/* 停止链并否决 */</span>
+    }
+    <span class="kw">return</span> <span class="nm">NOTIFY_DONE</span>;
+}
+
+<span class="cm">/* notifier_block 实例（对应内核 static struct notifier_block xxx）*/</span>
+<span class="kw">static struct</span> <span class="ty">user_notifier_block</span> nb_a = {
+    .notifier_call = handler_a,
+    .priority      = <span class="nm">100</span>,      <span class="cm">/* 高优先级，先调用 */</span>
+};
+<span class="kw">static struct</span> <span class="ty">user_notifier_block</span> nb_b = {
+    .notifier_call = handler_b,
+    .priority      = <span class="nm">50</span>,
+};
+
+<span class="kw">void</span> *<span class="fn">worker</span>(<span class="kw">void</span> *arg) {
+    <span class="ty">int</span> ret = <span class="fn">user_blocking_notifier_call_chain</span>(&amp;my_chain, <span class="nm">EVT_SHUTDOWN</span>, <span class="nm">NULL</span>);
+    printf(<span class="st">"链调用结果: 0x%04x\n"</span>, ret);
+    <span class="kw">return</span> <span class="nm">NULL</span>;
+}
+
+<span class="ty">int</span> <span class="fn">main</span>(<span class="kw">void</span>) {
+    <span class="fn">USER_BLOCKING_INIT_NOTIFIER_HEAD</span>(&amp;my_chain);
+
+    <span class="cm">/* 注册（对应内核 blocking_notifier_chain_register）*/</span>
+    <span class="fn">user_blocking_notifier_chain_register</span>(&amp;my_chain, &amp;nb_a);
+    <span class="fn">user_blocking_notifier_chain_register</span>(&amp;my_chain, &amp;nb_b);
+
+    <span class="ty">pthread_t</span> tid;
+    pthread_create(&amp;tid, <span class="nm">NULL</span>, worker, <span class="nm">NULL</span>);
+    pthread_join(tid, <span class="nm">NULL</span>);
+
+    <span class="cm">/* 注销 */</span>
+    <span class="fn">user_blocking_notifier_chain_unregister</span>(&amp;my_chain, &amp;nb_a);
+    <span class="fn">user_blocking_notifier_chain_unregister</span>(&amp;my_chain, &amp;nb_b);
+
+    <span class="fn">USER_BLOCKING_DESTROY_NOTIFIER_HEAD</span>(&amp;my_chain);
+    <span class="kw">return</span> <span class="nm">0</span>;
+}</code></pre>
+
+      <h2>示例 2：robust 回滚（类比内核 blocking_notifier_call_chain_robust）</h2>
+      <pre><code><span class="pp">#define</span> <span class="nm">EVT_PREPARE</span>   <span class="nm">1</span>   <span class="cm">/* val_up   */</span>
+<span class="pp">#define</span> <span class="nm">EVT_ROLLBACK</span>  <span class="nm">2</span>   <span class="cm">/* val_down */</span>
+
+<span class="kw">static int</span> <span class="fn">prepare_handler</span>(<span class="kw">struct</span> <span class="ty">user_notifier_block</span> *nb,
+                           <span class="kw">unsigned long</span> action, <span class="kw">void</span> *data)
+{
+    <span class="kw">if</span> (action == <span class="nm">EVT_PREPARE</span>) {
+        printf(<span class="st">"[%s] 执行 PREPARE\n"</span>, (char *)nb);
+        <span class="cm">/* 模拟某个处理器拒绝 */</span>
+        <span class="kw">if</span> (strcmp((char *)nb, <span class="st">"C"</span>) == <span class="nm">0</span>)
+            <span class="kw">return</span> <span class="nm">NOTIFY_BAD</span>;
+    } <span class="kw">else if</span> (action == <span class="nm">EVT_ROLLBACK</span>) {
+        printf(<span class="st">"[%s] 回滚！\n"</span>, (char *)nb);
+    }
+    <span class="kw">return</span> <span class="nm">NOTIFY_OK</span>;
+}
+
+<span class="cm">/* robust 调用：C 失败 → 自动对已调用的 A、B 发 ROLLBACK */</span>
+<span class="ty">int</span> ret = <span class="fn">user_blocking_notifier_call_chain_robust</span>(
+    &amp;my_chain, <span class="nm">EVT_PREPARE</span>, <span class="nm">EVT_ROLLBACK</span>, <span class="nm">NULL</span>);</code></pre>
+    </section>
+
+    <!-- ═══════════════════ S8 多线程 vs 多进程 ═══════════════════ -->
+    <section class="section" id="s8">
+      <div class="section-label">第 9 章</div>
+      <h1>多线程 vs 多进程：适用场景分析</h1>
+
+      <div class="callout callout-info">
+        <div class="callout-title">📌 结论先行</div>
+        <strong>user_notifier 天然适合多线程场景</strong>，因为链表和锁存储在进程的共享内存空间中；
+        <strong>多进程场景需要额外的 IPC 机制</strong>（共享内存 + 进程间锁）才能使用，复杂度大幅提升。
+      </div>
+
+      <div class="svg-wrap">
+        <svg viewBox="0 0 700 340" xmlns="http://www.w3.org/2000/svg" style="max-width:700px;width:100%">
+          <rect width="700" height="340" fill="#161b22" rx="10"/>
+          <text x="350" y="28" text-anchor="middle" fill="#e6edf3" font-size="14" font-weight="700">内存模型对比：多线程 vs 多进程</text>
+
+          <!-- Thread model -->
+          <rect x="15" y="45" width="320" height="270" rx="8" fill="#1c2333" stroke="#3fb950" stroke-width="1.5"/>
+          <text x="175" y="68" text-anchor="middle" fill="#3fb950" font-size="13" font-weight="700">多线程（同一进程）</text>
+
+          <!-- Shared space -->
+          <rect x="35" y="80" width="280" height="90" rx="6" fill="#0f1117" stroke="#3fb950" stroke-width="1" stroke-dasharray="4,3"/>
+          <text x="175" y="100" text-anchor="middle" fill="#3fb950" font-size="11">共享内存（自动）</text>
+          <rect x="50" y="108" width="80" height="28" rx="4" fill="#1c2333" stroke="#58a6ff"/>
+          <text x="90" y="127" text-anchor="middle" fill="#58a6ff" font-size="11">链头 head</text>
+          <rect x="145" y="108" width="80" height="28" rx="4" fill="#1c2333" stroke="#e3b341"/>
+          <text x="185" y="127" text-anchor="middle" fill="#e3b341" font-size="11">rwlock</text>
+          <rect x="240" y="108" width="60" height="28" rx="4" fill="#1c2333" stroke="#d2a8ff"/>
+          <text x="270" y="127" text-anchor="middle" fill="#d2a8ff" font-size="11">nb 链表</text>
+
+          <!-- Threads -->
+          <rect x="50" y="190" width="60" height="30" rx="4" fill="#1c2333" stroke="#58a6ff"/>
+          <text x="80" y="210" text-anchor="middle" fill="#58a6ff" font-size="11">线程 A</text>
+          <rect x="130" y="190" width="60" height="30" rx="4" fill="#1c2333" stroke="#58a6ff"/>
+          <text x="160" y="210" text-anchor="middle" fill="#58a6ff" font-size="11">线程 B</text>
+          <rect x="210" y="190" width="60" height="30" rx="4" fill="#1c2333" stroke="#58a6ff"/>
+          <text x="240" y="210" text-anchor="middle" fill="#58a6ff" font-size="11">线程 C</text>
+
+          <line x1="80" y1="180" x2="80" y2="136" stroke="#3fb950" stroke-width="1" stroke-dasharray="3,2"/>
+          <line x1="160" y1="180" x2="175" y2="136" stroke="#3fb950" stroke-width="1" stroke-dasharray="3,2"/>
+          <line x1="240" y1="180" x2="270" y2="136" stroke="#3fb950" stroke-width="1" stroke-dasharray="3,2"/>
+
+          <text x="175" y="255" text-anchor="middle" fill="#3fb950" font-size="12">✓ 直接访问，无需 IPC</text>
+          <text x="175" y="275" text-anchor="middle" fill="#3fb950" font-size="11">pthread_rwlock 即可保护</text>
+          <text x="175" y="295" text-anchor="middle" fill="#3fb950" font-size="11">回调在同一地址空间执行</text>
+
+          <!-- Process model -->
+          <rect x="360" y="45" width="325" height="270" rx="8" fill="#1c2333" stroke="#e3b341" stroke-width="1.5"/>
+          <text x="522" y="68" text-anchor="middle" fill="#e3b341" font-size="13" font-weight="700">多进程（各自地址空间）</text>
+
+          <!-- Process A -->
+          <rect x="375" y="80" width="130" height="100" rx="6" fill="#0f1117" stroke="#58a6ff"/>
+          <text x="440" y="100" text-anchor="middle" fill="#58a6ff" font-size="11">进程 A</text>
+          <text x="440" y="118" text-anchor="middle" fill="#8b949e" font-size="10">head（私有）</text>
+          <text x="440" y="134" text-anchor="middle" fill="#8b949e" font-size="10">rwlock（私有）</text>
+          <text x="440" y="150" text-anchor="middle" fill="#8b949e" font-size="10">nb 链（私有）</text>
+          <text x="440" y="168" text-anchor="middle" fill="#f85149" font-size="10">⚠ 其他进程不可见</text>
+
+          <!-- Process B -->
+          <rect x="520" y="80" width="130" height="100" rx="6" fill="#0f1117" stroke="#58a6ff"/>
+          <text x="585" y="100" text-anchor="middle" fill="#58a6ff" font-size="11">进程 B</text>
+          <text x="585" y="118" text-anchor="middle" fill="#8b949e" font-size="10">head（私有）</text>
+          <text x="585" y="134" text-anchor="middle" fill="#8b949e" font-size="10">rwlock（私有）</text>
+          <text x="585" y="150" text-anchor="middle" fill="#8b949e" font-size="10">nb 链（私有）</text>
+          <text x="585" y="168" text-anchor="middle" fill="#f85149" font-size="10">⚠ 其他进程不可见</text>
+
+          <!-- IPC needed -->
+          <rect x="385" y="200" width="280" height="40" rx="6" fill="#1c2333" stroke="#f85149" stroke-width="1.5"/>
+          <text x="525" y="218" text-anchor="middle" fill="#f85149" font-size="11">需要 IPC：管道/信号/Socket/共享内存</text>
+          <text x="525" y="234" text-anchor="middle" fill="#8b949e" font-size="10">将通知链桥接到进程间</text>
+
+          <text x="522" y="265" text-anchor="middle" fill="#e3b341" font-size="11">⚠ 回调函数指针无法跨进程传递</text>
+          <text x="522" y="285" text-anchor="middle" fill="#8b949e" font-size="11">需要额外序列化 + 反序列化</text>
+          <text x="522" y="305" text-anchor="middle" fill="#8b949e" font-size="11">共享内存 + pthread_mutex SHARED 属性</text>
+        </svg>
+        <div class="diagram-caption">图 9-1：多线程与多进程的内存模型差异</div>
+      </div>
+
+      <div class="cmp-grid">
+        <div class="cmp-card">
+          <h4 style="color:var(--green)">✅ 多线程优势</h4>
+          <ul>
+            <li>链表、锁、回调指针天然共享</li>
+            <li>无需任何 IPC 机制</li>
+            <li>pthread_rwlock 即可直接使用</li>
+            <li>回调函数在同一地址空间直接执行</li>
+            <li>零拷贝，延迟极低（纳秒级）</li>
+          </ul>
+        </div>
+        <div class="cmp-card">
+          <h4 style="color:var(--red)">❌ 多进程限制</h4>
+          <ul>
+            <li>各进程有独立地址空间，指针不通用</li>
+            <li>函数指针无法跨进程传递</li>
+            <li>需共享内存 + PTHREAD_PROCESS_SHARED 锁</li>
+            <li>回调无法直接执行，需消息转发</li>
+            <li>注销时节点释放复杂（谁管理内存？）</li>
+          </ul>
+        </div>
+      </div>
+    </section>
+
+    <!-- ═══════════════════ S9 多线程场景 ═══════════════════ -->
+    <section class="section" id="s9">
+      <div class="section-label">第 10 章</div>
+      <h1>多线程适用场景（推荐）</h1>
+      <p>以下均为 user_notifier 在多线程环境中的天然适用场景：</p>
+
+      <!-- 场景1 -->
+      <div class="scenario-card scenario-thread">
+        <h4>🟢 场景 1：插件/模块热插拔事件通知</h4>
+        <div class="tag-list">
+          <span class="tag tag-fit">推荐 Blocking 链</span>
+          <span class="tag tag-neutral">多线程</span>
+        </div>
+        <p>
+          主线程加载/卸载插件后，通过通知链广播给所有功能子模块。
+          插件注册自己的 <code>user_notifier_block</code>，主模块调用 <code>user_blocking_notifier_call_chain</code>。
+        </p>
+        <p><strong>类比内核场景：</strong>网络子系统通过 <code>register_netdevice_notifier</code> 监听网卡插拔事件。</p>
+        <pre><code><span class="cm">/* 事件码 */</span>
+<span class="pp">#define</span> <span class="nm">PLUGIN_LOAD</span>    <span class="nm">1</span>
+<span class="pp">#define</span> <span class="nm">PLUGIN_UNLOAD</span>  <span class="nm">2</span>
+
+<span class="kw">struct</span> <span class="ty">plugin_event</span> {
+    <span class="kw">const char</span> *name;
+    <span class="kw">void</span>       *handle;
+};
+
+<span class="kw">static int</span> <span class="fn">security_plugin_notifier</span>(<span class="kw">struct</span> <span class="ty">user_notifier_block</span> *nb,
+                                    <span class="kw">unsigned long</span> action, <span class="kw">void</span> *data)
+{
+    <span class="kw">struct</span> <span class="ty">plugin_event</span> *ev = data;
+    <span class="kw">if</span> (action == <span class="nm">PLUGIN_LOAD</span>)
+        printf(<span class="st">"安全模块: 插件 %s 已加载\n"</span>, ev-&gt;name);
+    <span class="kw">return</span> <span class="nm">NOTIFY_OK</span>;
+}
+
+<span class="cm">/* 注册（由安全子模块在初始化线程中调用）*/</span>
+<span class="kw">static struct</span> <span class="ty">user_notifier_block</span> sec_nb = {
+    .notifier_call = security_plugin_notifier,
+    .priority      = <span class="nm">200</span>,
+};
+<span class="fn">user_blocking_notifier_chain_register</span>(&amp;plugin_chain, &amp;sec_nb);
+
+<span class="cm">/* 主线程发布事件 */</span>
+<span class="kw">struct</span> <span class="ty">plugin_event</span> ev = { .name = <span class="st">"libfoo.so"</span> };
+<span class="fn">user_blocking_notifier_call_chain</span>(&amp;plugin_chain, <span class="nm">PLUGIN_LOAD</span>, &amp;ev);</code></pre>
+      </div>
+
+      <!-- 场景2 -->
+      <div class="scenario-card scenario-thread">
+        <h4>🟢 场景 2：状态机转换广播</h4>
+        <div class="tag-list">
+          <span class="tag tag-fit">推荐 Blocking 链</span>
+          <span class="tag tag-neutral">多线程</span>
+        </div>
+        <p>
+          应用程序有多个状态（初始化 → 运行 → 关闭），状态转换时需通知多个子线程（网络线程、UI线程、存储线程）分别做好准备。
+          <strong>Blocking 链天然支持回调阻塞等待</strong>，保证每个子系统都完成准备。
+        </p>
+        <p><strong>类比内核场景：</strong><code>register_reboot_notifier</code> 在系统关机时通知各驱动清理资源。</p>
+        <pre><code><span class="pp">#define</span> <span class="nm">STATE_RUNNING</span>  <span class="nm">1</span>
+<span class="pp">#define</span> <span class="nm">STATE_STOPPING</span> <span class="nm">2</span>
+
+<span class="cm">/* 网络线程监听 */</span>
+<span class="kw">static int</span> <span class="fn">network_state_handler</span>(<span class="kw">struct</span> <span class="ty">user_notifier_block</span> *nb,
+                                 <span class="kw">unsigned long</span> action, <span class="kw">void</span> *data)
+{
+    <span class="kw">if</span> (action == <span class="nm">STATE_STOPPING</span>) {
+        printf(<span class="st">"网络线程: 关闭所有连接...\n"</span>);
+        close_all_connections();   <span class="cm">/* 可以阻塞！Blocking 链允许 */</span>
+    }
+    <span class="kw">return</span> <span class="nm">NOTIFY_OK</span>;
+}</code></pre>
+      </div>
+
+      <!-- 场景3 -->
+      <div class="scenario-card scenario-thread">
+        <h4>🟢 场景 3：配置变更通知（含否决）</h4>
+        <div class="tag-list">
+          <span class="tag tag-fit">推荐 robust 变体</span>
+          <span class="tag tag-neutral">多线程</span>
+        </div>
+        <p>
+          配置变更时，先通过 <code>val_up</code>（PREPARE）征询各模块意见；若某模块返回 <code>NOTIFY_BAD</code>，
+          自动以 <code>val_down</code>（ROLLBACK）回滚已通知的模块。完美对应内核 robust 机制。
+        </p>
+        <pre><code><span class="pp">#define</span> <span class="nm">CFG_PREPARE</span>   <span class="nm">1</span>
+<span class="pp">#define</span> <span class="nm">CFG_COMMIT</span>    <span class="nm">2</span>
+<span class="pp">#define</span> <span class="nm">CFG_ROLLBACK</span>  <span class="nm">3</span>
+
+<span class="ty">int</span> ret = <span class="fn">user_blocking_notifier_call_chain_robust</span>(
+    &amp;config_chain,
+    <span class="nm">CFG_PREPARE</span>,   <span class="cm">/* val_up：逐个通知 */</span>
+    <span class="nm">CFG_ROLLBACK</span>,  <span class="cm">/* val_down：失败时回滚 */</span>
+    &amp;new_config
+);
+<span class="kw">if</span> (!(ret &amp; <span class="nm">NOTIFY_STOP_MASK</span>))
+    <span class="fn">user_blocking_notifier_call_chain</span>(&amp;config_chain, <span class="nm">CFG_COMMIT</span>, &amp;new_config);</code></pre>
+      </div>
+
+      <!-- 场景4 -->
+      <div class="scenario-card scenario-thread">
+        <h4>🟢 场景 4：高频信号/传感器事件分发</h4>
+        <div class="tag-list">
+          <span class="tag tag-fit">推荐 Raw 链（调用者加锁）</span>
+          <span class="tag tag-neutral">多线程</span>
+        </div>
+        <p>
+          传感器数据高频到达（如 1kHz），每次到达触发多个处理器（滤波器、日志、告警）。
+          使用 <strong>Raw 链</strong>，在外层一次性加写锁（注册期间）、不加锁（读期间），
+          获得最高吞吐。适合注册后极少变化、只频繁通知的场景。
+          类比内核 SRCU 链的设计哲学。
+        </p>
+        <pre><code><span class="cm">/* 注册阶段（启动时，单线程）*/</span>
+<span class="fn">user_raw_notifier_chain_register</span>(&amp;sensor_chain, &amp;filter_nb);
+<span class="fn">user_raw_notifier_chain_register</span>(&amp;sensor_chain, &amp;log_nb);
+<span class="fn">user_raw_notifier_chain_register</span>(&amp;sensor_chain, &amp;alert_nb);
+
+<span class="cm">/* 高频调用阶段（无锁，极低延迟）*/</span>
+<span class="kw">void</span> <span class="fn">on_sensor_data</span>(<span class="kw">float</span> value) {
+    <span class="cm">/* 注册完成后链不再变化，无需加锁 */</span>
+    <span class="fn">user_raw_notifier_call_chain</span>(&amp;sensor_chain, <span class="nm">EVT_DATA</span>, &amp;value);
+}</code></pre>
+      </div>
+    </section>
+
+    <!-- ═══════════════════ S10 多进程场景 ═══════════════════ -->
+    <section class="section" id="s10">
+      <div class="section-label">第 11 章</div>
+      <h1>多进程场景分析</h1>
+
+      <div class="callout callout-warn">
+        <div class="callout-title">⚠️ 重要限制</div>
+        user_notifier 的核心数据结构（链表节点、函数指针）存储在<strong>进程私有地址空间</strong>，
+        无法直接跨进程共享。在多进程场景下，通知链只能作为<strong>进程内部</strong>的分发机制，
+        进程间通知需借助 IPC 桥接。
+      </div>
+
+      <h2>多进程的两种使用模式</h2>
+
+      <!-- 模式1 -->
+      <div class="scenario-card scenario-process">
+        <h4>🟡 模式 A：进程内链 + IPC 桥接（可行）</h4>
+        <div class="tag-list">
+          <span class="tag tag-fit">适合</span>
+          <span class="tag tag-neutral">多进程</span>
+        </div>
+        <p>
+          每个进程内部维护自己的 user_notifier 链，通过 <strong>Unix Domain Socket / 管道 / 消息队列</strong>
+          接收来自其他进程的事件，再本地分发给链上各订阅者。
+        </p>
+
+        <div class="svg-wrap">
+          <svg viewBox="0 0 640 220" xmlns="http://www.w3.org/2000/svg" style="max-width:640px;width:100%">
+            <rect width="640" height="220" fill="#0f1117" rx="8"/>
+            <!-- Process A -->
+            <rect x="10" y="20" width="180" height="170" rx="8" fill="#1c2333" stroke="#58a6ff" stroke-width="1.5"/>
+            <text x="100" y="42" text-anchor="middle" fill="#58a6ff" font-size="12" font-weight="700">进程 A（发布者）</text>
+            <rect x="25" y="55" width="150" height="35" rx="4" fill="#0f1117" stroke="#e3b341"/>
+            <text x="100" y="78" text-anchor="middle" fill="#e3b341" font-size="11">产生事件</text>
+            <rect x="25" y="105" width="150" height="35" rx="4" fill="#0f1117" stroke="#3fb950"/>
+            <text x="100" y="128" text-anchor="middle" fill="#3fb950" font-size="11">序列化事件数据</text>
+            <text x="100" y="155" text-anchor="middle" fill="#d2a8ff" font-size="11">本地 notifier 链</text>
+            <text x="100" y="173" text-anchor="middle" fill="#8b949e" font-size="10">（通知本进程订阅者）</text>
+
+            <!-- IPC channel -->
+            <rect x="205" y="88" width="95" height="35" rx="6" fill="#1c2333" stroke="#f0883e" stroke-width="1.5"/>
+            <text x="252" y="107" text-anchor="middle" fill="#f0883e" font-size="11">IPC 通道</text>
+            <text x="252" y="120" text-anchor="middle" fill="#8b949e" font-size="10">Socket/Pipe</text>
+            <line x1="190" y1="110" x2="205" y2="110" stroke="#f0883e" stroke-width="1.5" marker-end="url(#arr2)"/>
+            <line x1="300" y1="110" x2="318" y2="110" stroke="#f0883e" stroke-width="1.5" marker-end="url(#arr2)"/>
+
+            <!-- Process B -->
+            <rect x="318" y="20" width="180" height="170" rx="8" fill="#1c2333" stroke="#3fb950" stroke-width="1.5"/>
+            <text x="408" y="42" text-anchor="middle" fill="#3fb950" font-size="12" font-weight="700">进程 B（订阅者）</text>
+            <rect x="333" y="55" width="150" height="35" rx="4" fill="#0f1117" stroke="#f0883e"/>
+            <text x="408" y="78" text-anchor="middle" fill="#f0883e" font-size="11">IPC 接收线程</text>
+            <rect x="333" y="105" width="150" height="35" rx="4" fill="#0f1117" stroke="#3fb950"/>
+            <text x="408" y="128" text-anchor="middle" fill="#3fb950" font-size="11">反序列化</text>
+            <text x="408" y="155" text-anchor="middle" fill="#d2a8ff" font-size="11">本地 notifier 链</text>
+            <text x="408" y="173" text-anchor="middle" fill="#8b949e" font-size="10">call_chain() 本地分发</text>
+
+            <!-- arrow within B -->
+            <line x1="408" y1="90" x2="408" y2="105" stroke="#3fb950" stroke-width="1" marker-end="url(#arr2)"/>
+            <line x1="408" y1="140" x2="408" y2="150" stroke="#3fb950" stroke-width="1" marker-end="url(#arr2)"/>
+
+            <!-- Process C -->
+            <rect x="510" y="60" width="120" height="80" rx="8" fill="#1c2333" stroke="#bc8cff" stroke-width="1"/>
+            <text x="570" y="80" text-anchor="middle" fill="#bc8cff" font-size="11">进程 C</text>
+            <text x="570" y="100" text-anchor="middle" fill="#8b949e" font-size="10">独立订阅</text>
+            <text x="570" y="120" text-anchor="middle" fill="#d2a8ff" font-size="10">本地链分发</text>
+            <line x1="300" y1="105" x2="510" y2="90" stroke="#f0883e" stroke-width="1" stroke-dasharray="3,2" marker-end="url(#arr2)"/>
+          </svg>
+        </div>
+        <div class="diagram-caption">图 11-1：多进程模式 A — 进程内 notifier + IPC 桥接</div>
+      </div>
+
+      <!-- 模式2 -->
+      <div class="scenario-card scenario-process">
+        <h4>🟡 模式 B：共享内存 + 进程间锁（高复杂度）</h4>
+        <div class="tag-list">
+          <span class="tag tag-nofit">复杂度高</span>
+          <span class="tag tag-neutral">多进程</span>
+        </div>
+        <p>
+          将链头和节点放在 <code>mmap</code> 共享内存中，使用
+          <code>PTHREAD_PROCESS_SHARED</code> 属性的 <code>pthread_rwlock_t</code>。
+          但<strong>函数指针仍然无法跨进程使用</strong>（ASLR、不同代码段），
+          回调必须用事件ID替代，接收方本地再分发。
+        </p>
+        <pre><code><span class="cm">/* 共享内存中的结构 */</span>
+<span class="kw">struct</span> <span class="ty">shared_notifier_head</span> {
+    <span class="ty">pthread_rwlock_t</span> lock;   <span class="cm">/* PTHREAD_PROCESS_SHARED */</span>
+    <span class="ty">uint32_t</span>         event;  <span class="cm">/* 最新事件（无函数指针！）*/</span>
+    <span class="ty">uint64_t</span>         data;   <span class="cm">/* 序列化数据 */</span>
+};
+
+<span class="cm">/* 初始化（生产者进程）*/</span>
+pthread_rwlockattr_t attr;
+pthread_rwlockattr_init(&amp;attr);
+pthread_rwlockattr_setpshared(&amp;attr, <span class="nm">PTHREAD_PROCESS_SHARED</span>);
+pthread_rwlock_init(&amp;shm-&gt;lock, &amp;attr);
+
+<span class="cm">/* 消费者进程：本地 notifier 链仍然有效（本进程内）*/</span>
+<span class="cm">/* 但回调需要本地注册，不能从共享内存获取函数指针 */</span></code></pre>
+      </div>
+
+      <!-- 场景：多进程适合的具体用例 -->
+      <h2>多进程适合的具体用例</h2>
+
+      <div class="scenario-card scenario-process">
+        <h4>🟡 场景 5：守护进程接收 Unix Signal 后本地分发</h4>
+        <div class="tag-list">
+          <span class="tag tag-fit">适合（进程内 Raw/Blocking 链）</span>
+          <span class="tag tag-neutral">多进程触发，本地分发</span>
+        </div>
+        <p>
+          守护进程（如 nginx worker）收到外部信号（SIGHUP / SIGUSR1）后，
+          在信号处理函数中设置标志位，由主循环调用 <code>user_blocking_notifier_call_chain</code>
+          通知进程内所有子模块（日志轮转、配置重载、统计清空）。
+        </p>
+        <pre><code><span class="kw">static volatile</span> <span class="ty">sig_atomic_t</span> reload_pending = <span class="nm">0</span>;
+<span class="kw">static struct</span> <span class="ty">user_blocking_notifier_head</span> daemon_chain;
+
+<span class="kw">void</span> <span class="fn">sig_hup_handler</span>(<span class="ty">int</span> sig) {
+    reload_pending = <span class="nm">1</span>;   <span class="cm">/* 信号安全：仅设标志 */</span>
+}
+
+<span class="cm">/* 主循环 */</span>
+<span class="kw">while</span> (running) {
+    <span class="kw">if</span> (reload_pending) {
+        reload_pending = <span class="nm">0</span>;
+        <span class="cm">/* 通知进程内所有模块（阻塞，允许 I/O 操作）*/</span>
+        <span class="fn">user_blocking_notifier_call_chain</span>(
+            &amp;daemon_chain, <span class="nm">EVT_RELOAD_CONFIG</span>, <span class="nm">NULL</span>);
+    }
+    do_work();
+}</code></pre>
+      </div>
+
+      <div class="scenario-card scenario-process">
+        <h4>🟡 场景 6：父子进程 fork 后各自独立的 notifier</h4>
+        <div class="tag-list">
+          <span class="tag tag-neutral">每进程独立链</span>
+          <span class="tag tag-fit">适合 fork 模型</span>
+        </div>
+        <p>
+          服务器 fork 出 worker 进程，每个 worker 有自己的 user_notifier 链。
+          父进程通过 Unix Domain Socket 广播消息，每个 worker 的接收线程调用本地 notifier 链分发事件。
+          <strong>链完全独立，互不干扰</strong>，注销也完全安全。
+        </p>
+        <pre><code><span class="cm">/* worker 进程中 */</span>
+<span class="kw">void</span> <span class="fn">worker_main</span>(<span class="ty">int</span> sock_fd) {
+    <span class="kw">struct</span> <span class="ty">user_blocking_notifier_head</span> local_chain;
+    <span class="fn">USER_BLOCKING_INIT_NOTIFIER_HEAD</span>(&amp;local_chain);
+
+    <span class="cm">/* 注册本 worker 自己的处理器 */</span>
+    <span class="fn">user_blocking_notifier_chain_register</span>(&amp;local_chain, &amp;my_handler_nb);
+
+    <span class="cm">/* IPC 接收线程将外部事件桥接到本地链 */</span>
+    start_ipc_bridge_thread(sock_fd, &amp;local_chain);
+
+    run_event_loop();
+}</code></pre>
+      </div>
+    </section>
+
+    <!-- ═══════════════════ S11 综合对比 ═══════════════════ -->
+    <section class="section" id="s11">
+      <div class="section-label">第 12 章</div>
+      <h1>综合对比图表</h1>
+
+      <div class="svg-wrap">
+        <svg viewBox="0 0 700 420" xmlns="http://www.w3.org/2000/svg" style="max-width:700px;width:100%">
+          <rect width="700" height="420" fill="#161b22" rx="10"/>
+          <text x="350" y="28" text-anchor="middle" fill="#e6edf3" font-size="14" font-weight="700">场景适用性综合评分</text>
+
+          <!-- Y axis label -->
+          <text x="12" y="220" fill="#8b949e" font-size="10" transform="rotate(-90,12,220)">适合程度</text>
+
+          <!-- Bars background -->
+          <line x1="60" y1="50" x2="60" y2="370" stroke="#30363d" stroke-width="1"/>
+          <line x1="60" y1="370" x2="680" y2="370" stroke="#30363d" stroke-width="1"/>
+
+          <!-- Y grid lines and labels -->
+          <line x1="58" y1="370" x2="680" y2="370" stroke="#30363d" stroke-width=".5" stroke-dasharray="3,3"/>
+          <line x1="58" y1="290" x2="680" y2="290" stroke="#30363d" stroke-width=".5" stroke-dasharray="3,3"/>
+          <line x1="58" y1="210" x2="680" y2="210" stroke="#30363d" stroke-width=".5" stroke-dasharray="3,3"/>
+          <line x1="58" y1="130" x2="680" y2="130" stroke="#30363d" stroke-width=".5" stroke-dasharray="3,3"/>
+          <line x1="58" y1="50" x2="680" y2="50" stroke="#30363d" stroke-width=".5" stroke-dasharray="3,3"/>
+          <text x="52" y="373" text-anchor="end" fill="#6a737d" font-size="10">0%</text>
+          <text x="52" y="293" text-anchor="end" fill="#6a737d" font-size="10">25%</text>
+          <text x="52" y="213" text-anchor="end" fill="#6a737d" font-size="10">50%</text>
+          <text x="52" y="133" text-anchor="end" fill="#6a737d" font-size="10">75%</text>
+          <text x="52" y="53" text-anchor="end" fill="#6a737d" font-size="10">100%</text>
+
+          <!-- Bar group 1: 插件热插拔 -->
+          <rect x="80" y="82" width="35" height="288" rx="3" fill="#3fb950" fill-opacity=".8"/>
+          <rect x="118" y="290" width="35" height="80" rx="3" fill="#e3b341" fill-opacity=".8"/>
+          <text x="115" y="390" text-anchor="middle" fill="#8b949e" font-size="10">插件热插拔</text>
+
+          <!-- Bar group 2: 状态机 -->
+          <rect x="185" y="50" width="35" height="320" rx="3" fill="#3fb950" fill-opacity=".8"/>
+          <rect x="223" y="290" width="35" height="80" rx="3" fill="#e3b341" fill-opacity=".8"/>
+          <text x="220" y="390" text-anchor="middle" fill="#8b949e" font-size="10">状态机广播</text>
+
+          <!-- Bar group 3: 配置变更 -->
+          <rect x="290" y="90" width="35" height="280" rx="3" fill="#3fb950" fill-opacity=".8"/>
+          <rect x="328" y="250" width="35" height="120" rx="3" fill="#e3b341" fill-opacity=".8"/>
+          <text x="325" y="390" text-anchor="middle" fill="#8b949e" font-size="10">配置变更</text>
+
+          <!-- Bar group 4: 高频传感器 -->
+          <rect x="395" y="70" width="35" height="300" rx="3" fill="#3fb950" fill-opacity=".8"/>
+          <rect x="433" y="322" width="35" height="48" rx="3" fill="#e3b341" fill-opacity=".8"/>
+          <text x="430" y="390" text-anchor="middle" fill="#8b949e" font-size="10">高频传感器</text>
+
+          <!-- Bar group 5: Signal 分发 -->
+          <rect x="500" y="160" width="35" height="210" rx="3" fill="#3fb950" fill-opacity=".8"/>
+          <rect x="538" y="130" width="35" height="240" rx="3" fill="#e3b341" fill-opacity=".8"/>
+          <text x="535" y="390" text-anchor="middle" fill="#8b949e" font-size="10">Signal 分发</text>
+
+          <!-- Bar group 6: Fork worker -->
+          <rect x="605" y="200" width="35" height="170" rx="3" fill="#3fb950" fill-opacity=".8"/>
+          <rect x="643" y="178" width="35" height="192" rx="3" fill="#e3b341" fill-opacity=".8"/>
+          <text x="640" y="390" text-anchor="middle" fill="#8b949e" font-size="10">Fork Worker</text>
+
+          <!-- Legend -->
+          <rect x="80" y="406" width="12" height="10" rx="2" fill="#3fb950"/>
+          <text x="96" y="416" fill="#8b949e" font-size="10">多线程适合度</text>
+          <rect x="200" y="406" width="12" height="10" rx="2" fill="#e3b341"/>
+          <text x="216" y="416" fill="#8b949e" font-size="10">多进程适合度</text>
+          <text x="400" y="416" fill="#6a737d" font-size="9">（越高越适合）</text>
+        </svg>
+        <div class="diagram-caption">图 12-1：各场景在多线程/多进程环境下的适用性评分</div>
+      </div>
+
+      <h2>决策矩阵</h2>
+      <div class="table-wrap">
+        <table>
+          <thead>
+            <tr>
+              <th>维度</th>
+              <th>多线程 <span class="badge badge-green">推荐</span></th>
+              <th>多进程 <span class="badge badge-yellow">需桥接</span></th>
+            </tr>
+          </thead>
+          <tbody>
+            <tr><td>链表/锁共享</td><td>✅ 自动（同地址空间）</td><td>❌ 需 mmap + PSHARED 锁</td></tr>
+            <tr><td>函数指针传递</td><td>✅ 直接使用</td><td>❌ 不可跨进程，需 ID 映射</td></tr>
+            <tr><td>回调执行</td><td>✅ 直接调用，零延迟</td><td>❌ 需消息序列化 + 本地再分发</td></tr>
+            <tr><td>注销安全性</td><td>✅ rwlock 保护，简单</td><td>⚠️ 需跨进程协调</td></tr>
+            <tr><td>推荐链类型</td><td>Atomic / Blocking / Raw</td><td>进程内 Blocking（IPC 桥接入口）</td></tr>
+            <tr><td>同步原语</td><td>pthread_rwlock_t</td><td>PTHREAD_PROCESS_SHARED rwlock</td></tr>
+            <tr><td>数据传递</td><td>直接指针</td><td>需序列化（protobuf/JSON/二进制）</td></tr>
+            <tr><td>典型延迟</td><td>纳秒级</td><td>微秒~毫秒级（IPC 开销）</td></tr>
+          </tbody>
+        </table>
+      </div>
+
+      <div class="svg-wrap">
+        <svg viewBox="0 0 700 280" xmlns="http://www.w3.org/2000/svg" style="max-width:700px;width:100%">
+          <rect width="700" height="280" fill="#161b22" rx="10"/>
+          <text x="350" y="26" text-anchor="middle" fill="#e6edf3" font-size="13" font-weight="700">user_notifier 链类型选择决策树</text>
+
+          <!-- Root -->
+          <rect x="260" y="42" width="180" height="36" rx="6" fill="#1c2333" stroke="#58a6ff" stroke-width="1.5"/>
+          <text x="350" y="65" text-anchor="middle" fill="#79c0ff" font-size="12">是否有并发修改链需求？</text>
+
+          <!-- NO branch -->
+          <line x1="260" y1="60" x2="160" y2="105" stroke="#8b949e" stroke-width="1.2"/>
+          <text x="195" y="92" text-anchor="middle" fill="#8b949e" font-size="10">否（静态链）</text>
+          <rect x="80" y="105" width="150" height="36" rx="6" fill="#1c2333" stroke="#e3b341" stroke-width="1.5"/>
+          <text x="155" y="120" text-anchor="middle" fill="#e3b341" font-size="11">Raw 链</text>
+          <text x="155" y="134" text-anchor="middle" fill="#8b949e" font-size="10">调用者自行保证</text>
+
+          <!-- YES branch -->
+          <line x1="440" y1="60" x2="540" y2="105" stroke="#8b949e" stroke-width="1.2"/>
+          <text x="508" y="92" text-anchor="middle" fill="#8b949e" font-size="10">是</text>
+          <rect x="460" y="105" width="180" height="36" rx="6" fill="#1c2333" stroke="#58a6ff" stroke-width="1.5"/>
+          <text x="550" y="122" text-anchor="middle" fill="#79c0ff" font-size="12">回调是否需要阻塞 I/O？</text>
+
+          <!-- Blocking -->
+          <line x1="550" y1="141" x2="550" y2="180" stroke="#8b949e" stroke-width="1.2"/>
+          <text x="562" y="164" fill="#8b949e" font-size="10">是</text>
+          <rect x="470" y="180" width="160" height="36" rx="6" fill="#1c2333" stroke="#3fb950" stroke-width="1.5"/>
+          <text x="550" y="196" text-anchor="middle" fill="#3fb950" font-size="11">Blocking 链</text>
+          <text x="550" y="210" text-anchor="middle" fill="#8b949e" font-size="10">pthread_rwlock_t</text>
+
+          <!-- Atomic -->
+          <line x1="460" y1="123" x2="330" y2="180" stroke="#8b949e" stroke-width="1.2"/>
+          <text x="375" y="160" text-anchor="middle" fill="#8b949e" font-size="10">否</text>
+          <rect x="230" y="180" width="160" height="36" rx="6" fill="#1c2333" stroke="#58a6ff" stroke-width="1.5"/>
+          <text x="310" y="196" text-anchor="middle" fill="#58a6ff" font-size="11">Atomic 链</text>
+          <text x="310" y="210" text-anchor="middle" fill="#8b949e" font-size="10">pthread_rwlock（写快照）</text>
+
+          <!-- robust note -->
+          <rect x="80" y="238" width="540" height="28" rx="6" fill="#1c2333" stroke="#bc8cff" stroke-width="1"/>
+          <text x="350" y="257" text-anchor="middle" fill="#bc8cff" font-size="11">需要事务性回滚？→ 使用 *_call_chain_robust 变体（任意链类型均支持）</text>
+        </svg>
+        <div class="diagram-caption">图 12-2：链类型选择决策树</div>
+      </div>
+
+      <h2>总结</h2>
+      <div class="callout callout-green">
+        <div class="callout-title">✅ 最终建议</div>
+        <strong>多线程场景</strong>：直接使用 user_notifier，选择合适链类型：<br>
+        &nbsp;&nbsp;• 高频无阻塞 → Raw 链（注册期加锁，运行期无锁）<br>
+        &nbsp;&nbsp;• 通用阻塞回调 → Blocking 链（pthread_rwlock，读多写少）<br>
+        &nbsp;&nbsp;• 无阻塞并发 → Atomic 链（读写锁保护，回调不可阻塞）<br><br>
+        <strong>多进程场景</strong>：在每个进程内部使用 user_notifier（Blocking 链），
+        进程间事件通过 IPC（Unix Socket / 管道 / 消息队列）桥接传入，
+        由本地接收线程调用 <code>user_blocking_notifier_call_chain</code> 进行进程内分发。<br><br>
+        <strong>核心原则</strong>：通知链是<em>进程内</em>的分发机制，IPC 是<em>进程间</em>的传输机制，
+        两者分工明确，组合使用效果最佳。
+      </div>
+
+      <div id="chapter-nav">
+        <a class="ch-btn" id="btn-prev" href="#s0">← 上一章</a>
+        <span style="color:var(--text2);font-size:13px" id="chapter-indicator">第 1 / 12 章</span>
+        <a class="ch-btn" id="btn-next" href="#s1">下一章 →</a>
+      </div>
+    </section>
+
+  </main>
+</div>
+
+<div class="kbd-hint">
+  <kbd>←</kbd> <kbd>→</kbd> 章节导航
+</div>
+
+<script>
+  // ── Section data ──
+  const sections = [
+    { id: 's0', title: '概述与官方来源' },
+    { id: 's1', title: '内核原始数据结构' },
+    { id: 's2', title: '四种链类型详解' },
+    { id: 's3', title: '返回值与控制流' },
+    { id: 's4', title: '移植设计原则' },
+    { id: 's5', title: 'user_notifier.h' },
+    { id: 's6', title: 'user_notifier.c' },
+    { id: 's7', title: '使用示例' },
+    { id: 's8', title: '多线程 vs 多进程' },
+    { id: 's9', title: '多线程适用场景' },
+    { id: 's10', title: '多进程场景分析' },
+    { id: 's11', title: '综合对比图表' },
+  ];
+
+  let currentSection = 0;
+
+  // ── Progress bar ──
+  function updateProgress() {
+    const docH = document.documentElement.scrollHeight - window.innerHeight;
+    const pct = docH > 0 ? (window.scrollY / docH) * 100 : 0;
+    document.getElementById('progress-bar').style.width = pct + '%';
+  }
+
+  // ── Active nav highlight ──
+  function updateActiveNav() {
+    const scrollY = window.scrollY + 80;
+    let current = 0;
+    sections.forEach((s, i) => {
+      const el = document.getElementById(s.id);
+      if (el && el.offsetTop <= scrollY) current = i;
+    });
+
+    document.querySelectorAll('.nav-item').forEach((item, i) => {
+      item.classList.toggle('active', i === current);
+    });
+
+    currentSection = current;
+    updateChapterNav();
+  }
+
+  // ── Chapter nav buttons ──
+  function updateChapterNav() {
+    const prev = document.getElementById('btn-prev');
+    const next = document.getElementById('btn-next');
+    const indicator = document.getElementById('chapter-indicator');
+
+    indicator.textContent = `第 ${currentSection + 1} / ${sections.length} 章`;
+
+    if (currentSection === 0) {
+      prev.classList.add('disabled');
+    } else {
+      prev.classList.remove('disabled');
+      prev.href = '#' + sections[currentSection - 1].id;
+    }
+
+    if (currentSection === sections.length - 1) {
+      next.classList.add('disabled');
+    } else {
+      next.classList.remove('disabled');
+      next.href = '#' + sections[currentSection + 1].id;
+    }
+  }
+
+  // ── Keyboard navigation ──
+  document.addEventListener('keydown', (e) => {
+    if (e.key === 'ArrowRight' && currentSection < sections.length - 1) {
+      window.location.hash = sections[currentSection + 1].id;
+    } else if (e.key === 'ArrowLeft' && currentSection > 0) {
+      window.location.hash = sections[currentSection - 1].id;
+    }
+  });
+
+  // ── Sidebar toggle (mobile) ──
+  function toggleSidebar() {
+    const sidebar = document.getElementById('sidebar');
+    const overlay = document.getElementById('sidebar-overlay');
+    const hamburger = document.getElementById('hamburger');
+    const open = sidebar.classList.toggle('open');
+    overlay.classList.toggle('open', open);
+    hamburger.classList.toggle('open', open);
+  }
+
+  // Nav item click → close sidebar on mobile
+  document.querySelectorAll('.nav-item').forEach(item => {
+    item.addEventListener('click', () => {
+      if (window.innerWidth <= 768) {
+        const sidebar = document.getElementById('sidebar');
+        const overlay = document.getElementById('sidebar-overlay');
+        const hamburger = document.getElementById('hamburger');
+        sidebar.classList.remove('open');
+        overlay.classList.remove('open');
+        hamburger.classList.remove('open');
+      }
+    });
+  });
+
+  // ── Scroll listener ──
+  window.addEventListener('scroll', () => {
+    updateProgress();
+    updateActiveNav();
+  }, { passive: true });
+
+  // Init
+  updateProgress();
+  updateActiveNav();
+</script>
+</body>
+</html>

@@ -1,0 +1,1375 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>GLib 设计思想借鉴指南 — C语言系统编程</title>
+<style>
+  :root {
+    --bg: #0f1117;
+    --bg2: #1a1d2e;
+    --bg3: #232640;
+    --accent: #7c6af7;
+    --accent2: #56cfb2;
+    --accent3: #f7916a;
+    --accent4: #f7c56a;
+    --text: #e2e6f0;
+    --text2: #9aa3c2;
+    --border: #2e3258;
+    --code-bg: #141728;
+    --nav-w: 270px;
+    --header-h: 54px;
+    --progress-h: 3px;
+  }
+  *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+  html { scroll-behavior: smooth; font-size: 16px; }
+  body {
+    background: var(--bg);
+    color: var(--text);
+    font-family: 'Segoe UI', 'PingFang SC', 'Microsoft YaHei', system-ui, sans-serif;
+    line-height: 1.75;
+    overflow-x: hidden;
+  }
+
+  /* ── Progress Bar ── */
+  #progress-bar {
+    position: fixed; top: 0; left: 0; height: var(--progress-h);
+    width: 0%; background: linear-gradient(90deg, var(--accent), var(--accent2));
+    z-index: 1000; transition: width 0.1s;
+  }
+
+  /* ── Top Header ── */
+  #topbar {
+    position: fixed; top: var(--progress-h); left: 0; right: 0; height: var(--header-h);
+    background: rgba(15,17,23,0.92); backdrop-filter: blur(12px);
+    border-bottom: 1px solid var(--border);
+    display: flex; align-items: center; padding: 0 1.2rem;
+    z-index: 900; gap: 1rem;
+  }
+  #hamburger {
+    display: none; flex-direction: column; gap: 5px; cursor: pointer;
+    background: none; border: none; padding: 4px;
+  }
+  #hamburger span { display: block; width: 22px; height: 2px; background: var(--text); border-radius: 2px; transition: all .3s; }
+  #topbar h1 { font-size: 1rem; font-weight: 700; color: var(--text); flex: 1; }
+  #topbar h1 span { color: var(--accent); }
+  .topbar-ref { font-size: 0.75rem; color: var(--text2); text-decoration: none; border: 1px solid var(--border); padding: 3px 10px; border-radius: 20px; transition: border-color .2s; }
+  .topbar-ref:hover { border-color: var(--accent); color: var(--accent); }
+
+  /* ── Layout ── */
+  #layout { display: flex; padding-top: calc(var(--header-h) + var(--progress-h)); min-height: 100vh; }
+
+  /* ── Sidebar ── */
+  #sidebar {
+    width: var(--nav-w); flex-shrink: 0;
+    position: fixed; top: calc(var(--header-h) + var(--progress-h));
+    bottom: 0; left: 0; overflow-y: auto;
+    background: var(--bg2); border-right: 1px solid var(--border);
+    padding: 1.2rem 0 2rem; z-index: 800;
+    transition: transform .3s ease;
+  }
+  #sidebar::-webkit-scrollbar { width: 4px; }
+  #sidebar::-webkit-scrollbar-thumb { background: var(--border); border-radius: 2px; }
+  .nav-group { margin-bottom: .4rem; }
+  .nav-group-label {
+    font-size: 0.68rem; font-weight: 700; letter-spacing: .1em;
+    color: var(--text2); text-transform: uppercase;
+    padding: .7rem 1.2rem .3rem;
+  }
+  .nav-link {
+    display: block; padding: .42rem 1.2rem .42rem 1.5rem;
+    font-size: 0.84rem; color: var(--text2);
+    text-decoration: none; border-left: 3px solid transparent;
+    transition: all .2s; cursor: pointer;
+  }
+  .nav-link:hover { color: var(--text); background: rgba(124,106,247,.07); border-left-color: var(--accent); }
+  .nav-link.active { color: var(--accent); background: rgba(124,106,247,.13); border-left-color: var(--accent); font-weight: 600; }
+
+  /* ── Overlay for mobile ── */
+  #overlay { display: none; position: fixed; inset: 0; background: rgba(0,0,0,.5); z-index: 750; }
+
+  /* ── Main Content ── */
+  #main {
+    margin-left: var(--nav-w); flex: 1;
+    max-width: calc(100% - var(--nav-w));
+  }
+  .section {
+    max-width: 860px; margin: 0 auto;
+    padding: 3rem 2.5rem 4rem;
+    border-bottom: 1px solid var(--border);
+  }
+  .section:last-child { border-bottom: none; }
+
+  /* ── Section Headers ── */
+  .section-badge {
+    display: inline-flex; align-items: center; gap: .4rem;
+    font-size: 0.7rem; font-weight: 700; letter-spacing: .08em; text-transform: uppercase;
+    color: var(--accent); background: rgba(124,106,247,.12);
+    padding: 3px 10px; border-radius: 20px; margin-bottom: .8rem;
+  }
+  h2.section-title {
+    font-size: 1.75rem; font-weight: 800; margin-bottom: 1.2rem;
+    background: linear-gradient(135deg, var(--text) 60%, var(--accent));
+    -webkit-background-clip: text; -webkit-text-fill-color: transparent;
+    background-clip: text;
+    line-height: 1.3;
+  }
+  h3.sub-title {
+    font-size: 1.1rem; font-weight: 700; margin: 2rem 0 .8rem;
+    color: var(--accent2); display: flex; align-items: center; gap: .5rem;
+  }
+  h3.sub-title::before { content: ''; display: block; width: 4px; height: 1em; background: var(--accent2); border-radius: 2px; }
+  h4 { font-size: .95rem; font-weight: 700; color: var(--accent4); margin: 1.4rem 0 .5rem; }
+
+  /* ── Text ── */
+  p { color: var(--text2); margin-bottom: .9rem; }
+  strong { color: var(--text); }
+  a { color: var(--accent); text-decoration: none; }
+  a:hover { text-decoration: underline; }
+
+  /* ── Code ── */
+  pre {
+    background: var(--code-bg); border: 1px solid var(--border);
+    border-radius: 10px; padding: 1.2rem 1.4rem; margin: 1rem 0 1.4rem;
+    overflow-x: auto; font-size: .82rem; line-height: 1.65;
+    position: relative;
+  }
+  pre::-webkit-scrollbar { height: 4px; }
+  pre::-webkit-scrollbar-thumb { background: var(--border); }
+  code { font-family: 'Fira Code', 'Cascadia Code', 'Consolas', monospace; }
+  pre code { color: #c9d1d9; }
+  .kw { color: #ff7b72; }
+  .cm { color: #8b949e; font-style: italic; }
+  .fn { color: #d2a8ff; }
+  .str { color: #a5d6ff; }
+  .num { color: #79c0ff; }
+  .pp { color: #ffa657; }
+  .ty { color: #56cfb2; }
+  .cm2 { color: #8b949e; }
+  .macro { color: #ffa657; }
+
+  /* ── Info Boxes ── */
+  .box {
+    border-radius: 10px; padding: 1rem 1.2rem; margin: 1.2rem 0;
+    border-left: 4px solid; font-size: .9rem;
+  }
+  .box-info { background: rgba(124,106,247,.08); border-color: var(--accent); }
+  .box-tip  { background: rgba(86,207,178,.08); border-color: var(--accent2); }
+  .box-warn { background: rgba(247,145,106,.08); border-color: var(--accent3); }
+  .box-ref  { background: rgba(247,197,106,.06); border-color: var(--accent4); }
+  .box-title { font-weight: 700; font-size: .8rem; text-transform: uppercase; letter-spacing: .06em; margin-bottom: .4rem; }
+  .box-info .box-title { color: var(--accent); }
+  .box-tip  .box-title { color: var(--accent2); }
+  .box-warn .box-title { color: var(--accent3); }
+  .box-ref  .box-title { color: var(--accent4); }
+
+  /* ── Tables ── */
+  table { width: 100%; border-collapse: collapse; margin: 1rem 0 1.5rem; font-size: .85rem; }
+  th { background: var(--bg3); color: var(--accent); font-weight: 700; text-align: left; padding: .6rem 1rem; border-bottom: 2px solid var(--border); }
+  td { padding: .55rem 1rem; border-bottom: 1px solid var(--border); color: var(--text2); vertical-align: top; }
+  tr:hover td { background: rgba(124,106,247,.04); }
+  td code, th code { font-size: .8rem; background: var(--bg3); padding: 1px 5px; border-radius: 4px; color: var(--accent2); }
+
+  /* ── SVG Diagrams ── */
+  .diagram { margin: 1.5rem 0; text-align: center; overflow-x: auto; }
+  .diagram svg { max-width: 100%; height: auto; }
+
+  /* ── Feature Cards ── */
+  .cards { display: grid; grid-template-columns: repeat(auto-fill, minmax(220px, 1fr)); gap: 1rem; margin: 1.2rem 0; }
+  .card {
+    background: var(--bg2); border: 1px solid var(--border);
+    border-radius: 12px; padding: 1.1rem 1rem; transition: border-color .2s, transform .2s;
+  }
+  .card:hover { border-color: var(--accent); transform: translateY(-2px); }
+  .card-icon { font-size: 1.5rem; margin-bottom: .5rem; }
+  .card-title { font-weight: 700; color: var(--text); font-size: .9rem; margin-bottom: .3rem; }
+  .card-desc { font-size: .8rem; color: var(--text2); }
+
+  /* ── Comparison ── */
+  .compare { display: grid; grid-template-columns: 1fr 1fr; gap: 1rem; margin: 1.2rem 0; }
+  .compare-item { background: var(--bg2); border: 1px solid var(--border); border-radius: 10px; padding: 1rem; }
+  .compare-item h5 { font-size: .8rem; font-weight: 700; margin-bottom: .6rem; text-transform: uppercase; letter-spacing: .06em; }
+  .compare-item.bad h5 { color: var(--accent3); }
+  .compare-item.good h5 { color: var(--accent2); }
+
+  /* ── Rule List ── */
+  .rule-list { list-style: none; margin: .8rem 0 1rem; }
+  .rule-list li { padding: .35rem 0 .35rem 1.5rem; position: relative; color: var(--text2); font-size: .9rem; }
+  .rule-list li::before { content: '▸'; position: absolute; left: 0; color: var(--accent); }
+
+  /* ── Keyboard nav hint ── */
+  #keynav-hint {
+    position: fixed; bottom: 1.2rem; right: 1.2rem;
+    background: var(--bg2); border: 1px solid var(--border);
+    border-radius: 10px; padding: .5rem .9rem; font-size: .75rem;
+    color: var(--text2); display: flex; align-items: center; gap: .6rem;
+    opacity: .7; pointer-events: none;
+  }
+  kbd { background: var(--bg3); border: 1px solid var(--border); border-radius: 4px; padding: 1px 6px; font-family: monospace; font-size: .78rem; color: var(--text); }
+
+  /* ── Responsive ── */
+  @media (max-width: 768px) {
+    #hamburger { display: flex; }
+    #sidebar { transform: translateX(-100%); }
+    #sidebar.open { transform: translateX(0); }
+    #overlay.open { display: block; }
+    #main { margin-left: 0; max-width: 100%; }
+    .section { padding: 2rem 1.2rem 3rem; }
+    h2.section-title { font-size: 1.4rem; }
+    .compare { grid-template-columns: 1fr; }
+    #keynav-hint { display: none; }
+    .cards { grid-template-columns: 1fr 1fr; }
+  }
+  @media (max-width: 480px) {
+    .cards { grid-template-columns: 1fr; }
+    table { font-size: .78rem; }
+    th, td { padding: .45rem .7rem; }
+  }
+</style>
+</head>
+<body>
+
+<div id="progress-bar"></div>
+
+<!-- Top Bar -->
+<header id="topbar">
+  <button id="hamburger" aria-label="菜单" onclick="toggleSidebar()">
+    <span></span><span></span><span></span>
+  </button>
+  <h1>GLib <span>设计思想</span> 借鉴指南</h1>
+  <a class="topbar-ref" href="https://docs.gtk.org/glib/" target="_blank" rel="noopener">官方文档 ↗</a>
+</header>
+
+<div id="overlay" onclick="toggleSidebar()"></div>
+
+<div id="layout">
+  <!-- Sidebar -->
+  <nav id="sidebar">
+    <div class="nav-group">
+      <div class="nav-group-label">概览</div>
+      <a class="nav-link" data-target="intro">GLib 简介</a>
+    </div>
+    <div class="nav-group">
+      <div class="nav-group-label">核心设计思想</div>
+      <a class="nav-link" data-target="raii">① RAII — 自动资源管理</a>
+      <a class="nav-link" data-target="refcount">② 引用计数</a>
+      <a class="nav-link" data-target="gerror">③ 结构化错误处理</a>
+      <a class="nav-link" data-target="opaque">④ 不透明类型封装</a>
+      <a class="nav-link" data-target="destroy">⑤ 销毁回调模式</a>
+      <a class="nav-link" data-target="ownership">⑥ 所有权语义</a>
+    </div>
+    <div class="nav-group">
+      <div class="nav-group-label">工程实践</div>
+      <a class="nav-link" data-target="atomic">⑦ 原子操作与线程安全</a>
+      <a class="nav-link" data-target="mainloop">⑧ 事件循环模式</a>
+      <a class="nav-link" data-target="summary">综合对比与总结</a>
+    </div>
+  </nav>
+
+  <!-- Main -->
+  <main id="main">
+
+    <!-- ═══════════ INTRO ═══════════ -->
+    <section class="section" id="intro">
+      <div class="section-badge">📖 概览</div>
+      <h2 class="section-title">GLib 设计哲学概述</h2>
+      <p>
+        <strong>GLib</strong> 是 GNOME 项目的基础 C 工具库，涵盖数据结构、内存管理、线程、事件循环、错误处理等模块。即使不直接引入 GLib 作为依赖，其设计思想同样适用于日常 C 系统编程。
+      </p>
+      <div class="box box-ref">
+        <div class="box-title">📚 官方来源</div>
+        <p style="margin:0">本文内容严格来源于 GLib 官方文档（<a href="https://docs.gtk.org/glib/" target="_blank">docs.gtk.org/glib</a>）及官方 GNOME 源码注释，涵盖 GLib 2.44～2.76+ 版本特性。</p>
+      </div>
+
+      <div class="cards">
+        <div class="card"><div class="card-icon">♻️</div><div class="card-title">RAII 自动清理</div><div class="card-desc">__attribute__((cleanup)) 实现变量离开作用域自动析构</div></div>
+        <div class="card"><div class="card-icon">🔗</div><div class="card-title">引用计数</div><div class="card-desc">grefcount / RcBox 轻量引用计数，支持原子版本</div></div>
+        <div class="card"><div class="card-icon">⚠️</div><div class="card-title">结构化错误</div><div class="card-desc">GError 带 domain/code/message 的分层错误报告</div></div>
+        <div class="card"><div class="card-icon">🔒</div><div class="card-title">不透明封装</div><div class="card-desc">隐藏实现细节，仅暴露操作函数，保证 ABI 稳定</div></div>
+        <div class="card"><div class="card-icon">🎯</div><div class="card-title">销毁回调</div><div class="card-desc">GDestroyNotify 统一资源释放接口</div></div>
+        <div class="card"><div class="card-icon">🔄</div><div class="card-title">所有权语义</div><div class="card-desc">g_steal_pointer 明确转移、转让所有权</div></div>
+        <div class="card"><div class="card-icon">⚡</div><div class="card-title">原子操作</div><div class="card-desc">gatomicrefcount 无锁线程安全引用计数</div></div>
+        <div class="card"><div class="card-icon">🔁</div><div class="card-title">事件循环</div><div class="card-desc">GMainLoop/GSource 事件驱动异步编程范式</div></div>
+      </div>
+
+      <!-- SVG overview diagram -->
+      <div class="diagram">
+        <svg width="720" height="200" viewBox="0 0 720 200" xmlns="http://www.w3.org/2000/svg" style="font-family:sans-serif">
+          <defs>
+            <marker id="arr" markerWidth="8" markerHeight="8" refX="6" refY="3" orient="auto">
+              <path d="M0,0 L0,6 L8,3 z" fill="#7c6af7"/>
+            </marker>
+          </defs>
+          <!-- center box -->
+          <rect x="280" y="70" width="160" height="60" rx="12" fill="#232640" stroke="#7c6af7" stroke-width="2"/>
+          <text x="360" y="96" text-anchor="middle" fill="#7c6af7" font-weight="bold" font-size="13">GLib 核心设计</text>
+          <text x="360" y="116" text-anchor="middle" fill="#9aa3c2" font-size="11">docs.gtk.org/glib</text>
+          <!-- surrounding -->
+          <rect x="20" y="10" width="110" height="40" rx="8" fill="#1a1d2e" stroke="#56cfb2" stroke-width="1.5"/>
+          <text x="75" y="35" text-anchor="middle" fill="#56cfb2" font-size="11">RAII / 自动清理</text>
+          <line x1="130" y1="30" x2="280" y2="90" stroke="#7c6af7" stroke-width="1" marker-end="url(#arr)"/>
+
+          <rect x="590" y="10" width="110" height="40" rx="8" fill="#1a1d2e" stroke="#56cfb2" stroke-width="1.5"/>
+          <text x="645" y="35" text-anchor="middle" fill="#56cfb2" font-size="11">引用计数 RcBox</text>
+          <line x1="590" y1="30" x2="440" y2="90" stroke="#7c6af7" stroke-width="1" marker-end="url(#arr)"/>
+
+          <rect x="20" y="150" width="110" height="40" rx="8" fill="#1a1d2e" stroke="#f7916a" stroke-width="1.5"/>
+          <text x="75" y="175" text-anchor="middle" fill="#f7916a" font-size="11">GError 错误处理</text>
+          <line x1="130" y1="165" x2="280" y2="130" stroke="#7c6af7" stroke-width="1" marker-end="url(#arr)"/>
+
+          <rect x="590" y="150" width="110" height="40" rx="8" fill="#1a1d2e" stroke="#f7916a" stroke-width="1.5"/>
+          <text x="645" y="175" text-anchor="middle" fill="#f7916a" font-size="11">不透明类型封装</text>
+          <line x1="590" y1="165" x2="440" y2="130" stroke="#7c6af7" stroke-width="1" marker-end="url(#arr)"/>
+
+          <rect x="200" y="155" width="110" height="40" rx="8" fill="#1a1d2e" stroke="#f7c56a" stroke-width="1.5"/>
+          <text x="255" y="180" text-anchor="middle" fill="#f7c56a" font-size="11">所有权 / 销毁回调</text>
+          <line x1="255" y1="155" x2="330" y2="130" stroke="#7c6af7" stroke-width="1" marker-end="url(#arr)"/>
+
+          <rect x="410" y="155" width="110" height="40" rx="8" fill="#1a1d2e" stroke="#f7c56a" stroke-width="1.5"/>
+          <text x="465" y="180" text-anchor="middle" fill="#f7c56a" font-size="11">事件循环 / 原子</text>
+          <line x1="465" y1="155" x2="400" y2="130" stroke="#7c6af7" stroke-width="1" marker-end="url(#arr)"/>
+        </svg>
+      </div>
+    </section>
+
+    <!-- ═══════════ RAII ═══════════ -->
+    <section class="section" id="raii">
+      <div class="section-badge">♻️ 设计思想 ①</div>
+      <h2 class="section-title">RAII — 自动资源管理</h2>
+      <p>
+        GLib 从 2.44 版本起通过 <code>g_autoptr()</code>、<code>g_autofree</code>、<code>g_auto()</code> 宏将 GCC/Clang 的 <code>__attribute__((cleanup))</code> 扩展封装为易用的 RAII 工具，使 C 代码在变量离开作用域时自动释放资源，彻底消除"多出口提前返回时忘记 free"的内存泄漏问题。
+      </p>
+
+      <div class="box box-ref">
+        <div class="box-title">📎 官方文档来源</div>
+        <p style="margin:0">
+          <a href="https://docs.gtk.org/glib/auto-cleanup.html" target="_blank">docs.gtk.org/glib/auto-cleanup.html</a> — GLib: Automatic Cleanup（GLib 2.44+）
+        </p>
+      </div>
+
+      <h3 class="sub-title">三个核心宏</h3>
+      <table>
+        <thead><tr><th>宏</th><th>适用场景</th><th>底层调用</th><th>引入版本</th></tr></thead>
+        <tbody>
+          <tr><td><code>g_autofree</code></td><td>简单堆内存指针（malloc 分配）</td><td>始终调用 <code>g_free()</code></td><td>2.44</td></tr>
+          <tr><td><code>g_autoptr(T)</code></td><td>指针类型，有注册的 cleanup 函数</td><td>调用 <code>T</code> 对应的 cleanup 函数</td><td>2.44</td></tr>
+          <tr><td><code>g_auto(T)</code></td><td>栈上分配的结构体（非指针）</td><td>调用 <code>T</code> 对应的 clear 函数</td><td>2.44</td></tr>
+        </tbody>
+      </table>
+
+      <!-- SVG: RAII scope diagram -->
+      <div class="diagram">
+        <svg width="640" height="220" viewBox="0 0 640 220" xmlns="http://www.w3.org/2000/svg">
+          <!-- scope box -->
+          <rect x="30" y="20" width="580" height="180" rx="14" fill="none" stroke="#2e3258" stroke-width="2" stroke-dasharray="6,3"/>
+          <text x="320" y="15" text-anchor="middle" fill="#9aa3c2" font-size="11">函数作用域</text>
+
+          <!-- timeline line -->
+          <line x1="80" y1="50" x2="80" y2="190" stroke="#7c6af7" stroke-width="2"/>
+          <!-- arrow down -->
+          <polygon points="80,196 76,186 84,186" fill="#7c6af7"/>
+          <text x="95" y="200" fill="#9aa3c2" font-size="10">执行顺序</text>
+
+          <!-- Step 1 -->
+          <rect x="110" y="45" width="430" height="32" rx="7" fill="#1a1d2e" stroke="#56cfb2" stroke-width="1.2"/>
+          <text x="130" y="66" fill="#56cfb2" font-size="12" font-family="monospace">g_autofree char *buf = g_malloc(size);</text>
+          <text x="570" y="66" text-anchor="end" fill="#9aa3c2" font-size="10">① 分配</text>
+
+          <!-- Step 2 -->
+          <rect x="110" y="90" width="430" height="32" rx="7" fill="#1a1d2e" stroke="#f7c56a" stroke-width="1.2"/>
+          <text x="130" y="111" fill="#f7c56a" font-size="12" font-family="monospace">g_autoptr(GError) err = NULL;</text>
+          <text x="570" y="111" text-anchor="end" fill="#9aa3c2" font-size="10">② 分配</text>
+
+          <!-- Step 3 - early return -->
+          <rect x="110" y="135" width="240" height="32" rx="7" fill="#1a1d2e" stroke="#f7916a" stroke-width="1.2"/>
+          <text x="130" y="156" fill="#f7916a" font-size="12" font-family="monospace">return FALSE;  // 提前返回</text>
+          <!-- cleanup arrow -->
+          <path d="M560,151 Q600,151 600,120 Q600,80 580,80" stroke="#7c6af7" stroke-width="1.5" fill="none" stroke-dasharray="4,3" marker-end="url(#arr2)"/>
+          <defs>
+            <marker id="arr2" markerWidth="8" markerHeight="8" refX="6" refY="3" orient="auto">
+              <path d="M0,0 L0,6 L8,3 z" fill="#7c6af7"/>
+            </marker>
+          </defs>
+          <text x="610" y="120" fill="#7c6af7" font-size="10">自动清理</text>
+          <text x="610" y="134" fill="#7c6af7" font-size="10">逆序执行</text>
+        </svg>
+      </div>
+
+      <h3 class="sub-title">GLib 官方示例（g_autoptr）</h3>
+      <p>以下示例直接引自 <a href="https://docs.gtk.org/glib/auto-cleanup.html" target="_blank">GLib 官方文档</a>：</p>
+      <pre><code><span class="ty">gboolean</span>
+<span class="fn">check_exists</span>(<span class="ty">GVariant</span> *dict)
+{
+  <span class="macro">g_autoptr</span>(<span class="ty">GVariant</span>) dirname, basename = <span class="num">NULL</span>;
+  <span class="macro">g_autofree</span> <span class="ty">gchar</span> *path = <span class="num">NULL</span>;
+
+  dirname  = <span class="fn">g_variant_lookup_value</span>(dict, <span class="str">"dirname"</span>,  G_VARIANT_TYPE_STRING);
+  <span class="kw">if</span> (dirname == <span class="num">NULL</span>)
+    <span class="kw">return</span> <span class="num">FALSE</span>;  <span class="cm">/* dirname 自动 unref */</span>
+
+  basename = <span class="fn">g_variant_lookup_value</span>(dict, <span class="str">"basename"</span>, G_VARIANT_TYPE_STRING);
+  <span class="kw">if</span> (basename == <span class="num">NULL</span>)
+    <span class="kw">return</span> <span class="num">FALSE</span>;  <span class="cm">/* dirname + basename 均自动 unref */</span>
+
+  path = <span class="fn">g_build_filename</span>(<span class="fn">g_variant_get_string</span>(dirname, <span class="num">NULL</span>),
+                           <span class="fn">g_variant_get_string</span>(basename, <span class="num">NULL</span>),
+                           <span class="num">NULL</span>);
+
+  <span class="kw">return</span> <span class="fn">g_access</span>(path, R_OK) == <span class="num">0</span>;
+  <span class="cm">/* path / dirname / basename 在此全部自动释放 */</span>
+}</code></pre>
+
+      <h3 class="sub-title">在自己代码中模拟（无需引入 GLib）</h3>
+      <div class="box box-tip">
+        <div class="box-title">✅ 原理</div>
+        <p style="margin:0"><code>g_autofree</code> 的底层实现仅用到 GCC/Clang 的 <code>__attribute__((cleanup(func)))</code>，可在不引入 GLib 的情况下直接仿写。</p>
+      </div>
+      <pre><code><span class="cm">/* ── 在自己项目中实现 RAII 工具宏 ── */</span>
+<span class="pp">#include</span> <span class="str">&lt;stdlib.h&gt;</span>
+<span class="pp">#include</span> <span class="str">&lt;stdio.h&gt;</span>
+
+<span class="cm">/* 释放普通堆内存 */</span>
+<span class="kw">static inline void</span> <span class="fn">cleanup_free</span>(<span class="kw">void</span> *p) {
+    <span class="kw">void</span> **pp = (<span class="kw">void</span> **)p;
+    <span class="kw">if</span> (*pp) { <span class="fn">free</span>(*pp); *pp = <span class="num">NULL</span>; }
+}
+
+<span class="cm">/* 关闭文件描述符 */</span>
+<span class="kw">static inline void</span> <span class="fn">cleanup_fd</span>(<span class="kw">int</span> *fd) {
+    <span class="kw">if</span> (*fd >= <span class="num">0</span>) { <span class="fn">close</span>(*fd); *fd = <span class="num">-1</span>; }
+}
+
+<span class="cm">/* 关闭 FILE* */</span>
+<span class="kw">static inline void</span> <span class="fn">cleanup_file</span>(<span class="ty">FILE</span> **fp) {
+    <span class="kw">if</span> (*fp) { <span class="fn">fclose</span>(*fp); *fp = <span class="num">NULL</span>; }
+}
+
+<span class="pp">#define autofree  __attribute__((cleanup(cleanup_free)))</span>
+<span class="pp">#define autofd    __attribute__((cleanup(cleanup_fd)))</span>
+<span class="pp">#define autofile  __attribute__((cleanup(cleanup_file)))</span>
+
+<span class="cm">/* ── 使用示例 ── */</span>
+<span class="kw">int</span> <span class="fn">process_file</span>(<span class="kw">const char</span> *path) {
+    <span class="macro">autofd</span>  <span class="kw">int</span>   fd   = <span class="fn">open</span>(path, O_RDONLY);
+    <span class="macro">autofree</span> <span class="kw">char</span> *buf  = <span class="fn">malloc</span>(<span class="num">4096</span>);
+
+    <span class="kw">if</span> (fd < <span class="num">0</span> || !buf) <span class="kw">return</span> <span class="num">-1</span>; <span class="cm">/* 自动清理 */</span>
+
+    ssize_t n = <span class="fn">read</span>(fd, buf, <span class="num">4096</span>);
+    <span class="kw">if</span> (n < <span class="num">0</span>) <span class="kw">return</span> <span class="num">-1</span>;         <span class="cm">/* 自动清理 */</span>
+
+    <span class="fn">printf</span>(<span class="str">"Read %zd bytes\n"</span>, n);
+    <span class="kw">return</span> <span class="num">0</span>; <span class="cm">/* fd 和 buf 在此自动清理，逆序执行 */</span>
+}</code></pre>
+
+      <div class="compare">
+        <div class="compare-item bad">
+          <h5>❌ 传统写法（易泄漏）</h5>
+          <pre style="margin:0;padding:.7rem;font-size:.77rem"><code><span class="kw">char</span> *buf = <span class="fn">malloc</span>(<span class="num">4096</span>);
+<span class="kw">int</span> fd = <span class="fn">open</span>(path, ...);
+<span class="kw">if</span> (fd < <span class="num">0</span>) {
+  <span class="fn">free</span>(buf); <span class="cm">// 容易忘</span>
+  <span class="kw">return</span> <span class="num">-1</span>;
+}
+<span class="cm">// ...更多 goto cleanup 样板代码</span>
+<span class="fn">close</span>(fd);
+<span class="fn">free</span>(buf);</code></pre>
+        </div>
+        <div class="compare-item good">
+          <h5>✅ RAII 写法（自动清理）</h5>
+          <pre style="margin:0;padding:.7rem;font-size:.77rem"><code><span class="macro">autofree</span> <span class="kw">char</span> *buf = <span class="fn">malloc</span>(<span class="num">4096</span>);
+<span class="macro">autofd</span>   <span class="kw">int</span>   fd  = <span class="fn">open</span>(path, ...);
+<span class="kw">if</span> (fd < <span class="num">0</span>) <span class="kw">return</span> <span class="num">-1</span>;
+<span class="cm">// 无需手动清理</span>
+<span class="cm">// 无论哪里 return，自动逆序清理</span></code></pre>
+        </div>
+      </div>
+
+      <div class="box box-warn">
+        <div class="box-title">⚠️ 注意事项（来自官方文档）</div>
+        <ul class="rule-list">
+          <li>必须在声明时立即初始化变量（如 <code>= NULL</code> 或 <code>= -1</code>）</li>
+          <li>不要通过 <code>goto</code> 跳过声明行（cleanup 可能操作未初始化的值）</li>
+          <li>不能用于类成员变量，仅限于函数局部变量</li>
+          <li>仅支持 GCC 和 Clang，MSVC 不支持此扩展</li>
+        </ul>
+      </div>
+    </section>
+
+    <!-- ═══════════ REFCOUNT ═══════════ -->
+    <section class="section" id="refcount">
+      <div class="section-badge">🔗 设计思想 ②</div>
+      <h2 class="section-title">引用计数 — RcBox 与 grefcount</h2>
+      <p>
+        GLib 提供 <code>grefcount</code> / <code>gatomicrefcount</code> 基础类型，以及更高级的 <strong>RcBox</strong>（Reference Counted Box）封装，让普通 C 结构体能够享有引用计数式的内存管理，无需引入 GObject 类型系统。
+      </p>
+      <div class="box box-ref">
+        <div class="box-title">📎 官方文档来源</div>
+        <p style="margin:0"><a href="https://docs.gtk.org/glib/reference-counting.html" target="_blank">docs.gtk.org/glib/reference-counting.html</a>（GLib 2.58+）</p>
+      </div>
+
+      <h3 class="sub-title">引用计数生命周期图</h3>
+      <div class="diagram">
+        <svg width="680" height="180" viewBox="0 0 680 180" xmlns="http://www.w3.org/2000/svg">
+          <defs>
+            <marker id="a3" markerWidth="8" markerHeight="8" refX="6" refY="3" orient="auto">
+              <path d="M0,0 L0,6 L8,3 z" fill="#56cfb2"/>
+            </marker>
+          </defs>
+          <!-- Box -->
+          <rect x="240" y="60" width="200" height="60" rx="10" fill="#1a1d2e" stroke="#56cfb2" stroke-width="2"/>
+          <text x="340" y="85" text-anchor="middle" fill="#56cfb2" font-weight="bold" font-size="13">Person { ref_count=2 }</text>
+          <text x="340" y="105" text-anchor="middle" fill="#9aa3c2" font-size="11">g_rc_box_new0(Person)</text>
+
+          <!-- ref1 -->
+          <rect x="30" y="70" width="130" height="40" rx="8" fill="#232640" stroke="#7c6af7" stroke-width="1.5"/>
+          <text x="95" y="95" text-anchor="middle" fill="#7c6af7" font-size="12">Database (ref=1)</text>
+          <line x1="160" y1="90" x2="238" y2="90" stroke="#56cfb2" stroke-width="1.5" marker-end="url(#a3)"/>
+          <text x="195" y="83" fill="#9aa3c2" font-size="10">acquire</text>
+
+          <!-- ref2 -->
+          <rect x="520" y="70" width="130" height="40" rx="8" fill="#232640" stroke="#7c6af7" stroke-width="1.5"/>
+          <text x="585" y="95" text-anchor="middle" fill="#7c6af7" font-size="12">Cache (ref=1)</text>
+          <line x1="520" y1="90" x2="442" y2="90" stroke="#56cfb2" stroke-width="1.5" marker-end="url(#a3)"/>
+          <text x="473" y="83" fill="#9aa3c2" font-size="10">acquire</text>
+
+          <!-- release path -->
+          <text x="340" y="150" text-anchor="middle" fill="#f7916a" font-size="11">release() → ref_count=1 → release() → ref_count=0 → free()</text>
+          <line x1="340" y1="120" x2="340" y2="140" stroke="#f7916a" stroke-width="1" stroke-dasharray="4,2"/>
+        </svg>
+      </div>
+
+      <h3 class="sub-title">官方示例：RcBox 基本用法</h3>
+      <pre><code><span class="cm">/* 官方文档示例：docs.gtk.org/glib/reference-counting.html */</span>
+
+<span class="kw">typedef struct</span> {
+  <span class="kw">char</span> *name;
+  <span class="kw">char</span> *address;
+  <span class="kw">char</span> *city;
+  <span class="kw">int</span>   age;
+} <span class="ty">Person</span>;
+
+<span class="ty">Person</span> *<span class="fn">person_new</span>(<span class="kw">void</span>) {
+  <span class="kw">return</span> <span class="fn">g_rc_box_new0</span>(<span class="ty">Person</span>);  <span class="cm">/* 零初始化 + 引用计数=1 */</span>
+}
+
+<span class="kw">void</span> <span class="fn">person_clear</span>(<span class="ty">Person</span> *p) {
+  <span class="fn">g_free</span>(p->name);
+  <span class="fn">g_free</span>(p->address);
+  <span class="fn">g_free</span>(p->city);
+}
+
+<span class="kw">void</span> <span class="fn">add_person_to_database</span>(<span class="ty">Database</span> *db, <span class="ty">Person</span> *p) {
+  <span class="cm">/* 数据库持有引用：ref_count++ */</span>
+  db->persons = <span class="fn">g_list_prepend</span>(db->persons, <span class="fn">g_rc_box_acquire</span>(p));
+}
+
+<span class="kw">void</span> <span class="fn">remove_person_from_database</span>(<span class="ty">Database</span> *db, <span class="ty">Person</span> *p) {
+  db->persons = <span class="fn">g_list_remove</span>(db->persons, p);
+  <span class="cm">/* release 时若 ref_count 降为 0，自动调用 person_clear 再 free */</span>
+  <span class="fn">g_rc_box_release_full</span>(p, (<span class="ty">GDestroyNotify</span>) person_clear);
+}</code></pre>
+
+      <h3 class="sub-title">线程安全版本对比（官方文档）</h3>
+      <table>
+        <thead><tr><th>操作</th><th>非原子版（单线程）</th><th>原子版（多线程安全）</th></tr></thead>
+        <tbody>
+          <tr><td>分配</td><td><code>g_rc_box_alloc()</code></td><td><code>g_atomic_rc_box_alloc()</code></td></tr>
+          <tr><td>零初始化分配</td><td><code>g_rc_box_new0(T)</code></td><td><code>g_atomic_rc_box_new0(T)</code></td></tr>
+          <tr><td>复制</td><td><code>g_rc_box_dup()</code></td><td><code>g_atomic_rc_box_dup()</code></td></tr>
+          <tr><td>增加引用</td><td><code>g_rc_box_acquire()</code></td><td><code>g_atomic_rc_box_acquire()</code></td></tr>
+          <tr><td>释放引用</td><td><code>g_rc_box_release()</code></td><td><code>g_atomic_rc_box_release()</code></td></tr>
+          <tr><td>释放+清理</td><td><code>g_rc_box_release_full()</code></td><td><code>g_atomic_rc_box_release_full()</code></td></tr>
+        </tbody>
+      </table>
+
+      <h3 class="sub-title">在自己代码中实现引用计数模式</h3>
+      <pre><code><span class="cm">/* 无需 GLib，实现最简引用计数结构 */</span>
+<span class="pp">#include</span> <span class="str">&lt;stdatomic.h&gt;</span>
+<span class="pp">#include</span> <span class="str">&lt;stdlib.h&gt;</span>
+
+<span class="kw">typedef void</span> (*<span class="ty">DestroyFunc</span>)(<span class="kw">void</span> *);
+
+<span class="kw">typedef struct</span> {
+  _Atomic <span class="kw">int</span> ref_count;
+  <span class="ty">DestroyFunc</span> destroy;
+  <span class="cm">/* 之后紧跟用户数据 */</span>
+} <span class="ty">RcHeader</span>;
+
+<span class="kw">void</span> *<span class="fn">rc_new</span>(<span class="kw">size_t</span> size, <span class="ty">DestroyFunc</span> destroy) {
+  <span class="ty">RcHeader</span> *h = <span class="fn">calloc</span>(<span class="num">1</span>, <span class="kw">sizeof</span>(<span class="ty">RcHeader</span>) + size);
+  <span class="fn">atomic_store</span>(&h->ref_count, <span class="num">1</span>);
+  h->destroy = destroy;
+  <span class="kw">return</span> (<span class="kw">char</span> *)h + <span class="kw">sizeof</span>(<span class="ty">RcHeader</span>);
+}
+
+<span class="kw">void</span> *<span class="fn">rc_acquire</span>(<span class="kw">void</span> *ptr) {
+  <span class="ty">RcHeader</span> *h = (<span class="ty">RcHeader</span> *)ptr - <span class="num">1</span>;
+  <span class="fn">atomic_fetch_add</span>(&h->ref_count, <span class="num">1</span>);
+  <span class="kw">return</span> ptr;
+}
+
+<span class="kw">void</span> <span class="fn">rc_release</span>(<span class="kw">void</span> *ptr) {
+  <span class="ty">RcHeader</span> *h = (<span class="ty">RcHeader</span> *)ptr - <span class="num">1</span>;
+  <span class="kw">if</span> (<span class="fn">atomic_fetch_sub</span>(&h->ref_count, <span class="num">1</span>) == <span class="num">1</span>) {
+    <span class="kw">if</span> (h->destroy) h-><span class="fn">destroy</span>(ptr);
+    <span class="fn">free</span>(h);
+  }
+}</code></pre>
+    </section>
+
+    <!-- ═══════════ GERROR ═══════════ -->
+    <section class="section" id="gerror">
+      <div class="section-badge">⚠️ 设计思想 ③</div>
+      <h2 class="section-title">结构化错误处理 — GError 模式</h2>
+      <p>
+        GLib 提供 <strong>GError</strong> 作为统一的、结构化的错误报告机制，解决 C 语言用数字错误码难以携带上下文信息的问题，并配套了一套严格的使用规则。
+      </p>
+      <div class="box box-ref">
+        <div class="box-title">📎 官方文档来源</div>
+        <p style="margin:0"><a href="https://docs.gtk.org/glib/error-reporting.html" target="_blank">docs.gtk.org/glib/error-reporting.html</a> — GLib: Error Reporting</p>
+      </div>
+
+      <h3 class="sub-title">GError 结构（官方）</h3>
+      <pre><code><span class="cm">/* GError 结构包含三个字段（来自官方文档）：*/</span>
+<span class="kw">struct</span> <span class="ty">GError</span> {
+  <span class="ty">GQuark</span>  domain;   <span class="cm">/* 错误所在模块（用 quark 字符串唯一标识）*/</span>
+  <span class="kw">int</span>     code;     <span class="cm">/* 该模块内具体错误码（枚举值）*/</span>
+  <span class="kw">char</span>   *message;  <span class="cm">/* 人类可读的错误描述（UTF-8）*/</span>
+};</code></pre>
+
+      <!-- SVG: Error flow -->
+      <div class="diagram">
+        <svg width="660" height="200" viewBox="0 0 660 200" xmlns="http://www.w3.org/2000/svg">
+          <defs>
+            <marker id="a4" markerWidth="8" markerHeight="8" refX="6" refY="3" orient="auto">
+              <path d="M0,0 L0,6 L8,3 z" fill="#f7916a"/>
+            </marker>
+            <marker id="a5" markerWidth="8" markerHeight="8" refX="6" refY="3" orient="auto">
+              <path d="M0,0 L0,6 L8,3 z" fill="#56cfb2"/>
+            </marker>
+          </defs>
+          <!-- callee -->
+          <rect x="30" y="70" width="160" height="60" rx="10" fill="#1a1d2e" stroke="#f7916a" stroke-width="1.5"/>
+          <text x="110" y="96" text-anchor="middle" fill="#f7916a" font-size="12" font-weight="bold">底层函数</text>
+          <text x="110" y="116" text-anchor="middle" fill="#9aa3c2" font-size="10">g_set_error(err, ...)</text>
+
+          <!-- arrow error -->
+          <line x1="190" y1="90" x2="270" y2="90" stroke="#f7916a" stroke-width="1.5" marker-end="url(#a4)"/>
+          <text x="230" y="83" text-anchor="middle" fill="#9aa3c2" font-size="10">GError*</text>
+
+          <!-- middle -->
+          <rect x="270" y="60" width="140" height="80" rx="10" fill="#1a1d2e" stroke="#f7c56a" stroke-width="1.5"/>
+          <text x="340" y="86" text-anchor="middle" fill="#f7c56a" font-size="12" font-weight="bold">中间函数</text>
+          <text x="340" y="104" text-anchor="middle" fill="#9aa3c2" font-size="10">g_propagate_error</text>
+          <text x="340" y="120" text-anchor="middle" fill="#9aa3c2" font-size="10">或 g_error_matches</text>
+
+          <!-- arrow propagate -->
+          <line x1="410" y1="90" x2="490" y2="90" stroke="#f7916a" stroke-width="1.5" marker-end="url(#a4)"/>
+          <text x="450" y="83" text-anchor="middle" fill="#9aa3c2" font-size="10">propagate</text>
+
+          <!-- caller -->
+          <rect x="490" y="70" width="150" height="60" rx="10" fill="#1a1d2e" stroke="#56cfb2" stroke-width="1.5"/>
+          <text x="565" y="96" text-anchor="middle" fill="#56cfb2" font-size="12" font-weight="bold">调用方</text>
+          <text x="565" y="116" text-anchor="middle" fill="#9aa3c2" font-size="10">检查 err != NULL</text>
+
+          <!-- clear arrow -->
+          <path d="M565,130 Q565,170 340,170 Q200,170 110,130" stroke="#56cfb2" stroke-width="1" fill="none" stroke-dasharray="4,3" marker-end="url(#a5)"/>
+          <text x="340" y="185" text-anchor="middle" fill="#56cfb2" font-size="10">g_error_free(err) / g_clear_error(&amp;err)</text>
+        </svg>
+      </div>
+
+      <h3 class="sub-title">官方示例：设置与传播错误</h3>
+      <pre><code><span class="cm">/* 官方文档示例：定义错误域 */</span>
+<span class="pp">#define</span> FOO_ERROR <span class="fn">foo_error_quark</span>()
+<span class="ty">GQuark</span> <span class="fn">foo_error_quark</span>(<span class="kw">void</span>) {
+  <span class="kw">return</span> <span class="fn">g_quark_from_static_string</span>(<span class="str">"foo-error-quark"</span>);
+}
+<span class="kw">typedef enum</span> { FOO_ERROR_NOT_FOUND, FOO_ERROR_PERMISSION } <span class="ty">FooError</span>;
+
+<span class="cm">/* 底层：设置错误 */</span>
+<span class="kw">int</span> <span class="fn">foo_open_file</span>(<span class="ty">GError</span> **error) {
+  <span class="fn">g_return_val_if_fail</span>(error == <span class="num">NULL</span> || *error == <span class="num">NULL</span>, <span class="num">-1</span>);
+
+  <span class="kw">int</span> fd = <span class="fn">open</span>(<span class="str">"file.txt"</span>, O_RDONLY);
+  <span class="kw">if</span> (fd < <span class="num">0</span>) {
+    <span class="fn">g_set_error</span>(error,
+               FOO_ERROR, FOO_ERROR_NOT_FOUND,
+               <span class="str">"Failed to open file: %s"</span>, <span class="fn">g_strerror</span>(errno));
+    <span class="kw">return</span> <span class="num">-1</span>;
+  }
+  <span class="kw">return</span> fd;
+}
+
+<span class="cm">/* 调用方：使用错误 */</span>
+<span class="kw">void</span> <span class="fn">caller</span>(<span class="kw">void</span>) {
+  <span class="macro">g_autoptr</span>(<span class="ty">GError</span>) err = <span class="num">NULL</span>;
+  <span class="kw">int</span> fd = <span class="fn">foo_open_file</span>(&err);
+  <span class="kw">if</span> (err) {
+    <span class="kw">if</span> (<span class="fn">g_error_matches</span>(err, FOO_ERROR, FOO_ERROR_NOT_FOUND))
+      <span class="fn">fprintf</span>(stderr, <span class="str">"[NOT FOUND] %s\n"</span>, err->message);
+    <span class="kw">else</span>
+      <span class="fn">fprintf</span>(stderr, <span class="str">"[ERROR] %s\n"</span>, err->message);
+    <span class="cm">/* g_autoptr 在函数结束时自动 g_error_free(err) */</span>
+  }
+}</code></pre>
+
+      <h3 class="sub-title">官方规则摘要（GLib 文档）</h3>
+      <ul class="rule-list">
+        <li>GError 只用于<strong>可恢复的运行时错误</strong>，编程错误用 <code>g_assert</code> / <code>g_return_if_fail</code></li>
+        <li>函数的最后一个参数若能报错，应为 <code>GError **error</code></li>
+        <li>调用方可传 <code>NULL</code> 表示忽略错误（但函数仍须中止当前操作）</li>
+        <li><code>GError*</code> 传入前必须初始化为 <code>NULL</code></li>
+        <li>不可"堆叠"错误：每次错误后必须处理或向上传播</li>
+        <li><code>GError</code> 结构体不可在栈上分配</li>
+      </ul>
+
+      <h3 class="sub-title">在自己代码中实现结构化错误</h3>
+      <pre><code><span class="cm">/* 仿 GError 的轻量错误结构，无需 GLib */</span>
+<span class="pp">#include</span> <span class="str">&lt;stdarg.h&gt;</span>
+<span class="pp">#include</span> <span class="str">&lt;stdio.h&gt;</span>
+<span class="pp">#include</span> <span class="str">&lt;stdlib.h&gt;</span>
+<span class="pp">#include</span> <span class="str">&lt;string.h&gt;</span>
+
+<span class="kw">typedef struct</span> {
+  <span class="kw">int</span>   domain;   <span class="cm">/* 模块 ID，如 ERR_DOMAIN_IO */</span>
+  <span class="kw">int</span>   code;
+  <span class="kw">char</span> *message;
+} <span class="ty">AppError</span>;
+
+<span class="kw">void</span> <span class="fn">app_error_set</span>(<span class="ty">AppError</span> **err, <span class="kw">int</span> domain, <span class="kw">int</span> code,
+                   <span class="kw">const char</span> *fmt, ...) {
+  <span class="kw">if</span> (!err) <span class="kw">return</span>;
+  *err = <span class="fn">calloc</span>(<span class="num">1</span>, <span class="kw">sizeof</span>(**err));
+  (*err)->domain = domain; (*err)->code = code;
+  <span class="ty">va_list</span> ap; <span class="fn">va_start</span>(ap, fmt);
+  <span class="fn">vasprintf</span>(&(*err)->message, fmt, ap);
+  <span class="fn">va_end</span>(ap);
+}
+
+<span class="kw">void</span> <span class="fn">app_error_free</span>(<span class="ty">AppError</span> *err) {
+  <span class="kw">if</span> (err) { <span class="fn">free</span>(err->message); <span class="fn">free</span>(err); }
+}
+
+<span class="cm">/* 对应 g_autofree 的 cleanup wrapper */</span>
+<span class="kw">static inline void</span> <span class="fn">cleanup_apperror</span>(<span class="ty">AppError</span> **e) { <span class="fn">app_error_free</span>(*e); }
+<span class="pp">#define autoerr  __attribute__((cleanup(cleanup_apperror)))</span>
+
+<span class="cm">/* 使用示例 */</span>
+<span class="ty">AppError</span> *<span class="fn">read_config</span>(<span class="kw">const char</span> *path) {
+  <span class="kw">return</span> <span class="num">NULL</span>; <span class="cm">/* 成功时返回 NULL */</span>
+}
+
+<span class="kw">void</span> <span class="fn">init</span>(<span class="kw">void</span>) {
+  <span class="macro">autoerr</span> <span class="ty">AppError</span> *err = <span class="num">NULL</span>;
+  <span class="fn">app_error_set</span>(&err, <span class="num">1</span>, <span class="num">404</span>, <span class="str">"File not found: %s"</span>, <span class="str">"/etc/app.conf"</span>);
+  <span class="kw">if</span> (err) <span class="fn">fprintf</span>(stderr, <span class="str">"Error[%d:%d]: %s\n"</span>,
+                   err->domain, err->code, err->message);
+  <span class="cm">/* err 在函数结束时自动释放 */</span>
+}</code></pre>
+    </section>
+
+    <!-- ═══════════ OPAQUE ═══════════ -->
+    <section class="section" id="opaque">
+      <div class="section-badge">🔒 设计思想 ④</div>
+      <h2 class="section-title">不透明类型封装 — 隐藏实现细节</h2>
+      <p>
+        GLib 广泛使用<strong>不透明类型（Opaque Type）</strong>模式：结构体内容仅在实现文件中可见，头文件只暴露 <code>typedef</code> 名称与操作函数。GLib 官方文档明确说明诸如 <code>GHashTable</code>、<code>GMainContext</code>、<code>GRegex</code> 等均为"opaque data structure，only accessible via provided functions"。
+      </p>
+
+      <div class="diagram">
+        <svg width="640" height="200" viewBox="0 0 640 200" xmlns="http://www.w3.org/2000/svg">
+          <!-- Wall -->
+          <rect x="290" y="20" width="60" height="160" rx="6" fill="#2e3258" stroke="#7c6af7" stroke-width="1.5"/>
+          <text x="320" y="103" text-anchor="middle" fill="#7c6af7" font-size="11" font-weight="bold">API</text>
+          <text x="320" y="117" text-anchor="middle" fill="#9aa3c2" font-size="9">(.h)</text>
+
+          <!-- left: user -->
+          <rect x="40" y="55" width="200" height="90" rx="10" fill="#1a1d2e" stroke="#56cfb2" stroke-width="1.5"/>
+          <text x="140" y="86" text-anchor="middle" fill="#56cfb2" font-size="12" font-weight="bold">调用方（用户代码）</text>
+          <text x="140" y="106" text-anchor="middle" fill="#9aa3c2" font-size="10">MyObject *obj = my_obj_new();</text>
+          <text x="140" y="122" text-anchor="middle" fill="#9aa3c2" font-size="10">my_obj_do_work(obj);</text>
+          <text x="140" y="138" text-anchor="middle" fill="#9aa3c2" font-size="10">my_obj_free(obj);</text>
+
+          <!-- arrows -->
+          <line x1="240" y1="90" x2="288" y2="90" stroke="#56cfb2" stroke-width="1.5" marker-end="url(#a5)"/>
+          <line x1="352" y1="110" x2="390" y2="110" stroke="#f7916a" stroke-width="1.5" marker-end="url(#a3b)"/>
+          <defs>
+            <marker id="a3b" markerWidth="8" markerHeight="8" refX="6" refY="3" orient="auto">
+              <path d="M0,0 L0,6 L8,3 z" fill="#f7916a"/>
+            </marker>
+          </defs>
+
+          <!-- right: impl -->
+          <rect x="400" y="30" width="210" height="140" rx="10" fill="#141728" stroke="#f7916a" stroke-width="1.5"/>
+          <text x="505" y="56" text-anchor="middle" fill="#f7916a" font-size="12" font-weight="bold">实现（.c）</text>
+          <text x="505" y="76" text-anchor="middle" fill="#9aa3c2" font-size="10">struct MyObject {</text>
+          <text x="505" y="92" text-anchor="middle" fill="#9aa3c2" font-size="10">  int  internal_state;</text>
+          <text x="505" y="108" text-anchor="middle" fill="#9aa3c2" font-size="10">  char *buffer;</text>
+          <text x="505" y="124" text-anchor="middle" fill="#9aa3c2" font-size="10">  pthread_mutex_t lock;</text>
+          <text x="505" y="140" text-anchor="middle" fill="#9aa3c2" font-size="10">};</text>
+          <text x="505" y="160" text-anchor="middle" fill="#9aa3c2" font-size="9">对外完全不可见</text>
+        </svg>
+      </div>
+
+      <h3 class="sub-title">头文件与实现文件的正确分离</h3>
+      <div class="compare">
+        <div class="compare-item bad">
+          <h5>❌ 暴露内部结构（头文件）</h5>
+          <pre style="margin:0;padding:.7rem;font-size:.77rem"><code><span class="cm">/* myobj.h — 错误：暴露实现 */</span>
+<span class="kw">typedef struct</span> {
+  <span class="kw">int</span>   state;    <span class="cm">/* 用户可随意修改 */</span>
+  <span class="kw">char</span> *buf;
+} <span class="ty">MyObject</span>;
+
+<span class="ty">MyObject</span>* <span class="fn">my_obj_new</span>();</code></pre>
+        </div>
+        <div class="compare-item good">
+          <h5>✅ 不透明类型（GLib 风格）</h5>
+          <pre style="margin:0;padding:.7rem;font-size:.77rem"><code><span class="cm">/* myobj.h — 正确：仅前向声明 */</span>
+<span class="kw">typedef struct</span> _MyObject <span class="ty">MyObject</span>;
+
+<span class="ty">MyObject</span>* <span class="fn">my_obj_new</span>();
+<span class="kw">void</span>      <span class="fn">my_obj_do_work</span>(<span class="ty">MyObject</span>*);
+<span class="kw">void</span>      <span class="fn">my_obj_free</span>(<span class="ty">MyObject</span>*);
+
+<span class="cm">/* myobj.c — 定义藏在实现文件中 */</span>
+<span class="kw">struct</span> _MyObject { ... };</code></pre>
+        </div>
+      </div>
+
+      <div class="box box-tip">
+        <div class="box-title">✅ 优势</div>
+        <ul class="rule-list" style="margin:0">
+          <li>ABI 稳定：可以自由修改内部布局而不影响调用方的编译</li>
+          <li>封装性：防止用户绕过接口直接操作内部字段</li>
+          <li>线程安全更易实现：内部可自由添加锁，外部无感知</li>
+        </ul>
+      </div>
+    </section>
+
+    <!-- ═══════════ DESTROY ═══════════ -->
+    <section class="section" id="destroy">
+      <div class="section-badge">🎯 设计思想 ⑤</div>
+      <h2 class="section-title">销毁回调模式 — GDestroyNotify</h2>
+      <p>
+        GLib 定义了 <code>GDestroyNotify</code> 类型（<code>typedef void (*GDestroyNotify)(gpointer data)</code>），在数据结构、线程本地存储、哈希表等接口中广泛使用，让容器或系统在释放数据时能自动调用用户注册的清理函数，实现了通用的资源销毁钩子。
+      </p>
+
+      <h3 class="sub-title">典型用法场景</h3>
+      <table>
+        <thead><tr><th>GLib API</th><th>GDestroyNotify 作用</th></tr></thead>
+        <tbody>
+          <tr><td><code>g_hash_table_new_full(..., key_destroy, value_destroy)</code></td><td>哈希表销毁或覆盖条目时自动释放 key/value</td></tr>
+          <tr><td><code>g_private_new(GDestroyNotify)</code></td><td>线程退出时自动释放线程局部变量</td></tr>
+          <tr><td><code>g_source_set_callback(..., GDestroyNotify)</code></td><td>GSource 销毁时释放 user_data</td></tr>
+          <tr><td><code>g_rc_box_release_full(p, destroy)</code></td><td>引用计数归零时调用清理函数</td></tr>
+          <tr><td><code>g_object_set_data_full(obj, key, data, destroy)</code></td><td>对象数据覆盖或销毁时释放附属数据</td></tr>
+        </tbody>
+      </table>
+
+      <h3 class="sub-title">在自己代码中实现销毁回调模式</h3>
+      <pre><code><span class="cm">/* 通用销毁回调接口 */</span>
+<span class="kw">typedef void</span> (*<span class="ty">DestroyNotify</span>)(<span class="kw">void</span> *data);
+
+<span class="cm">/* 带 owner 语义的容器节点 */</span>
+<span class="kw">typedef struct</span> <span class="ty">Node</span> {
+  <span class="kw">void</span>           *data;
+  <span class="ty">DestroyNotify</span>   destroy;  <span class="cm">/* 可为 NULL（不拥有数据）*/</span>
+  <span class="kw">struct</span> <span class="ty">Node</span>    *next;
+} <span class="ty">Node</span>;
+
+<span class="ty">Node</span> *<span class="fn">node_new</span>(<span class="kw">void</span> *data, <span class="ty">DestroyNotify</span> destroy) {
+  <span class="ty">Node</span> *n = <span class="fn">malloc</span>(<span class="kw">sizeof</span>(*n));
+  n->data = data; n->destroy = destroy; n->next = <span class="num">NULL</span>;
+  <span class="kw">return</span> n;
+}
+
+<span class="kw">void</span> <span class="fn">node_free</span>(<span class="ty">Node</span> *n) {
+  <span class="kw">if</span> (n) {
+    <span class="kw">if</span> (n->destroy) n-><span class="fn">destroy</span>(n->data);  <span class="cm">/* 自动清理 */</span>
+    <span class="fn">free</span>(n);
+  }
+}
+
+<span class="cm">/* 使用：哈希表拥有字符串 value */</span>
+<span class="ty">Node</span> *n = <span class="fn">node_new</span>(<span class="fn">strdup</span>(<span class="str">"hello"</span>), free);
+<span class="fn">node_free</span>(n);  <span class="cm">/* 自动 free("hello") */</span>
+
+<span class="cm">/* 使用：不拥有（借用）数据 */</span>
+<span class="ty">Node</span> *borrowed = <span class="fn">node_new</span>(some_ptr, <span class="num">NULL</span>);  <span class="cm">/* 不释放 */</span></code></pre>
+
+      <div class="box box-info">
+        <div class="box-title">💡 设计精髓</div>
+        <p style="margin:0">
+          通过将 <code>DestroyNotify</code> 与数据<strong>同时注册</strong>，容器无需知道数据的类型，却能在正确的时机释放它。这是在 C 语言中实现"多态析构"的惯用法，等同于 C++ 中虚析构函数的效果，但没有虚表开销。
+        </p>
+      </div>
+    </section>
+
+    <!-- ═══════════ OWNERSHIP ═══════════ -->
+    <section class="section" id="ownership">
+      <div class="section-badge">🔄 设计思想 ⑥</div>
+      <h2 class="section-title">所有权语义 — g_steal_pointer</h2>
+      <p>
+        GLib 2.44 引入 <code>g_steal_pointer()</code>，用于在不增加引用计数的情况下<strong>显式转移指针所有权</strong>，配合自动清理宏使用可避免双重释放（double-free）。
+      </p>
+      <div class="box box-ref">
+        <div class="box-title">📎 官方文档来源</div>
+        <p style="margin:0"><a href="https://docs.gtk.org/glib/reference-counting.html" target="_blank">docs.gtk.org/glib/reference-counting.html</a> 和 <a href="https://docs.gtk.org/glib/memory.html" target="_blank">docs.gtk.org/glib/memory.html</a></p>
+      </div>
+
+      <h3 class="sub-title">官方示例：g_steal_pointer 转移所有权</h3>
+      <pre><code><span class="cm">/* 官方文档示例：引用计数对象的所有权转移 */</span>
+<span class="ty">Person</span> *p = <span class="fn">g_rc_box_new</span>(<span class="ty">Person</span>);
+
+<span class="cm">/* fill_person_details() 在其他地方定义 */</span>
+<span class="fn">fill_person_details</span>(p);
+
+<span class="cm">/* 转移所有权：p 变为 NULL，不增加 ref_count */</span>
+<span class="fn">add_person_to_database_no_ref</span>(db, <span class="fn">g_steal_pointer</span>(&p));
+<span class="cm">/* 此时 p == NULL，不会在函数结束时被二次释放 */</span></code></pre>
+
+      <h3 class="sub-title">所有权语义三种模式</h3>
+      <div class="diagram">
+        <svg width="660" height="180" viewBox="0 0 660 180" xmlns="http://www.w3.org/2000/svg">
+          <defs>
+            <marker id="a6" markerWidth="8" markerHeight="8" refX="6" refY="3" orient="auto">
+              <path d="M0,0 L0,6 L8,3 z" fill="#7c6af7"/>
+            </marker>
+          </defs>
+          <!-- Borrow -->
+          <rect x="20" y="40" width="170" height="100" rx="10" fill="#1a1d2e" stroke="#56cfb2" stroke-width="1.5"/>
+          <text x="105" y="68" text-anchor="middle" fill="#56cfb2" font-size="12" font-weight="bold">借用（Borrow）</text>
+          <text x="105" y="90" text-anchor="middle" fill="#9aa3c2" font-size="10">const T* 参数</text>
+          <text x="105" y="108" text-anchor="middle" fill="#9aa3c2" font-size="10">不增加引用计数</text>
+          <text x="105" y="126" text-anchor="middle" fill="#9aa3c2" font-size="10">调用方仍拥有所有权</text>
+
+          <!-- Transfer -->
+          <rect x="245" y="40" width="170" height="100" rx="10" fill="#1a1d2e" stroke="#f7c56a" stroke-width="1.5"/>
+          <text x="330" y="68" text-anchor="middle" fill="#f7c56a" font-size="12" font-weight="bold">转移（Transfer）</text>
+          <text x="330" y="90" text-anchor="middle" fill="#9aa3c2" font-size="10">g_steal_pointer()</text>
+          <text x="330" y="108" text-anchor="middle" fill="#9aa3c2" font-size="10">原指针置 NULL</text>
+          <text x="330" y="126" text-anchor="middle" fill="#9aa3c2" font-size="10">所有权转移到被调方</text>
+
+          <!-- Share -->
+          <rect x="470" y="40" width="170" height="100" rx="10" fill="#1a1d2e" stroke="#f7916a" stroke-width="1.5"/>
+          <text x="555" y="68" text-anchor="middle" fill="#f7916a" font-size="12" font-weight="bold">共享（Share）</text>
+          <text x="555" y="90" text-anchor="middle" fill="#9aa3c2" font-size="10">g_rc_box_acquire()</text>
+          <text x="555" y="108" text-anchor="middle" fill="#9aa3c2" font-size="10">引用计数++</text>
+          <text x="555" y="126" text-anchor="middle" fill="#9aa3c2" font-size="10">双方共同拥有</text>
+        </svg>
+      </div>
+
+      <h3 class="sub-title">在自己代码中实现 steal_pointer</h3>
+      <pre><code><span class="cm">/* 仿 g_steal_pointer 的通用宏 */</span>
+<span class="pp">#define steal_pointer(pp) ({          \
+    __typeof__(*(pp)) _tmp = *(pp);   \
+    *(pp) = NULL;                     \
+    _tmp;                             \
+})</span>
+
+<span class="cm">/* 使用示例 */</span>
+<span class="macro">autofree</span> <span class="kw">char</span> *local_buf = <span class="fn">malloc</span>(<span class="num">1024</span>);
+<span class="fn">fill_data</span>(local_buf);
+<span class="cm">/* 将所有权转移给 result，local_buf 变为 NULL，函数结束不会 double-free */</span>
+<span class="kw">char</span> *result = <span class="fn">steal_pointer</span>(&local_buf);</code></pre>
+    </section>
+
+    <!-- ═══════════ ATOMIC ═══════════ -->
+    <section class="section" id="atomic">
+      <div class="section-badge">⚡ 设计思想 ⑦</div>
+      <h2 class="section-title">原子操作与线程安全设计</h2>
+      <p>
+        GLib 通过 <code>gatomicrefcount</code> 和 <code>g_atomic_*</code> 系列函数提供了<strong>无锁</strong>引用计数和原子基础操作，并封装了跨平台的互斥量（GMutex）、条件变量（GCond）、读写锁（GRWLock）和线程本地存储（GPrivate）。
+      </p>
+
+      <h3 class="sub-title">原子引用计数原理图</h3>
+      <div class="diagram">
+        <svg width="640" height="180" viewBox="0 0 640 180" xmlns="http://www.w3.org/2000/svg">
+          <defs>
+            <marker id="a7" markerWidth="8" markerHeight="8" refX="6" refY="3" orient="auto">
+              <path d="M0,0 L0,6 L8,3 z" fill="#56cfb2"/>
+            </marker>
+          </defs>
+          <!-- Thread 1 -->
+          <rect x="30" y="40" width="130" height="100" rx="10" fill="#1a1d2e" stroke="#56cfb2" stroke-width="1.5"/>
+          <text x="95" y="68" text-anchor="middle" fill="#56cfb2" font-size="11" font-weight="bold">线程 A</text>
+          <text x="95" y="90" text-anchor="middle" fill="#9aa3c2" font-size="10">atomic_fetch_add</text>
+          <text x="95" y="108" text-anchor="middle" fill="#9aa3c2" font-size="10">(&ref, 1)</text>
+          <text x="95" y="126" text-anchor="middle" fill="#f7c56a" font-size="10">ref_count: 1→2</text>
+
+          <!-- Thread 2 -->
+          <rect x="30" y="155" width="130" height="0" rx="10" fill="none"/>
+
+          <!-- Memory -->
+          <rect x="250" y="55" width="140" height="70" rx="10" fill="#232640" stroke="#7c6af7" stroke-width="2"/>
+          <text x="320" y="82" text-anchor="middle" fill="#7c6af7" font-size="12" font-weight="bold">_Atomic int</text>
+          <text x="320" y="102" text-anchor="middle" fill="#f7c56a" font-size="14" font-weight="bold">ref_count</text>
+          <text x="320" y="118" text-anchor="middle" fill="#9aa3c2" font-size="10">CAS 保证原子性</text>
+
+          <!-- Thread 3 -->
+          <rect x="480" y="40" width="130" height="100" rx="10" fill="#1a1d2e" stroke="#f7916a" stroke-width="1.5"/>
+          <text x="545" y="68" text-anchor="middle" fill="#f7916a" font-size="11" font-weight="bold">线程 B</text>
+          <text x="545" y="90" text-anchor="middle" fill="#9aa3c2" font-size="10">atomic_fetch_sub</text>
+          <text x="545" y="108" text-anchor="middle" fill="#9aa3c2" font-size="10">(&ref, 1)</text>
+          <text x="545" y="126" text-anchor="middle" fill="#f7916a" font-size="10">若=0 → free()</text>
+
+          <line x1="160" y1="90" x2="248" y2="90" stroke="#56cfb2" stroke-width="1.5" marker-end="url(#a7)"/>
+          <line x1="480" y1="90" x2="392" y2="90" stroke="#f7916a" stroke-width="1.5" marker-end="url(#a3b)"/>
+        </svg>
+      </div>
+
+      <h3 class="sub-title">GLib 线程同步工具速查</h3>
+      <table>
+        <thead><tr><th>GLib 类型/宏</th><th>等价 POSIX</th><th>特点</th></tr></thead>
+        <tbody>
+          <tr><td><code>GMutex</code></td><td><code>pthread_mutex_t</code></td><td>静态初始化友好，栈分配安全</td></tr>
+          <tr><td><code>GRecMutex</code></td><td><code>pthread_mutex (RECURSIVE)</code></td><td>同线程可重入锁</td></tr>
+          <tr><td><code>GRWLock</code></td><td><code>pthread_rwlock_t</code></td><td>读写分离锁，多读单写</td></tr>
+          <tr><td><code>GCond</code></td><td><code>pthread_cond_t</code></td><td>条件变量</td></tr>
+          <tr><td><code>GPrivate</code></td><td><code>pthread_key_t</code></td><td>线程本地存储，支持 GDestroyNotify</td></tr>
+          <tr><td><code>GOnce / g_once()</code></td><td><code>pthread_once_t</code></td><td>一次性初始化，保证线程安全</td></tr>
+          <tr><td><code>g_atomic_int_*</code></td><td>C11 <code>_Atomic</code></td><td>原子整数操作，无锁</td></tr>
+        </tbody>
+      </table>
+
+      <h3 class="sub-title">一次性初始化模式（GOnce）</h3>
+      <pre><code><span class="cm">/* GLib GOnce 单次初始化 — 对应 pthread_once */</span>
+<span class="kw">static</span> <span class="ty">GOnce</span> my_once = G_ONCE_INIT;
+
+<span class="kw">static</span> <span class="ty">gpointer</span> <span class="fn">init_expensive_resource</span>(<span class="ty">gpointer</span> arg) {
+  <span class="cm">/* 只会被调用一次，线程安全 */</span>
+  <span class="kw">return</span> <span class="fn">create_resource</span>();
+}
+
+<span class="kw">void</span> <span class="fn">use_resource</span>(<span class="kw">void</span>) {
+  <span class="ty">Resource</span> *r = <span class="fn">g_once</span>(&my_once, init_expensive_resource, <span class="num">NULL</span>);
+  <span class="fn">do_work</span>(r);
+}
+
+<span class="cm">/* ── 无需 GLib：用 C11 原子量实现同等效果 ── */</span>
+<span class="pp">#include</span> <span class="str">&lt;stdatomic.h&gt;</span>
+<span class="kw">static</span> _Atomic <span class="kw">int</span>  once_flag = <span class="num">0</span>;
+<span class="kw">static</span> <span class="ty">Resource</span>    *global_res = <span class="num">NULL</span>;
+
+<span class="kw">void</span> <span class="fn">use_resource_c11</span>(<span class="kw">void</span>) {
+  <span class="kw">int</span> expected = <span class="num">0</span>;
+  <span class="kw">if</span> (<span class="fn">atomic_compare_exchange_strong</span>(&once_flag, &expected, <span class="num">1</span>)) {
+    global_res = <span class="fn">create_resource</span>();
+    <span class="fn">atomic_store</span>(&once_flag, <span class="num">2</span>);
+  }
+  <span class="kw">while</span> (<span class="fn">atomic_load</span>(&once_flag) != <span class="num">2</span>) ; <span class="cm">/* 自旋等待 */</span>
+  <span class="fn">do_work</span>(global_res);
+}</code></pre>
+    </section>
+
+    <!-- ═══════════ MAINLOOP ═══════════ -->
+    <section class="section" id="mainloop">
+      <div class="section-badge">🔁 设计思想 ⑧</div>
+      <h2 class="section-title">事件循环模式 — GMainLoop</h2>
+      <p>
+        GLib 的 <strong>GMainLoop/GMainContext/GSource</strong> 体系是一套完整的事件驱动框架。官方文档（<a href="https://docs.gtk.org/glib/main-loop.html" target="_blank">docs.gtk.org/glib/main-loop.html</a>）描述其核心为：事件源（GSource）被注册到上下文（GMainContext），主循环（GMainLoop）驱动调度。
+      </p>
+
+      <h3 class="sub-title">事件循环状态机（官方文档描述）</h3>
+      <div class="diagram">
+        <svg width="660" height="220" viewBox="0 0 660 220" xmlns="http://www.w3.org/2000/svg">
+          <defs>
+            <marker id="a8" markerWidth="8" markerHeight="8" refX="6" refY="3" orient="auto">
+              <path d="M0,0 L0,6 L8,3 z" fill="#7c6af7"/>
+            </marker>
+          </defs>
+          <!-- States -->
+          <rect x="30" y="80" width="120" height="50" rx="10" fill="#1a1d2e" stroke="#56cfb2" stroke-width="1.5"/>
+          <text x="90" y="108" text-anchor="middle" fill="#56cfb2" font-size="12" font-weight="bold">Prepare</text>
+          <text x="90" y="124" text-anchor="middle" fill="#9aa3c2" font-size="9">检查源是否就绪</text>
+
+          <rect x="210" y="20" width="120" height="50" rx="10" fill="#1a1d2e" stroke="#f7c56a" stroke-width="1.5"/>
+          <text x="270" y="48" text-anchor="middle" fill="#f7c56a" font-size="12" font-weight="bold">Query</text>
+          <text x="270" y="64" text-anchor="middle" fill="#9aa3c2" font-size="9">获取 poll 参数</text>
+
+          <rect x="390" y="20" width="120" height="50" rx="10" fill="#1a1d2e" stroke="#f7c56a" stroke-width="1.5"/>
+          <text x="450" y="48" text-anchor="middle" fill="#f7c56a" font-size="12" font-weight="bold">Wait/Poll</text>
+          <text x="450" y="64" text-anchor="middle" fill="#9aa3c2" font-size="9">阻塞等待事件</text>
+
+          <rect x="390" y="140" width="120" height="50" rx="10" fill="#1a1d2e" stroke="#f7916a" stroke-width="1.5"/>
+          <text x="450" y="168" text-anchor="middle" fill="#f7916a" font-size="12" font-weight="bold">Check</text>
+          <text x="450" y="184" text-anchor="middle" fill="#9aa3c2" font-size="9">检查事件是否发生</text>
+
+          <rect x="210" y="140" width="120" height="50" rx="10" fill="#1a1d2e" stroke="#7c6af7" stroke-width="1.5"/>
+          <text x="270" y="168" text-anchor="middle" fill="#7c6af7" font-size="12" font-weight="bold">Dispatch</text>
+          <text x="270" y="184" text-anchor="middle" fill="#9aa3c2" font-size="9">调用回调函数</text>
+
+          <!-- arrows -->
+          <line x1="150" y1="100" x2="208" y2="55" stroke="#7c6af7" stroke-width="1.5" marker-end="url(#a8)"/>
+          <line x1="330" y1="45" x2="388" y2="45" stroke="#7c6af7" stroke-width="1.5" marker-end="url(#a8)"/>
+          <line x1="450" y1="70" x2="450" y2="138" stroke="#7c6af7" stroke-width="1.5" marker-end="url(#a8)"/>
+          <line x1="390" y1="165" x2="332" y2="165" stroke="#7c6af7" stroke-width="1.5" marker-end="url(#a8)"/>
+          <line x1="210" y1="165" x2="155" y2="120" stroke="#7c6af7" stroke-width="1.5" marker-end="url(#a8)"/>
+
+          <!-- priority -->
+          <text x="330" y="215" text-anchor="middle" fill="#9aa3c2" font-size="10">优先级越低（值越大）→ 越晚调度 | G_PRIORITY_DEFAULT=0</text>
+        </svg>
+      </div>
+
+      <h3 class="sub-title">主循环使用示例</h3>
+      <pre><code><span class="cm">/* GLib 主循环基本结构 */</span>
+<span class="pp">#include</span> <span class="str">&lt;glib.h&gt;</span>
+
+<span class="ty">gboolean</span> <span class="fn">timer_callback</span>(<span class="ty">gpointer</span> user_data) {
+  <span class="fn">printf</span>(<span class="str">"Timer fired!\n"</span>);
+  <span class="kw">return</span> G_SOURCE_CONTINUE;  <span class="cm">/* TRUE = 保留定时器 */</span>
+}
+
+<span class="kw">int</span> <span class="fn">main</span>(<span class="kw">void</span>) {
+  <span class="macro">g_autoptr</span>(<span class="ty">GMainLoop</span>) loop = <span class="fn">g_main_loop_new</span>(<span class="num">NULL</span>, FALSE);
+
+  <span class="cm">/* 每 1 秒触发一次 */</span>
+  <span class="fn">g_timeout_add_seconds</span>(<span class="num">1</span>, timer_callback, <span class="num">NULL</span>);
+
+  <span class="fn">g_main_loop_run</span>(loop);  <span class="cm">/* 阻塞，直到 g_main_loop_quit() */</span>
+  <span class="kw">return</span> <span class="num">0</span>;
+  <span class="cm">/* loop 在此自动 g_main_loop_unref */</span>
+}</code></pre>
+
+      <h3 class="sub-title">在自己代码中实现简易事件循环</h3>
+      <pre><code><span class="cm">/* 无需 GLib 的轻量事件循环骨架 */</span>
+<span class="pp">#include</span> <span class="str">&lt;poll.h&gt;</span>
+<span class="pp">#include</span> <span class="str">&lt;stdlib.h&gt;</span>
+
+<span class="kw">typedef</span> <span class="kw">int</span> (*<span class="ty">EventCallback</span>)(<span class="kw">int</span> fd, <span class="kw">short</span> events, <span class="kw">void</span> *udata);
+
+<span class="kw">typedef struct</span> {
+  <span class="kw">struct</span> pollfd *fds;
+  <span class="ty">EventCallback</span> *cbs;
+  <span class="kw">void</span>          **udatas;
+  <span class="kw">int</span>             count;
+  <span class="kw">int</span>             running;
+} <span class="ty">EventLoop</span>;
+
+<span class="kw">void</span> <span class="fn">event_loop_run</span>(<span class="ty">EventLoop</span> *loop) {
+  loop->running = <span class="num">1</span>;
+  <span class="kw">while</span> (loop->running) {
+    <span class="kw">int</span> n = <span class="fn">poll</span>(loop->fds, loop->count, <span class="num">-1</span>);
+    <span class="kw">if</span> (n <= <span class="num">0</span>) <span class="kw">continue</span>;
+    <span class="kw">for</span> (<span class="kw">int</span> i = <span class="num">0</span>; i < loop->count; i++) {
+      <span class="kw">if</span> (loop->fds[i].revents) {
+        <span class="kw">int</span> keep = loop-><span class="fn">cbs</span>[i](loop->fds[i].fd,
+                                    loop->fds[i].revents,
+                                    loop->udatas[i]);
+        <span class="kw">if</span> (!keep) <span class="fn">event_loop_remove</span>(loop, i);
+      }
+    }
+  }
+}</code></pre>
+    </section>
+
+    <!-- ═══════════ SUMMARY ═══════════ -->
+    <section class="section" id="summary">
+      <div class="section-badge">📊 综合总结</div>
+      <h2 class="section-title">综合对比与实践建议</h2>
+
+      <h3 class="sub-title">各设计思想价值评估</h3>
+      <div class="diagram">
+        <svg width="640" height="310" viewBox="0 0 640 310" xmlns="http://www.w3.org/2000/svg">
+          <defs>
+            <linearGradient id="bar-raii" x1="0" y1="0" x2="1" y2="0">
+              <stop offset="0%" stop-color="#7c6af7"/>
+              <stop offset="100%" stop-color="#56cfb2"/>
+            </linearGradient>
+          </defs>
+          <!-- Y axis -->
+          <line x1="150" y1="20" x2="150" y2="270" stroke="#2e3258" stroke-width="1.5"/>
+          <!-- X axis -->
+          <line x1="150" y1="270" x2="620" y2="270" stroke="#2e3258" stroke-width="1.5"/>
+          <!-- X label -->
+          <text x="385" y="298" text-anchor="middle" fill="#9aa3c2" font-size="10">采用难度（越长越复杂）→</text>
+
+          <!-- Bars -->
+          <!-- RAII -->
+          <rect x="155" y="40" width="450" height="24" rx="4" fill="url(#bar-raii)"/>
+          <text x="148" y="57" text-anchor="end" fill="#e2e6f0" font-size="11">RAII</text>
+          <text x="610" y="57" text-anchor="start" fill="#56cfb2" font-size="10" font-weight="bold">★★★★★</text>
+
+          <!-- RefCount -->
+          <rect x="155" y="76" width="340" height="24" rx="4" fill="url(#bar-raii)"/>
+          <text x="148" y="93" text-anchor="end" fill="#e2e6f0" font-size="11">引用计数</text>
+          <text x="500" y="93" text-anchor="start" fill="#56cfb2" font-size="10" font-weight="bold">★★★★☆</text>
+
+          <!-- GError -->
+          <rect x="155" y="112" width="280" height="24" rx="4" fill="url(#bar-raii)"/>
+          <text x="148" y="129" text-anchor="end" fill="#e2e6f0" font-size="11">结构化错误</text>
+          <text x="440" y="129" text-anchor="start" fill="#56cfb2" font-size="10" font-weight="bold">★★★★☆</text>
+
+          <!-- Opaque -->
+          <rect x="155" y="148" width="200" height="24" rx="4" fill="url(#bar-raii)"/>
+          <text x="148" y="165" text-anchor="end" fill="#e2e6f0" font-size="11">不透明封装</text>
+          <text x="360" y="165" text-anchor="start" fill="#56cfb2" font-size="10" font-weight="bold">★★★★★</text>
+
+          <!-- Destroy -->
+          <rect x="155" y="184" width="250" height="24" rx="4" fill="url(#bar-raii)"/>
+          <text x="148" y="201" text-anchor="end" fill="#e2e6f0" font-size="11">销毁回调</text>
+          <text x="410" y="201" text-anchor="start" fill="#56cfb2" font-size="10" font-weight="bold">★★★★☆</text>
+
+          <!-- Ownership -->
+          <rect x="155" y="220" width="180" height="24" rx="4" fill="url(#bar-raii)"/>
+          <text x="148" y="237" text-anchor="end" fill="#e2e6f0" font-size="11">所有权语义</text>
+          <text x="340" y="237" text-anchor="start" fill="#56cfb2" font-size="10" font-weight="bold">★★★★★</text>
+
+          <!-- Legend -->
+          <rect x="155" y="256" width="12" height="12" rx="2" fill="url(#bar-raii)"/>
+          <text x="172" y="267" fill="#9aa3c2" font-size="10">条形长度 = 引入复杂度  ★ = 实用价值</text>
+        </svg>
+      </div>
+
+      <h3 class="sub-title">完整实践清单</h3>
+      <table>
+        <thead><tr><th>设计模式</th><th>引入成本</th><th>直接收益</th><th>推荐场景</th></tr></thead>
+        <tbody>
+          <tr>
+            <td><strong>RAII（__attribute__cleanup）</strong></td>
+            <td>极低（几个宏）</td>
+            <td>彻底消除多出口内存泄漏</td>
+            <td>所有 GCC/Clang 项目</td>
+          </tr>
+          <tr>
+            <td><strong>不透明类型</strong></td>
+            <td>极低（设计规范）</td>
+            <td>ABI 稳定，封装性好</td>
+            <td>所有公共 API 设计</td>
+          </tr>
+          <tr>
+            <td><strong>结构化错误（GError 模式）</strong></td>
+            <td>低（定义结构体+规则）</td>
+            <td>错误上下文丰富，易调试</td>
+            <td>系统/网络/文件 IO 层</td>
+          </tr>
+          <tr>
+            <td><strong>销毁回调（DestroyNotify）</strong></td>
+            <td>低（函数指针）</td>
+            <td>通用容器析构，避免类型耦合</td>
+            <td>通用容器/哈希表/队列</td>
+          </tr>
+          <tr>
+            <td><strong>引用计数</strong></td>
+            <td>中（实现 RcHeader）</td>
+            <td>共享数据生命周期管理</td>
+            <td>多处共享的复杂对象</td>
+          </tr>
+          <tr>
+            <td><strong>所有权语义（steal_pointer）</strong></td>
+            <td>低（一个宏）</td>
+            <td>防止双重释放，明确转移语义</td>
+            <td>配合 RAII 使用</td>
+          </tr>
+          <tr>
+            <td><strong>事件循环</strong></td>
+            <td>高（需完整实现）</td>
+            <td>高并发非阻塞 IO</td>
+            <td>网络服务器/守护进程</td>
+          </tr>
+          <tr>
+            <td><strong>原子引用计数</strong></td>
+            <td>中（C11 _Atomic）</td>
+            <td>多线程安全的引用计数</td>
+            <td>多线程共享数据</td>
+          </tr>
+        </tbody>
+      </table>
+
+      <div class="box box-info">
+        <div class="box-title">💡 最小化移植策略</div>
+        <p><strong>第一步</strong>：引入 RAII 宏 + 不透明类型规范 → 立即改善代码安全性，零成本</p>
+        <p><strong>第二步</strong>：引入结构化错误 + 销毁回调 → 提升 API 可用性与错误诊断能力</p>
+        <p><strong>第三步</strong>：按需引入引用计数 + 原子操作 → 解决共享所有权与线程安全</p>
+        <p style="margin:0"><strong>第四步</strong>：若需异步 IO，再实现事件循环 → 或直接使用 libuv/libev 等成熟库</p>
+      </div>
+
+      <div class="box box-ref">
+        <div class="box-title">📚 参考资料（均为官方来源）</div>
+        <ul class="rule-list" style="margin:0">
+          <li><a href="https://docs.gtk.org/glib/auto-cleanup.html" target="_blank">GLib: Automatic Cleanup</a> — g_autoptr / g_autofree（GLib 2.44+）</li>
+          <li><a href="https://docs.gtk.org/glib/reference-counting.html" target="_blank">GLib: Reference Counting</a> — RcBox / grefcount（GLib 2.58+）</li>
+          <li><a href="https://docs.gtk.org/glib/error-reporting.html" target="_blank">GLib: Error Reporting</a> — GError 使用规则</li>
+          <li><a href="https://docs.gtk.org/glib/memory.html" target="_blank">GLib: Memory Allocation</a> — g_malloc / g_steal_pointer</li>
+          <li><a href="https://docs.gtk.org/glib/" target="_blank">GLib 2.0 官方主页</a> — docs.gtk.org/glib</li>
+          <li><a href="https://mail.gnome.org/archives/commits-list/2015-February/msg09715.html" target="_blank">g_autofree 原始提交记录</a> — GNOME commits-list 2015</li>
+        </ul>
+      </div>
+    </section>
+
+  </main>
+</div>
+
+<!-- Keyboard nav hint -->
+<div id="keynav-hint">
+  <kbd>←</kbd><kbd>→</kbd> 键盘导航章节
+</div>
+
+<script>
+// ── Section IDs in order ──
+const sectionIds = ['intro','raii','refcount','gerror','opaque','destroy','ownership','atomic','mainloop','summary'];
+
+// ── Progress Bar ──
+function updateProgress() {
+  const scrollTop = window.scrollY;
+  const docHeight = document.documentElement.scrollHeight - window.innerHeight;
+  const pct = docHeight > 0 ? (scrollTop / docHeight) * 100 : 0;
+  document.getElementById('progress-bar').style.width = pct + '%';
+}
+
+// ── Active Nav Highlight ──
+const navLinks = document.querySelectorAll('.nav-link[data-target]');
+function updateActiveNav() {
+  const scrollY = window.scrollY + window.innerHeight * 0.35;
+  let current = sectionIds[0];
+  for (const id of sectionIds) {
+    const el = document.getElementById(id);
+    if (el && el.offsetTop <= scrollY) current = id;
+  }
+  navLinks.forEach(a => {
+    a.classList.toggle('active', a.dataset.target === current);
+  });
+}
+
+// ── Smooth scroll on nav click ──
+navLinks.forEach(a => {
+  a.addEventListener('click', () => {
+    const target = document.getElementById(a.dataset.target);
+    if (target) {
+      target.scrollIntoView({ behavior: 'smooth', block: 'start' });
+      // Close sidebar on mobile
+      if (window.innerWidth <= 768) toggleSidebar(false);
+    }
+  });
+});
+
+window.addEventListener('scroll', () => { updateProgress(); updateActiveNav(); }, { passive: true });
+updateProgress();
+updateActiveNav();
+
+// ── Hamburger / Sidebar ──
+function toggleSidebar(force) {
+  const sidebar = document.getElementById('sidebar');
+  const overlay = document.getElementById('overlay');
+  const isOpen = typeof force === 'boolean' ? force : !sidebar.classList.contains('open');
+  sidebar.classList.toggle('open', isOpen);
+  overlay.classList.toggle('open', isOpen);
+}
+
+// ── Keyboard Navigation ──
+document.addEventListener('keydown', e => {
+  if (e.target.tagName === 'INPUT' || e.target.tagName === 'TEXTAREA') return;
+  const active = [...navLinks].findIndex(a => a.classList.contains('active'));
+  let next = active;
+  if (e.key === 'ArrowRight' && active < sectionIds.length - 1) next = active + 1;
+  if (e.key === 'ArrowLeft'  && active > 0)                      next = active - 1;
+  if (next !== active) {
+    const target = document.getElementById(sectionIds[next]);
+    if (target) target.scrollIntoView({ behavior: 'smooth', block: 'start' });
+  }
+});
+</script>
+</body>
+</html>

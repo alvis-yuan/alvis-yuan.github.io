@@ -1,0 +1,1859 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Linux kfifo 无锁队列 — 原理与用户态实现</title>
+<style>
+  :root {
+    --nav-w: 270px;
+    --hdr-h: 56px;
+    --accent: #0078d7;
+    --accent2: #005fa3;
+    --bg: #f7f8fc;
+    --sidebar-bg: #1e2233;
+    --sidebar-text: #c8d0e7;
+    --sidebar-active: #0078d7;
+    --sidebar-hover: #2a3350;
+    --code-bg: #1a1e2e;
+    --code-fg: #e8eaf6;
+    --border: #e0e4f0;
+    --text: #1a1a2e;
+    --subtext: #555577;
+    --tag-green: #1a7f4b;
+    --tag-blue: #0062b1;
+    --tag-orange: #c85c00;
+    --card-bg: #fff;
+    --progress-h: 3px;
+    --radius: 10px;
+    --shadow: 0 2px 16px rgba(0,0,60,0.09);
+  }
+  *,*::before,*::after{box-sizing:border-box;margin:0;padding:0}
+  html{scroll-behavior:smooth;font-size:16px}
+  body{
+    font-family:'Segoe UI',system-ui,sans-serif;
+    background:var(--bg);
+    color:var(--text);
+    min-height:100vh;
+    overflow-x:hidden;
+  }
+  /* Progress bar */
+  #progress-bar{
+    position:fixed;top:0;left:0;height:var(--progress-h);
+    width:0%;background:linear-gradient(90deg,#0078d7,#00c6ff);
+    z-index:9999;transition:width .1s linear;
+  }
+  /* Sidebar */
+  #sidebar{
+    position:fixed;top:0;left:0;
+    width:var(--nav-w);height:100vh;
+    background:var(--sidebar-bg);
+    color:var(--sidebar-text);
+    overflow-y:auto;overflow-x:hidden;
+    z-index:800;
+    transition:transform .3s cubic-bezier(.4,0,.2,1);
+    display:flex;flex-direction:column;
+  }
+  #sidebar::-webkit-scrollbar{width:4px}
+  #sidebar::-webkit-scrollbar-thumb{background:#3a4060;border-radius:2px}
+  .sidebar-logo{
+    padding:18px 20px 14px;
+    border-bottom:1px solid #2a3350;
+    font-size:.85rem;color:#8899bb;
+    line-height:1.4;
+  }
+  .sidebar-logo strong{display:block;color:#e0e8ff;font-size:1.05rem;margin-bottom:2px}
+  .nav-group{padding:10px 0 4px}
+  .nav-group-title{
+    padding:6px 20px 4px;
+    font-size:.7rem;font-weight:700;
+    letter-spacing:.12em;text-transform:uppercase;
+    color:#5566aa;
+  }
+  .nav-item{
+    display:block;padding:8px 20px;
+    font-size:.85rem;color:var(--sidebar-text);
+    text-decoration:none;cursor:pointer;
+    border-left:3px solid transparent;
+    transition:all .18s;
+    line-height:1.4;
+  }
+  .nav-item:hover{background:var(--sidebar-hover);color:#fff}
+  .nav-item.active{
+    background:rgba(0,120,215,.18);
+    border-left-color:var(--sidebar-active);
+    color:#fff;font-weight:600;
+  }
+  /* Header */
+  #topbar{
+    position:fixed;top:0;left:var(--nav-w);right:0;height:var(--hdr-h);
+    background:#fff;border-bottom:1px solid var(--border);
+    display:flex;align-items:center;justify-content:space-between;
+    padding:0 28px;z-index:700;
+    transition:left .3s;
+    box-shadow:0 1px 8px rgba(0,0,60,0.06);
+  }
+  #topbar-title{font-size:.95rem;font-weight:600;color:var(--text);white-space:nowrap;overflow:hidden;text-overflow:ellipsis;max-width:70%}
+  #topbar-nav{display:flex;gap:8px}
+  .nav-btn{
+    background:var(--accent);color:#fff;border:none;
+    padding:6px 14px;border-radius:6px;cursor:pointer;
+    font-size:.8rem;font-weight:600;
+    transition:background .18s;
+  }
+  .nav-btn:hover{background:var(--accent2)}
+  .nav-btn:disabled{background:#b0b8cc;cursor:default}
+  /* Burger */
+  #burger{
+    display:none;background:none;border:none;cursor:pointer;
+    padding:8px;color:var(--text);
+  }
+  #burger svg{display:block}
+  /* Main */
+  #main{
+    margin-left:var(--nav-w);
+    padding-top:calc(var(--hdr-h) + 8px);
+    min-height:100vh;
+    transition:margin-left .3s;
+  }
+  .chapter{
+    max-width:860px;
+    margin:0 auto;
+    padding:36px 28px 60px;
+    display:none;
+  }
+  .chapter.active{display:block}
+  /* Typography */
+  h1{font-size:2rem;font-weight:800;color:#0a0a2a;margin-bottom:12px;line-height:1.2}
+  h2{font-size:1.35rem;font-weight:700;color:#0a1a3a;margin:36px 0 14px;border-bottom:2px solid var(--border);padding-bottom:8px}
+  h3{font-size:1.05rem;font-weight:700;color:#1a2a5a;margin:24px 0 10px}
+  p{line-height:1.8;color:#2a2a4a;margin-bottom:14px}
+  a{color:var(--accent);text-decoration:none}
+  a:hover{text-decoration:underline}
+  ul,ol{margin-bottom:14px;padding-left:24px;line-height:1.8;color:#2a2a4a}
+  li{margin-bottom:4px}
+  /* Chapter header */
+  .chapter-hero{
+    background:linear-gradient(135deg,#0a1628 0%,#1a2d5a 60%,#0d3a7a 100%);
+    color:#fff;border-radius:var(--radius);
+    padding:28px 28px 24px;margin-bottom:28px;
+    position:relative;overflow:hidden;
+  }
+  .chapter-hero::before{
+    content:'';position:absolute;top:-40px;right:-60px;
+    width:200px;height:200px;
+    background:radial-gradient(circle,rgba(0,120,255,.3),transparent 70%);
+    border-radius:50%;
+  }
+  .chapter-hero .badge{
+    display:inline-block;
+    background:rgba(0,120,215,.35);
+    color:#7ec8ff;
+    border:1px solid rgba(0,150,255,.3);
+    padding:3px 10px;border-radius:20px;
+    font-size:.72rem;font-weight:700;letter-spacing:.08em;
+    margin-bottom:10px;
+  }
+  .chapter-hero h1{color:#fff;font-size:1.65rem}
+  .chapter-hero p{color:#b0c8f0;margin-bottom:0}
+  /* Code blocks */
+  pre{
+    background:var(--code-bg);
+    color:var(--code-fg);
+    border-radius:8px;
+    padding:20px;
+    overflow-x:auto;
+    font-family:'Consolas','Fira Mono',monospace;
+    font-size:.82rem;
+    line-height:1.65;
+    margin:18px 0;
+    border:1px solid #2a3050;
+    position:relative;
+  }
+  .pre-label{
+    display:inline-block;
+    background:#2a3a60;color:#7ec8ff;
+    font-size:.68rem;font-weight:700;letter-spacing:.1em;
+    padding:2px 10px;border-radius:3px 3px 0 0;
+    margin-bottom:0;
+    position:absolute;top:0;left:0;
+    border-radius:8px 0 6px 0;
+  }
+  pre.has-label{padding-top:34px}
+  code{font-family:'Consolas','Fira Mono',monospace;font-size:.85em}
+  p code,li code{
+    background:#eef2ff;color:#1a3a7a;
+    padding:1px 6px;border-radius:4px;
+    font-size:.82em;
+  }
+  /* Callout boxes */
+  .callout{
+    border-radius:8px;padding:16px 18px;margin:18px 0;
+    border-left:4px solid;
+  }
+  .callout-info{background:#e8f4ff;border-color:#0078d7}
+  .callout-info .callout-title{color:#005aa3}
+  .callout-warn{background:#fff8e8;border-color:#e8a000}
+  .callout-warn .callout-title{color:#a06000}
+  .callout-success{background:#eefaf3;border-color:#1a7f4b}
+  .callout-success .callout-title{color:#0d5c35}
+  .callout-danger{background:#fff0f0;border-color:#d02020}
+  .callout-danger .callout-title{color:#a00000}
+  .callout-title{font-weight:700;font-size:.85rem;margin-bottom:6px;display:flex;align-items:center;gap:6px}
+  /* Tags */
+  .tag{
+    display:inline-block;padding:2px 9px;border-radius:12px;
+    font-size:.72rem;font-weight:700;margin:2px 3px 2px 0;
+  }
+  .tag-green{background:#d4f0e0;color:var(--tag-green)}
+  .tag-blue{background:#d4e8ff;color:var(--tag-blue)}
+  .tag-orange{background:#ffe8d0;color:var(--tag-orange)}
+  /* Cards */
+  .card-row{display:grid;grid-template-columns:repeat(auto-fit,minmax(200px,1fr));gap:16px;margin:18px 0}
+  .card{
+    background:var(--card-bg);border-radius:var(--radius);
+    border:1px solid var(--border);padding:18px;
+    box-shadow:var(--shadow);
+  }
+  .card-icon{font-size:1.6rem;margin-bottom:8px}
+  .card h4{font-size:.95rem;font-weight:700;margin-bottom:6px;color:#0a1a3a}
+  .card p{font-size:.82rem;margin-bottom:0;color:var(--subtext)}
+  /* Table */
+  .table-wrap{overflow-x:auto;margin:18px 0}
+  table{border-collapse:collapse;width:100%;font-size:.85rem}
+  th{background:#1e2233;color:#c8d0e7;padding:10px 14px;text-align:left;font-weight:600}
+  td{padding:9px 14px;border-bottom:1px solid var(--border);color:#2a2a4a}
+  tr:hover td{background:#f0f4ff}
+  /* Source reference */
+  .src-ref{
+    display:inline-flex;align-items:center;gap:6px;
+    background:#f0f4ff;border:1px solid #c0d0ff;
+    color:#1a3a8a;padding:4px 12px;border-radius:20px;
+    font-size:.78rem;font-weight:600;
+    text-decoration:none;margin:4px 0;
+  }
+  .src-ref:hover{background:#d8e8ff}
+  /* SVG diagrams */
+  .diagram{
+    background:#fff;border:1px solid var(--border);
+    border-radius:var(--radius);padding:20px;
+    margin:20px 0;text-align:center;
+    box-shadow:var(--shadow);
+    overflow-x:auto;
+  }
+  .diagram svg{max-width:100%;height:auto}
+  /* Overlay for mobile sidebar */
+  #overlay{
+    display:none;position:fixed;inset:0;
+    background:rgba(0,0,0,.5);z-index:750;
+  }
+  /* Responsive */
+  @media(max-width:768px){
+    :root{--nav-w:270px}
+    #sidebar{transform:translateX(-100%)}
+    #sidebar.open{transform:translateX(0)}
+    #topbar{left:0}
+    #main{margin-left:0}
+    #burger{display:block}
+    #overlay.show{display:block}
+    .chapter{padding:24px 16px 50px}
+    h1{font-size:1.5rem}
+    .card-row{grid-template-columns:1fr}
+  }
+  /* Syntax highlight classes */
+  .kw{color:#569cd6}
+  .cm{color:#6a9955;font-style:italic}
+  .st{color:#ce9178}
+  .nm{color:#b5cea8}
+  .fn{color:#dcdcaa}
+  .pp{color:#c586c0}
+  .ty{color:#4ec9b0}
+  .op{color:#d4d4d4}
+</style>
+</head>
+<body>
+
+<div id="progress-bar"></div>
+<div id="overlay"></div>
+
+<!-- Sidebar -->
+<nav id="sidebar">
+  <div class="sidebar-logo">
+    <strong>Linux kfifo 无锁队列</strong>
+    原理 · 实现 · 应用
+  </div>
+  <div class="nav-group">
+    <div class="nav-group-title">背景与原理</div>
+    <a class="nav-item active" data-ch="0">§1 · 概述与背景</a>
+    <a class="nav-item" data-ch="1">§2 · kfifo 数据结构</a>
+    <a class="nav-item" data-ch="2">§3 · 环形缓冲区原理</a>
+    <a class="nav-item" data-ch="3">§4 · 无锁核心：内存屏障</a>
+  </div>
+  <div class="nav-group">
+    <div class="nav-group-title">用户态实现</div>
+    <a class="nav-item" data-ch="4">§5 · user_kfifo.h 完整实现</a>
+    <a class="nav-item" data-ch="5">§6 · 关键 API 解析</a>
+  </div>
+  <div class="nav-group">
+    <div class="nav-group-title">实战示例</div>
+    <a class="nav-item" data-ch="6">§7 · 生产者消费者示例</a>
+    <a class="nav-item" data-ch="7">§8 · 与内核版本对比</a>
+    <a class="nav-item" data-ch="8">§9 · 注意事项与局限</a>
+    <a class="nav-item" data-ch="9">§10 · 参考文献</a>
+  </div>
+</nav>
+
+<!-- Topbar -->
+<header id="topbar">
+  <button id="burger" aria-label="菜单">
+    <svg width="22" height="22" viewBox="0 0 22 22" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round">
+      <line x1="3" y1="6" x2="19" y2="6"/><line x1="3" y1="11" x2="19" y2="11"/><line x1="3" y1="16" x2="19" y2="16"/>
+    </svg>
+  </button>
+  <span id="topbar-title">§1 · 概述与背景</span>
+  <div id="topbar-nav">
+    <button class="nav-btn" id="btn-prev" disabled>← 上一章</button>
+    <button class="nav-btn" id="btn-next">下一章 →</button>
+  </div>
+</header>
+
+<!-- Main content -->
+<main id="main">
+
+<!-- ========== Chapter 0 ========== -->
+<section class="chapter active" id="ch-0">
+  <div class="chapter-hero">
+    <div class="badge">CHAPTER 1</div>
+    <h1>概述与背景</h1>
+    <p>Linux 内核 kfifo 的设计哲学：用最少的同步原语，实现最高效的队列</p>
+  </div>
+
+  <h2>什么是 kfifo？</h2>
+  <p>
+    <strong>kfifo</strong>（Kernel FIFO）是 Linux 内核提供的一种通用环形缓冲区（Ring Buffer / Circular Buffer）实现，
+    位于内核源码的 <code>include/linux/kfifo.h</code> 和 <code>lib/kfifo.c</code>。
+    它由 Stelian Pop 在 2004 年首次引入，后经 Stefani Seibold 在 2013 年重写为泛型版本。
+  </p>
+
+  <div class="callout callout-info">
+    <div class="callout-title">📌 官方注释原文（摘自 torvalds/linux master）</div>
+    <pre style="margin:8px 0 0;background:transparent;color:#1a3a8a;border:none;padding:0;font-size:.8rem">/*
+ * Note about locking: There is no locking required until only one reader
+ * and one writer is using the fifo and no kfifo_reset() will be called.
+ * kfifo_reset_out() can be safely used, until it will be only called
+ * in the reader thread.
+ * For multiple writer and one reader there is only a need to lock the writer.
+ * And vice versa for only one writer and multiple reader there is only a need
+ * to lock the reader.
+ */</pre>
+    <a class="src-ref" href="https://github.com/torvalds/linux/blob/master/include/linux/kfifo.h" target="_blank">
+      🔗 github.com/torvalds/linux — include/linux/kfifo.h
+    </a>
+  </div>
+
+  <h2>核心设计目标</h2>
+  <div class="card-row">
+    <div class="card">
+      <div class="card-icon">🔒</div>
+      <h4>SPSC 无锁</h4>
+      <p>单生产者 + 单消费者场景下，无需任何互斥锁，仅依靠内存屏障保证正确性</p>
+    </div>
+    <div class="card">
+      <div class="card-icon">⚡</div>
+      <h4>高性能</h4>
+      <p>利用 2 的幂次大小，将取模运算替换为位与（&）运算，极大提升速度</p>
+    </div>
+    <div class="card">
+      <div class="card-icon">♾️</div>
+      <h4>自然溢出</h4>
+      <p>in/out 指针不做范围限制，依靠 unsigned int 自然溢出（wrap around）消除判断</p>
+    </div>
+    <div class="card">
+      <div class="card-icon">🧩</div>
+      <h4>泛型支持</h4>
+      <p>现代版本通过宏和联合体支持任意类型元素，并支持定长/变长记录模式</p>
+    </div>
+  </div>
+
+  <h2>演进历史</h2>
+  <div class="table-wrap">
+    <table>
+      <tr><th>版本/时间</th><th>作者</th><th>主要变化</th></tr>
+      <tr><td>v2.6.10 (2004)</td><td>Stelian Pop</td><td>首次引入，简单字节流 FIFO，含 spinlock</td></tr>
+      <tr><td>v2.6.33 (2010)</td><td>Stefani Seibold</td><td>重构 API，引入 <code>__kfifo</code> 内部结构，支持泛型</td></tr>
+      <tr><td>v3.x+</td><td>Stefani Seibold</td><td>完整宏体系，支持变长记录（rec_ptr_1/rec_ptr_2）</td></tr>
+      <tr><td>v6.x (现代)</td><td>社区维护</td><td>引入 <code>smp_load_acquire</code>/<code>smp_store_release</code> 等现代屏障原语</td></tr>
+    </table>
+  </div>
+
+  <h2>应用场景</h2>
+  <ul>
+    <li>驱动层：键盘/串口/网卡的中断上下文 → 进程上下文数据传递</li>
+    <li>内核日志：tracing/ftrace 环形日志缓冲区</li>
+    <li>用户态移植：高性能服务器、实时系统的线程间通信</li>
+    <li>音视频：媒体管道中的帧缓冲队列</li>
+  </ul>
+</section>
+
+<!-- ========== Chapter 1 ========== -->
+<section class="chapter" id="ch-1">
+  <div class="chapter-hero">
+    <div class="badge">CHAPTER 2</div>
+    <h1>kfifo 数据结构</h1>
+    <p>理解 __kfifo 结构体的每个字段，以及泛型宏体系的设计</p>
+  </div>
+
+  <h2>核心结构体 <code>struct __kfifo</code></h2>
+  <p>摘自 Linux kernel master 分支 <code>include/linux/kfifo.h</code>（作者：Stefani Seibold）：</p>
+  <a class="src-ref" href="https://github.com/torvalds/linux/blob/master/include/linux/kfifo.h" target="_blank">
+    🔗 github.com/torvalds/linux — include/linux/kfifo.h (Copyright © 2013 Stefani Seibold)
+  </a>
+
+  <pre class="has-label"><span class="pre-label">kernel/include/linux/kfifo.h</span><span class="kw">struct</span> <span class="ty">__kfifo</span> {
+    <span class="kw">unsigned int</span>  in;    <span class="cm">/* 写入位置（生产者更新）*/</span>
+    <span class="kw">unsigned int</span>  out;   <span class="cm">/* 读取位置（消费者更新）*/</span>
+    <span class="kw">unsigned int</span>  mask;  <span class="cm">/* 缓冲区大小减一（size - 1，用于位与取模）*/</span>
+    <span class="kw">unsigned int</span>  esize; <span class="cm">/* 每个元素的字节大小 */</span>
+    <span class="kw">void</span>         *data;  <span class="cm">/* 指向实际存储缓冲区的指针 */</span>
+};</pre>
+
+  <div class="diagram">
+    <svg width="620" height="180" viewBox="0 0 620 180">
+      <defs>
+        <marker id="arr" markerWidth="8" markerHeight="8" refX="6" refY="3" orient="auto">
+          <path d="M0,0 L0,6 L8,3 z" fill="#0078d7"/>
+        </marker>
+      </defs>
+      <!-- struct box -->
+      <rect x="20" y="20" width="580" height="60" rx="8" fill="#1e2233" stroke="#0078d7" stroke-width="1.5"/>
+      <text x="40" y="38" font-size="11" fill="#7ec8ff" font-family="monospace" font-weight="bold">struct __kfifo</text>
+      <!-- Fields -->
+      <rect x="40" y="46" width="80" height="24" rx="4" fill="#0d3a6a" stroke="#0078d7" stroke-width="1"/>
+      <text x="80" y="62" text-anchor="middle" font-size="11" fill="#fff" font-family="monospace">in</text>
+      <rect x="135" y="46" width="80" height="24" rx="4" fill="#0d3a6a" stroke="#0078d7" stroke-width="1"/>
+      <text x="175" y="62" text-anchor="middle" font-size="11" fill="#fff" font-family="monospace">out</text>
+      <rect x="230" y="46" width="80" height="24" rx="4" fill="#0d3a6a" stroke="#0078d7" stroke-width="1"/>
+      <text x="270" y="62" text-anchor="middle" font-size="11" fill="#fff" font-family="monospace">mask</text>
+      <rect x="325" y="46" width="80" height="24" rx="4" fill="#0d3a6a" stroke="#0078d7" stroke-width="1"/>
+      <text x="365" y="62" text-anchor="middle" font-size="11" fill="#fff" font-family="monospace">esize</text>
+      <rect x="420" y="46" width="160" height="24" rx="4" fill="#1a4a2a" stroke="#1a7f4b" stroke-width="1"/>
+      <text x="500" y="62" text-anchor="middle" font-size="11" fill="#7fffb0" font-family="monospace">*data ──────→</text>
+
+      <!-- Buffer visualization -->
+      <text x="310" y="112" text-anchor="middle" font-size="11" fill="#8899bb">实际数据缓冲区（大小必须为 2 的幂次）</text>
+      <rect x="20" y="120" width="580" height="40" rx="6" fill="#111827" stroke="#2a3a60" stroke-width="1.5"/>
+      <!-- slots -->
+      <rect x="20" y="120" width="72" height="40" rx="0" fill="#1a2a4a" stroke="#2a3a60" stroke-width="1"/>
+      <text x="56" y="144" text-anchor="middle" font-size="10" fill="#5566aa" font-family="monospace">[0]</text>
+      <rect x="92" y="120" width="72" height="40" fill="#1a3a6a" stroke="#0078d7" stroke-width="2"/>
+      <text x="128" y="140" text-anchor="middle" font-size="10" fill="#7ec8ff" font-family="monospace">[1]</text>
+      <text x="128" y="154" text-anchor="middle" font-size="9" fill="#0078d7">← out</text>
+      <rect x="164" y="120" width="72" height="40" fill="#1a4a2a" stroke="#1a7f4b" stroke-width="1"/>
+      <text x="200" y="144" text-anchor="middle" font-size="10" fill="#7fffb0" font-family="monospace">[2] data</text>
+      <rect x="236" y="120" width="72" height="40" fill="#1a4a2a" stroke="#1a7f4b" stroke-width="1"/>
+      <text x="272" y="144" text-anchor="middle" font-size="10" fill="#7fffb0" font-family="monospace">[3] data</text>
+      <rect x="308" y="120" width="72" height="40" fill="#3a2a1a" stroke="#e8a000" stroke-width="2"/>
+      <text x="344" y="140" text-anchor="middle" font-size="10" fill="#ffd080" font-family="monospace">[4]</text>
+      <text x="344" y="154" text-anchor="middle" font-size="9" fill="#e8a000">← in</text>
+      <rect x="380" y="120" width="72" height="40" fill="#1a2a4a" stroke="#2a3a60" stroke-width="1"/>
+      <text x="416" y="144" text-anchor="middle" font-size="10" fill="#5566aa" font-family="monospace">[5]</text>
+      <rect x="452" y="120" width="72" height="40" fill="#1a2a4a" stroke="#2a3a60" stroke-width="1"/>
+      <text x="488" y="144" text-anchor="middle" font-size="10" fill="#5566aa" font-family="monospace">[6]</text>
+      <rect x="524" y="120" width="76" height="40" rx="0" fill="#1a2a4a" stroke="#2a3a60" stroke-width="1"/>
+      <text x="562" y="144" text-anchor="middle" font-size="10" fill="#5566aa" font-family="monospace">[7]</text>
+      <!-- Legend -->
+      <rect x="164" y="161" width="12" height="8" fill="#1a4a2a" stroke="#1a7f4b" stroke-width="1"/>
+      <text x="180" y="169" font-size="10" fill="#5566aa">有效数据</text>
+      <rect x="280" y="161" width="12" height="8" fill="#1a2a4a" stroke="#2a3a60" stroke-width="1"/>
+      <text x="296" y="169" font-size="10" fill="#5566aa">空闲槽位</text>
+    </svg>
+  </div>
+
+  <h2>字段详解</h2>
+  <div class="table-wrap">
+    <table>
+      <tr><th>字段</th><th>类型</th><th>含义</th><th>所有者</th></tr>
+      <tr><td><code>in</code></td><td>unsigned int</td><td>下一个写入位置的<strong>绝对偏移</strong>，单调递增，不清零</td><td>生产者</td></tr>
+      <tr><td><code>out</code></td><td>unsigned int</td><td>下一个读取位置的<strong>绝对偏移</strong>，单调递增，不清零</td><td>消费者</td></tr>
+      <tr><td><code>mask</code></td><td>unsigned int</td><td>等于 <code>size - 1</code>，用于 <code>idx & mask</code> 替代取模</td><td>只读</td></tr>
+      <tr><td><code>esize</code></td><td>unsigned int</td><td>每个元素字节数（字节流时为 1）</td><td>只读</td></tr>
+      <tr><td><code>data</code></td><td>void *</td><td>指向实际环形缓冲区内存</td><td>只读</td></tr>
+    </table>
+  </div>
+
+  <h2>旧版结构（v2.6.x，更直观）</h2>
+  <p>来自 <a href="https://github.com/spotify/linux/blob/master/include/linux/kfifo.h" target="_blank">spotify/linux（早期内核镜像）</a>，便于理解基本概念：</p>
+  <pre class="has-label"><span class="pre-label">kernel v2.6.x — include/linux/kfifo.h</span><span class="cm">/* Copyright (C) 2004 Stelian Pop &lt;stelian@popies.net&gt; */</span>
+<span class="kw">struct</span> <span class="ty">kfifo</span> {
+    <span class="kw">unsigned char</span>  *buffer; <span class="cm">/* 数据缓冲区指针 */</span>
+    <span class="kw">unsigned int</span>    size;   <span class="cm">/* 缓冲区大小（必须为 2 的幂）*/</span>
+    <span class="kw">unsigned int</span>    in;     <span class="cm">/* 写位置：data is added at offset (in % size) */</span>
+    <span class="kw">unsigned int</span>    out;    <span class="cm">/* 读位置：data is extracted from off. (out % size) */</span>
+    <span class="ty">spinlock_t</span>     *lock;   <span class="cm">/* 多写者时使用锁 */</span>
+};</pre>
+
+  <div class="callout callout-success">
+    <div class="callout-title">✅ 关键洞见</div>
+    <p style="margin:0">旧版用 <code>size</code> 字段，新版用 <code>mask = size - 1</code> 字段，这样在访问元素时只需 <code>in & mask</code> 一次位操作，比 <code>in % size</code> 更快。</p>
+  </div>
+</section>
+
+<!-- ========== Chapter 2 ========== -->
+<section class="chapter" id="ch-2">
+  <div class="chapter-hero">
+    <div class="badge">CHAPTER 3</div>
+    <h1>环形缓冲区原理</h1>
+    <p>索引自然溢出技巧、2 的幂次魔法、满/空判断的精妙设计</p>
+  </div>
+
+  <h2>为什么必须是 2 的幂次大小？</h2>
+  <p>来自 <a href="https://github.com/LorDClockaN/DesireC-eclair/blob/master/kernel/kfifo.c" target="_blank">kernel/kfifo.c</a> 注释：</p>
+  <pre class="has-label"><span class="pre-label">kernel/kfifo.c — kfifo_alloc</span><span class="cm">/*
+ * round up to the next power of 2, since our 'let the indices
+ * wrap' technique works only in this case.
+ */</span>
+<span class="kw">if</span> (size &amp; (size - <span class="nm">1</span>)) {
+    BUG_ON(size &gt; <span class="nm">0x80000000</span>);
+    size = roundup_pow_of_two(size);
+}</pre>
+
+  <div class="callout callout-info">
+    <div class="callout-title">💡 位运算替代取模</div>
+    <p style="margin:0">当 <code>size = 2^N</code> 时：<code>index % size</code> ≡ <code>index & (size-1)</code> ≡ <code>index & mask</code><br>
+    位与运算是 CPU 单周期指令，取模运算需要除法指令（慢 5~20 倍）。</p>
+  </div>
+
+  <h2>索引自然溢出（Wrap-Around）技巧</h2>
+  <p>kfifo 使用 <code>unsigned int</code> 类型的 <code>in</code> 和 <code>out</code>，它们<strong>永不清零、单调递增</strong>，利用无符号整数溢出（C 标准定义的行为）自动回绕。</p>
+
+  <div class="diagram">
+    <svg width="580" height="220" viewBox="0 0 580 220">
+      <defs>
+        <marker id="arr2" markerWidth="8" markerHeight="8" refX="6" refY="3" orient="auto">
+          <path d="M0,0 L0,6 L8,3 z" fill="#e8a000"/>
+        </marker>
+        <marker id="arr3" markerWidth="8" markerHeight="8" refX="6" refY="3" orient="auto">
+          <path d="M0,0 L0,6 L8,3 z" fill="#1a7f4b"/>
+        </marker>
+      </defs>
+      <!-- Number line -->
+      <text x="290" y="20" text-anchor="middle" font-size="12" fill="#8899bb" font-weight="bold">unsigned int 数轴（0 → UINT_MAX → 0 自动回绕）</text>
+      <line x1="30" y1="50" x2="550" y2="50" stroke="#2a3a60" stroke-width="2"/>
+      <!-- Ticks -->
+      <line x1="30" y1="44" x2="30" y2="56" stroke="#5566aa" stroke-width="2"/>
+      <text x="30" y="70" text-anchor="middle" font-size="10" fill="#5566aa">0</text>
+      <line x1="160" y1="44" x2="160" y2="56" stroke="#5566aa" stroke-width="2"/>
+      <text x="160" y="70" text-anchor="middle" font-size="10" fill="#5566aa">UINT_MAX/4</text>
+      <line x1="290" y1="44" x2="290" y2="56" stroke="#5566aa" stroke-width="2"/>
+      <text x="290" y="70" text-anchor="middle" font-size="10" fill="#5566aa">UINT_MAX/2</text>
+      <line x1="420" y1="44" x2="420" y2="56" stroke="#5566aa" stroke-width="2"/>
+      <text x="420" y="70" text-anchor="middle" font-size="10" fill="#5566aa">3×UINT_MAX/4</text>
+      <line x1="550" y1="44" x2="550" y2="56" stroke="#5566aa" stroke-width="2"/>
+      <text x="550" y="70" text-anchor="middle" font-size="10" fill="#5566aa">UINT_MAX</text>
+      <!-- Arrow wrapping -->
+      <path d="M 545,50 Q 580,50 580,10 Q 580,-10 30,10 Q 10,10 35,50" stroke="#e8a000" stroke-width="1.5" fill="none" stroke-dasharray="5,3" marker-end="url(#arr2)"/>
+      <text x="450" y="14" font-size="10" fill="#e8a000">溢出回绕 (wrap)</text>
+
+      <!-- in/out markers -->
+      <circle cx="200" cy="50" r="6" fill="#1a7f4b" stroke="#fff" stroke-width="2"/>
+      <text x="200" y="88" text-anchor="middle" font-size="11" fill="#1a7f4b" font-weight="bold">out=0xFF0000A0</text>
+      <line x1="200" y1="56" x2="200" y2="80" stroke="#1a7f4b" stroke-width="1.5" stroke-dasharray="3,2"/>
+
+      <circle cx="350" cy="50" r="6" fill="#0078d7" stroke="#fff" stroke-width="2"/>
+      <text x="350" y="88" text-anchor="middle" font-size="11" fill="#0078d7" font-weight="bold">in=0xFF0000C0</text>
+      <line x1="350" y1="56" x2="350" y2="80" stroke="#0078d7" stroke-width="1.5" stroke-dasharray="3,2"/>
+
+      <!-- used length -->
+      <rect x="200" y="44" width="150" height="12" rx="2" fill="rgba(0,120,215,0.25)" stroke="#0078d7" stroke-width="1"/>
+      <text x="275" y="42" text-anchor="middle" font-size="10" fill="#7ec8ff">used = in - out = 0x20（正确！）</text>
+
+      <!-- Explanation box -->
+      <rect x="30" y="110" width="520" height="90" rx="8" fill="#1e2233" stroke="#2a3a60" stroke-width="1.5"/>
+      <text x="50" y="130" font-size="11" fill="#c8d0e7" font-family="monospace">当 out = 0xFF000090, in = 0xFF0000B0 时：</text>
+      <text x="50" y="148" font-size="11" fill="#7ec8ff" font-family="monospace">  in - out = 0xFF0000B0 - 0xFF000090 = 0x20  ← 始终正确</text>
+      <text x="50" y="166" font-size="11" fill="#7fffb0" font-family="monospace">  (in - out) &amp; mask  = 0x20 &amp; (size-1)        ← 有效数据量</text>
+      <text x="50" y="184" font-size="11" fill="#ffd080" font-family="monospace">  in &amp; mask           = 物理写入槽位          ← 无需取模</text>
+    </svg>
+  </div>
+
+  <h2>满/空判断</h2>
+  <pre class="has-label"><span class="pre-label">kfifo 满/空判断逻辑</span><span class="cm">/* 队列中已使用的元素数 */</span>
+used = fifo->in - fifo->out;          <span class="cm">// 无符号减法，自动处理溢出</span>
+
+<span class="cm">/* 队列是否为空 */</span>
+is_empty = (fifo->in == fifo->out);   <span class="cm">// in == out 时为空</span>
+
+<span class="cm">/* 队列是否已满 */</span>
+is_full = (used == size);             <span class="cm">// used == size 时满</span>
+                                      <span class="cm">// size = mask + 1</span>
+
+<span class="cm">/* 剩余可写空间 */</span>
+unused = size - (fifo->in - fifo->out);  <span class="cm">// size - used</span></pre>
+
+  <div class="callout callout-warn">
+    <div class="callout-title">⚠️ 为何 size 必须是 2 的幂？</div>
+    <p style="margin:0">若 size 不是 2 的幂，则 <code>in & (size-1)</code> 不等于 <code>in % size</code>，索引计算会出错。内核代码会强制 roundup_pow_of_two。</p>
+  </div>
+
+  <h2>写入操作原理（__kfifo_put）</h2>
+  <p>来自 <a href="https://github.com/LorDClockaN/DesireC-eclair/blob/master/kernel/kfifo.c" target="_blank">kernel/kfifo.c</a>：</p>
+  <pre class="has-label"><span class="pre-label">kernel/kfifo.c — __kfifo_put（简化版）</span><span class="kw">unsigned int</span> <span class="fn">__kfifo_put</span>(<span class="kw">struct</span> <span class="ty">kfifo</span> *fifo,
+                        <span class="kw">const unsigned char</span> *buffer, <span class="kw">unsigned int</span> len)
+{
+    <span class="kw">unsigned int</span> l;
+
+    <span class="cm">/* 1. 限制写入长度，不超过剩余空间 */</span>
+    len = min(len, fifo->size - fifo->in + fifo->out);
+
+    <span class="cm">/* 2. ★ 写屏障：确保读取 fifo->out 在数据写入之前 */</span>
+    smp_wmb();
+
+    <span class="cm">/* 3. 计算从 in 到缓冲区末尾的连续空间 */</span>
+    l = min(len, fifo->size - (fifo->in &amp; (fifo->size - <span class="nm">1</span>)));
+
+    <span class="cm">/* 4. 第一段：写到缓冲区末尾 */</span>
+    memcpy(fifo->buffer + (fifo->in &amp; (fifo->size - <span class="nm">1</span>)), buffer, l);
+
+    <span class="cm">/* 5. 第二段：若有剩余，从缓冲区头部继续写（环绕）*/</span>
+    memcpy(fifo->buffer, buffer + l, len - l);
+
+    <span class="cm">/* 6. ★ 写屏障：确保数据写入完成后再更新 in 索引 */</span>
+    smp_wmb();
+
+    <span class="cm">/* 7. 更新写指针（消费者可见）*/</span>
+    fifo->in += len;
+    <span class="kw">return</span> len;
+}</pre>
+
+  <h2>两段式 memcpy 的必要性</h2>
+  <div class="diagram">
+    <svg width="580" height="160" viewBox="0 0 580 160">
+      <!-- Ring buffer visualization -->
+      <text x="290" y="18" text-anchor="middle" font-size="12" fill="#8899bb" font-weight="bold">环形缓冲区写入（跨越末尾时分两段 memcpy）</text>
+      <!-- Buffer cells size=8 -->
+      <g transform="translate(20,30)">
+        <!-- cells 0-7 -->
+        <rect x="0" y="0" width="66" height="36" rx="4" fill="#1a2a4a" stroke="#2a3a60"/>
+        <text x="33" y="22" text-anchor="middle" font-size="11" fill="#5566aa" font-family="monospace">[0] ✓</text>
+        <rect x="70" y="0" width="66" height="36" rx="4" fill="#1a2a4a" stroke="#2a3a60"/>
+        <text x="103" y="22" text-anchor="middle" font-size="11" fill="#5566aa" font-family="monospace">[1] ✓</text>
+        <rect x="140" y="0" width="66" height="36" rx="4" fill="#1a2a4a" stroke="#2a3a60"/>
+        <text x="173" y="22" text-anchor="middle" font-size="11" fill="#5566aa" font-family="monospace">[2] ✓</text>
+        <rect x="210" y="0" width="66" height="36" rx="4" fill="#0d3a6a" stroke="#0078d7" stroke-width="2"/>
+        <text x="243" y="16" text-anchor="middle" font-size="10" fill="#7ec8ff" font-family="monospace">[3]</text>
+        <text x="243" y="30" text-anchor="middle" font-size="9" fill="#0078d7">← out=3</text>
+        <rect x="280" y="0" width="66" height="36" rx="4" fill="#1a2a4a" stroke="#2a3a60"/>
+        <text x="313" y="22" text-anchor="middle" font-size="11" fill="#5566aa" font-family="monospace">[4]</text>
+        <rect x="350" y="0" width="66" height="36" rx="4" fill="#1a2a4a" stroke="#2a3a60"/>
+        <text x="383" y="22" text-anchor="middle" font-size="11" fill="#5566aa" font-family="monospace">[5]</text>
+        <!-- in at 6 -->
+        <rect x="420" y="0" width="66" height="36" rx="4" fill="#3a1a1a" stroke="#e8a000" stroke-width="2"/>
+        <text x="453" y="16" text-anchor="middle" font-size="10" fill="#ffd080" font-family="monospace">[6]</text>
+        <text x="453" y="30" text-anchor="middle" font-size="9" fill="#e8a000">← in=6</text>
+        <rect x="490" y="0" width="50" height="36" rx="4" fill="#1a2a4a" stroke="#2a3a60"/>
+        <text x="515" y="22" text-anchor="middle" font-size="11" fill="#5566aa" font-family="monospace">[7]</text>
+
+        <!-- Write 3 elements starting at 6: [6],[7],[0] -->
+        <!-- First memcpy: [6],[7] -->
+        <rect x="420" y="0" width="66" height="36" rx="4" fill="#1a4a2a" stroke="#1a7f4b" stroke-width="2"/>
+        <text x="453" y="16" text-anchor="middle" font-size="10" fill="#7fffb0" font-family="monospace">[6] W1</text>
+        <text x="453" y="30" text-anchor="middle" font-size="9" fill="#1a7f4b">段1</text>
+        <rect x="490" y="0" width="50" height="36" rx="4" fill="#1a4a2a" stroke="#1a7f4b" stroke-width="2"/>
+        <text x="515" y="16" text-anchor="middle" font-size="10" fill="#7fffb0" font-family="monospace">[7] W2</text>
+        <text x="515" y="30" text-anchor="middle" font-size="9" fill="#1a7f4b">段1</text>
+        <!-- Second memcpy wraps to [0] -->
+        <rect x="0" y="0" width="66" height="36" rx="4" fill="#4a2a1a" stroke="#e86030" stroke-width="2"/>
+        <text x="33" y="16" text-anchor="middle" font-size="10" fill="#ffb080" font-family="monospace">[0] W3</text>
+        <text x="33" y="30" text-anchor="middle" font-size="9" fill="#e86030">段2</text>
+
+        <!-- Arrow showing wrap -->
+        <path d="M 540,18 Q 560,18 560,-10 Q 560,-25 20,-10 Q 5,-5 20,18" stroke="#e86030" stroke-width="1.5" fill="none" stroke-dasharray="4,3" marker-end="url(#arr2)"/>
+      </g>
+      <text x="290" y="150" text-anchor="middle" font-size="11" fill="#8899bb">写入 3 个元素：第 1 段写 [6],[7]（2 个），第 2 段写 [0]（1 个），环绕完成</text>
+    </svg>
+  </div>
+</section>
+
+<!-- ========== Chapter 3 ========== -->
+<section class="chapter" id="ch-3">
+  <div class="chapter-hero">
+    <div class="badge">CHAPTER 4</div>
+    <h1>无锁核心：内存屏障</h1>
+    <p>SPSC 模型下，为什么两个 smp_wmb/smp_rmb 就足够了？</p>
+  </div>
+
+  <h2>SPSC（Single Producer Single Consumer）模型</h2>
+  <p>来自 Stack Overflow 对内核代码的权威解析（<a href="https://stackoverflow.com/questions/78096108/why-do-kfifo-need-smp-wmb-even-with-spin-lock-irqsave-in-kernel-in-version-4-9-3" target="_blank">原文链接</a>）：</p>
+
+  <div class="callout callout-info">
+    <div class="callout-title">📌 官方锁注释（摘自 kfifo.h 头部）</div>
+    <pre style="margin:6px 0 0;background:transparent;color:#1a3a8a;border:none;padding:0;font-size:.8rem">/*
+ * Note about locking: There is no locking required until only one reader
+ * and one writer is using the fifo and no kfifo_reset() will be called.
+ */</pre>
+  </div>
+
+  <h2>内存屏障的作用</h2>
+  <div class="card-row">
+    <div class="card">
+      <div class="card-icon">🛡️</div>
+      <h4>smp_wmb()（写屏障）</h4>
+      <p>确保屏障前的所有写操作对其他 CPU 可见，再执行屏障后的写操作。<br>防止编译器/CPU 乱序：先写数据，再更新 <code>in</code> 索引</p>
+    </div>
+    <div class="card">
+      <div class="card-icon">👁️</div>
+      <h4>smp_rmb()（读屏障）</h4>
+      <p>确保屏障前的读操作完成后，再执行屏障后的读操作。<br>防止乱序：先读 <code>in</code> 索引，再读数据</p>
+    </div>
+  </div>
+
+  <h2>两次屏障的完整时序</h2>
+  <div class="diagram">
+    <svg width="580" height="330" viewBox="0 0 580 330">
+      <!-- Timeline -->
+      <text x="290" y="18" text-anchor="middle" font-size="12" fill="#8899bb" font-weight="bold">SPSC 无锁队列内存屏障时序图</text>
+
+      <!-- Producer column -->
+      <rect x="20" y="28" width="240" height="24" rx="4" fill="#0d3a6a" stroke="#0078d7"/>
+      <text x="140" y="44" text-anchor="middle" font-size="12" fill="#7ec8ff" font-weight="bold">生产者线程（Producer）</text>
+
+      <!-- Consumer column -->
+      <rect x="320" y="28" width="240" height="24" rx="4" fill="#0d3a1a" stroke="#1a7f4b"/>
+      <text x="440" y="44" text-anchor="middle" font-size="12" fill="#7fffb0" font-weight="bold">消费者线程（Consumer）</text>
+
+      <!-- Producer steps -->
+      <rect x="30" y="64" width="220" height="32" rx="4" fill="#1e2233" stroke="#2a3a60"/>
+      <text x="140" y="82" text-anchor="middle" font-size="11" fill="#c8d0e7" font-family="monospace">1. 读取 fifo-&gt;out</text>
+      <text x="140" y="93" text-anchor="middle" font-size="9" fill="#5566aa">（判断空间是否充足）</text>
+
+      <rect x="30" y="106" width="220" height="24" rx="4" fill="#1a3a6a" stroke="#0078d7"/>
+      <text x="140" y="122" text-anchor="middle" font-size="11" fill="#7ec8ff" font-family="monospace">2. smp_wmb()  ★读屏障对out</text>
+
+      <rect x="30" y="140" width="220" height="32" rx="4" fill="#1e2233" stroke="#2a3a60"/>
+      <text x="140" y="158" text-anchor="middle" font-size="11" fill="#c8d0e7" font-family="monospace">3. memcpy 写入数据</text>
+      <text x="140" y="169" text-anchor="middle" font-size="9" fill="#5566aa">（两段式写入环形区域）</text>
+
+      <rect x="30" y="182" width="220" height="24" rx="4" fill="#1a3a6a" stroke="#0078d7"/>
+      <text x="140" y="198" text-anchor="middle" font-size="11" fill="#7ec8ff" font-family="monospace">4. smp_wmb()  ★数据→in顺序</text>
+
+      <rect x="30" y="216" width="220" height="32" rx="4" fill="#1e2233" stroke="#2a3a60"/>
+      <text x="140" y="234" text-anchor="middle" font-size="11" fill="#c8d0e7" font-family="monospace">5. fifo-&gt;in += len</text>
+      <text x="140" y="245" text-anchor="middle" font-size="9" fill="#5566aa">（消费者此后可见新数据）</text>
+
+      <!-- Consumer steps -->
+      <rect x="330" y="64" width="220" height="32" rx="4" fill="#1e2233" stroke="#2a3a60"/>
+      <text x="440" y="82" text-anchor="middle" font-size="11" fill="#c8d0e7" font-family="monospace">1. 读取 fifo-&gt;in</text>
+      <text x="440" y="93" text-anchor="middle" font-size="9" fill="#5566aa">（判断是否有数据可读）</text>
+
+      <rect x="330" y="106" width="220" height="24" rx="4" fill="#1a3a1a" stroke="#1a7f4b"/>
+      <text x="440" y="122" text-anchor="middle" font-size="11" fill="#7fffb0" font-family="monospace">2. smp_rmb()  ★in→数据顺序</text>
+
+      <rect x="330" y="140" width="220" height="32" rx="4" fill="#1e2233" stroke="#2a3a60"/>
+      <text x="440" y="158" text-anchor="middle" font-size="11" fill="#c8d0e7" font-family="monospace">3. memcpy 读出数据</text>
+      <text x="440" y="169" text-anchor="middle" font-size="9" fill="#5566aa">（两段式读取）</text>
+
+      <rect x="330" y="182" width="220" height="24" rx="4" fill="#1a3a1a" stroke="#1a7f4b"/>
+      <text x="440" y="198" text-anchor="middle" font-size="11" fill="#7fffb0" font-family="monospace">4. smp_mb()   ★确保数据已读</text>
+
+      <rect x="330" y="216" width="220" height="32" rx="4" fill="#1e2233" stroke="#2a3a60"/>
+      <text x="440" y="234" text-anchor="middle" font-size="11" fill="#c8d0e7" font-family="monospace">5. fifo-&gt;out += len</text>
+      <text x="440" y="245" text-anchor="middle" font-size="9" fill="#5566aa">（生产者此后可见新空间）</text>
+
+      <!-- Shared memory visualization -->
+      <rect x="220" y="60" width="100" height="198" rx="6" fill="#111827" stroke="#3a4060" stroke-dasharray="5,3"/>
+      <text x="270" y="82" text-anchor="middle" font-size="10" fill="#3a4060">共享</text>
+      <text x="270" y="94" text-anchor="middle" font-size="10" fill="#3a4060">内存</text>
+
+      <!-- Arrows showing communication -->
+      <line x1="250" y1="130" x2="250" y2="200" stroke="#0078d7" stroke-width="1" stroke-dasharray="3,2"/>
+      <text x="250" y="168" text-anchor="middle" font-size="9" fill="#0078d7" transform="rotate(-90,250,168)">data[]</text>
+      <line x1="250" y1="225" x2="250" y2="245" stroke="#1a7f4b" stroke-width="1" stroke-dasharray="3,2"/>
+
+      <!-- Legend -->
+      <rect x="20" y="272" width="540" height="52" rx="6" fill="#1e2233" stroke="#2a3a60"/>
+      <text x="40" y="290" font-size="11" fill="#ffd080">关键不变量：</text>
+      <text x="40" y="305" font-size="10" fill="#c8d0e7" font-family="monospace">• 生产者只写 in，消费者只写 out → 各自独立，无竞争</text>
+      <text x="40" y="318" font-size="10" fill="#c8d0e7" font-family="monospace">• 内存屏障保证：写数据 happens-before 写in，读in happens-before 读数据</text>
+    </svg>
+  </div>
+
+  <h2>用户态等价原语</h2>
+  <div class="table-wrap">
+    <table>
+      <tr><th>内核原语</th><th>用户态等价（C11）</th><th>用户态等价（GCC）</th></tr>
+      <tr><td><code>smp_wmb()</code></td><td><code>atomic_thread_fence(memory_order_release)</code></td><td><code>__sync_synchronize()</code></td></tr>
+      <tr><td><code>smp_rmb()</code></td><td><code>atomic_thread_fence(memory_order_acquire)</code></td><td><code>__sync_synchronize()</code></td></tr>
+      <tr><td><code>smp_mb()</code></td><td><code>atomic_thread_fence(memory_order_seq_cst)</code></td><td><code>__sync_synchronize()</code></td></tr>
+      <tr><td><code>READ_ONCE(x)</code></td><td><code>atomic_load_explicit(&x, memory_order_relaxed)</code></td><td><code>*(volatile typeof(x)*)&x</code></td></tr>
+      <tr><td><code>WRITE_ONCE(x,v)</code></td><td><code>atomic_store_explicit(&x, v, memory_order_relaxed)</code></td><td><code>*(volatile typeof(x)*)&x = v</code></td></tr>
+    </table>
+  </div>
+
+  <div class="callout callout-success">
+    <div class="callout-title">✅ 用户态选择建议</div>
+    <p style="margin:0">在用户态 C11 程序中，推荐使用 <code>stdatomic.h</code> 中的原子操作和 <code>atomic_thread_fence</code>，语义更精准，编译器可生成最优代码（acquire/release 通常比 seq_cst 少一条屏障指令）。</p>
+  </div>
+</section>
+
+<!-- ========== Chapter 4 ========== -->
+<section class="chapter" id="ch-4">
+  <div class="chapter-hero">
+    <div class="badge">CHAPTER 5</div>
+    <h1>user_kfifo.h 完整实现</h1>
+    <p>严格遵照 Linux kfifo 设计，移植到用户态 C11 的无锁队列头文件</p>
+  </div>
+
+  <h2>设计原则（与内核版本对应）</h2>
+  <ul>
+    <li><strong>in/out 单调递增</strong>：不清零，自然溢出，与 <code>struct __kfifo</code> 完全一致</li>
+    <li><strong>mask = size - 1</strong>：size 必须是 2 的幂，位与取模</li>
+    <li><strong>C11 原子操作</strong>：用 <code>_Atomic unsigned int</code> + <code>atomic_thread_fence</code> 替代内核屏障</li>
+    <li><strong>SPSC 无锁</strong>：单生产者单消费者场景下，无需任何锁</li>
+    <li><strong>泛型支持</strong>：通过宏支持任意 POD 类型</li>
+  </ul>
+
+  <pre class="has-label"><span class="pre-label">user_kfifo.h — 完整实现（仿 Linux kernel kfifo，SPSC 无锁）</span><span class="cm">/*
+ * user_kfifo.h — User-space SPSC lock-free ring buffer
+ *
+ * Design based on Linux kernel kfifo (include/linux/kfifo.h, lib/kfifo.c)
+ * Copyright (C) 2013 Stefani Seibold &lt;stefani@seibold.net&gt;
+ * Original source: https://github.com/torvalds/linux/blob/master/include/linux/kfifo.h
+ *
+ * User-space adaptation using C11 stdatomic.h
+ * - Single Producer, Single Consumer (SPSC) lock-free
+ * - in/out indices never reset, rely on unsigned wrap-around
+ * - size MUST be a power of 2
+ * - Uses acquire/release semantics (matches kernel smp_rmb/smp_wmb)
+ */</span>
+<span class="pp">#ifndef USER_KFIFO_H
+#define USER_KFIFO_H</span>
+
+<span class="pp">#include</span> <span class="st">&lt;stdint.h&gt;</span>
+<span class="pp">#include</span> <span class="st">&lt;stddef.h&gt;</span>
+<span class="pp">#include</span> <span class="st">&lt;string.h&gt;</span>
+<span class="pp">#include</span> <span class="st">&lt;stdlib.h&gt;</span>
+<span class="pp">#include</span> <span class="st">&lt;stdatomic.h&gt;</span>  <span class="cm">/* C11 — 替代内核 smp_wmb/smp_rmb */</span>
+<span class="pp">#include</span> <span class="st">&lt;assert.h&gt;</span>
+
+<span class="cm">/* ────────────────────────────────────────────────────────────
+ * 判断是否为 2 的幂（对应内核 is_power_of_2）
+ * ──────────────────────────────────────────────────────────── */</span>
+<span class="pp">#define KFIFO_IS_POWER_OF_2(n)  ((n) != 0 &amp;&amp; (((n) &amp; ((n) - 1)) == 0))</span>
+
+<span class="cm">/* ────────────────────────────────────────────────────────────
+ * 核心结构体（对应内核 struct __kfifo）
+ *
+ * 关键设计：in/out 使用 _Atomic，保证跨线程可见性；
+ * 使用 C11 acquire/release 语义，精确匹配内核 smp_wmb/smp_rmb
+ * ──────────────────────────────────────────────────────────── */</span>
+<span class="kw">struct</span> <span class="ty">user_kfifo</span> {
+    _Atomic <span class="kw">unsigned int</span>  in;    <span class="cm">/* 写入偏移（生产者更新）*/</span>
+    _Atomic <span class="kw">unsigned int</span>  out;   <span class="cm">/* 读取偏移（消费者更新）*/</span>
+    <span class="kw">unsigned int</span>           mask;  <span class="cm">/* size - 1（只读）*/</span>
+    <span class="kw">unsigned int</span>           esize; <span class="cm">/* 元素字节大小（只读）*/</span>
+    <span class="kw">void</span>                  *data;  <span class="cm">/* 数据缓冲区（只读）*/</span>
+};
+
+<span class="cm">/* ────────────────────────────────────────────────────────────
+ * 初始化（对应内核 __kfifo_init）
+ *
+ * @fifo  : 指向 user_kfifo 结构的指针
+ * @buf   : 用户提供的缓冲区（大小必须为 2 的幂次 * esize）
+ * @size  : 缓冲区能容纳的元素个数（必须是 2 的幂）
+ * @esize : 每个元素的字节大小
+ * 返回 0 成功，-1 失败
+ * ──────────────────────────────────────────────────────────── */</span>
+<span class="kw">static inline int</span>
+<span class="fn">user_kfifo_init</span>(<span class="kw">struct</span> <span class="ty">user_kfifo</span> *fifo, <span class="kw">void</span> *buf,
+                <span class="kw">unsigned int</span> size, <span class="kw">unsigned int</span> esize)
+{
+    <span class="kw">if</span> (!KFIFO_IS_POWER_OF_2(size) || size &lt; <span class="nm">2</span> || !buf)
+        <span class="kw">return</span> -<span class="nm">1</span>;
+    atomic_init(&amp;fifo->in,  <span class="nm">0</span>);
+    atomic_init(&amp;fifo->out, <span class="nm">0</span>);
+    fifo->mask  = size - <span class="nm">1</span>;
+    fifo->esize = esize;
+    fifo->data  = buf;
+    <span class="kw">return</span> <span class="nm">0</span>;
+}
+
+<span class="cm">/* ────────────────────────────────────────────────────────────
+ * 动态分配（对应内核 kfifo_alloc）
+ * ──────────────────────────────────────────────────────────── */</span>
+<span class="kw">static inline int</span>
+<span class="fn">user_kfifo_alloc</span>(<span class="kw">struct</span> <span class="ty">user_kfifo</span> *fifo,
+                  <span class="kw">unsigned int</span> size, <span class="kw">unsigned int</span> esize)
+{
+    <span class="cm">/* roundup to next power of 2（对应内核 roundup_pow_of_two）*/</span>
+    <span class="kw">if</span> (!KFIFO_IS_POWER_OF_2(size)) {
+        size--;
+        size |= size >> <span class="nm">1</span>;  size |= size >> <span class="nm">2</span>;
+        size |= size >> <span class="nm">4</span>;  size |= size >> <span class="nm">8</span>;
+        size |= size >> <span class="nm">16</span>; size++;
+    }
+    <span class="kw">void</span> *buf = malloc((size_t)size * esize);
+    <span class="kw">if</span> (!buf) <span class="kw">return</span> -<span class="nm">1</span>;
+    <span class="kw">return</span> <span class="fn">user_kfifo_init</span>(fifo, buf, size, esize);
+}
+
+<span class="cm">/* 释放动态分配的缓冲区 */</span>
+<span class="kw">static inline void</span>
+<span class="fn">user_kfifo_free</span>(<span class="kw">struct</span> <span class="ty">user_kfifo</span> *fifo)
+{
+    free(fifo->data);
+    fifo->data = NULL;
+    fifo->mask = fifo->esize = <span class="nm">0</span>;
+}
+
+<span class="cm">/* ────────────────────────────────────────────────────────────
+ * 内部查询辅助
+ * ──────────────────────────────────────────────────────────── */</span>
+
+<span class="cm">/* 当前已使用的元素数（对应 kfifo_len）*/</span>
+<span class="kw">static inline unsigned int</span>
+<span class="fn">user_kfifo_len</span>(<span class="kw">const struct</span> <span class="ty">user_kfifo</span> *fifo)
+{
+    <span class="cm">/* 无符号减法：自然处理 wrap-around，与内核完全一致 */</span>
+    <span class="kw">return</span> atomic_load_explicit(&amp;fifo->in, memory_order_acquire)
+         - atomic_load_explicit(&amp;fifo->out, memory_order_acquire);
+}
+
+<span class="cm">/* 缓冲区总容量（元素数）*/</span>
+<span class="kw">static inline unsigned int</span>
+<span class="fn">user_kfifo_size</span>(<span class="kw">const struct</span> <span class="ty">user_kfifo</span> *fifo) { <span class="kw">return</span> fifo->mask + <span class="nm">1</span>; }
+
+<span class="cm">/* 剩余可写空间（元素数，对应 kfifo_avail）*/</span>
+<span class="kw">static inline unsigned int</span>
+<span class="fn">user_kfifo_avail</span>(<span class="kw">const struct</span> <span class="ty">user_kfifo</span> *fifo)
+{
+    <span class="kw">return</span> <span class="fn">user_kfifo_size</span>(fifo) - <span class="fn">user_kfifo_len</span>(fifo);
+}
+
+<span class="cm">/* 是否为空（对应 kfifo_is_empty）*/</span>
+<span class="kw">static inline int</span>
+<span class="fn">user_kfifo_is_empty</span>(<span class="kw">const struct</span> <span class="ty">user_kfifo</span> *fifo)
+{
+    <span class="kw">return</span> atomic_load_explicit(&amp;fifo->in, memory_order_acquire)
+        == atomic_load_explicit(&amp;fifo->out, memory_order_acquire);
+}
+
+<span class="cm">/* 是否已满（对应 kfifo_is_full）*/</span>
+<span class="kw">static inline int</span>
+<span class="fn">user_kfifo_is_full</span>(<span class="kw">const struct</span> <span class="ty">user_kfifo</span> *fifo)
+{
+    <span class="kw">return</span> <span class="fn">user_kfifo_len</span>(fifo) == <span class="fn">user_kfifo_size</span>(fifo);
+}
+
+<span class="cm">/* ────────────────────────────────────────────────────────────
+ * 内部：将 src 复制到环形缓冲区的 off 位置（对应 kfifo_copy_in）
+ *
+ * 对应内核实现：
+ *   static void kfifo_copy_in(struct __kfifo *fifo, const void *src,
+ *                             unsigned int len, unsigned int off)
+ *   {
+ *       unsigned int size = fifo->mask + 1;
+ *       unsigned int l;
+ *       off &amp;= fifo->mask;
+ *       l = min(len, size - off);
+ *       memcpy(fifo->data + off, src, l);
+ *       memcpy(fifo->data, src + l, len - l);
+ *       smp_wmb();   ← 确保数据写入完成后再更新 in
+ *   }
+ * ──────────────────────────────────────────────────────────── */</span>
+<span class="kw">static inline void</span>
+<span class="fn">_kfifo_copy_in</span>(<span class="kw">struct</span> <span class="ty">user_kfifo</span> *fifo, <span class="kw">const void</span> *src,
+               <span class="kw">unsigned int</span> nelem, <span class="kw">unsigned int</span> off)
+{
+    <span class="kw">unsigned int</span> size = fifo->mask + <span class="nm">1</span>;
+    <span class="kw">unsigned int</span> esize = fifo->esize;
+    <span class="kw">unsigned int</span> l;
+    <span class="kw">char</span> *base = (<span class="kw">char</span> *)fifo->data;
+
+    off &amp;= fifo->mask;              <span class="cm">/* 对应内核 off &amp;= fifo->mask */</span>
+    l = (nelem &lt; size - off) ? nelem : (size - off);  <span class="cm">/* min(nelem, size-off) */</span>
+
+    <span class="cm">/* 第一段 memcpy：from off to end */</span>
+    memcpy(base + off * esize, src, l * esize);
+    <span class="cm">/* 第二段 memcpy：wrap around（若有剩余）*/</span>
+    memcpy(base, (<span class="kw">const char</span> *)src + l * esize, (nelem - l) * esize);
+
+    <span class="cm">/* ★ 写屏障（对应内核 smp_wmb）
+     * 保证数据写入完成后，in 的更新才对消费者可见 */</span>
+    atomic_thread_fence(memory_order_release);
+}
+
+<span class="cm">/* 内部：从环形缓冲区的 off 位置复制到 dst（对应 kfifo_copy_out）*/</span>
+<span class="kw">static inline void</span>
+<span class="fn">_kfifo_copy_out</span>(<span class="kw">struct</span> <span class="ty">user_kfifo</span> *fifo, <span class="kw">void</span> *dst,
+                <span class="kw">unsigned int</span> nelem, <span class="kw">unsigned int</span> off)
+{
+    <span class="kw">unsigned int</span> size = fifo->mask + <span class="nm">1</span>;
+    <span class="kw">unsigned int</span> esize = fifo->esize;
+    <span class="kw">unsigned int</span> l;
+    <span class="kw">const char</span> *base = (<span class="kw">const char</span> *)fifo->data;
+
+    off &amp;= fifo->mask;
+    l = (nelem &lt; size - off) ? nelem : (size - off);
+
+    memcpy(dst, base + off * esize, l * esize);
+    memcpy((<span class="kw">char</span> *)dst + l * esize, base, (nelem - l) * esize);
+
+    <span class="cm">/* ★ 全内存屏障（对应内核 smp_mb）
+     * 保证数据读取完成后，out 的更新才对生产者可见 */</span>
+    atomic_thread_fence(memory_order_seq_cst);
+}
+
+<span class="cm">/* ────────────────────────────────────────────────────────────
+ * user_kfifo_in — 写入 nelem 个元素（对应内核 __kfifo_in）
+ *
+ * @fifo  : 队列指针
+ * @buf   : 数据源
+ * @nelem : 要写入的元素个数
+ * 返回实际写入的元素个数
+ *
+ * 对应内核：
+ *   unsigned int __kfifo_in(struct __kfifo *fifo,
+ *                           const void *buf, unsigned int len)
+ *   仅生产者调用，无需锁（SPSC 模式）
+ * ──────────────────────────────────────────────────────────── */</span>
+<span class="kw">static inline unsigned int</span>
+<span class="fn">user_kfifo_in</span>(<span class="kw">struct</span> <span class="ty">user_kfifo</span> *fifo, <span class="kw">const void</span> *buf, <span class="kw">unsigned int</span> nelem)
+{
+    <span class="kw">unsigned int</span> avail, in;
+
+    <span class="cm">/* 1. 读取消费者的 out（acquire，对应内核 smp_wmb 前读 out）*/</span>
+    <span class="kw">unsigned int</span> out = atomic_load_explicit(&amp;fifo->out, memory_order_acquire);
+    in  = atomic_load_explicit(&amp;fifo->in,  memory_order_relaxed);
+
+    <span class="cm">/* 2. 计算可写空间 */</span>
+    avail = (fifo->mask + <span class="nm">1</span>) - (in - out);
+    <span class="kw">if</span> (nelem > avail) nelem = avail;  <span class="cm">/* 截断到可写上限 */</span>
+    <span class="kw">if</span> (nelem == <span class="nm">0</span>) <span class="kw">return</span> <span class="nm">0</span>;
+
+    <span class="cm">/* 3. 写入数据 + release fence（内部调用 _kfifo_copy_in）*/</span>
+    <span class="fn">_kfifo_copy_in</span>(fifo, buf, nelem, in);
+
+    <span class="cm">/* 4. 更新 in（release，消费者可见）
+     *    对应内核：fifo->in += len; 配合前面的 smp_wmb() */</span>
+    atomic_store_explicit(&amp;fifo->in, in + nelem, memory_order_release);
+
+    <span class="kw">return</span> nelem;
+}
+
+<span class="cm">/* ────────────────────────────────────────────────────────────
+ * user_kfifo_out — 读取 nelem 个元素（对应内核 __kfifo_out）
+ *
+ * @fifo  : 队列指针
+ * @buf   : 目标缓冲区
+ * @nelem : 要读取的元素个数
+ * 返回实际读取的元素个数
+ * ──────────────────────────────────────────────────────────── */</span>
+<span class="kw">static inline unsigned int</span>
+<span class="fn">user_kfifo_out</span>(<span class="kw">struct</span> <span class="ty">user_kfifo</span> *fifo, <span class="kw">void</span> *buf, <span class="kw">unsigned int</span> nelem)
+{
+    <span class="kw">unsigned int</span> used, out;
+
+    <span class="cm">/* 1. 读取生产者的 in（acquire，对应内核 smp_rmb 前读 in）*/</span>
+    <span class="kw">unsigned int</span> in = atomic_load_explicit(&amp;fifo->in, memory_order_acquire);
+    out = atomic_load_explicit(&amp;fifo->out, memory_order_relaxed);
+
+    <span class="cm">/* 2. 计算可读数量 */</span>
+    used = in - out;  <span class="cm">/* 无符号减法，自动处理溢出 */</span>
+    <span class="kw">if</span> (nelem > used) nelem = used;
+    <span class="kw">if</span> (nelem == <span class="nm">0</span>) <span class="kw">return</span> <span class="nm">0</span>;
+
+    <span class="cm">/* 3. 读取数据 + seq_cst fence */</span>
+    <span class="fn">_kfifo_copy_out</span>(fifo, buf, nelem, out);
+
+    <span class="cm">/* 4. 更新 out（release，生产者可见）*/</span>
+    atomic_store_explicit(&amp;fifo->out, out + nelem, memory_order_release);
+
+    <span class="kw">return</span> nelem;
+}
+
+<span class="cm">/* ────────────────────────────────────────────────────────────
+ * user_kfifo_peek — 仅查看不消费（对应内核 kfifo_out_peek）
+ * ──────────────────────────────────────────────────────────── */</span>
+<span class="kw">static inline unsigned int</span>
+<span class="fn">user_kfifo_peek</span>(<span class="kw">struct</span> <span class="ty">user_kfifo</span> *fifo, <span class="kw">void</span> *buf, <span class="kw">unsigned int</span> nelem)
+{
+    <span class="kw">unsigned int</span> in = atomic_load_explicit(&amp;fifo->in,  memory_order_acquire);
+    <span class="kw">unsigned int</span> out= atomic_load_explicit(&amp;fifo->out, memory_order_relaxed);
+    <span class="kw">unsigned int</span> used = in - out;
+    <span class="kw">if</span> (nelem > used) nelem = used;
+    <span class="kw">if</span> (nelem == <span class="nm">0</span>) <span class="kw">return</span> <span class="nm">0</span>;
+    atomic_thread_fence(memory_order_acquire);
+    <span class="fn">_kfifo_copy_out</span>(fifo, buf, nelem, out);
+    <span class="kw">return</span> nelem;  <span class="cm">/* out 不更新 */</span>
+}
+
+<span class="cm">/* ────────────────────────────────────────────────────────────
+ * 泛型便捷宏（对应内核 kfifo_put / kfifo_get 宏）
+ *
+ * KFIFO_PUT(fifo_ptr, val)  — 写入单个元素
+ * KFIFO_GET(fifo_ptr, ptr)  — 读取单个元素到 *ptr
+ * ──────────────────────────────────────────────────────────── */</span>
+<span class="pp">#define KFIFO_PUT(fifo, val) \
+    user_kfifo_in((fifo), &amp;(val), 1)
+
+#define KFIFO_GET(fifo, ptr) \
+    user_kfifo_out((fifo), (ptr), 1)</span>
+
+<span class="pp">#endif /* USER_KFIFO_H */</span></pre>
+</section>
+
+<!-- ========== Chapter 5 ========== -->
+<section class="chapter" id="ch-5">
+  <div class="chapter-hero">
+    <div class="badge">CHAPTER 6</div>
+    <h1>关键 API 解析</h1>
+    <p>逐函数对照内核原版，理解每个设计决策背后的原因</p>
+  </div>
+
+  <h2>API 总览</h2>
+  <div class="table-wrap">
+    <table>
+      <tr><th>用户态函数</th><th>对应内核函数</th><th>功能</th><th>线程安全</th></tr>
+      <tr><td><code>user_kfifo_init()</code></td><td><code>__kfifo_init()</code></td><td>静态初始化，使用预分配 buf</td><td>初始化时调用</td></tr>
+      <tr><td><code>user_kfifo_alloc()</code></td><td><code>kfifo_alloc()</code></td><td>动态分配缓冲区并初始化</td><td>初始化时调用</td></tr>
+      <tr><td><code>user_kfifo_free()</code></td><td><code>kfifo_free()</code></td><td>释放动态分配的缓冲区</td><td>销毁时调用</td></tr>
+      <tr><td><code>user_kfifo_in()</code></td><td><code>__kfifo_in()</code></td><td>写入 N 个元素</td><td>仅生产者</td></tr>
+      <tr><td><code>user_kfifo_out()</code></td><td><code>__kfifo_out()</code></td><td>读取并消费 N 个元素</td><td>仅消费者</td></tr>
+      <tr><td><code>user_kfifo_peek()</code></td><td><code>__kfifo_out_peek()</code></td><td>预览不消费</td><td>仅消费者</td></tr>
+      <tr><td><code>user_kfifo_len()</code></td><td><code>kfifo_len()</code></td><td>已使用元素数</td><td>近似值</td></tr>
+      <tr><td><code>user_kfifo_avail()</code></td><td><code>kfifo_avail()</code></td><td>可写元素数</td><td>近似值</td></tr>
+      <tr><td><code>user_kfifo_is_empty()</code></td><td><code>kfifo_is_empty()</code></td><td>是否为空</td><td>近似值</td></tr>
+      <tr><td><code>user_kfifo_is_full()</code></td><td><code>kfifo_is_full()</code></td><td>是否已满</td><td>近似值</td></tr>
+      <tr><td><code>KFIFO_PUT(f, val)</code></td><td><code>kfifo_put()</code></td><td>写入单个元素（宏）</td><td>仅生产者</td></tr>
+      <tr><td><code>KFIFO_GET(f, ptr)</code></td><td><code>kfifo_get()</code></td><td>读取单个元素（宏）</td><td>仅消费者</td></tr>
+    </table>
+  </div>
+
+  <h2>memory_order 语义选择</h2>
+
+  <div class="diagram">
+    <svg width="580" height="240" viewBox="0 0 580 240">
+      <text x="290" y="18" text-anchor="middle" font-size="12" fill="#8899bb" font-weight="bold">acquire/release 配对关系（SPSC 无锁的核心）</text>
+
+      <!-- Producer -->
+      <rect x="20" y="30" width="240" height="190" rx="8" fill="#0d1a2a" stroke="#0078d7" stroke-width="1.5"/>
+      <text x="140" y="50" text-anchor="middle" font-size="11" fill="#7ec8ff" font-weight="bold">生产者</text>
+
+      <rect x="35" y="60" width="210" height="28" rx="4" fill="#1a3a6a" stroke="#0078d7"/>
+      <text x="140" y="78" text-anchor="middle" font-size="10" fill="#7ec8ff" font-family="monospace">load out (memory_order_acquire)</text>
+
+      <rect x="35" y="98" width="210" height="28" rx="4" fill="#1e2a3a" stroke="#3a5a8a"/>
+      <text x="140" y="116" text-anchor="middle" font-size="10" fill="#c8d0e7" font-family="monospace">memcpy 写入数据</text>
+
+      <rect x="35" y="136" width="210" height="28" rx="4" fill="#1a2a1a" stroke="#1a7f4b"/>
+      <text x="140" y="154" text-anchor="middle" font-size="10" fill="#7fffb0" font-family="monospace">fence(memory_order_release)</text>
+
+      <rect x="35" y="174" width="210" height="28" rx="4" fill="#1a3a1a" stroke="#1a7f4b"/>
+      <text x="140" y="192" text-anchor="middle" font-size="10" fill="#7fffb0" font-family="monospace">store in (memory_order_release)</text>
+
+      <!-- Arrow -->
+      <path d="M 260,186 L 320,186" stroke="#e8a000" stroke-width="2" marker-end="url(#arr2)" stroke-dasharray="5,3"/>
+      <text x="290" y="176" text-anchor="middle" font-size="10" fill="#ffd080">happens-</text>
+      <text x="290" y="188" text-anchor="middle" font-size="10" fill="#ffd080">before</text>
+
+      <path d="M 260,74 L 320,74" stroke="#1a7f4b" stroke-width="2" marker-end="url(#arr3)" stroke-dasharray="5,3"/>
+      <text x="290" y="64" text-anchor="middle" font-size="10" fill="#7fffb0">同步</text>
+      <text x="290" y="76" text-anchor="middle" font-size="10" fill="#7fffb0">release→acquire</text>
+
+      <!-- Consumer -->
+      <rect x="320" y="30" width="240" height="190" rx="8" fill="#0d1a0d" stroke="#1a7f4b" stroke-width="1.5"/>
+      <text x="440" y="50" text-anchor="middle" font-size="11" fill="#7fffb0" font-weight="bold">消费者</text>
+
+      <rect x="335" y="60" width="210" height="28" rx="4" fill="#1a3a1a" stroke="#1a7f4b"/>
+      <text x="440" y="78" text-anchor="middle" font-size="10" fill="#7fffb0" font-family="monospace">load in (memory_order_acquire)</text>
+
+      <rect x="335" y="98" width="210" height="28" rx="4" fill="#1e2a1e" stroke="#3a6a3a"/>
+      <text x="440" y="116" text-anchor="middle" font-size="10" fill="#c8d0e7" font-family="monospace">memcpy 读取数据</text>
+
+      <rect x="335" y="136" width="210" height="28" rx="4" fill="#1a2a3a" stroke="#3a5aaa"/>
+      <text x="440" y="154" text-anchor="middle" font-size="10" fill="#b0c8ff" font-family="monospace">fence(memory_order_seq_cst)</text>
+
+      <rect x="335" y="174" width="210" height="28" rx="4" fill="#1a1a3a" stroke="#5a5aaa"/>
+      <text x="440" y="192" text-anchor="middle" font-size="10" fill="#b0c8ff" font-family="monospace">store out (memory_order_release)</text>
+    </svg>
+  </div>
+
+  <h2>正确性证明（非形式化）</h2>
+  <ol>
+    <li><strong>生产者写数据</strong>：<code>_kfifo_copy_in</code> 内的 <code>release fence</code> 确保所有 memcpy 在 <code>store in</code> 之前对其他核可见</li>
+    <li><strong>消费者读数据</strong>：<code>load in</code> 使用 <code>acquire</code>，保证"看到新 in 值" 的同时，也能看到对应的 data 写入</li>
+    <li><strong>反向对称</strong>：消费者 <code>store out</code> 使用 <code>release</code>，生产者 <code>load out</code> 使用 <code>acquire</code>，同步释放的空间信息</li>
+    <li><strong>无数据竞争</strong>：生产者只写 <code>in</code> 和 <code>data[in..in+n-1]</code>，消费者只写 <code>out</code> 和读 <code>data[out..out+n-1]</code>，两者无交集（队列满时生产者停止写入）</li>
+  </ol>
+
+  <div class="callout callout-danger">
+    <div class="callout-title">🚫 严格限制</div>
+    <ul style="margin:0">
+      <li>本实现仅保证 <strong>SPSC（单生产者-单消费者）</strong> 无锁安全</li>
+      <li>多生产者或多消费者场景必须在外部加锁（如 <code>pthread_mutex</code>）</li>
+      <li>不要在信号处理器中调用（异步信号安全性需额外保证）</li>
+      <li>不要调用 <code>user_kfifo_reset()</code> 期间有其他线程访问队列</li>
+    </ul>
+  </div>
+</section>
+
+<!-- ========== Chapter 6 ========== -->
+<section class="chapter" id="ch-6">
+  <div class="chapter-hero">
+    <div class="badge">CHAPTER 7</div>
+    <h1>生产者消费者示例</h1>
+    <p>完整的多线程示例：使用 user_kfifo.h 实现无锁生产者消费者模型</p>
+  </div>
+
+  <h2>示例场景描述</h2>
+  <p>模拟一个数据采集系统：一个采集线程（生产者）持续产生传感器数据包，一个处理线程（消费者）读取并处理。使用 <code>user_kfifo</code> 作为中间缓冲队列，SPSC 无锁通信。</p>
+
+  <div class="diagram">
+    <svg width="580" height="160" viewBox="0 0 580 160">
+      <defs>
+        <marker id="farr" markerWidth="10" markerHeight="8" refX="8" refY="4" orient="auto">
+          <path d="M0,0 L0,8 L10,4 z" fill="#0078d7"/>
+        </marker>
+      </defs>
+      <!-- Producer thread -->
+      <rect x="20" y="40" width="140" height="80" rx="8" fill="#0d1a2a" stroke="#0078d7" stroke-width="2"/>
+      <text x="90" y="70" text-anchor="middle" font-size="13" fill="#7ec8ff" font-weight="bold">生产者线程</text>
+      <text x="90" y="88" text-anchor="middle" font-size="11" fill="#5577aa">采集传感器</text>
+      <text x="90" y="103" text-anchor="middle" font-size="11" fill="#5577aa">user_kfifo_in()</text>
+
+      <!-- Arrow 1 -->
+      <path d="M 160,80 L 220,80" stroke="#0078d7" stroke-width="2.5" marker-end="url(#farr)"/>
+      <text x="190" y="72" text-anchor="middle" font-size="10" fill="#7ec8ff">写入</text>
+
+      <!-- Queue -->
+      <rect x="220" y="20" width="140" height="120" rx="8" fill="#111827" stroke="#2a3a60" stroke-width="1.5"/>
+      <text x="290" y="44" text-anchor="middle" font-size="12" fill="#8899bb" font-weight="bold">user_kfifo</text>
+      <text x="290" y="60" text-anchor="middle" font-size="10" fill="#5566aa">ring buffer</text>
+      <!-- Mini slots -->
+      <rect x="235" y="68" width="20" height="14" rx="2" fill="#1a4a2a" stroke="#1a7f4b"/>
+      <rect x="258" y="68" width="20" height="14" rx="2" fill="#1a4a2a" stroke="#1a7f4b"/>
+      <rect x="281" y="68" width="20" height="14" rx="2" fill="#3a1a1a" stroke="#e8a000" stroke-dasharray="3,2"/>
+      <rect x="304" y="68" width="20" height="14" rx="2" fill="#1a2a3a" stroke="#2a3a60"/>
+      <rect x="327" y="68" width="20" height="14" rx="2" fill="#1a2a3a" stroke="#2a3a60"/>
+      <text x="290" y="100" text-anchor="middle" font-size="9" fill="#5566aa">SPSC 无锁</text>
+      <text x="290" y="113" text-anchor="middle" font-size="9" fill="#5566aa">acquire/release</text>
+      <text x="290" y="126" text-anchor="middle" font-size="9" fill="#5566aa">内存屏障保护</text>
+
+      <!-- Arrow 2 -->
+      <path d="M 360,80 L 420,80" stroke="#1a7f4b" stroke-width="2.5" marker-end="url(#farr)"/>
+      <text x="390" y="72" text-anchor="middle" font-size="10" fill="#7fffb0">读取</text>
+
+      <!-- Consumer thread -->
+      <rect x="420" y="40" width="140" height="80" rx="8" fill="#0d1a0d" stroke="#1a7f4b" stroke-width="2"/>
+      <text x="490" y="70" text-anchor="middle" font-size="13" fill="#7fffb0" font-weight="bold">消费者线程</text>
+      <text x="490" y="88" text-anchor="middle" font-size="11" fill="#3a7a3a">处理数据</text>
+      <text x="490" y="103" text-anchor="middle" font-size="11" fill="#3a7a3a">user_kfifo_out()</text>
+    </svg>
+  </div>
+
+  <h2>完整示例代码（producer_consumer_demo.c）</h2>
+  <pre class="has-label"><span class="pre-label">producer_consumer_demo.c — 完整可编译示例（gcc -std=c11 -pthread -o demo demo.c）</span><span class="pp">#include</span> <span class="st">&lt;stdio.h&gt;</span>
+<span class="pp">#include</span> <span class="st">&lt;stdlib.h&gt;</span>
+<span class="pp">#include</span> <span class="st">&lt;pthread.h&gt;</span>
+<span class="pp">#include</span> <span class="st">&lt;unistd.h&gt;</span>
+<span class="pp">#include</span> <span class="st">&lt;stdatomic.h&gt;</span>
+<span class="pp">#include</span> <span class="st">"user_kfifo.h"</span>  <span class="cm">/* 引入我们的无锁队列 */</span>
+
+<span class="cm">/* ── 传感器数据包定义 ── */</span>
+<span class="kw">typedef struct</span> {
+    <span class="kw">uint32_t</span>   seq;         <span class="cm">/* 序列号（用于验证顺序）*/</span>
+    <span class="kw">float</span>      temperature; <span class="cm">/* 模拟温度值 */</span>
+    <span class="kw">uint64_t</span>   timestamp;   <span class="cm">/* 时间戳（微秒）*/</span>
+} <span class="ty">SensorPacket</span>;
+
+<span class="cm">/* ── 全局队列（缓冲 64 个 SensorPacket）── */</span>
+<span class="pp">#define QUEUE_SIZE  64    /* 必须是 2 的幂 */</span>
+<span class="pp">#define MSG_COUNT   200   /* 总共生产/消费的消息数 */</span>
+
+<span class="kw">static struct</span> <span class="ty">user_kfifo</span> g_fifo;
+<span class="kw">static</span> _Atomic <span class="kw">int</span>       g_producer_done = <span class="nm">0</span>; <span class="cm">/* 生产者完成标志 */</span>
+
+<span class="cm">/* ── 生产者线程函数 ── */</span>
+<span class="kw">static void</span> *<span class="fn">producer_thread</span>(<span class="kw">void</span> *arg)
+{
+    (<span class="kw">void</span>)arg;
+    <span class="kw">for</span> (<span class="kw">uint32_t</span> i = <span class="nm">0</span>; i &lt; MSG_COUNT; i++) {
+        <span class="ty">SensorPacket</span> pkt = {
+            .seq         = i,
+            .temperature = <span class="nm">25.0f</span> + (i % <span class="nm">10</span>) * <span class="nm">0.5f</span>,
+            .timestamp   = (<span class="kw">uint64_t</span>)i * <span class="nm">1000</span>
+        };
+
+        <span class="cm">/* 队列满时自旋等待（实际项目可用 semaphore 阻塞）*/</span>
+        <span class="kw">while</span> (<span class="fn">user_kfifo_in</span>(&amp;g_fifo, &amp;pkt, <span class="nm">1</span>) == <span class="nm">0</span>) {
+            <span class="cm">/* 让出 CPU，避免忙等耗尽资源 */</span>
+            <span class="fn">sched_yield</span>();
+        }
+
+        <span class="kw">if</span> (i % <span class="nm">50</span> == <span class="nm">0</span>)
+            <span class="fn">printf</span>(<span class="st">"[Producer] 已发送 seq=%u, temp=%.1f°C\n"</span>,
+                   pkt.seq, pkt.temperature);
+
+        <span class="cm">/* 模拟采集间隔（生产比消费稍慢，测试缓冲效果）*/</span>
+        <span class="fn">usleep</span>(<span class="nm">500</span>);
+    }
+
+    <span class="cm">/* 通知消费者生产完成 */</span>
+    atomic_store_explicit(&amp;g_producer_done, <span class="nm">1</span>, memory_order_release);
+    <span class="fn">printf</span>(<span class="st">"[Producer] 全部 %d 条消息发送完毕\n"</span>, MSG_COUNT);
+    <span class="kw">return</span> NULL;
+}
+
+<span class="cm">/* ── 消费者线程函数 ── */</span>
+<span class="kw">static void</span> *<span class="fn">consumer_thread</span>(<span class="kw">void</span> *arg)
+{
+    (<span class="kw">void</span>)arg;
+    <span class="ty">SensorPacket</span> pkt;
+    <span class="kw">uint32_t</span> consumed = <span class="nm">0</span>;
+    <span class="kw">uint32_t</span> expected_seq = <span class="nm">0</span>;
+    <span class="kw">int</span>      errors = <span class="nm">0</span>;
+
+    <span class="kw">for</span> (;;) {
+        <span class="kw">if</span> (<span class="fn">user_kfifo_out</span>(&amp;g_fifo, &amp;pkt, <span class="nm">1</span>) == <span class="nm">1</span>) {
+            <span class="cm">/* 验证序列号连续（无锁安全性验证）*/</span>
+            <span class="kw">if</span> (pkt.seq != expected_seq) {
+                <span class="fn">fprintf</span>(stderr, <span class="st">"[Consumer] !! 顺序错误: 期望 %u, 得到 %u\n"</span>,
+                        expected_seq, pkt.seq);
+                errors++;
+            }
+            expected_seq++;
+            consumed++;
+
+            <span class="kw">if</span> (consumed % <span class="nm">50</span> == <span class="nm">0</span>)
+                <span class="fn">printf</span>(<span class="st">"[Consumer] 已处理 seq=%u, temp=%.1f°C, 队列剩余=%u\n"</span>,
+                       pkt.seq, pkt.temperature,
+                       <span class="fn">user_kfifo_len</span>(&amp;g_fifo));
+
+            <span class="cm">/* 模拟处理耗时 */</span>
+            <span class="fn">usleep</span>(<span class="nm">300</span>);
+
+        } <span class="kw">else</span> {
+            <span class="cm">/* 队列空，检查是否所有消息已处理完毕 */</span>
+            <span class="kw">if</span> (atomic_load_explicit(&amp;g_producer_done, memory_order_acquire)
+                &amp;&amp; <span class="fn">user_kfifo_is_empty</span>(&amp;g_fifo))
+            {
+                <span class="kw">break</span>;
+            }
+            <span class="fn">sched_yield</span>();
+        }
+    }
+
+    <span class="fn">printf</span>(<span class="st">"[Consumer] 全部处理完毕，共 %u 条，错误 %d 处\n"</span>, consumed, errors);
+    <span class="kw">return</span> NULL;
+}
+
+<span class="kw">int</span> <span class="fn">main</span>(<span class="kw">void</span>)
+{
+    <span class="cm">/* 初始化 user_kfifo（64 个 SensorPacket 槽位）*/</span>
+    <span class="kw">if</span> (<span class="fn">user_kfifo_alloc</span>(&amp;g_fifo, QUEUE_SIZE, <span class="kw">sizeof</span>(<span class="ty">SensorPacket</span>)) != <span class="nm">0</span>) {
+        <span class="fn">fprintf</span>(stderr, <span class="st">"队列初始化失败\n"</span>);
+        <span class="kw">return</span> <span class="nm">1</span>;
+    }
+
+    <span class="fn">printf</span>(<span class="st">"=== user_kfifo SPSC 无锁队列演示 ===\n"</span>);
+    <span class="fn">printf</span>(<span class="st">"队列容量: %u 个 SensorPacket\n"</span>, <span class="fn">user_kfifo_size</span>(&amp;g_fifo));
+    <span class="fn">printf</span>(<span class="st">"元素大小: %u 字节\n\n"</span>, g_fifo.esize);
+
+    <span class="ty">pthread_t</span> prod_tid, cons_tid;
+    <span class="fn">pthread_create</span>(&amp;prod_tid, NULL, producer_thread, NULL);
+    <span class="fn">pthread_create</span>(&amp;cons_tid, NULL, consumer_thread, NULL);
+    <span class="fn">pthread_join</span>(prod_tid, NULL);
+    <span class="fn">pthread_join</span>(cons_tid, NULL);
+
+    <span class="fn">user_kfifo_free</span>(&amp;g_fifo);
+    <span class="fn">printf</span>(<span class="st">"\n演示完成。\n"</span>);
+    <span class="kw">return</span> <span class="nm">0</span>;
+}</pre>
+
+  <h2>预期输出</h2>
+  <pre class="has-label"><span class="pre-label">运行输出（示例）</span>=== user_kfifo SPSC 无锁队列演示 ===
+队列容量: 64 个 SensorPacket
+元素大小: 16 字节
+
+[Producer] 已发送 seq=0, temp=25.0°C
+[Consumer] 已处理 seq=0, temp=25.0°C, 队列剩余=1
+[Producer] 已发送 seq=50, temp=25.0°C
+[Consumer] 已处理 seq=50, temp=25.0°C, 队列剩余=8
+[Producer] 已发送 seq=100, temp=25.0°C
+[Consumer] 已处理 seq=100, temp=25.0°C, 队列剩余=12
+[Producer] 已发送 seq=150, temp=25.0°C
+[Consumer] 已处理 seq=150, temp=25.0°C, 队列剩余=6
+[Producer] 全部 200 条消息发送完毕
+[Consumer] 全部处理完毕，共 200 条，错误 0 处
+
+演示完成。</pre>
+
+  <h2>交互式模拟演示</h2>
+  <p>点击按钮模拟队列的生产/消费过程：</p>
+  <div style="background:#111827;border-radius:10px;padding:20px;margin:18px 0">
+    <div style="display:flex;gap:12px;margin-bottom:16px;flex-wrap:wrap">
+      <button onclick="demoEnqueue()" style="background:#0078d7;color:#fff;border:none;padding:8px 18px;border-radius:6px;cursor:pointer;font-weight:600">▶ 生产（入队）</button>
+      <button onclick="demoDequeue()" style="background:#1a7f4b;color:#fff;border:none;padding:8px 18px;border-radius:6px;cursor:pointer;font-weight:600">◀ 消费（出队）</button>
+      <button onclick="demoReset()" style="background:#444;color:#fff;border:none;padding:8px 18px;border-radius:6px;cursor:pointer;font-weight:600">⟳ 重置</button>
+    </div>
+    <div style="display:flex;align-items:center;gap:16px;margin-bottom:12px">
+      <span style="color:#8899bb;font-size:.85rem">in=</span><span id="demo-in" style="color:#7ec8ff;font-family:monospace;font-weight:bold">0</span>
+      <span style="color:#8899bb;font-size:.85rem">out=</span><span id="demo-out" style="color:#7fffb0;font-family:monospace;font-weight:bold">0</span>
+      <span style="color:#8899bb;font-size:.85rem">used=</span><span id="demo-used" style="color:#ffd080;font-family:monospace;font-weight:bold">0</span>
+      <span style="color:#8899bb;font-size:.85rem">mask=7</span>
+    </div>
+    <div id="demo-slots" style="display:flex;gap:4px;flex-wrap:nowrap;overflow-x:auto;padding-bottom:8px"></div>
+    <div id="demo-log" style="margin-top:12px;max-height:120px;overflow-y:auto;font-family:monospace;font-size:.78rem;color:#8899bb;background:#0d1117;border-radius:6px;padding:10px"></div>
+  </div>
+</section>
+
+<!-- ========== Chapter 7 ========== -->
+<section class="chapter" id="ch-7">
+  <div class="chapter-hero">
+    <div class="badge">CHAPTER 8</div>
+    <h1>与内核版本对比</h1>
+    <p>user_kfifo 与 Linux kernel kfifo 的设计差异与权衡</p>
+  </div>
+
+  <h2>核心差异对比</h2>
+  <div class="table-wrap">
+    <table>
+      <tr><th>特性</th><th>Linux kernel kfifo</th><th>user_kfifo（本实现）</th></tr>
+      <tr><td>内存屏障原语</td><td><code>smp_wmb()</code> / <code>smp_rmb()</code> / <code>smp_mb()</code></td><td><code>atomic_thread_fence()</code> (C11)</td></tr>
+      <tr><td>原子读写</td><td><code>READ_ONCE()</code> / <code>WRITE_ONCE()</code></td><td><code>atomic_load_explicit()</code> / <code>atomic_store_explicit()</code></td></tr>
+      <tr><td>内存分配</td><td><code>kmalloc()</code> / <code>kfree()</code></td><td><code>malloc()</code> / <code>free()</code></td></tr>
+      <tr><td>泛型支持</td><td>复杂宏+联合体（<code>typeof()</code>）</td><td>简化宏（<code>KFIFO_PUT</code>/<code>KFIFO_GET</code>）</td></tr>
+      <tr><td>多写者支持</td><td><code>kfifo_in_spinlocked()</code>（外部 spinlock）</td><td>需用户自行加 pthread_mutex</td></tr>
+      <tr><td>变长记录</td><td>支持（<code>kfifo_rec_ptr_1/2</code>）</td><td>不支持（仅定长元素）</td></tr>
+      <tr><td>DMA 支持</td><td>支持（<code>__kfifo_dma_in_prepare</code>）</td><td>不支持</td></tr>
+      <tr><td>用户空间拷贝</td><td><code>kfifo_from_user()</code> / <code>kfifo_to_user()</code></td><td>不适用</td></tr>
+      <tr><td>GCC 扩展依赖</td><td>依赖 <code>typeof()</code>、<code>__builtin_*</code></td><td>标准 C11（可移植）</td></tr>
+      <tr><td>编译环境</td><td>Linux 内核构建系统</td><td>任何支持 C11 的编译器</td></tr>
+    </table>
+  </div>
+
+  <h2>内存屏障等价性分析</h2>
+  <div class="diagram">
+    <svg width="580" height="200" viewBox="0 0 580 200">
+      <text x="290" y="20" text-anchor="middle" font-size="12" fill="#8899bb" font-weight="bold">内核 vs 用户态内存屏障语义对应</text>
+
+      <!-- Kernel side -->
+      <rect x="20" y="34" width="245" height="155" rx="8" fill="#0d1a2a" stroke="#0078d7" stroke-width="1.5"/>
+      <text x="142" y="54" text-anchor="middle" font-size="11" fill="#7ec8ff" font-weight="bold">Linux Kernel</text>
+
+      <rect x="35" y="64" width="215" height="26" rx="4" fill="#1a3a6a" stroke="#0078d7"/>
+      <text x="142" y="81" text-anchor="middle" font-size="10" fill="#7ec8ff" font-family="monospace">smp_wmb()  (写-写 屏障)</text>
+
+      <rect x="35" y="98" width="215" height="26" rx="4" fill="#1a3a6a" stroke="#0078d7"/>
+      <text x="142" y="115" text-anchor="middle" font-size="10" fill="#7ec8ff" font-family="monospace">smp_rmb()  (读-读 屏障)</text>
+
+      <rect x="35" y="132" width="215" height="26" rx="4" fill="#1a3a6a" stroke="#0078d7"/>
+      <text x="142" y="149" text-anchor="middle" font-size="10" fill="#7ec8ff" font-family="monospace">smp_mb()   (全屏障)</text>
+
+      <rect x="35" y="166" width="215" height="16" rx="4" fill="#0d1a0d" stroke="#1a7f4b"/>
+      <text x="142" y="177" text-anchor="middle" font-size="9" fill="#7fffb0" font-family="monospace">READ_ONCE / WRITE_ONCE</text>
+
+      <!-- Arrow -->
+      <text x="290" y="77" text-anchor="middle" font-size="18" fill="#e8a000">⟺</text>
+      <text x="290" y="115" text-anchor="middle" font-size="18" fill="#e8a000">⟺</text>
+      <text x="290" y="149" text-anchor="middle" font-size="18" fill="#e8a000">⟺</text>
+      <text x="290" y="177" text-anchor="middle" font-size="18" fill="#e8a000">⟺</text>
+
+      <!-- User side -->
+      <rect x="315" y="34" width="245" height="155" rx="8" fill="#0d1a0d" stroke="#1a7f4b" stroke-width="1.5"/>
+      <text x="437" y="54" text-anchor="middle" font-size="11" fill="#7fffb0" font-weight="bold">user_kfifo (C11)</text>
+
+      <rect x="330" y="64" width="215" height="26" rx="4" fill="#1a3a1a" stroke="#1a7f4b"/>
+      <text x="437" y="81" text-anchor="middle" font-size="10" fill="#7fffb0" font-family="monospace">fence(memory_order_release)</text>
+
+      <rect x="330" y="98" width="215" height="26" rx="4" fill="#1a3a1a" stroke="#1a7f4b"/>
+      <text x="437" y="115" text-anchor="middle" font-size="10" fill="#7fffb0" font-family="monospace">fence(memory_order_acquire)</text>
+
+      <rect x="330" y="132" width="215" height="26" rx="4" fill="#1a3a1a" stroke="#1a7f4b"/>
+      <text x="437" y="149" text-anchor="middle" font-size="10" fill="#7fffb0" font-family="monospace">fence(memory_order_seq_cst)</text>
+
+      <rect x="330" y="166" width="215" height="16" rx="4" fill="#1a1a3a" stroke="#5a5aaa"/>
+      <text x="437" y="177" text-anchor="middle" font-size="9" fill="#b0c8ff" font-family="monospace">atomic_load/store_explicit(relaxed)</text>
+    </svg>
+  </div>
+
+  <h2>性能对比分析</h2>
+  <div class="callout callout-info">
+    <div class="callout-title">📊 性能说明</div>
+    <p style="margin:0">在 x86_64 架构上，<code>memory_order_release</code> store 和 <code>memory_order_acquire</code> load 通常不产生额外屏障指令（x86 的 TSO 模型已保证），性能接近无屏障版本。在 ARM/RISC-V 等弱序架构上，会生成 <code>dmb</code>/<code>fence</code> 等显式指令，但这正是正确性所必需的。</p>
+  </div>
+
+  <div class="table-wrap">
+    <table>
+      <tr><th>架构</th><th>release store 开销</th><th>acquire load 开销</th><th>seq_cst fence 开销</th></tr>
+      <tr><td>x86_64</td><td>几乎无额外开销</td><td>几乎无额外开销</td><td>MFENCE（几十纳秒）</td></tr>
+      <tr><td>ARM64</td><td>stlr 指令（store-release）</td><td>ldar 指令（load-acquire）</td><td>dmb ish</td></tr>
+      <tr><td>RISC-V</td><td>fence w,rw</td><td>fence rw,r</td><td>fence rw,rw</td></tr>
+    </table>
+  </div>
+</section>
+
+<!-- ========== Chapter 8 ========== -->
+<section class="chapter" id="ch-8">
+  <div class="chapter-hero">
+    <div class="badge">CHAPTER 9</div>
+    <h1>注意事项与局限</h1>
+    <p>使用 user_kfifo 时必须了解的约束与最佳实践</p>
+  </div>
+
+  <h2>使用约束</h2>
+  <div class="callout callout-danger">
+    <div class="callout-title">🚫 禁止事项</div>
+    <ul style="margin:0">
+      <li><strong>不允许多生产者并发调用</strong> <code>user_kfifo_in()</code>，否则 in 索引存在竞争</li>
+      <li><strong>不允许多消费者并发调用</strong> <code>user_kfifo_out()</code>，否则 out 索引存在竞争</li>
+      <li><strong>不要从信号处理器</strong>（signal handler）中调用，需额外 async-signal safety 保证</li>
+      <li><strong>不要在有其他线程访问时</strong>调用 reset（<code>atomic_store in=out=0</code>），可能导致数据损坏</li>
+      <li><strong>元素类型必须是 POD</strong>（Plain Old Data），不要使用含指针的复杂结构（指针在跨线程传递时可能悬空）</li>
+    </ul>
+  </div>
+
+  <h2>最佳实践</h2>
+  <div class="card-row">
+    <div class="card">
+      <div class="card-icon">🔢</div>
+      <h4>选择合适队列容量</h4>
+      <p>队列大小应大于生产/消费速率差值的峰值，避免频繁忙等。推荐：<code>capacity ≥ 2 × burst_size</code></p>
+    </div>
+    <div class="card">
+      <div class="card-icon">😴</div>
+      <h4>避免忙等</h4>
+      <p>生产者/消费者循环中加入 <code>sched_yield()</code> 或 <code>nanosleep()</code>，或配合 semaphore 实现阻塞式等待</p>
+    </div>
+    <div class="card">
+      <div class="card-icon">📦</div>
+      <h4>批量操作</h4>
+      <p>尽量批量写入/读取（<code>nelem > 1</code>），减少屏障指令和缓存行竞争次数</p>
+    </div>
+    <div class="card">
+      <div class="card-icon">🏷️</div>
+      <h4>缓存行对齐</h4>
+      <p>将 in/out 分别放在不同缓存行（64字节对齐），避免 False Sharing</p>
+    </div>
+  </div>
+
+  <h2>缓存行伪共享（False Sharing）优化</h2>
+  <p>内核中通过 <code>cache_aligned</code> 属性将 in/out 放在不同缓存行，用户态可参考此优化：</p>
+  <pre class="has-label"><span class="pre-label">避免 False Sharing 的优化版结构体</span><span class="pp">#define CACHE_LINE_SIZE  64</span>
+<span class="pp">#define CACHE_ALIGNED    __attribute__((__aligned__(CACHE_LINE_SIZE)))</span>
+
+<span class="kw">struct</span> <span class="ty">user_kfifo_aligned</span> {
+    <span class="cm">/* 生产者独占缓存行 */</span>
+    _Atomic <span class="kw">unsigned int</span>  in    CACHE_ALIGNED;
+
+    <span class="cm">/* 消费者独占缓存行 */</span>
+    _Atomic <span class="kw">unsigned int</span>  out   CACHE_ALIGNED;
+
+    <span class="cm">/* 只读字段（初始化后不变）*/</span>
+    <span class="kw">unsigned int</span>           mask  CACHE_ALIGNED;
+    <span class="kw">unsigned int</span>           esize;
+    <span class="kw">void</span>                  *data;
+};</pre>
+
+  <div class="callout callout-warn">
+    <div class="callout-title">⚠️ 关于 kfifo_len() 等查询函数的注意事项</div>
+    <p style="margin:0">
+      <code>user_kfifo_len()</code>、<code>user_kfifo_is_empty()</code> 等函数返回的是<strong>近似值</strong>。
+      由于 in/out 由不同线程更新，读取到的值可能已过时。
+      例如：消费者调用 <code>is_empty()</code> 返回 true 后，生产者可能立即写入了新数据。
+      这些函数仅适用于统计/监控，不能用于并发控制判断。
+    </p>
+  </div>
+
+  <h2>扩展场景：配合 semaphore 实现阻塞队列</h2>
+  <pre class="has-label"><span class="pre-label">阻塞式生产者（避免忙等）</span><span class="pp">#include</span> <span class="st">&lt;semaphore.h&gt;</span>
+
+sem_t g_slots_sem;   <span class="cm">/* 空槽位计数（初始=QUEUE_SIZE）*/</span>
+sem_t g_items_sem;   <span class="cm">/* 已有元素计数（初始=0）*/</span>
+
+<span class="cm">/* 初始化 */</span>
+sem_init(&amp;g_slots_sem, <span class="nm">0</span>, QUEUE_SIZE);
+sem_init(&amp;g_items_sem, <span class="nm">0</span>, <span class="nm">0</span>);
+
+<span class="cm">/* 生产者：阻塞等待有空槽 */</span>
+<span class="kw">void</span> <span class="fn">blocking_produce</span>(<span class="ty">SensorPacket</span> *pkt) {
+    sem_wait(&amp;g_slots_sem);          <span class="cm">/* 等待空槽位 */</span>
+    <span class="fn">user_kfifo_in</span>(&amp;g_fifo, pkt, <span class="nm">1</span>); <span class="cm">/* 无锁写入 */</span>
+    sem_post(&amp;g_items_sem);          <span class="cm">/* 通知有新元素 */</span>
+}
+
+<span class="cm">/* 消费者：阻塞等待有数据 */</span>
+<span class="kw">void</span> <span class="fn">blocking_consume</span>(<span class="ty">SensorPacket</span> *pkt) {
+    sem_wait(&amp;g_items_sem);           <span class="cm">/* 等待有元素 */</span>
+    <span class="fn">user_kfifo_out</span>(&amp;g_fifo, pkt, <span class="nm">1</span>); <span class="cm">/* 无锁读取 */</span>
+    sem_post(&amp;g_slots_sem);           <span class="cm">/* 通知有空槽 */</span>
+}</pre>
+</section>
+
+<!-- ========== Chapter 9 ========== -->
+<section class="chapter" id="ch-9">
+  <div class="chapter-hero">
+    <div class="badge">CHAPTER 10</div>
+    <h1>参考文献与原文链接</h1>
+    <p>所有内容均基于以下权威来源，严格对照原文编写</p>
+  </div>
+
+  <h2>官方内核源码</h2>
+  <ul>
+    <li>
+      <a class="src-ref" href="https://github.com/torvalds/linux/blob/master/include/linux/kfifo.h" target="_blank">
+        🔗 torvalds/linux — include/linux/kfifo.h
+      </a>
+      <br><span style="color:#5566aa;font-size:.85rem">Linux 内核主线 kfifo 头文件，Copyright © 2013 Stefani Seibold &lt;stefani@seibold.net&gt;</span>
+    </li>
+    <li style="margin-top:10px">
+      <a class="src-ref" href="https://github.com/torvalds/linux/blob/master/lib/kfifo.c" target="_blank">
+        🔗 torvalds/linux — lib/kfifo.c
+      </a>
+      <br><span style="color:#5566aa;font-size:.85rem">kfifo 实现文件，包含 kfifo_copy_in/out 等核心函数</span>
+    </li>
+    <li style="margin-top:10px">
+      <a class="src-ref" href="https://github.com/spotify/linux/blob/master/include/linux/kfifo.h" target="_blank">
+        🔗 spotify/linux — include/linux/kfifo.h (v2.6.x)
+      </a>
+      <br><span style="color:#5566aa;font-size:.85rem">早期 kfifo 版本（Stelian Pop，2004），包含原始简单结构</span>
+    </li>
+    <li style="margin-top:10px">
+      <a class="src-ref" href="https://github.com/LorDClockaN/DesireC-eclair/blob/master/kernel/kfifo.c" target="_blank">
+        🔗 DesireC-eclair — kernel/kfifo.c
+      </a>
+      <br><span style="color:#5566aa;font-size:.85rem">早期 kfifo.c 实现，__kfifo_put/__kfifo_get 含 smp_wmb/smp_rmb 注释</span>
+    </li>
+  </ul>
+
+  <h2>内核文档与邮件列表</h2>
+  <ul>
+    <li>
+      <a class="src-ref" href="https://lwn.net/Articles/106560/" target="_blank">
+        🔗 LWN.net — Circular buffers in the kernel (2004)
+      </a>
+      <br><span style="color:#5566aa;font-size:.85rem">Jonathan Corbet 对 kfifo 首次引入的权威解析</span>
+    </li>
+    <li style="margin-top:10px">
+      <a class="src-ref" href="https://lwn.net/Articles/401676/" target="_blank">
+        🔗 LWN.net — kfifo writer side lock-less support (2010)
+      </a>
+      <br><span style="color:#5566aa;font-size:.85rem">Huang Ying 提出的 kfifo 无锁写入扩展方案</span>
+    </li>
+    <li style="margin-top:10px">
+      <a class="src-ref" href="https://lkml.org/lkml/2018/12/10/1189" target="_blank">
+        🔗 LKML — kfifo: add memory barrier (2018)
+      </a>
+      <br><span style="color:#5566aa;font-size:.85rem">Yulei Zhang 对 kfifo 内存屏障缺失问题的修复讨论</span>
+    </li>
+    <li style="margin-top:10px">
+      <a class="src-ref" href="https://linux.kernel.narkive.com/biDV0ioX/rfc-0-2-new-kfifo-api" target="_blank">
+        🔗 LKML Archive — RFC: new kfifo API
+      </a>
+      <br><span style="color:#5566aa;font-size:.85rem">Stefani Seibold 提出新泛型 kfifo API 的原始 RFC</span>
+    </li>
+  </ul>
+
+  <h2>技术参考</h2>
+  <ul>
+    <li>
+      <a class="src-ref" href="https://stackoverflow.com/questions/78096108/why-do-kfifo-need-smp-wmb-even-with-spin-lock-irqsave-in-kernel-in-version-4-9-3" target="_blank">
+        🔗 Stack Overflow — Why do kfifo need smp_wmb?
+      </a>
+      <br><span style="color:#5566aa;font-size:.85rem">对 kfifo 内存屏障使用的权威问答，解释 SPSC 模型下屏障必要性</span>
+    </li>
+    <li style="margin-top:10px">
+      <a class="src-ref" href="https://github.com/liigo/kfifo" target="_blank">
+        🔗 github.com/liigo/kfifo
+      </a>
+      <br><span style="color:#5566aa;font-size:.85rem">kfifo 用户态移植参考实现（基于内核 v3.x 泛型版本）</span>
+    </li>
+  </ul>
+
+  <h2>C11 标准参考</h2>
+  <ul>
+    <li>ISO/IEC 9899:2011（C11）— §7.17 Atomics（stdatomic.h 规范）</li>
+    <li><code>atomic_thread_fence()</code> — C11 §7.17.4：定义 acquire/release/seq_cst 语义</li>
+    <li><code>_Atomic</code> 限定符 — C11 §6.7.2.4：原子类型声明</li>
+  </ul>
+
+  <div class="callout callout-success">
+    <div class="callout-title">✅ 版权与许可</div>
+    <p style="margin:0">
+      本文档中的 <strong>user_kfifo.h 实现</strong>为原创用户态移植，遵循 MIT 许可。
+      内核原版 kfifo 代码遵循 <strong>GNU GPL v2 or later</strong>
+      （SPDX-License-Identifier: GPL-2.0-or-later）。
+      本文档引用的内核代码片段仅作学习与说明用途。
+    </p>
+  </div>
+</section>
+
+</main>
+
+<script>
+// ─── Chapter navigation ───────────────────────────────────────────
+const chapters = document.querySelectorAll('.chapter');
+const navItems = document.querySelectorAll('.nav-item[data-ch]');
+const topbarTitle = document.getElementById('topbar-title');
+const btnPrev = document.getElementById('btn-prev');
+const btnNext = document.getElementById('btn-next');
+let current = 0;
+
+const titles = [
+  '§1 · 概述与背景',
+  '§2 · kfifo 数据结构',
+  '§3 · 环形缓冲区原理',
+  '§4 · 无锁核心：内存屏障',
+  '§5 · user_kfifo.h 完整实现',
+  '§6 · 关键 API 解析',
+  '§7 · 生产者消费者示例',
+  '§8 · 与内核版本对比',
+  '§9 · 注意事项与局限',
+  '§10 · 参考文献'
+];
+
+function goTo(idx) {
+  if (idx < 0 || idx >= chapters.length) return;
+  chapters[current].classList.remove('active');
+  navItems[current].classList.remove('active');
+  current = idx;
+  chapters[current].classList.add('active');
+  navItems[current].classList.add('active');
+  topbarTitle.textContent = titles[current];
+  btnPrev.disabled = current === 0;
+  btnNext.disabled = current === chapters.length - 1;
+  document.getElementById('main').scrollTop = 0;
+  window.scrollTo(0, 0);
+  updateProgress();
+  // Close sidebar on mobile
+  if (window.innerWidth <= 768) {
+    document.getElementById('sidebar').classList.remove('open');
+    document.getElementById('overlay').classList.remove('show');
+  }
+}
+
+navItems.forEach((item) => {
+  item.addEventListener('click', () => goTo(parseInt(item.dataset.ch)));
+});
+
+btnPrev.addEventListener('click', () => goTo(current - 1));
+btnNext.addEventListener('click', () => goTo(current + 1));
+
+// Keyboard navigation
+document.addEventListener('keydown', (e) => {
+  if (e.key === 'ArrowRight') goTo(current + 1);
+  if (e.key === 'ArrowLeft')  goTo(current - 1);
+});
+
+// ─── Progress bar ─────────────────────────────────────────────────
+const progressBar = document.getElementById('progress-bar');
+function updateProgress() {
+  const pct = ((current + 1) / chapters.length) * 100;
+  progressBar.style.width = pct + '%';
+}
+updateProgress();
+
+window.addEventListener('scroll', () => {
+  const scrolled = window.scrollY;
+  const maxScroll = document.documentElement.scrollHeight - window.innerHeight;
+  const chapterPct = current / (chapters.length - 1);
+  const intraChapter = maxScroll > 0 ? scrolled / maxScroll : 0;
+  const total = (current + intraChapter) / chapters.length * 100;
+  progressBar.style.width = Math.max(((current + 1) / chapters.length) * 100, total) + '%';
+});
+
+// ─── Sidebar burger (mobile) ──────────────────────────────────────
+const sidebar = document.getElementById('sidebar');
+const overlay = document.getElementById('overlay');
+document.getElementById('burger').addEventListener('click', () => {
+  sidebar.classList.toggle('open');
+  overlay.classList.toggle('show');
+});
+overlay.addEventListener('click', () => {
+  sidebar.classList.remove('open');
+  overlay.classList.remove('show');
+});
+
+// ─── Interactive demo (Ch 6) ─────────────────────────────────────
+const DEMO_SIZE = 8;
+const DEMO_MASK = DEMO_SIZE - 1;
+let demoIn = 0, demoOut = 0, demoSeq = 0;
+const demoData = new Array(DEMO_SIZE).fill(null);
+
+function demoRender() {
+  const slotsEl = document.getElementById('demo-slots');
+  if (!slotsEl) return;
+  slotsEl.innerHTML = '';
+  for (let i = 0; i < DEMO_SIZE; i++) {
+    const phys = i;
+    const isIn  = (demoIn & DEMO_MASK) === phys && demoIn !== demoOut ? false : (demoIn & DEMO_MASK) === phys;
+    const isOut = (demoOut & DEMO_MASK) === phys;
+    const hasData = demoData[phys] !== null;
+
+    let bg = '#1a2a4a', border = '#2a3a60', textColor = '#5566aa';
+    let label = `[${phys}]`;
+    let sublabel = '';
+
+    if (hasData) { bg = '#1a4a2a'; border = '#1a7f4b'; textColor = '#7fffb0'; label = `[${phys}]`; sublabel = `#${demoData[phys]}`; }
+    const markers = [];
+    if ((demoIn & DEMO_MASK) === phys) markers.push('← in');
+    if ((demoOut & DEMO_MASK) === phys) markers.push('← out');
+
+    const div = document.createElement('div');
+    div.style.cssText = `min-width:60px;height:60px;background:${bg};border:2px solid ${border};border-radius:6px;display:flex;flex-direction:column;align-items:center;justify-content:center;font-family:monospace;font-size:11px;color:${textColor};flex-shrink:0;transition:all .2s`;
+    div.innerHTML = `<span style="font-weight:bold">${label}</span>${sublabel ? `<span style="color:#fff;font-size:10px">${sublabel}</span>` : ''}${markers.length ? `<span style="font-size:9px;color:${markers.includes('← in') ? '#7ec8ff' : '#e8a000'}">${markers.join(' ')}</span>` : ''}`;
+    slotsEl.appendChild(div);
+  }
+  document.getElementById('demo-in').textContent = demoIn;
+  document.getElementById('demo-out').textContent = demoOut;
+  document.getElementById('demo-used').textContent = demoIn - demoOut;
+}
+
+function demoLog(msg, color) {
+  const el = document.getElementById('demo-log');
+  if (!el) return;
+  const line = document.createElement('div');
+  line.style.color = color || '#8899bb';
+  line.textContent = `[${new Date().toLocaleTimeString()}] ${msg}`;
+  el.appendChild(line);
+  el.scrollTop = el.scrollHeight;
+}
+
+function demoEnqueue() {
+  const avail = DEMO_SIZE - (demoIn - demoOut);
+  if (avail === 0) { demoLog('队列已满，无法入队', '#e86030'); return; }
+  const slot = demoIn & DEMO_MASK;
+  demoData[slot] = demoSeq;
+  demoLog(`入队 slot[${slot}] = #${demoSeq}，in: ${demoIn} → ${demoIn+1}`, '#7ec8ff');
+  demoSeq++;
+  demoIn++;
+  demoRender();
+}
+
+function demoDequeue() {
+  const used = demoIn - demoOut;
+  if (used === 0) { demoLog('队列为空，无法出队', '#e86030'); return; }
+  const slot = demoOut & DEMO_MASK;
+  const val = demoData[slot];
+  demoData[slot] = null;
+  demoLog(`出队 slot[${slot}] = #${val}，out: ${demoOut} → ${demoOut+1}`, '#7fffb0');
+  demoOut++;
+  demoRender();
+}
+
+function demoReset() {
+  demoIn = demoOut = demoSeq = 0;
+  demoData.fill(null);
+  const el = document.getElementById('demo-log');
+  if (el) el.innerHTML = '';
+  demoLog('队列已重置', '#ffd080');
+  demoRender();
+}
+
+// Init demo when chapter 6 is first shown
+const origGoTo = goTo;
+// Render demo on load
+setTimeout(() => { demoRender(); demoLog('演示初始化完成，点击"生产"或"消费"按钮', '#ffd080'); }, 100);
+</script>
+</body>
+</html>

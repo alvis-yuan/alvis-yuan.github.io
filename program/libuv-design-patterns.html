@@ -1,0 +1,2038 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>libuv 设计思想精讲 — C 语言系统编程借鉴指南</title>
+<style>
+  /* ===== CSS Reset & Base ===== */
+  *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+  html { scroll-behavior: smooth; font-size: 16px; }
+  body {
+    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", "PingFang SC", "Hiragino Sans GB", "Microsoft YaHei", sans-serif;
+    background: #0f1117;
+    color: #c9d1d9;
+    line-height: 1.75;
+    overflow-x: hidden;
+  }
+
+  /* ===== Progress Bar ===== */
+  #progress-bar {
+    position: fixed;
+    top: 0; left: 0;
+    height: 3px;
+    width: 0%;
+    background: linear-gradient(90deg, #58a6ff, #bc8cff);
+    z-index: 9999;
+    transition: width 0.1s linear;
+  }
+
+  /* ===== Sidebar ===== */
+  #sidebar {
+    position: fixed;
+    top: 0; left: 0;
+    width: 272px;
+    height: 100vh;
+    background: #161b22;
+    border-right: 1px solid #21262d;
+    overflow-y: auto;
+    z-index: 100;
+    transition: transform 0.3s ease;
+    display: flex;
+    flex-direction: column;
+  }
+  #sidebar-header {
+    padding: 20px 18px 14px;
+    border-bottom: 1px solid #21262d;
+    flex-shrink: 0;
+  }
+  #sidebar-header h1 {
+    font-size: 0.85rem;
+    font-weight: 700;
+    color: #58a6ff;
+    letter-spacing: 0.06em;
+    text-transform: uppercase;
+  }
+  #sidebar-header p {
+    font-size: 0.72rem;
+    color: #6e7681;
+    margin-top: 4px;
+  }
+  #sidebar nav { padding: 12px 0 80px; flex: 1; }
+  .nav-group-label {
+    font-size: 0.68rem;
+    font-weight: 700;
+    color: #6e7681;
+    text-transform: uppercase;
+    letter-spacing: 0.1em;
+    padding: 14px 18px 6px;
+  }
+  .nav-item {
+    display: block;
+    padding: 7px 18px 7px 22px;
+    font-size: 0.82rem;
+    color: #8b949e;
+    text-decoration: none;
+    border-left: 3px solid transparent;
+    transition: all 0.2s;
+    cursor: pointer;
+    line-height: 1.4;
+  }
+  .nav-item:hover { color: #c9d1d9; background: #21262d; }
+  .nav-item.active { color: #58a6ff; border-left-color: #58a6ff; background: rgba(88,166,255,0.07); font-weight: 600; }
+
+  /* ===== Hamburger ===== */
+  #hamburger {
+    display: none;
+    position: fixed;
+    top: 14px; left: 14px;
+    z-index: 200;
+    background: #161b22;
+    border: 1px solid #30363d;
+    border-radius: 8px;
+    width: 40px; height: 40px;
+    align-items: center; justify-content: center;
+    cursor: pointer;
+    flex-direction: column;
+    gap: 5px;
+    padding: 8px;
+  }
+  #hamburger span {
+    display: block;
+    width: 100%; height: 2px;
+    background: #c9d1d9;
+    border-radius: 2px;
+    transition: all 0.3s;
+  }
+  #overlay {
+    display: none;
+    position: fixed;
+    inset: 0;
+    background: rgba(0,0,0,0.6);
+    z-index: 99;
+  }
+
+  /* ===== Main Content ===== */
+  #main {
+    margin-left: 272px;
+    min-height: 100vh;
+    transition: margin-left 0.3s ease;
+  }
+  .chapter {
+    max-width: 860px;
+    margin: 0 auto;
+    padding: 60px 40px 80px;
+    min-height: 100vh;
+    border-bottom: 1px solid #21262d;
+  }
+  .chapter:last-child { border-bottom: none; }
+
+  /* ===== Typography ===== */
+  .chapter-badge {
+    display: inline-block;
+    font-size: 0.68rem;
+    font-weight: 700;
+    letter-spacing: 0.12em;
+    text-transform: uppercase;
+    color: #58a6ff;
+    background: rgba(88,166,255,0.12);
+    border: 1px solid rgba(88,166,255,0.25);
+    border-radius: 20px;
+    padding: 3px 12px;
+    margin-bottom: 12px;
+  }
+  .chapter h2 {
+    font-size: 2rem;
+    font-weight: 800;
+    color: #e6edf3;
+    line-height: 1.2;
+    margin-bottom: 10px;
+  }
+  .chapter-subtitle {
+    font-size: 1rem;
+    color: #6e7681;
+    margin-bottom: 36px;
+    padding-bottom: 24px;
+    border-bottom: 1px solid #21262d;
+  }
+  h3 {
+    font-size: 1.2rem;
+    font-weight: 700;
+    color: #e6edf3;
+    margin: 36px 0 14px;
+    display: flex;
+    align-items: center;
+    gap: 10px;
+  }
+  h3::before {
+    content: '';
+    display: inline-block;
+    width: 4px; height: 1.2em;
+    background: linear-gradient(180deg, #58a6ff, #bc8cff);
+    border-radius: 2px;
+    flex-shrink: 0;
+  }
+  h4 {
+    font-size: 1rem;
+    font-weight: 600;
+    color: #c9d1d9;
+    margin: 24px 0 10px;
+  }
+  p { margin: 0 0 14px; color: #c9d1d9; }
+  strong { color: #e6edf3; }
+  a { color: #58a6ff; text-decoration: none; }
+  a:hover { text-decoration: underline; }
+
+  /* ===== Code ===== */
+  code {
+    font-family: "SFMono-Regular", Consolas, "Liberation Mono", Menlo, monospace;
+    font-size: 0.82em;
+    background: #21262d;
+    border: 1px solid #30363d;
+    border-radius: 4px;
+    padding: 2px 6px;
+    color: #ff7b72;
+  }
+  pre {
+    background: #161b22;
+    border: 1px solid #30363d;
+    border-radius: 10px;
+    padding: 20px 22px;
+    overflow-x: auto;
+    margin: 18px 0 22px;
+    position: relative;
+  }
+  pre code {
+    background: none;
+    border: none;
+    padding: 0;
+    font-size: 0.84rem;
+    color: #c9d1d9;
+    line-height: 1.7;
+  }
+  .code-label {
+    position: absolute;
+    top: 10px; right: 14px;
+    font-size: 0.65rem;
+    font-weight: 700;
+    letter-spacing: 0.1em;
+    color: #484f58;
+    text-transform: uppercase;
+  }
+  .kw { color: #ff7b72; }
+  .fn { color: #d2a8ff; }
+  .cm { color: #8b949e; font-style: italic; }
+  .str { color: #a5d6ff; }
+  .num { color: #79c0ff; }
+  .type { color: #ffa657; }
+  .pp { color: #f0883e; }
+
+  /* ===== Callout Boxes ===== */
+  .callout {
+    border-radius: 8px;
+    padding: 14px 18px;
+    margin: 18px 0;
+    border-left: 4px solid;
+    font-size: 0.9rem;
+  }
+  .callout-info { background: rgba(88,166,255,0.08); border-color: #58a6ff; }
+  .callout-warn { background: rgba(255,183,77,0.08); border-color: #e3b341; }
+  .callout-tip { background: rgba(63,185,80,0.08); border-color: #3fb950; }
+  .callout-danger { background: rgba(248,81,73,0.08); border-color: #f85149; }
+  .callout-title {
+    font-size: 0.72rem;
+    font-weight: 800;
+    letter-spacing: 0.12em;
+    text-transform: uppercase;
+    margin-bottom: 6px;
+  }
+  .callout-info .callout-title { color: #58a6ff; }
+  .callout-warn .callout-title { color: #e3b341; }
+  .callout-tip .callout-title { color: #3fb950; }
+  .callout-danger .callout-title { color: #f85149; }
+
+  /* ===== Cards ===== */
+  .card-grid {
+    display: grid;
+    grid-template-columns: repeat(auto-fill, minmax(240px, 1fr));
+    gap: 16px;
+    margin: 20px 0;
+  }
+  .card {
+    background: #161b22;
+    border: 1px solid #30363d;
+    border-radius: 10px;
+    padding: 18px;
+    transition: border-color 0.2s, transform 0.2s;
+  }
+  .card:hover { border-color: #58a6ff; transform: translateY(-2px); }
+  .card-icon { font-size: 1.6rem; margin-bottom: 10px; }
+  .card h4 { margin: 0 0 8px; color: #e6edf3; font-size: 0.92rem; }
+  .card p { font-size: 0.82rem; color: #8b949e; margin: 0; }
+
+  /* ===== Table ===== */
+  table {
+    width: 100%;
+    border-collapse: collapse;
+    margin: 18px 0;
+    font-size: 0.86rem;
+  }
+  th {
+    background: #21262d;
+    color: #e6edf3;
+    font-weight: 700;
+    text-align: left;
+    padding: 10px 14px;
+    border: 1px solid #30363d;
+  }
+  td {
+    padding: 9px 14px;
+    border: 1px solid #30363d;
+    color: #c9d1d9;
+    vertical-align: top;
+  }
+  tr:nth-child(even) td { background: #161b22; }
+  tr:nth-child(odd) td { background: #0d1117; }
+
+  /* ===== SVG Diagrams ===== */
+  .diagram-wrap {
+    background: #161b22;
+    border: 1px solid #30363d;
+    border-radius: 10px;
+    padding: 24px 16px;
+    margin: 22px 0;
+    overflow-x: auto;
+    text-align: center;
+  }
+  .diagram-wrap svg { max-width: 100%; height: auto; }
+  .diagram-caption {
+    text-align: center;
+    font-size: 0.78rem;
+    color: #6e7681;
+    margin-top: 10px;
+    font-style: italic;
+  }
+
+  /* ===== Source Link ===== */
+  .source-link {
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+    font-size: 0.76rem;
+    color: #58a6ff;
+    background: rgba(88,166,255,0.07);
+    border: 1px solid rgba(88,166,255,0.2);
+    border-radius: 6px;
+    padding: 4px 10px;
+    margin: 8px 0 18px;
+    text-decoration: none;
+  }
+  .source-link:hover { background: rgba(88,166,255,0.15); }
+
+  /* ===== Chapter Nav Buttons ===== */
+  .chapter-nav {
+    display: flex;
+    gap: 12px;
+    margin-top: 50px;
+    flex-wrap: wrap;
+  }
+  .btn-nav {
+    display: inline-flex;
+    align-items: center;
+    gap: 8px;
+    padding: 10px 20px;
+    border-radius: 8px;
+    font-size: 0.86rem;
+    font-weight: 600;
+    cursor: pointer;
+    border: 1px solid #30363d;
+    background: #21262d;
+    color: #c9d1d9;
+    transition: all 0.2s;
+  }
+  .btn-nav:hover { background: #30363d; color: #e6edf3; }
+  .btn-nav.primary { background: #1f6feb; border-color: #388bfd; color: #fff; }
+  .btn-nav.primary:hover { background: #388bfd; }
+
+  /* ===== Highlight list ===== */
+  ul.styled, ol.styled {
+    padding-left: 24px;
+    margin: 12px 0 18px;
+  }
+  ul.styled li, ol.styled li {
+    margin-bottom: 8px;
+    color: #c9d1d9;
+    font-size: 0.92rem;
+  }
+  ul.styled li::marker { color: #58a6ff; }
+  ol.styled li::marker { color: #58a6ff; font-weight: 700; }
+
+  /* ===== Responsive ===== */
+  @media (max-width: 768px) {
+    #sidebar { transform: translateX(-100%); width: 260px; }
+    #sidebar.open { transform: translateX(0); }
+    #main { margin-left: 0; }
+    #hamburger { display: flex; }
+    #overlay.show { display: block; }
+    .chapter { padding: 70px 18px 60px; }
+    .chapter h2 { font-size: 1.5rem; }
+    .card-grid { grid-template-columns: 1fr; }
+  }
+  @media (max-width: 480px) {
+    .chapter { padding: 70px 14px 50px; }
+    pre { padding: 14px 14px; }
+    table { font-size: 0.78rem; }
+    td, th { padding: 7px 10px; }
+  }
+
+  /* Scroll-to-top */
+  #scroll-top {
+    position: fixed;
+    bottom: 24px; right: 24px;
+    width: 40px; height: 40px;
+    background: #21262d;
+    border: 1px solid #30363d;
+    border-radius: 50%;
+    display: flex; align-items: center; justify-content: center;
+    cursor: pointer;
+    font-size: 1.1rem;
+    color: #8b949e;
+    opacity: 0;
+    transition: opacity 0.3s, transform 0.3s;
+    z-index: 50;
+    transform: translateY(10px);
+  }
+  #scroll-top.show { opacity: 1; transform: translateY(0); }
+  #scroll-top:hover { color: #58a6ff; border-color: #58a6ff; }
+</style>
+</head>
+<body>
+
+<!-- Progress Bar -->
+<div id="progress-bar"></div>
+
+<!-- Hamburger -->
+<div id="hamburger" onclick="toggleSidebar()" aria-label="菜单">
+  <span></span><span></span><span></span>
+</div>
+
+<!-- Overlay -->
+<div id="overlay" onclick="toggleSidebar()"></div>
+
+<!-- Sidebar -->
+<div id="sidebar">
+  <div id="sidebar-header">
+    <h1>libuv 设计精讲</h1>
+    <p>C 语言系统编程借鉴指南</p>
+  </div>
+  <nav id="nav">
+    <div class="nav-group-label">概览</div>
+    <a class="nav-item" onclick="goTo('ch0')">0 · 引言与背景</a>
+
+    <div class="nav-group-label">核心设计模式</div>
+    <a class="nav-item" onclick="goTo('ch1')">1 · RAII — 资源即初始化</a>
+    <a class="nav-item" onclick="goTo('ch2')">2 · Handle/Request 分离</a>
+    <a class="nav-item" onclick="goTo('ch3')">3 · 事件循环架构</a>
+    <a class="nav-item" onclick="goTo('ch4')">4 · 回调与上下文传递</a>
+    <a class="nav-item" onclick="goTo('ch5')">5 · 线程池与任务队列</a>
+
+    <div class="nav-group-label">高级技巧</div>
+    <a class="nav-item" onclick="goTo('ch6')">6 · 引用计数与生命周期</a>
+    <a class="nav-item" onclick="goTo('ch7')">7 · Baton 数据传递模式</a>
+    <a class="nav-item" onclick="goTo('ch8')">8 · 跨线程通信 uv_async</a>
+    <a class="nav-item" onclick="goTo('ch9')">9 · 错误处理约定</a>
+
+    <div class="nav-group-label">实践</div>
+    <a class="nav-item" onclick="goTo('ch10')">10 · 综合对比与建议</a>
+  </nav>
+</div>
+
+<!-- Main -->
+<div id="main">
+
+<!-- ========================= CHAPTER 0 ========================= -->
+<section class="chapter" id="ch0">
+  <div class="chapter-badge">引言</div>
+  <h2>libuv 与 C 语言系统编程</h2>
+  <p class="chapter-subtitle">为什么不引入 libuv，却还要学习它的设计思想？</p>
+
+  <p>
+    <strong>libuv</strong> 是一个跨平台的 C 语言异步 I/O 支持库，最初为 <a href="https://nodejs.org" target="_blank">Node.js</a> 而生。它抽象了 Linux 的 <code>epoll</code>、macOS/BSD 的 <code>kqueue</code>、Solaris 的 event ports 以及 Windows 的 <code>IOCP</code>，提供统一的事件驱动异步 I/O 模型。
+  </p>
+  <p>
+    然而在许多 C 语言业务系统或嵌入式项目中，直接引入 libuv 成本太高：依赖链复杂、可移植性要求多样、内存占用敏感。但 libuv 的代码库中凝结了大量经过生产检验的设计模式，完全可以在不依赖库本身的前提下借鉴到日常开发中。
+  </p>
+
+  <a class="source-link" href="https://docs.libuv.org/en/v1.x/design.html" target="_blank">
+    📄 官方文档：Design overview — libuv documentation
+  </a>
+
+  <div class="card-grid">
+    <div class="card">
+      <div class="card-icon">🏗️</div>
+      <h4>RAII 资源管理</h4>
+      <p>初始化即拥有，关闭回调中释放，避免资源泄漏</p>
+    </div>
+    <div class="card">
+      <div class="card-icon">🔗</div>
+      <h4>Handle/Request 分离</h4>
+      <p>长生命周期对象与短生命周期操作解耦</p>
+    </div>
+    <div class="card">
+      <div class="card-icon">⚙️</div>
+      <h4>事件循环</h4>
+      <p>单线程非阻塞 I/O，阶段清晰可扩展</p>
+    </div>
+    <div class="card">
+      <div class="card-icon">📦</div>
+      <h4>Baton 数据传递</h4>
+      <p>回调链中安全传递上下文数据的通用模式</p>
+    </div>
+    <div class="card">
+      <div class="card-icon">🧵</div>
+      <h4>线程池任务队列</h4>
+      <p>阻塞操作异步化，不阻塞主线程事件循环</p>
+    </div>
+    <div class="card">
+      <div class="card-icon">🔢</div>
+      <h4>引用计数生命周期</h4>
+      <p>精确控制事件循环存活状态，避免过早退出</p>
+    </div>
+  </div>
+
+  <div class="diagram-wrap">
+    <svg viewBox="0 0 720 200" xmlns="http://www.w3.org/2000/svg" style="min-width:400px">
+      <!-- libuv arch overview -->
+      <defs>
+        <linearGradient id="g1" x1="0%" y1="0%" x2="100%" y2="100%">
+          <stop offset="0%" style="stop-color:#58a6ff;stop-opacity:0.18"/>
+          <stop offset="100%" style="stop-color:#bc8cff;stop-opacity:0.08"/>
+        </linearGradient>
+      </defs>
+      <!-- Top Layer -->
+      <rect x="10" y="16" width="700" height="64" rx="8" fill="url(#g1)" stroke="#58a6ff" stroke-width="1.2" stroke-dasharray="4,3"/>
+      <text x="360" y="34" fill="#58a6ff" font-size="10" font-weight="700" text-anchor="middle" letter-spacing="1">API 层（用户使用）</text>
+      <rect x="30" y="42" width="120" height="28" rx="6" fill="#21262d" stroke="#30363d"/>
+      <text x="90" y="61" fill="#c9d1d9" font-size="11" text-anchor="middle">Network I/O</text>
+      <rect x="165" y="42" width="120" height="28" rx="6" fill="#21262d" stroke="#30363d"/>
+      <text x="225" y="61" fill="#c9d1d9" font-size="11" text-anchor="middle">File I/O</text>
+      <rect x="300" y="42" width="120" height="28" rx="6" fill="#21262d" stroke="#30363d"/>
+      <text x="360" y="61" fill="#c9d1d9" font-size="11" text-anchor="middle">DNS / Timers</text>
+      <rect x="435" y="42" width="120" height="28" rx="6" fill="#21262d" stroke="#30363d"/>
+      <text x="495" y="61" fill="#c9d1d9" font-size="11" text-anchor="middle">Signals</text>
+      <rect x="570" y="42" width="120" height="28" rx="6" fill="#21262d" stroke="#30363d"/>
+      <text x="630" y="61" fill="#c9d1d9" font-size="11" text-anchor="middle">User Code</text>
+      <!-- Arrow down -->
+      <line x1="360" y1="80" x2="360" y2="100" stroke="#484f58" stroke-width="1.5" marker-end="url(#arr)"/>
+      <defs>
+        <marker id="arr" markerWidth="8" markerHeight="6" refX="8" refY="3" orient="auto">
+          <polygon points="0 0, 8 3, 0 6" fill="#484f58"/>
+        </marker>
+      </defs>
+      <!-- Bottom Layer -->
+      <rect x="10" y="102" width="700" height="78" rx="8" fill="rgba(188,140,255,0.06)" stroke="#bc8cff" stroke-width="1.2" stroke-dasharray="4,3"/>
+      <text x="360" y="120" fill="#bc8cff" font-size="10" font-weight="700" text-anchor="middle" letter-spacing="1">平台抽象层</text>
+      <rect x="30" y="128" width="155" height="40" rx="6" fill="#21262d" stroke="#30363d"/>
+      <text x="107" y="143" fill="#ffa657" font-size="10" text-anchor="middle">epoll (Linux)</text>
+      <text x="107" y="160" fill="#8b949e" font-size="9" text-anchor="middle">kqueue (macOS/BSD)</text>
+      <rect x="200" y="128" width="155" height="40" rx="6" fill="#21262d" stroke="#30363d"/>
+      <text x="277" y="143" fill="#ffa657" font-size="10" text-anchor="middle">IOCP (Windows)</text>
+      <text x="277" y="160" fill="#8b949e" font-size="9" text-anchor="middle">event ports (Solaris)</text>
+      <rect x="370" y="128" width="155" height="40" rx="6" fill="#21262d" stroke="#30363d"/>
+      <text x="447" y="143" fill="#ffa657" font-size="10" text-anchor="middle">Thread Pool</text>
+      <text x="447" y="160" fill="#8b949e" font-size="9" text-anchor="middle">文件 I/O / DNS / 用户任务</text>
+      <rect x="540" y="128" width="155" height="40" rx="6" fill="#21262d" stroke="#30363d"/>
+      <text x="617" y="143" fill="#ffa657" font-size="10" text-anchor="middle">pthreads / Win Threads</text>
+      <text x="617" y="160" fill="#8b949e" font-size="9" text-anchor="middle">Mutex / RWLock / Barrier</text>
+    </svg>
+    <p class="diagram-caption">图1 · libuv 整体架构图（源自官方设计文档）</p>
+  </div>
+
+  <div class="chapter-nav">
+    <button class="btn-nav primary" onclick="goTo('ch1')">下一章 →</button>
+  </div>
+</section>
+
+<!-- ========================= CHAPTER 1 ========================= -->
+<section class="chapter" id="ch1">
+  <div class="chapter-badge">核心模式 · 01</div>
+  <h2>RAII — 资源即初始化</h2>
+  <p class="chapter-subtitle">libuv 的 Handle 生命周期管理与 C 语言 RAII 实践</p>
+
+  <a class="source-link" href="https://docs.libuv.org/en/v1.x/design.html#handles-and-requests" target="_blank">
+    📄 官方文档：Handles and requests — Design overview
+  </a>
+  <a class="source-link" href="https://docs.libuv.org/en/v1.x/handle.html" target="_blank">
+    📄 官方 API：uv_handle_t — Base handle
+  </a>
+
+  <h3>什么是 libuv 的 RAII 思想</h3>
+  <p>
+    官方文档明确规定了 Handle 的生命周期规则（Guidelines for dealing with handles and requests）：
+  </p>
+  <ul class="styled">
+    <li><strong>规则 1</strong>：如果 <code>uv_foo_init()</code> 成功初始化了 handle，则<strong>必须</strong>调用 <code>uv_close()</code>。若初始化失败则无需处理。</li>
+    <li><strong>规则 2</strong>：只有 handle 需要关闭，request 不需要。例如 <code>uv_tcp_t</code> 是 handle，<code>uv_write_t</code> 是 request。</li>
+    <li><strong>规则 3</strong>：handle 的内存<strong>只能</strong>在 <code>uv_close_cb</code> 内部或其返回之后才能被回收或重用，不能提前释放。</li>
+    <li><strong>规则 4</strong>：request 在完成时或被 <code>uv_cancel()</code> 取消时自动关闭，无需额外清理（除 <code>uv_fs_t</code> 和 <code>uv_getaddrinfo_t</code> 外）。</li>
+  </ul>
+
+  <div class="callout callout-danger">
+    <div class="callout-title">⚠️ 关键约束</div>
+    官方文档原文：<em>"This MUST be called on each handle before memory is released. Moreover, the memory can only be released in close_cb or after it has returned."</em><br>
+    （在释放内存前，每个 handle 都必须调用 uv_close。内存只能在 close_cb 中或其返回后释放。）
+  </div>
+
+  <h3>Handle 生命周期状态机</h3>
+
+  <div class="diagram-wrap">
+    <svg viewBox="0 0 680 200" xmlns="http://www.w3.org/2000/svg" style="min-width:360px">
+      <defs>
+        <marker id="arr2" markerWidth="8" markerHeight="6" refX="8" refY="3" orient="auto">
+          <polygon points="0 0, 8 3, 0 6" fill="#58a6ff"/>
+        </marker>
+        <marker id="arr3" markerWidth="8" markerHeight="6" refX="8" refY="3" orient="auto">
+          <polygon points="0 0, 8 3, 0 6" fill="#f85149"/>
+        </marker>
+        <marker id="arr4" markerWidth="8" markerHeight="6" refX="8" refY="3" orient="auto">
+          <polygon points="0 0, 8 3, 0 6" fill="#3fb950"/>
+        </marker>
+      </defs>
+      <!-- States -->
+      <rect x="20" y="80" width="110" height="44" rx="8" fill="#21262d" stroke="#30363d"/>
+      <text x="75" y="97" fill="#8b949e" font-size="11" text-anchor="middle">未初始化</text>
+      <text x="75" y="113" fill="#6e7681" font-size="9" text-anchor="middle">Uninitialized</text>
+
+      <rect x="185" y="60" width="120" height="44" rx="8" fill="rgba(88,166,255,0.12)" stroke="#58a6ff"/>
+      <text x="245" y="77" fill="#58a6ff" font-size="11" text-anchor="middle" font-weight="700">已初始化</text>
+      <text x="245" y="93" fill="#8b949e" font-size="9" text-anchor="middle">uv_foo_init() 成功</text>
+
+      <rect x="185" y="120" width="120" height="44" rx="6" fill="rgba(63,185,80,0.10)" stroke="#3fb950"/>
+      <text x="245" y="137" fill="#3fb950" font-size="11" text-anchor="middle" font-weight="700">活跃中</text>
+      <text x="245" y="153" fill="#8b949e" font-size="9" text-anchor="middle">uv_foo_start() 调用</text>
+
+      <rect x="385" y="90" width="120" height="44" rx="6" fill="rgba(255,183,77,0.10)" stroke="#e3b341"/>
+      <text x="445" y="107" fill="#e3b341" font-size="11" text-anchor="middle" font-weight="700">正在关闭</text>
+      <text x="445" y="123" fill="#8b949e" font-size="9" text-anchor="middle">uv_close() 调用</text>
+
+      <rect x="555" y="90" width="110" height="44" rx="6" fill="rgba(248,81,73,0.10)" stroke="#f85149"/>
+      <text x="610" y="107" fill="#f85149" font-size="11" text-anchor="middle" font-weight="700">已关闭</text>
+      <text x="610" y="123" fill="#8b949e" font-size="9" text-anchor="middle">close_cb 触发</text>
+
+      <!-- Arrows -->
+      <line x1="130" y1="102" x2="183" y2="82" stroke="#58a6ff" stroke-width="1.5" marker-end="url(#arr2)"/>
+      <text x="150" y="78" fill="#58a6ff" font-size="9" text-anchor="middle">init()</text>
+
+      <line x1="245" y1="104" x2="245" y2="120" stroke="#3fb950" stroke-width="1.5" marker-end="url(#arr4)"/>
+      <text x="262" y="115" fill="#3fb950" font-size="9">start()</text>
+
+      <line x1="245" y1="142" x2="244" y2="105" stroke="#e3b341" stroke-width="1.2" stroke-dasharray="4,3" marker-end="url(#arr2)"/>
+      <text x="220" y="120" fill="#e3b341" font-size="9">stop()</text>
+
+      <line x1="305" y1="82" x2="383" y2="100" stroke="#f85149" stroke-width="1.5" marker-end="url(#arr3)"/>
+      <text x="340" y="82" fill="#f85149" font-size="9">uv_close()</text>
+
+      <line x1="305" y1="142" x2="390" y2="115" stroke="#f85149" stroke-width="1.5" marker-end="url(#arr3)"/>
+
+      <line x1="505" y1="112" x2="553" y2="112" stroke="#f85149" stroke-width="1.5" marker-end="url(#arr3)"/>
+      <text x="525" y="107" fill="#f85149" font-size="9" text-anchor="middle">close_cb</text>
+
+      <!-- Memory free note -->
+      <rect x="555" y="148" width="110" height="28" rx="4" fill="#21262d" stroke="#30363d" stroke-dasharray="3,2"/>
+      <text x="610" y="160" fill="#6e7681" font-size="9" text-anchor="middle">free(handle)</text>
+      <text x="610" y="172" fill="#6e7681" font-size="8" text-anchor="middle">仅在此后可释放</text>
+      <line x1="610" y1="134" x2="610" y2="148" stroke="#484f58" stroke-width="1" stroke-dasharray="2,2"/>
+    </svg>
+    <p class="diagram-caption">图2 · libuv Handle 生命周期状态机（官方设计规范）</p>
+  </div>
+
+  <h3>C 语言中模拟 RAII 的实践方案</h3>
+  <p>C++ 的 RAII 依赖析构函数，C 语言没有析构函数，但可以通过 <strong>init/cleanup 函数对 + 宏封装</strong> 模拟：</p>
+
+  <pre><span class="code-label">C · RAII 模拟</span><code><span class="cm">/* === 借鉴 libuv 的 C 语言 RAII 模式 === */</span>
+
+<span class="cm">/* 1. 资源结构体，内嵌状态标志 */</span>
+<span class="kw">typedef struct</span> {
+    <span class="type">int</span>    fd;          <span class="cm">/* 文件描述符 */</span>
+    <span class="type">char</span>  *buf;        <span class="cm">/* 动态分配缓冲区 */</span>
+    <span class="type">int</span>    initialized; <span class="cm">/* 是否已初始化（对应 uv_foo_init 成功标志）*/</span>
+} <span class="type">my_handle_t</span>;
+
+<span class="cm">/* 2. init 函数：成功则标记，失败则不标记 */</span>
+<span class="type">int</span> <span class="fn">my_handle_init</span>(<span class="type">my_handle_t</span> *h, <span class="kw">const</span> <span class="type">char</span> *path) {
+    h->initialized = <span class="num">0</span>;
+    h->buf = (<span class="type">char</span>*)malloc(<span class="num">4096</span>);
+    <span class="kw">if</span> (!h->buf) <span class="kw">return</span> -<span class="num">1</span>;
+    h->fd = open(path, O_RDWR);
+    <span class="kw">if</span> (h->fd < <span class="num">0</span>) { free(h->buf); <span class="kw">return</span> -<span class="num">1</span>; }
+    h->initialized = <span class="num">1</span>;  <span class="cm">/* 标记成功 */</span>
+    <span class="kw">return</span> <span class="num">0</span>;
+}
+
+<span class="cm">/* 3. cleanup 函数：仅在 initialized 时执行 */</span>
+<span class="kw">void</span> <span class="fn">my_handle_cleanup</span>(<span class="type">my_handle_t</span> *h) {
+    <span class="kw">if</span> (!h->initialized) <span class="kw">return</span>;
+    close(h->fd);
+    free(h->buf);
+    h->initialized = <span class="num">0</span>;
+}
+
+<span class="cm">/* 4. 使用：通过 goto cleanup 统一出口 */</span>
+<span class="type">int</span> <span class="fn">process_file</span>(<span class="kw">const</span> <span class="type">char</span> *path) {
+    <span class="type">my_handle_t</span> h;
+    <span class="type">int</span> rc = -<span class="num">1</span>;
+
+    <span class="kw">if</span> (<span class="fn">my_handle_init</span>(&h, path) != <span class="num">0</span>) <span class="kw">goto</span> done;
+
+    <span class="cm">/* ... 使用 h ... */</span>
+    rc = <span class="num">0</span>;
+
+cleanup:
+    <span class="fn">my_handle_cleanup</span>(&h);  <span class="cm">/* 安全：未初始化时是空操作 */</span>
+done:
+    <span class="kw">return</span> rc;
+}</code></pre>
+
+  <div class="callout callout-tip">
+    <div class="callout-title">✅ 核心借鉴点</div>
+    libuv 的经验是：<strong>init 成功 → 必须 close</strong>，<strong>内存释放只在 close_cb 后</strong>。在 C 语言中翻译为：init 成功 → 必须 cleanup，cleanup 统一放在单一出口（<code>goto cleanup</code>）。这消除了中间 return 路径上的资源泄漏。
+  </div>
+
+  <div class="chapter-nav">
+    <button class="btn-nav" onclick="goTo('ch0')">← 上一章</button>
+    <button class="btn-nav primary" onclick="goTo('ch2')">下一章 →</button>
+  </div>
+</section>
+
+<!-- ========================= CHAPTER 2 ========================= -->
+<section class="chapter" id="ch2">
+  <div class="chapter-badge">核心模式 · 02</div>
+  <h2>Handle / Request 分离模式</h2>
+  <p class="chapter-subtitle">长生命周期对象与短生命周期操作的解耦设计</p>
+
+  <a class="source-link" href="https://docs.libuv.org/en/v1.x/design.html#handles-and-requests" target="_blank">
+    📄 官方文档：Handles and requests — Design overview
+  </a>
+  <a class="source-link" href="https://docs.libuv.org/en/v1.x/guide/basics.html#handles-and-requests" target="_blank">
+    📄 官方文档：Handles and Requests — Basics of libuv
+  </a>
+
+  <h3>官方定义</h3>
+  <p>
+    官方文档原文：<em>"Handles represent long-lived objects capable of performing certain operations while active. [...] Requests represent (typically) short-lived operations."</em>
+  </p>
+  <p>
+    <strong>Handle（句柄）</strong>代表长生命周期对象，活跃期间能执行特定操作。<strong>Request（请求）</strong>代表通常是短生命周期的操作，可以作用于 handle（如写请求），也可以独立运行（如 getaddrinfo 不需要 handle，直接在 loop 上运行）。
+  </p>
+
+  <table>
+    <thead>
+      <tr><th>特征</th><th>Handle（句柄）</th><th>Request（请求）</th></tr>
+    </thead>
+    <tbody>
+      <tr><td>生命周期</td><td>长期，active 期间持续运行</td><td>短期，通常一个回调后结束</td></tr>
+      <tr><td>典型示例</td><td>uv_tcp_t, uv_timer_t, uv_signal_t</td><td>uv_write_t, uv_connect_t, uv_fs_t</td></tr>
+      <tr><td>关闭方式</td><td>必须调用 uv_close()，异步回调</td><td>完成或取消后自动关闭</td></tr>
+      <tr><td>内存释放时机</td><td>close_cb 中或之后</td><td>请求完成后（特殊请求需手动清理）</td></tr>
+      <tr><td>事件循环存活影响</td><td>active + ref'd handle 使 loop 存活</td><td>active request 使 loop 存活</td></tr>
+    </tbody>
+  </table>
+
+  <div class="callout callout-info">
+    <div class="callout-title">📌 官方举例</div>
+    <em>"For example, an UDP socket is represented by a uv_udp_t, while individual writes to the socket use a uv_udp_send_t structure that is passed to the callback after the write is done."</em><br>
+    UDP socket 是 Handle（持续存在），每次写操作是 Request（用完即弃）。
+  </div>
+
+  <h3>Handle/Request 分离的优势</h3>
+  <ul class="styled">
+    <li><strong>内存可预测</strong>：长期对象和短期对象分开分配，生命周期明确，不会因混用导致 use-after-free</li>
+    <li><strong>并发安全</strong>：每个 Request 携带独立上下文，无需全局锁</li>
+    <li><strong>可取消</strong>：Request 可通过 <code>uv_cancel()</code> 取消，Handle 则通过 <code>uv_close()</code> 关闭</li>
+    <li><strong>职责单一</strong>：Handle 管理连接/资源状态，Request 管理单次操作</li>
+  </ul>
+
+  <div class="diagram-wrap">
+    <svg viewBox="0 0 680 240" xmlns="http://www.w3.org/2000/svg" style="min-width:360px">
+      <defs>
+        <marker id="ar5" markerWidth="8" markerHeight="6" refX="8" refY="3" orient="auto">
+          <polygon points="0 0, 8 3, 0 6" fill="#8b949e"/>
+        </marker>
+        <marker id="ar6" markerWidth="8" markerHeight="6" refX="8" refY="3" orient="auto">
+          <polygon points="0 0, 8 3, 0 6" fill="#3fb950"/>
+        </marker>
+      </defs>
+
+      <!-- Event Loop box -->
+      <rect x="260" y="8" width="160" height="44" rx="8" fill="rgba(88,166,255,0.15)" stroke="#58a6ff" stroke-width="1.5"/>
+      <text x="340" y="25" fill="#58a6ff" font-size="11" text-anchor="middle" font-weight="700">Event Loop</text>
+      <text x="340" y="43" fill="#8b949e" font-size="9" text-anchor="middle">uv_loop_t</text>
+
+      <!-- Handle box -->
+      <rect x="40" y="90" width="200" height="130" rx="8" fill="rgba(255,166,87,0.08)" stroke="#ffa657" stroke-width="1.5"/>
+      <text x="140" y="110" fill="#ffa657" font-size="12" text-anchor="middle" font-weight="700">Handle（长期）</text>
+      <rect x="56" y="120" width="168" height="28" rx="5" fill="#21262d" stroke="#30363d"/>
+      <text x="140" y="139" fill="#c9d1d9" font-size="10" text-anchor="middle">uv_tcp_t server  （监听连接）</text>
+      <rect x="56" y="156" width="168" height="28" rx="5" fill="#21262d" stroke="#30363d"/>
+      <text x="140" y="175" fill="#c9d1d9" font-size="10" text-anchor="middle">uv_timer_t timer  （定时器）</text>
+      <rect x="56" y="192" width="168" height="22" rx="5" fill="#21262d" stroke="#30363d"/>
+      <text x="140" y="207" fill="#8b949e" font-size="9" text-anchor="middle">uv_close() → close_cb → free()</text>
+
+      <!-- Request box -->
+      <rect x="440" y="90" width="200" height="130" rx="8" fill="rgba(63,185,80,0.08)" stroke="#3fb950" stroke-width="1.5"/>
+      <text x="540" y="110" fill="#3fb950" font-size="12" text-anchor="middle" font-weight="700">Request（短期）</text>
+      <rect x="456" y="120" width="168" height="28" rx="5" fill="#21262d" stroke="#30363d"/>
+      <text x="540" y="139" fill="#c9d1d9" font-size="10" text-anchor="middle">uv_write_t req  （写一次数据）</text>
+      <rect x="456" y="156" width="168" height="28" rx="5" fill="#21262d" stroke="#30363d"/>
+      <text x="540" y="175" fill="#c9d1d9" font-size="10" text-anchor="middle">uv_connect_t conn （建立连接）</text>
+      <rect x="456" y="192" width="168" height="22" rx="5" fill="#21262d" stroke="#30363d"/>
+      <text x="540" y="207" fill="#8b949e" font-size="9" text-anchor="middle">完成后自动关闭，可 uv_cancel()</text>
+
+      <!-- Arrows from loop -->
+      <line x1="280" y1="52" x2="180" y2="90" stroke="#ffa657" stroke-width="1.5" marker-end="url(#ar5)"/>
+      <text x="195" y="74" fill="#ffa657" font-size="9">管理</text>
+      <line x1="400" y1="52" x2="480" y2="90" stroke="#3fb950" stroke-width="1.5" marker-end="url(#ar5)"/>
+      <text x="450" y="74" fill="#3fb950" font-size="9">调度</text>
+
+      <!-- Arrow request works on handle -->
+      <line x1="440" y1="134" x2="242" y2="134" stroke="#8b949e" stroke-width="1" stroke-dasharray="5,3" marker-end="url(#ar5)"/>
+      <text x="340" y="128" fill="#6e7681" font-size="9" text-anchor="middle">操作作用于 →</text>
+    </svg>
+    <p class="diagram-caption">图3 · Handle 与 Request 的职责分工（官方文档概念）</p>
+  </div>
+
+  <h3>在 C 语言业务代码中的应用</h3>
+
+  <pre><span class="code-label">C · Handle/Request 分离模式</span><code><span class="cm">/* 借鉴 libuv 的"长期对象 vs 短期操作"分离 */</span>
+
+<span class="cm">/* === 长期对象：连接 handle === */</span>
+<span class="kw">typedef struct</span> {
+    <span class="type">int</span>          fd;
+    <span class="type">char</span>         peer_ip[<span class="num">64</span>];
+    <span class="type">void</span>        *userdata;
+    <span class="kw">void</span>       (*on_close)(<span class="kw">struct</span> <span class="type">conn_handle</span> *);
+} <span class="type">conn_handle_t</span>;
+
+<span class="cm">/* === 短期操作：写请求 === */</span>
+<span class="kw">typedef struct</span> {
+    <span class="type">conn_handle_t</span> *handle;   <span class="cm">/* 关联的 handle */</span>
+    <span class="type">char</span>          *data;     <span class="cm">/* 待写数据 */</span>
+    <span class="type">size_t</span>         len;
+    <span class="kw">void</span>         (*on_done)(<span class="kw">struct</span> <span class="type">write_req</span> *, <span class="type">int</span> status);
+} <span class="type">write_req_t</span>;
+
+<span class="cm">/* 发起写操作：创建短期 request，不影响 handle 生命周期 */</span>
+<span class="type">int</span> <span class="fn">conn_write</span>(<span class="type">conn_handle_t</span> *h, <span class="type">char</span> *data, <span class="type">size_t</span> len,
+               <span class="kw">void</span> (*cb)(<span class="type">write_req_t</span>*, <span class="type">int</span>)) {
+    <span class="type">write_req_t</span> *req = malloc(<span class="kw">sizeof</span>(*req));
+    <span class="kw">if</span> (!req) <span class="kw">return</span> -<span class="num">1</span>;
+    req->handle  = h;
+    req->data    = data;
+    req->len     = len;
+    req->on_done = cb;
+    <span class="cm">/* 提交到 I/O 子系统，完成后在 on_done 中 free(req) */</span>
+    <span class="kw">return</span> <span class="fn">io_submit_write</span>(req);
+}
+
+<span class="cm">/* 写完成回调：释放 request，handle 继续存活 */</span>
+<span class="kw">void</span> <span class="fn">on_write_done</span>(<span class="type">write_req_t</span> *req, <span class="type">int</span> status) {
+    <span class="kw">if</span> (status < <span class="num">0</span>) <span class="fn">log_error</span>(<span class="str">"write failed: %d"</span>, status);
+    free(req->data);
+    free(req);  <span class="cm">/* request 完成即释放，handle 不受影响 */</span>
+}</code></pre>
+
+  <div class="chapter-nav">
+    <button class="btn-nav" onclick="goTo('ch1')">← 上一章</button>
+    <button class="btn-nav primary" onclick="goTo('ch3')">下一章 →</button>
+  </div>
+</section>
+
+<!-- ========================= CHAPTER 3 ========================= -->
+<section class="chapter" id="ch3">
+  <div class="chapter-badge">核心模式 · 03</div>
+  <h2>事件循环架构</h2>
+  <p class="chapter-subtitle">单线程非阻塞 I/O 的阶段化执行模型</p>
+
+  <a class="source-link" href="https://docs.libuv.org/en/v1.x/design.html#the-i-o-loop" target="_blank">
+    📄 官方文档：The I/O loop — Design overview
+  </a>
+  <a class="source-link" href="https://docs.libuv.org/en/v1.x/guide/basics.html#event-loops" target="_blank">
+    📄 官方文档：Event loops — Basics of libuv
+  </a>
+
+  <h3>事件循环的本质</h3>
+  <p>官方文档原文：</p>
+  <div class="callout callout-info">
+    <div class="callout-title">📌 官方伪代码</div>
+    <em>"while there are still events to process:<br>
+    &nbsp;&nbsp;&nbsp;&nbsp;e = get the next event<br>
+    &nbsp;&nbsp;&nbsp;&nbsp;if there is a callback associated with e:<br>
+    &nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;call the callback"</em>
+  </div>
+
+  <p>libuv 事件循环的核心特性：</p>
+  <ul class="styled">
+    <li><strong>单线程</strong>：event loop 绑定单一线程，官方原文："it's meant to be tied to a single thread"</li>
+    <li><strong>非阻塞</strong>：所有网络 I/O 在非阻塞 socket 上执行，由平台最佳机制轮询</li>
+    <li><strong>平台最优</strong>：Linux 用 epoll，macOS/BSD 用 kqueue，Solaris 用 event ports，Windows 用 IOCP</li>
+    <li><strong>非线程安全</strong>："The libuv event loop is not thread-safe except where stated otherwise"</li>
+  </ul>
+
+  <h3>Loop 的 13 个执行阶段</h3>
+  <p>官方文档详细列出了每次 loop iteration 的所有阶段：</p>
+
+  <div class="diagram-wrap">
+    <svg viewBox="0 0 700 520" xmlns="http://www.w3.org/2000/svg" style="min-width:380px">
+      <defs>
+        <marker id="la" markerWidth="8" markerHeight="6" refX="8" refY="3" orient="auto">
+          <polygon points="0 0, 8 3, 0 6" fill="#58a6ff"/>
+        </marker>
+        <marker id="la2" markerWidth="8" markerHeight="6" refX="8" refY="3" orient="auto">
+          <polygon points="0 0, 8 3, 0 6" fill="#6e7681"/>
+        </marker>
+      </defs>
+
+      <!-- Central loop label -->
+      <ellipse cx="350" cy="260" rx="80" ry="50" fill="rgba(88,166,255,0.07)" stroke="#58a6ff" stroke-width="1.5" stroke-dasharray="5,3"/>
+      <text x="350" y="254" fill="#58a6ff" font-size="12" text-anchor="middle" font-weight="700">Event</text>
+      <text x="350" y="272" fill="#58a6ff" font-size="12" text-anchor="middle" font-weight="700">Loop</text>
+
+      <!-- Stages in circular arrangement -->
+      <!-- Stage 1: update time -->
+      <rect x="295" y="18" width="110" height="38" rx="6" fill="#21262d" stroke="#58a6ff" stroke-width="1"/>
+      <text x="350" y="33" fill="#58a6ff" font-size="9" text-anchor="middle" font-weight="700">① 更新"当前时间"</text>
+      <text x="350" y="48" fill="#8b949e" font-size="8" text-anchor="middle">loop concept of 'now'</text>
+      <line x1="350" y1="56" x2="350" y2="74" stroke="#58a6ff" stroke-width="1" marker-end="url(#la)"/>
+
+      <!-- Stage 2: due timers -->
+      <rect x="295" y="76" width="110" height="38" rx="6" fill="#21262d" stroke="#ffa657" stroke-width="1"/>
+      <text x="350" y="91" fill="#ffa657" font-size="9" text-anchor="middle" font-weight="700">② 执行到期定时器</text>
+      <text x="350" y="106" fill="#8b949e" font-size="8" text-anchor="middle">Due timers run</text>
+      <line x1="350" y1="114" x2="350" y2="130" stroke="#8b949e" stroke-width="1" marker-end="url(#la2)"/>
+
+      <!-- Stage 3: alive check -->
+      <rect x="295" y="132" width="110" height="38" rx="6" fill="#21262d" stroke="#8b949e" stroke-width="1"/>
+      <text x="350" y="147" fill="#c9d1d9" font-size="9" text-anchor="middle" font-weight="700">③ 检查 Loop 存活</text>
+      <text x="350" y="162" fill="#8b949e" font-size="8" text-anchor="middle">active handles/requests?</text>
+
+      <!-- Stage 4-6 on left -->
+      <rect x="60" y="160" width="130" height="38" rx="6" fill="#21262d" stroke="#3fb950" stroke-width="1"/>
+      <text x="125" y="175" fill="#3fb950" font-size="9" text-anchor="middle" font-weight="700">④ Pending 回调</text>
+      <text x="125" y="190" fill="#8b949e" font-size="8" text-anchor="middle">上轮延迟的 I/O 回调</text>
+
+      <rect x="60" y="212" width="130" height="38" rx="6" fill="#21262d" stroke="#3fb950" stroke-width="1"/>
+      <text x="125" y="227" fill="#3fb950" font-size="9" text-anchor="middle" font-weight="700">⑤ Idle 回调</text>
+      <text x="125" y="242" fill="#8b949e" font-size="8" text-anchor="middle">每轮必调用（如活跃）</text>
+
+      <rect x="60" y="264" width="130" height="38" rx="6" fill="#21262d" stroke="#3fb950" stroke-width="1"/>
+      <text x="125" y="279" fill="#3fb950" font-size="9" text-anchor="middle" font-weight="700">⑥ Prepare 回调</text>
+      <text x="125" y="294" fill="#8b949e" font-size="8" text-anchor="middle">I/O 阻塞前调用</text>
+
+      <!-- Stage 7-8 bottom -->
+      <rect x="200" y="430" width="130" height="38" rx="6" fill="#21262d" stroke="#bc8cff" stroke-width="1.5"/>
+      <text x="265" y="445" fill="#bc8cff" font-size="9" text-anchor="middle" font-weight="700">⑦ 计算超时</text>
+      <text x="265" y="460" fill="#8b949e" font-size="8" text-anchor="middle">Poll timeout calc</text>
+
+      <rect x="368" y="430" width="130" height="38" rx="6" fill="#21262d" stroke="#bc8cff" stroke-width="2"/>
+      <text x="433" y="445" fill="#bc8cff" font-size="9" text-anchor="middle" font-weight="700">⑧ I/O 轮询阻塞</text>
+      <text x="433" y="460" fill="#8b949e" font-size="8" text-anchor="middle">epoll/kqueue/IOCP 等待</text>
+
+      <!-- Stage 9-11 on right -->
+      <rect x="510" y="264" width="130" height="38" rx="6" fill="#21262d" stroke="#f85149" stroke-width="1"/>
+      <text x="575" y="279" fill="#f85149" font-size="9" text-anchor="middle" font-weight="700">⑨ Check 回调</text>
+      <text x="575" y="294" fill="#8b949e" font-size="8" text-anchor="middle">I/O 阻塞后立即调用</text>
+
+      <rect x="510" y="212" width="130" height="38" rx="6" fill="#21262d" stroke="#f85149" stroke-width="1"/>
+      <text x="575" y="227" fill="#f85149" font-size="9" text-anchor="middle" font-weight="700">⑩ Close 回调</text>
+      <text x="575" y="242" fill="#8b949e" font-size="8" text-anchor="middle">uv_close() 的回调</text>
+
+      <rect x="510" y="160" width="130" height="38" rx="6" fill="#21262d" stroke="#f85149" stroke-width="1"/>
+      <text x="575" y="175" fill="#f85149" font-size="9" text-anchor="middle" font-weight="700">⑪ 更新时间</text>
+      <text x="575" y="190" fill="#8b949e" font-size="8" text-anchor="middle">loop 'now' updated</text>
+
+      <!-- Stage 12-13 top right -->
+      <rect x="450" y="76" width="130" height="38" rx="6" fill="#21262d" stroke="#e3b341" stroke-width="1"/>
+      <text x="515" y="91" fill="#e3b341" font-size="9" text-anchor="middle" font-weight="700">⑫ 再次到期定时器</text>
+      <text x="515" y="106" fill="#8b949e" font-size="8" text-anchor="middle">不更新 'now'</text>
+
+      <rect x="450" y="18" width="130" height="38" rx="6" fill="#21262d" stroke="#e3b341" stroke-width="1"/>
+      <text x="515" y="33" fill="#e3b341" font-size="9" text-anchor="middle" font-weight="700">⑬ 本轮迭代结束</text>
+      <text x="515" y="48" fill="#8b949e" font-size="8" text-anchor="middle">继续 or 退出</text>
+
+      <!-- Flow arrows (simplified) -->
+      <line x1="295" y1="151" x2="192" y2="165" stroke="#3fb950" stroke-width="1" marker-end="url(#la)"/>
+      <line x1="125" y1="198" x2="125" y2="212" stroke="#3fb950" stroke-width="1" marker-end="url(#la)"/>
+      <line x1="125" y1="250" x2="125" y2="264" stroke="#3fb950" stroke-width="1" marker-end="url(#la)"/>
+      <line x1="125" y1="302" x2="215" y2="430" stroke="#bc8cff" stroke-width="1" marker-end="url(#la)"/>
+      <line x1="330" y1="449" x2="368" y2="449" stroke="#bc8cff" stroke-width="1" marker-end="url(#la)"/>
+      <line x1="498" y1="449" x2="510" y2="283" stroke="#f85149" stroke-width="1" marker-end="url(#la)"/>
+      <line x1="575" y1="264" x2="575" y2="250" stroke="#f85149" stroke-width="1" marker-end="url(#la)"/>
+      <line x1="575" y1="212" x2="575" y2="198" stroke="#f85149" stroke-width="1" marker-end="url(#la)"/>
+      <line x1="575" y1="160" x2="520" y2="114" stroke="#e3b341" stroke-width="1" marker-end="url(#la)"/>
+      <line x1="515" y1="76" x2="515" y2="56" stroke="#e3b341" stroke-width="1" marker-end="url(#la)"/>
+      <line x1="405" y1="37" x2="450" y2="37" stroke="#e3b341" stroke-width="1" marker-end="url(#la)"/>
+    </svg>
+    <p class="diagram-caption">图4 · libuv 事件循环 13 个阶段（官方 Design overview 文档）</p>
+  </div>
+
+  <h3>在 C 语言项目中的应用</h3>
+  <p>即使不使用 libuv，事件循环的思想也可以自行实现。关键是将循环体拆分为<strong>明确的阶段</strong>：</p>
+
+  <pre><span class="code-label">C · 简化事件循环框架</span><code><span class="cm">/* 借鉴 libuv 阶段化事件循环的精简版本 */</span>
+
+<span class="kw">typedef struct</span> {
+    <span class="type">int</span>  epfd;
+    <span class="type">int</span>  stop_flag;
+    <span class="type">int</span>  active_count;  <span class="cm">/* active handles 计数 */</span>
+    <span class="type">int64_t</span> now_ms;
+    <span class="cm">/* timer_heap, pending_queue, close_queue ... */</span>
+} <span class="type">my_loop_t</span>;
+
+<span class="kw">void</span> <span class="fn">my_loop_run</span>(<span class="type">my_loop_t</span> *loop) {
+    <span class="kw">while</span> (loop->active_count > <span class="num">0</span> && !loop->stop_flag) {
+        <span class="cm">/* ① 更新当前时间（减少系统调用） */</span>
+        loop->now_ms = <span class="fn">get_monotonic_ms</span>();
+
+        <span class="cm">/* ② 运行到期定时器 */</span>
+        <span class="fn">run_timers</span>(loop);
+
+        <span class="cm">/* ③④ 运行 pending/idle/prepare 回调 */</span>
+        <span class="fn">run_pending</span>(loop);
+        <span class="fn">run_idle</span>(loop);
+        <span class="fn">run_prepare</span>(loop);
+
+        <span class="cm">/* ⑦ 计算 poll timeout */</span>
+        <span class="type">int</span> timeout = <span class="fn">calc_timeout</span>(loop);
+
+        <span class="cm">/* ⑧ I/O 轮询（核心阻塞点） */</span>
+        <span class="fn">io_poll</span>(loop, timeout);   <span class="cm">/* epoll_wait / kevent / ... */</span>
+
+        <span class="cm">/* ⑨ check 回调 */</span>
+        <span class="fn">run_check</span>(loop);
+
+        <span class="cm">/* ⑩ close 回调 */</span>
+        <span class="fn">run_closing</span>(loop);
+    }
+}</code></pre>
+
+  <div class="callout callout-warn">
+    <div class="callout-title">⚠️ 重要提醒</div>
+    官方特别强调：<em>"libuv uses a thread pool to make asynchronous file I/O operations possible, but network I/O is always performed in a single thread, each loop's thread."</em><br>
+    文件 I/O 在线程池中运行，网络 I/O 永远在 loop 线程中。这是关键设计决策，借鉴时要注意区分。
+  </div>
+
+  <div class="chapter-nav">
+    <button class="btn-nav" onclick="goTo('ch2')">← 上一章</button>
+    <button class="btn-nav primary" onclick="goTo('ch4')">下一章 →</button>
+  </div>
+</section>
+
+<!-- ========================= CHAPTER 4 ========================= -->
+<section class="chapter" id="ch4">
+  <div class="chapter-badge">核心模式 · 04</div>
+  <h2>回调与上下文传递</h2>
+  <p class="chapter-subtitle">void* data 字段与 Storing Context 模式</p>
+
+  <a class="source-link" href="https://docs.libuv.org/en/v1.x/guide/basics.html#storing-context" target="_blank">
+    📄 官方文档：Storing context — Basics of libuv
+  </a>
+
+  <h3>官方上下文传递机制</h3>
+  <p>官方文档原文：</p>
+  <div class="callout callout-info">
+    <div class="callout-title">📌 官方说明</div>
+    <em>"All handles and requests have a void* data member which you can set to the context and cast back in the callback. This is a common pattern used throughout the C library ecosystem. In addition uv_loop_t also has a similar data member."</em>
+  </div>
+  <p>
+    所有 handle 和 request 都有一个 <code>void* data</code> 成员，用于在调用点和回调之间传递应用特定信息。这是 C 库生态中的通用模式。
+  </p>
+
+  <h3>为什么需要 void* data</h3>
+  <p>
+    在回调驱动的编程中，回调函数签名是固定的（由框架决定），无法通过函数参数直接传递业务上下文。<code>void* data</code> 是 C 语言中唯一安全的泛型上下文传递方式：
+  </p>
+
+  <div class="diagram-wrap">
+    <svg viewBox="0 0 660 200" xmlns="http://www.w3.org/2000/svg" style="min-width:360px">
+      <defs>
+        <marker id="da" markerWidth="8" markerHeight="6" refX="8" refY="3" orient="auto">
+          <polygon points="0 0, 8 3, 0 6" fill="#58a6ff"/>
+        </marker>
+      </defs>
+      <!-- Call site -->
+      <rect x="20" y="50" width="160" height="110" rx="8" fill="#21262d" stroke="#58a6ff" stroke-width="1.5"/>
+      <text x="100" y="72" fill="#58a6ff" font-size="11" text-anchor="middle" font-weight="700">调用方</text>
+      <text x="100" y="92" fill="#c9d1d9" font-size="9" text-anchor="middle">conn.data = &my_ctx;</text>
+      <text x="100" y="108" fill="#c9d1d9" font-size="9" text-anchor="middle">uv_read_start(&conn,</text>
+      <text x="100" y="122" fill="#c9d1d9" font-size="9" text-anchor="middle">  alloc_cb, read_cb);</text>
+      <text x="100" y="142" fill="#6e7681" font-size="8" text-anchor="middle">设置 data 指针</text>
+
+      <!-- Arrow: time passes -->
+      <line x1="182" y1="105" x2="238" y2="105" stroke="#58a6ff" stroke-width="1.5" marker-end="url(#da)"/>
+      <rect x="194" y="80" width="40" height="18" rx="3" fill="#161b22"/>
+      <text x="214" y="93" fill="#e3b341" font-size="8" text-anchor="middle">时间</text>
+
+      <!-- Event loop -->
+      <rect x="240" y="70" width="120" height="70" rx="8" fill="rgba(88,166,255,0.07)" stroke="#58a6ff" stroke-width="1" stroke-dasharray="4,3"/>
+      <text x="300" y="91" fill="#58a6ff" font-size="10" text-anchor="middle" font-weight="700">Event Loop</text>
+      <text x="300" y="108" fill="#8b949e" font-size="8" text-anchor="middle">I/O 就绪事件触发</text>
+      <text x="300" y="124" fill="#8b949e" font-size="8" text-anchor="middle">调用 read_cb</text>
+      <line x1="362" y1="105" x2="418" y2="105" stroke="#3fb950" stroke-width="1.5" marker-end="url(#da)"/>
+
+      <!-- Callback -->
+      <rect x="420" y="50" width="210" height="110" rx="8" fill="#21262d" stroke="#3fb950" stroke-width="1.5"/>
+      <text x="525" y="72" fill="#3fb950" font-size="11" text-anchor="middle" font-weight="700">回调函数</text>
+      <text x="525" y="92" fill="#c9d1d9" font-size="9" text-anchor="middle">read_cb(uv_stream_t *s, ...) {</text>
+      <text x="525" y="108" fill="#c9d1d9" font-size="9" text-anchor="middle">  my_ctx_t *ctx = s->data;</text>
+      <text x="525" y="124" fill="#ffa657" font-size="9" text-anchor="middle">  // 安全取回上下文 ✓</text>
+      <text x="525" y="140" fill="#c9d1d9" font-size="9" text-anchor="middle">}</text>
+
+      <!-- data flow label -->
+      <text x="330" y="165" fill="#6e7681" font-size="9" text-anchor="middle">void* data 在 handle 内部"保温"，跨越时间传递上下文</text>
+    </svg>
+    <p class="diagram-caption">图5 · void* data 字段实现跨时间的上下文传递</p>
+  </div>
+
+  <h3>实际代码示例</h3>
+
+  <pre><span class="code-label">C · 上下文传递模式</span><code><span class="cm">/* === 业务上下文结构体 === */</span>
+<span class="kw">typedef struct</span> {
+    <span class="type">int</span>          user_id;
+    <span class="type">char</span>         session_token[<span class="num">64</span>];
+    <span class="type">int</span>          bytes_read;
+    <span class="type">void</span>        *write_queue;
+} <span class="type">client_ctx_t</span>;
+
+<span class="cm">/* 连接建立时，绑定上下文 */</span>
+<span class="kw">void</span> <span class="fn">on_new_connection</span>(<span class="type">uv_stream_t</span> *server, <span class="type">int</span> status) {
+    <span class="type">uv_tcp_t</span> *client = malloc(<span class="kw">sizeof</span>(<span class="type">uv_tcp_t</span>));
+    uv_tcp_init(loop, client);
+
+    <span class="type">client_ctx_t</span> *ctx = malloc(<span class="kw">sizeof</span>(<span class="type">client_ctx_t</span>));
+    ctx->user_id = <span class="fn">allocate_user_id</span>();
+    ctx->bytes_read = <span class="num">0</span>;
+
+    client->data = ctx;  <span class="cm">/* ← 绑定到 handle 的 data 字段 */</span>
+    uv_accept(server, (uv_stream_t*)client);
+    uv_read_start((uv_stream_t*)client, alloc_buffer, <span class="fn">on_read</span>);
+}
+
+<span class="cm">/* 读回调中恢复上下文 */</span>
+<span class="kw">void</span> <span class="fn">on_read</span>(<span class="type">uv_stream_t</span> *stream, <span class="type">ssize_t</span> nread,
+             <span class="kw">const</span> <span class="type">uv_buf_t</span> *buf) {
+    <span class="type">client_ctx_t</span> *ctx = (<span class="type">client_ctx_t</span> *)stream->data;  <span class="cm">/* ← 取回 */</span>
+    <span class="kw">if</span> (nread > <span class="num">0</span>) {
+        ctx->bytes_read += nread;
+        <span class="fn">process_data</span>(ctx, buf->base, nread);
+    } <span class="kw">else if</span> (nread < <span class="num">0</span>) {
+        uv_close((<span class="type">uv_handle_t</span>*)stream, <span class="fn">on_close</span>);
+    }
+    free(buf->base);
+}
+
+<span class="cm">/* close 回调中释放上下文 */</span>
+<span class="kw">void</span> <span class="fn">on_close</span>(<span class="type">uv_handle_t</span> *handle) {
+    <span class="type">client_ctx_t</span> *ctx = (<span class="type">client_ctx_t</span> *)handle->data;
+    free(ctx);    <span class="cm">/* 先释放上下文 */</span>
+    free(handle); <span class="cm">/* 再释放 handle（在 close_cb 中，符合 RAII 规范）*/</span>
+}</code></pre>
+
+  <div class="callout callout-tip">
+    <div class="callout-title">✅ 实践建议</div>
+    在 C 语言中不管是否使用 libuv，凡是需要"回调 + 上下文"的场景（如 epoll 事件处理、定时器回调、线程任务），都应使用 <code>void* data</code> / <code>void* userdata</code> 字段模式，避免全局变量和静态变量导致的并发问题。
+  </div>
+
+  <div class="chapter-nav">
+    <button class="btn-nav" onclick="goTo('ch3')">← 上一章</button>
+    <button class="btn-nav primary" onclick="goTo('ch5')">下一章 →</button>
+  </div>
+</section>
+
+<!-- ========================= CHAPTER 5 ========================= -->
+<section class="chapter" id="ch5">
+  <div class="chapter-badge">核心模式 · 05</div>
+  <h2>线程池与任务队列</h2>
+  <p class="chapter-subtitle">阻塞操作异步化的官方设计与 C 语言移植</p>
+
+  <a class="source-link" href="https://docs.libuv.org/en/v1.x/design.html#file-i-o" target="_blank">
+    📄 官方文档：File I/O — Design overview
+  </a>
+  <a class="source-link" href="https://docs.libuv.org/en/v1.x/guide/threads.html" target="_blank">
+    📄 官方文档：Threads — libuv guide
+  </a>
+
+  <h3>为什么需要线程池</h3>
+  <p>官方文档原文：</p>
+  <div class="callout callout-info">
+    <div class="callout-title">📌 官方说明</div>
+    <em>"Unlike network I/O, there are no platform-specific file I/O primitives libuv could rely on, so the current approach is to run blocking file I/O operations in a thread pool."</em><br><br>
+    <em>"it is imperative to make sure that no function which runs periodically in the loop thread blocks when performing I/O or is a serious CPU hog, because this means that the loop slows down and events are not being handled at full capacity."</em>
+  </div>
+
+  <p>libuv 当前在全局线程池上运行以下 3 类操作：</p>
+  <ul class="styled">
+    <li>文件系统操作（File system operations）</li>
+    <li>DNS 函数（getaddrinfo / getnameinfo）</li>
+    <li>通过 <code>uv_queue_work()</code> 提交的用户自定义代码</li>
+  </ul>
+
+  <h3>uv_queue_work 的工作模型</h3>
+
+  <div class="diagram-wrap">
+    <svg viewBox="0 0 700 230" xmlns="http://www.w3.org/2000/svg" style="min-width:380px">
+      <defs>
+        <marker id="qa" markerWidth="8" markerHeight="6" refX="8" refY="3" orient="auto">
+          <polygon points="0 0, 8 3, 0 6" fill="#58a6ff"/>
+        </marker>
+        <marker id="qa2" markerWidth="8" markerHeight="6" refX="8" refY="3" orient="auto">
+          <polygon points="0 0, 8 3, 0 6" fill="#3fb950"/>
+        </marker>
+      </defs>
+
+      <!-- Main thread -->
+      <rect x="10" y="20" width="680" height="40" rx="6" fill="rgba(88,166,255,0.06)" stroke="#58a6ff" stroke-width="1"/>
+      <text x="20" y="44" fill="#58a6ff" font-size="10" font-weight="700">主线程 (Event Loop Thread)</text>
+
+      <!-- Main thread boxes -->
+      <rect x="60" y="30" width="100" height="20" rx="4" fill="#21262d" stroke="#30363d"/>
+      <text x="110" y="44" fill="#c9d1d9" font-size="9" text-anchor="middle">uv_queue_work()</text>
+      <line x1="160" y1="40" x2="280" y2="40" stroke="#58a6ff" stroke-width="1.2" marker-end="url(#qa)" stroke-dasharray="4,2"/>
+
+      <rect x="282" y="30" width="100" height="20" rx="4" fill="#21262d" stroke="#30363d"/>
+      <text x="332" y="44" fill="#8b949e" font-size="9" text-anchor="middle">继续处理事件...</text>
+
+      <rect x="530" y="30" width="100" height="20" rx="4" fill="rgba(63,185,80,0.15)" stroke="#3fb950"/>
+      <text x="580" y="44" fill="#3fb950" font-size="9" text-anchor="middle">after_cb() 回调</text>
+
+      <!-- Thread pool -->
+      <rect x="10" y="90" width="680" height="120" rx="6" fill="rgba(255,166,87,0.05)" stroke="#ffa657" stroke-width="1"/>
+      <text x="20" y="112" fill="#ffa657" font-size="10" font-weight="700">线程池 (Thread Pool，默认 4 线程，UV_THREADPOOL_SIZE 可配)</text>
+
+      <rect x="60" y="120" width="130" height="38" rx="6" fill="#21262d" stroke="#ffa657"/>
+      <text x="125" y="135" fill="#ffa657" font-size="9" text-anchor="middle">Worker Thread 1</text>
+      <text x="125" y="150" fill="#8b949e" font-size="8" text-anchor="middle">执行 work_cb（阻塞）</text>
+
+      <rect x="210" y="120" width="130" height="38" rx="6" fill="#21262d" stroke="#ffa657"/>
+      <text x="275" y="135" fill="#ffa657" font-size="9" text-anchor="middle">Worker Thread 2</text>
+      <text x="275" y="150" fill="#8b949e" font-size="8" text-anchor="middle">执行 work_cb（阻塞）</text>
+
+      <rect x="360" y="120" width="130" height="38" rx="6" fill="#21262d" stroke="#6e7681"/>
+      <text x="425" y="135" fill="#6e7681" font-size="9" text-anchor="middle">Worker Thread 3</text>
+      <text x="425" y="150" fill="#8b949e" font-size="8" text-anchor="middle">空闲等待</text>
+
+      <rect x="510" y="120" width="130" height="38" rx="6" fill="#21262d" stroke="#6e7681"/>
+      <text x="575" y="135" fill="#6e7681" font-size="9" text-anchor="middle">Worker Thread 4</text>
+      <text x="575" y="150" fill="#8b949e" font-size="8" text-anchor="middle">空闲等待</text>
+
+      <!-- Arrows: submit and result back -->
+      <line x1="110" y1="60" x2="110" y2="120" stroke="#ffa657" stroke-width="1.2" marker-end="url(#qa)"/>
+      <text x="120" y="90" fill="#ffa657" font-size="8">提交</text>
+      <line x1="125" y1="158" x2="565" y2="40" stroke="#3fb950" stroke-width="1.2" stroke-dasharray="4,3" marker-end="url(#qa2)"/>
+      <text x="370" y="100" fill="#3fb950" font-size="8">完成 → 回调在主线程触发</text>
+    </svg>
+    <p class="diagram-caption">图6 · uv_queue_work 的线程池工作模型（官方 Threads 文档）</p>
+  </div>
+
+  <h3>在 C 语言中实现类似机制</h3>
+
+  <pre><span class="code-label">C · 简化线程池任务队列</span><code><span class="cm">/* 借鉴 uv_queue_work 的 work + after 双回调模式 */</span>
+
+<span class="kw">typedef struct</span> <span class="type">task_t</span> {
+    <span class="kw">void</span>  (*work_fn)(<span class="kw">struct</span> <span class="type">task_t</span>*);    <span class="cm">/* 在工作线程执行（可阻塞）*/</span>
+    <span class="kw">void</span>  (*after_fn)(<span class="kw">struct</span> <span class="type">task_t</span>*, <span class="type">int</span> status); <span class="cm">/* 在主线程执行 */</span>
+    <span class="type">void</span>  *data;                        <span class="cm">/* 用户数据（对应 uv_work_t.data）*/</span>
+    <span class="type">int</span>    status;
+} <span class="type">task_t</span>;
+
+<span class="cm">/* 工作线程入口：执行阻塞操作，完成后通知主线程 */</span>
+<span class="kw">static void</span>* <span class="fn">worker_thread</span>(<span class="kw">void</span> *arg) {
+    <span class="type">task_t</span> *task = (<span class="type">task_t</span>*)arg;
+    task->work_fn(task);           <span class="cm">/* 执行阻塞任务 */</span>
+    <span class="fn">wakeup_main_thread</span>(task);      <span class="cm">/* 通知主线程（如写管道/eventfd）*/</span>
+    <span class="kw">return</span> NULL;
+}
+
+<span class="cm">/* 主线程 event loop 中处理完成任务 */</span>
+<span class="kw">void</span> <span class="fn">dispatch_completed_tasks</span>(<span class="type">my_loop_t</span> *loop) {
+    <span class="type">task_t</span> *task;
+    <span class="kw">while</span> ((task = <span class="fn">completed_queue_pop</span>(loop)) != NULL) {
+        <span class="kw">if</span> (task->after_fn)
+            task->after_fn(task, task->status); <span class="cm">/* 在主线程安全调用 */</span>
+    }
+}
+
+<span class="cm">/* 使用示例：类比 uv_queue_work */</span>
+<span class="kw">void</span> <span class="fn">do_file_read</span>(<span class="type">task_t</span> *t) {
+    <span class="cm">/* 此函数在工作线程运行，可以使用阻塞 read() */</span>
+    <span class="type">file_req_t</span> *req = (<span class="type">file_req_t</span>*)t->data;
+    req->nread = read(req->fd, req->buf, req->len);
+    t->status = (req->nread >= <span class="num">0</span>) ? <span class="num">0</span> : -errno;
+}
+
+<span class="kw">void</span> <span class="fn">after_file_read</span>(<span class="type">task_t</span> *t, <span class="type">int</span> status) {
+    <span class="cm">/* 此函数在主线程运行，可以安全访问主线程数据结构 */</span>
+    <span class="type">file_req_t</span> *req = (<span class="type">file_req_t</span>*)t->data;
+    <span class="kw">if</span> (status == <span class="num">0</span>) <span class="fn">process_data</span>(req->buf, req->nread);
+    free(req);
+    free(t);
+}</code></pre>
+
+  <div class="chapter-nav">
+    <button class="btn-nav" onclick="goTo('ch4')">← 上一章</button>
+    <button class="btn-nav primary" onclick="goTo('ch6')">下一章 →</button>
+  </div>
+</section>
+
+<!-- ========================= CHAPTER 6 ========================= -->
+<section class="chapter" id="ch6">
+  <div class="chapter-badge">高级技巧 · 06</div>
+  <h2>引用计数与生命周期管理</h2>
+  <p class="chapter-subtitle">uv_ref / uv_unref 与事件循环存活控制</p>
+
+  <a class="source-link" href="https://docs.libuv.org/en/v1.x/guide/utilities.html#event-loop-reference-count" target="_blank">
+    📄 官方文档：Event loop reference count — Utilities
+  </a>
+
+  <h3>Loop 存活条件（官方定义）</h3>
+  <p>官方文档原文：<em>"If a loop has active and ref'd handles, active requests or closing handles it's considered to be alive."</em></p>
+  <p>
+    每个 handle 在 start 时自动增加 loop 的引用计数，在 stop 时减少。通过 <code>uv_ref()</code> 和 <code>uv_unref()</code> 可以手动控制：
+  </p>
+
+  <ul class="styled">
+    <li><code>uv_ref(handle)</code>：增加引用，使 loop 保持存活（即使该 handle 是唯一活跃的）</li>
+    <li><code>uv_unref(handle)</code>：减少引用，允许 loop 在该 handle 是唯一活跃时退出</li>
+  </ul>
+
+  <div class="callout callout-info">
+    <div class="callout-title">📌 官方用例</div>
+    <em>"You might have a garbage collector which runs every X seconds [...] you don't want to have to stop them along all clean exit paths or error scenarios. [...] just unref the timer immediately after creation so that if it is the only watcher running then uv_run will still exit."</em><br>
+    垃圾回收定时器、心跳定时器等"守护型"句柄，应 unref，使其不阻止程序正常退出。
+  </div>
+
+  <pre><span class="code-label">C · 引用计数模式（仿 libuv）</span><code><span class="cm">/* 官方示例：垃圾回收定时器 unref，不阻塞 loop 退出 */</span>
+
+uv_timer_t gc_req;
+uv_timer_t main_job_req;
+
+<span class="type">int</span> <span class="fn">main</span>() {
+    <span class="type">uv_loop_t</span> *loop = uv_default_loop();
+
+    <span class="cm">/* 初始化 GC 定时器，每 2 秒触发 */</span>
+    uv_timer_init(loop, &gc_req);
+    uv_unref((<span class="type">uv_handle_t</span>*) &gc_req);  <span class="cm">/* ← unref：不影响 loop 存活 */</span>
+    uv_timer_start(&gc_req, gc_callback, <span class="num">0</span>, <span class="num">2000</span>);
+
+    <span class="cm">/* 主任务：9 秒后完成 */</span>
+    uv_timer_init(loop, &main_job_req);
+    uv_timer_start(&main_job_req, job_done, <span class="num">9000</span>, <span class="num">0</span>);
+
+    <span class="cm">/* 9 秒后 main_job_req 结束，gc_req 虽活跃但 unref，loop 正常退出 */</span>
+    <span class="kw">return</span> uv_run(loop, UV_RUN_DEFAULT);
+}</code></pre>
+
+  <h3>在 C 语言中实现引用计数管理</h3>
+
+  <div class="diagram-wrap">
+    <svg viewBox="0 0 660 180" xmlns="http://www.w3.org/2000/svg" style="min-width:340px">
+      <defs>
+        <marker id="rca" markerWidth="8" markerHeight="6" refX="8" refY="3" orient="auto">
+          <polygon points="0 0, 8 3, 0 6" fill="#58a6ff"/>
+        </marker>
+      </defs>
+      <!-- Loop ref count states -->
+      <rect x="10" y="40" width="200" height="100" rx="8" fill="#21262d" stroke="#58a6ff" stroke-width="1.5"/>
+      <text x="110" y="62" fill="#58a6ff" font-size="11" text-anchor="middle" font-weight="700">Event Loop</text>
+      <text x="110" y="82" fill="#c9d1d9" font-size="10" text-anchor="middle">ref_count = 2</text>
+      <text x="110" y="100" fill="#3fb950" font-size="9" text-anchor="middle">✓ 存活（running）</text>
+      <text x="110" y="118" fill="#8b949e" font-size="8" text-anchor="middle">main_timer(ref=1) + gc_timer(ref=0)</text>
+
+      <line x1="210" y1="90" x2="300" y2="90" stroke="#ffa657" stroke-width="1.5" marker-end="url(#rca)"/>
+      <text x="255" y="78" fill="#ffa657" font-size="9" text-anchor="middle">main_timer 结束</text>
+      <text x="255" y="92" fill="#ffa657" font-size="9" text-anchor="middle">ref_count--</text>
+
+      <rect x="302" y="40" width="200" height="100" rx="8" fill="#21262d" stroke="#e3b341" stroke-width="1.5"/>
+      <text x="402" y="62" fill="#e3b341" font-size="11" text-anchor="middle" font-weight="700">Event Loop</text>
+      <text x="402" y="82" fill="#c9d1d9" font-size="10" text-anchor="middle">ref_count = 1</text>
+      <text x="402" y="100" fill="#8b949e" font-size="9" text-anchor="middle">仅 gc_timer 活跃但 unref</text>
+
+      <line x1="502" y1="90" x2="600" y2="90" stroke="#f85149" stroke-width="1.5" marker-end="url(#rca)"/>
+      <text x="550" y="78" fill="#f85149" font-size="9" text-anchor="middle">ref_count == 0</text>
+
+      <rect x="602" y="60" width="54" height="54" rx="8" fill="rgba(248,81,73,0.1)" stroke="#f85149" stroke-width="1.5"/>
+      <text x="629" y="83" fill="#f85149" font-size="10" text-anchor="middle" font-weight="700">Loop</text>
+      <text x="629" y="100" fill="#f85149" font-size="10" text-anchor="middle" font-weight="700">退出</text>
+
+      <text x="330" y="160" fill="#6e7681" font-size="9" text-anchor="middle">注意：gc_timer 虽然 active 但 ref=0，不计入存活条件</text>
+    </svg>
+    <p class="diagram-caption">图7 · 引用计数控制 Loop 存活（官方 uv_ref/uv_unref 机制）</p>
+  </div>
+
+  <pre><span class="code-label">C · 简化引用计数实现</span><code><span class="kw">typedef struct</span> {
+    <span class="type">int</span>  active_count;  <span class="cm">/* ref'd + active handles 数量 */</span>
+    <span class="type">int</span>  stop_flag;
+} <span class="type">my_loop_t</span>;
+
+<span class="kw">typedef struct</span> {
+    <span class="type">my_loop_t</span> *loop;
+    <span class="type">int</span>        active;
+    <span class="type">int</span>        ref;     <span class="cm">/* 1=计入 loop 存活，0=不计入（对应 unref）*/</span>
+} <span class="type">my_handle_t</span>;
+
+<span class="kw">void</span> <span class="fn">handle_start</span>(<span class="type">my_handle_t</span> *h) {
+    h->active = <span class="num">1</span>;
+    <span class="kw">if</span> (h->ref) h->loop->active_count++;
+}
+
+<span class="kw">void</span> <span class="fn">handle_stop</span>(<span class="type">my_handle_t</span> *h) {
+    <span class="kw">if</span> (!h->active) <span class="kw">return</span>;
+    h->active = <span class="num">0</span>;
+    <span class="kw">if</span> (h->ref) h->loop->active_count--;
+}
+
+<span class="kw">void</span> <span class="fn">handle_unref</span>(<span class="type">my_handle_t</span> *h) {
+    <span class="kw">if</span> (!h->ref) <span class="kw">return</span>;
+    h->ref = <span class="num">0</span>;
+    <span class="kw">if</span> (h->active) h->loop->active_count--;  <span class="cm">/* 从计数中移除 */</span>
+}</code></pre>
+
+  <div class="chapter-nav">
+    <button class="btn-nav" onclick="goTo('ch5')">← 上一章</button>
+    <button class="btn-nav primary" onclick="goTo('ch7')">下一章 →</button>
+  </div>
+</section>
+
+<!-- ========================= CHAPTER 7 ========================= -->
+<section class="chapter" id="ch7">
+  <div class="chapter-badge">高级技巧 · 07</div>
+  <h2>Baton 数据传递模式</h2>
+  <p class="chapter-subtitle">将 request 结构体嵌入业务结构体的一次性释放技巧</p>
+
+  <a class="source-link" href="https://docs.libuv.org/en/v1.x/guide/utilities.html#passing-data-to-worker-thread" target="_blank">
+    📄 官方文档：Passing data to worker thread — Utilities
+  </a>
+
+  <h3>什么是 Baton 模式</h3>
+  <p>官方文档原文：</p>
+  <div class="callout callout-info">
+    <div class="callout-title">📌 官方定义</div>
+    <em>"A slight variation is to have the uv_work_t itself as the first member of this struct (called a baton). This allows cleaning up the work request and all the data in one free call."</em>
+  </div>
+  <p>
+    Baton 模式将 <code>uv_work_t</code>（或任意 request 结构体）作为业务结构体的<strong>第一个成员</strong>，从而 request 的地址与业务结构体地址相同，可以用一次 <code>free()</code> 同时释放两者。
+  </p>
+
+  <h3>官方示例代码</h3>
+
+  <pre><span class="code-label">C · Baton 模式（官方示例）</span><code><span class="cm">/* 官方文档 Utilities - Passing data to worker thread */</span>
+
+<span class="kw">struct</span> <span class="type">ftp_baton</span> {
+    <span class="type">uv_work_t</span>  req;        <span class="cm">/* ← 必须是第一个成员！*/</span>
+    <span class="type">char</span>      *host;
+    <span class="type">int</span>        port;
+    <span class="type">char</span>      *username;
+    <span class="type">char</span>      *password;
+};
+
+<span class="cm">/* 分配 baton，req.data 指回 baton 自身 */</span>
+<span class="type">ftp_baton_t</span> *baton = malloc(<span class="kw">sizeof</span>(<span class="type">ftp_baton_t</span>));
+baton->req.data = (<span class="kw">void</span>*) baton;   <span class="cm">/* 自引用 */</span>
+baton->host = strdup(<span class="str">"my.webhost.com"</span>);
+baton->port = <span class="num">21</span>;
+
+uv_queue_work(loop, &baton->req, ftp_session, ftp_cleanup);
+
+<span class="cm">/* 工作函数：从 req 恢复 baton */</span>
+<span class="kw">void</span> <span class="fn">ftp_session</span>(<span class="type">uv_work_t</span> *req) {
+    <span class="type">ftp_baton_t</span> *baton = (<span class="type">ftp_baton_t</span>*) req->data;
+    fprintf(stderr, <span class="str">"Connecting to %s\n"</span>, baton->host);
+    <span class="cm">/* ... 阻塞的 FTP 操作 ... */</span>
+}
+
+<span class="cm">/* 清理函数：一次 free 搞定所有 */</span>
+<span class="kw">void</span> <span class="fn">ftp_cleanup</span>(<span class="type">uv_work_t</span> *req, <span class="type">int</span> status) {
+    <span class="type">ftp_baton_t</span> *baton = (<span class="type">ftp_baton_t</span>*) req->data;
+    free(baton->host);
+    free(baton->username);
+    free(baton);   <span class="cm">/* baton == req，一次释放！*/</span>
+}</code></pre>
+
+  <div class="diagram-wrap">
+    <svg viewBox="0 0 640 200" xmlns="http://www.w3.org/2000/svg" style="min-width:340px">
+      <!-- Memory layout diagram -->
+      <text x="100" y="24" fill="#8b949e" font-size="10" text-anchor="middle" font-weight="700">不使用 Baton（两次 free）</text>
+      <text x="440" y="24" fill="#58a6ff" font-size="10" text-anchor="middle" font-weight="700">使用 Baton（一次 free）✓</text>
+
+      <!-- Left: separate alloc -->
+      <rect x="20" y="40" width="100" height="50" rx="5" fill="#21262d" stroke="#f85149" stroke-width="1.5"/>
+      <text x="70" y="60" fill="#f85149" font-size="9" text-anchor="middle">uv_work_t</text>
+      <text x="70" y="78" fill="#8b949e" font-size="8" text-anchor="middle">malloc #1</text>
+
+      <rect x="140" y="40" width="100" height="50" rx="5" fill="#21262d" stroke="#f85149" stroke-width="1.5"/>
+      <text x="190" y="60" fill="#f85149" font-size="9" text-anchor="middle">biz_data_t</text>
+      <text x="190" y="78" fill="#8b949e" font-size="8" text-anchor="middle">malloc #2</text>
+
+      <text x="70" y="115" fill="#f85149" font-size="9" text-anchor="middle">free(req)</text>
+      <text x="190" y="115" fill="#f85149" font-size="9" text-anchor="middle">free(data)</text>
+      <text x="120" y="140" fill="#f85149" font-size="9" text-anchor="middle">需要 2 次释放，易遗漏</text>
+
+      <!-- Right: baton -->
+      <rect x="350" y="40" width="220" height="80" rx="5" fill="#21262d" stroke="#3fb950" stroke-width="2"/>
+      <rect x="350" y="40" width="220" height="38" rx="5" fill="rgba(88,166,255,0.1)" stroke="#58a6ff" stroke-width="1"/>
+      <text x="460" y="54" fill="#58a6ff" font-size="9" text-anchor="middle" font-weight="700">uv_work_t req  ← 第一个成员</text>
+      <text x="460" y="70" fill="#8b949e" font-size="7" text-anchor="middle">&baton == &baton.req</text>
+
+      <text x="460" y="96" fill="#3fb950" font-size="9" text-anchor="middle">host / port / user / pass</text>
+      <text x="460" y="112" fill="#8b949e" font-size="8" text-anchor="middle">业务字段</text>
+
+      <text x="460" y="145" fill="#3fb950" font-size="9" text-anchor="middle">free(baton)  ← 一次释放全部 ✓</text>
+    </svg>
+    <p class="diagram-caption">图8 · Baton 模式内存布局对比（官方 Utilities 文档）</p>
+  </div>
+
+  <h3>不依赖 libuv 的通用 Baton 模式</h3>
+
+  <pre><span class="code-label">C · 通用 Baton 模式</span><code><span class="cm">/* 通用原则：将"框架请求"作为业务结构体第一个成员 */</span>
+
+<span class="kw">typedef struct</span> {
+    <span class="type">work_req_t</span>  req;         <span class="cm">/* ← 框架请求，必须第一个 */</span>
+    <span class="cm">/* 业务数据 */</span>
+    <span class="type">int</span>         user_id;
+    <span class="type">char</span>       *query;
+    <span class="type">void</span>       *result;
+    <span class="type">int</span>         result_len;
+} <span class="type">db_query_baton_t</span>;
+
+<span class="kw">void</span> <span class="fn">submit_db_query</span>(<span class="type">int</span> user_id, <span class="kw">const</span> <span class="type">char</span> *sql) {
+    <span class="type">db_query_baton_t</span> *b = calloc(<span class="num">1</span>, <span class="kw">sizeof</span>(*b));
+    b->user_id = user_id;
+    b->query   = strdup(sql);
+    b->req.data = b;   <span class="cm">/* 自引用 */</span>
+    <span class="fn">threadpool_submit</span>(&b->req, <span class="fn">do_db_query</span>, <span class="fn">on_db_result</span>);
+}
+
+<span class="kw">void</span> <span class="fn">do_db_query</span>(<span class="type">work_req_t</span> *req) {              <span class="cm">/* 工作线程 */</span>
+    <span class="type">db_query_baton_t</span> *b = req->data;
+    b->result = <span class="fn">db_execute</span>(b->query, &b->result_len);
+}
+
+<span class="kw">void</span> <span class="fn">on_db_result</span>(<span class="type">work_req_t</span> *req, <span class="type">int</span> status) {  <span class="cm">/* 主线程 */</span>
+    <span class="type">db_query_baton_t</span> *b = req->data;
+    <span class="fn">send_response</span>(b->user_id, b->result, b->result_len);
+    free(b->result);
+    free(b->query);
+    free(b);           <span class="cm">/* 一次 free，释放 req 和所有业务数据 */</span>
+}</code></pre>
+
+  <div class="chapter-nav">
+    <button class="btn-nav" onclick="goTo('ch6')">← 上一章</button>
+    <button class="btn-nav primary" onclick="goTo('ch8')">下一章 →</button>
+  </div>
+</section>
+
+<!-- ========================= CHAPTER 8 ========================= -->
+<section class="chapter" id="ch8">
+  <div class="chapter-badge">高级技巧 · 08</div>
+  <h2>跨线程通信 — uv_async 模式</h2>
+  <p class="chapter-subtitle">工作线程安全唤醒主线程 Event Loop 的设计</p>
+
+  <a class="source-link" href="https://docs.libuv.org/en/v1.x/guide/threads.html#inter-thread-communication" target="_blank">
+    📄 官方文档：Inter-thread communication — Threads
+  </a>
+
+  <h3>问题：线程不安全的事件循环</h3>
+  <p>
+    官方文档明确：<em>"The libuv event loop is not thread-safe except where stated otherwise."</em> 工作线程不能直接调用任何 libuv API（除了 <code>uv_async_send</code>）。
+  </p>
+
+  <div class="callout callout-danger">
+    <div class="callout-title">⚠️ 官方警告</div>
+    <em>"It is important to realize that since the message send is async, the callback may be invoked immediately after uv_async_send is called in another thread, or it may be invoked after some time. libuv may also combine multiple calls to uv_async_send and invoke your callback only once."</em><br>
+    多次 <code>uv_async_send</code> 可能只触发一次回调，不保证一对一。
+  </div>
+
+  <h3>uv_async 的工作机制</h3>
+
+  <div class="diagram-wrap">
+    <svg viewBox="0 0 680 220" xmlns="http://www.w3.org/2000/svg" style="min-width:360px">
+      <defs>
+        <marker id="asa" markerWidth="8" markerHeight="6" refX="8" refY="3" orient="auto">
+          <polygon points="0 0, 8 3, 0 6" fill="#58a6ff"/>
+        </marker>
+        <marker id="asb" markerWidth="8" markerHeight="6" refX="8" refY="3" orient="auto">
+          <polygon points="0 0, 8 3, 0 6" fill="#f85149"/>
+        </marker>
+      </defs>
+
+      <!-- Main thread -->
+      <rect x="10" y="10" width="660" height="56" rx="6" fill="rgba(88,166,255,0.06)" stroke="#58a6ff" stroke-width="1"/>
+      <text x="20" y="28" fill="#58a6ff" font-size="9" font-weight="700">主线程 (Event Loop)</text>
+      <rect x="30" y="30" width="120" height="28" rx="4" fill="#21262d" stroke="#30363d"/>
+      <text x="90" y="49" fill="#c9d1d9" font-size="9" text-anchor="middle">uv_async_init(cb)</text>
+      <rect x="260" y="30" width="130" height="28" rx="4" fill="#21262d" stroke="#58a6ff"/>
+      <text x="325" y="49" fill="#58a6ff" font-size="9" text-anchor="middle">epoll_wait 阻塞中...</text>
+      <rect x="500" y="30" width="140" height="28" rx="4" fill="rgba(63,185,80,0.12)" stroke="#3fb950"/>
+      <text x="570" y="44" fill="#3fb950" font-size="9" text-anchor="middle">✓ 被唤醒 → 执行 cb</text>
+      <text x="570" y="53" fill="#8b949e" font-size="7.5" text-anchor="middle">print_progress()</text>
+
+      <!-- Worker thread -->
+      <rect x="10" y="100" width="660" height="56" rx="6" fill="rgba(255,166,87,0.05)" stroke="#ffa657" stroke-width="1"/>
+      <text x="20" y="118" fill="#ffa657" font-size="9" font-weight="700">工作线程 (Thread Pool)</text>
+      <rect x="30" y="120" width="160" height="28" rx="4" fill="#21262d" stroke="#ffa657"/>
+      <text x="110" y="134" fill="#ffa657" font-size="9" text-anchor="middle">fake_download() 阻塞运行</text>
+      <text x="110" y="145" fill="#8b949e" font-size="7" text-anchor="middle">更新进度 atomic_store()</text>
+      <rect x="400" y="120" width="160" height="28" rx="4" fill="rgba(248,81,73,0.1)" stroke="#f85149"/>
+      <text x="480" y="134" fill="#f85149" font-size="9" text-anchor="middle">uv_async_send(&async)</text>
+      <text x="480" y="145" fill="#8b949e" font-size="7" text-anchor="middle">非阻塞，立即返回</text>
+
+      <!-- Arrows -->
+      <line x1="480" y1="120" x2="480" y2="70" stroke="#f85149" stroke-width="1.5" marker-end="url(#asb)"/>
+      <text x="490" y="95" fill="#f85149" font-size="8">唤醒 loop</text>
+
+      <rect x="10" y="175" width="660" height="36" rx="5" fill="#21262d" stroke="#30363d"/>
+      <text x="340" y="190" fill="#8b949e" font-size="9" text-anchor="middle">注意：uv_async_send 可能合并多次调用 → 回调只触发一次。使用 atomic 变量安全传递数据。</text>
+      <text x="340" y="204" fill="#6e7681" font-size="8" text-anchor="middle">官方："libuv may also combine multiple calls to uv_async_send and invoke your callback only once"</text>
+    </svg>
+    <p class="diagram-caption">图9 · uv_async 跨线程通信机制（官方 Threads 文档）</p>
+  </div>
+
+  <h3>C 语言中的跨线程通信方案</h3>
+  <p>不使用 libuv 时，可用 <code>eventfd</code>（Linux）或管道实现类似机制：</p>
+
+  <pre><span class="code-label">C · 工作线程唤醒主线程（eventfd 方案）</span><code><span class="cm">/* 借鉴 uv_async 的设计：工作线程写 eventfd，主线程 epoll 监听 */</span>
+
+<span class="kw">typedef struct</span> {
+    <span class="type">int</span>    event_fd;       <span class="cm">/* eventfd 描述符 */</span>
+    <span class="kw">void</span> (*callback)(<span class="kw">void</span> *); <span class="cm">/* 主线程执行的回调 */</span>
+    <span class="type">void</span>  *data;
+    <span class="type">_Atomic int</span> pending;   <span class="cm">/* 原子标志，避免回调合并问题 */</span>
+} <span class="type">my_async_t</span>;
+
+<span class="cm">/* 初始化：创建 eventfd，注册到 epoll */</span>
+<span class="type">int</span> <span class="fn">my_async_init</span>(<span class="type">my_loop_t</span> *loop, <span class="type">my_async_t</span> *a,
+                   <span class="kw">void</span> (*cb)(<span class="kw">void</span>*), <span class="kw">void</span> *data) {
+    a->event_fd = eventfd(<span class="num">0</span>, EFD_NONBLOCK | EFD_CLOEXEC);
+    a->callback = cb;
+    a->data = data;
+    atomic_store(&a->pending, <span class="num">0</span>);
+    <span class="kw">return</span> <span class="fn">epoll_add</span>(loop->epfd, a->event_fd, a);
+}
+
+<span class="cm">/* 工作线程调用：非阻塞，仅唤醒 loop（可合并多次调用）*/</span>
+<span class="kw">void</span> <span class="fn">my_async_send</span>(<span class="type">my_async_t</span> *a) {
+    atomic_store(&a->pending, <span class="num">1</span>);
+    <span class="type">uint64_t</span> v = <span class="num">1</span>;
+    write(a->event_fd, &v, <span class="kw">sizeof</span>(v));  <span class="cm">/* 唤醒 epoll_wait */</span>
+}
+
+<span class="cm">/* 主线程 epoll 事件处理：读取 eventfd，执行回调 */</span>
+<span class="kw">void</span> <span class="fn">my_async_dispatch</span>(<span class="type">my_async_t</span> *a) {
+    <span class="type">uint64_t</span> v;
+    read(a->event_fd, &v, <span class="kw">sizeof</span>(v));   <span class="cm">/* 清除 eventfd */</span>
+    <span class="kw">if</span> (atomic_exchange(&a->pending, <span class="num">0</span>))
+        a->callback(a->data);             <span class="cm">/* 主线程安全回调 */</span>
+}</code></pre>
+
+  <div class="chapter-nav">
+    <button class="btn-nav" onclick="goTo('ch7')">← 上一章</button>
+    <button class="btn-nav primary" onclick="goTo('ch9')">下一章 →</button>
+  </div>
+</section>
+
+<!-- ========================= CHAPTER 9 ========================= -->
+<section class="chapter" id="ch9">
+  <div class="chapter-badge">高级技巧 · 09</div>
+  <h2>错误处理约定</h2>
+  <p class="chapter-subtitle">负数错误码、uv_strerror 与统一错误处理风格</p>
+
+  <a class="source-link" href="https://docs.libuv.org/en/v1.x/guide/basics.html#error-handling" target="_blank">
+    📄 官方文档：Error handling — Basics of libuv
+  </a>
+  <a class="source-link" href="https://docs.libuv.org/en/v1.x/errors.html" target="_blank">
+    📄 官方 API：Error constants — libuv documentation
+  </a>
+
+  <h3>官方错误处理规范</h3>
+  <p>官方文档原文：</p>
+  <div class="callout callout-info">
+    <div class="callout-title">📌 官方规范</div>
+    <em>"Initialization functions or synchronous functions which may fail return a negative number on error. Async functions that may fail will pass a status parameter to their callbacks. The error messages are defined as UV_E* constants."</em><br><br>
+    <em>"You can use the uv_strerror(int) and uv_err_name(int) functions to get a const char * describing the error or the error name respectively."</em>
+  </div>
+
+  <table>
+    <thead>
+      <tr><th>函数类型</th><th>错误返回方式</th><th>示例</th></tr>
+    </thead>
+    <tbody>
+      <tr><td>同步/初始化函数</td><td>返回负整数（< 0）</td><td><code>uv_tcp_init()</code> 返回 <code>UV_ENOMEM</code></td></tr>
+      <tr><td>异步回调</td><td><code>status</code> 参数 < 0</td><td><code>read_cb(handle, nread, buf)</code> nread < 0</td></tr>
+      <tr><td>读取回调</td><td><code>nread</code> 参数 < 0</td><td><code>UV_EOF</code> 表示正常结束</td></tr>
+    </tbody>
+  </table>
+
+  <h3>在 C 语言中建立统一错误处理风格</h3>
+
+  <pre><span class="code-label">C · 统一错误处理约定</span><code><span class="cm">/* 借鉴 libuv 的错误处理约定 */</span>
+
+<span class="cm">/* 1. 定义错误码（类似 UV_E* 常量）*/</span>
+<span class="pp">#define MY_ENOMEM    -1</span>
+<span class="pp">#define MY_EINVAL    -2</span>
+<span class="pp">#define MY_ECONNRESET -3</span>
+<span class="pp">#define MY_EOF       -4</span>
+
+<span class="cm">/* 2. 统一错误描述函数（类似 uv_strerror）*/</span>
+<span class="kw">const</span> <span class="type">char</span>* <span class="fn">my_strerror</span>(<span class="type">int</span> err) {
+    <span class="kw">switch</span> (err) {
+    <span class="kw">case</span> MY_ENOMEM:    <span class="kw">return</span> <span class="str">"out of memory"</span>;
+    <span class="kw">case</span> MY_EINVAL:    <span class="kw">return</span> <span class="str">"invalid argument"</span>;
+    <span class="kw">case</span> MY_ECONNRESET: <span class="kw">return</span> <span class="str">"connection reset by peer"</span>;
+    <span class="kw">case</span> MY_EOF:       <span class="kw">return</span> <span class="str">"end of file"</span>;
+    <span class="kw">default</span>:           <span class="kw">return</span> <span class="str">"unknown error"</span>;
+    }
+}
+
+<span class="cm">/* 3. 初始化函数：成功返回 0，失败返回负数 */</span>
+<span class="type">int</span> <span class="fn">conn_init</span>(<span class="type">conn_t</span> *c, <span class="kw">const</span> <span class="type">char</span> *addr) {
+    c->fd = socket(AF_INET, SOCK_STREAM, <span class="num">0</span>);
+    <span class="kw">if</span> (c->fd < <span class="num">0</span>) <span class="kw">return</span> MY_ENOMEM;
+    <span class="kw">if</span> (!addr) <span class="kw">return</span> MY_EINVAL;
+    <span class="kw">return</span> <span class="num">0</span>;   <span class="cm">/* 成功 */</span>
+}
+
+<span class="cm">/* 4. 异步回调：通过 status 参数传递错误 */</span>
+<span class="kw">void</span> <span class="fn">on_read</span>(<span class="type">conn_t</span> *c, <span class="type">ssize_t</span> nread, <span class="kw">const</span> <span class="type">char</span> *buf) {
+    <span class="kw">if</span> (nread == MY_EOF) {
+        <span class="fn">log_info</span>(<span class="str">"Connection closed normally"</span>);
+        <span class="fn">conn_close</span>(c);
+        <span class="kw">return</span>;
+    }
+    <span class="kw">if</span> (nread < <span class="num">0</span>) {
+        <span class="fn">log_error</span>(<span class="str">"Read error: %s"</span>, <span class="fn">my_strerror</span>(nread));
+        <span class="fn">conn_close</span>(c);
+        <span class="kw">return</span>;
+    }
+    <span class="fn">process_data</span>(buf, nread);
+}
+
+<span class="cm">/* 5. 使用宏简化错误检查（类似 libuv 内部使用模式）*/</span>
+<span class="pp">#define CHECK(r, msg) \
+    do { if ((r) < 0) { fprintf(stderr, msg ": %s\n", my_strerror(r)); goto err; } } while(0)</span>
+
+<span class="type">int</span> <span class="fn">setup</span>() {
+    <span class="type">int</span> r;
+    <span class="type">conn_t</span> c;
+    r = <span class="fn">conn_init</span>(&c, <span class="str">"127.0.0.1"</span>);  <span class="fn">CHECK</span>(r, <span class="str">"conn_init failed"</span>);
+    r = <span class="fn">conn_bind</span>(&c, <span class="num">8080</span>);          <span class="fn">CHECK</span>(r, <span class="str">"conn_bind failed"</span>);
+    <span class="kw">return</span> <span class="num">0</span>;
+err:
+    <span class="fn">conn_cleanup</span>(&c);
+    <span class="kw">return</span> -<span class="num">1</span>;
+}</code></pre>
+
+  <div class="callout callout-tip">
+    <div class="callout-title">✅ 错误处理最佳实践</div>
+    <ul style="margin: 0; padding-left: 20px; font-size: 0.88rem;">
+      <li>同步函数：返回值 0 = 成功，负数 = 具体错误码</li>
+      <li>异步回调：status/nread 参数 &lt; 0 表示错误，区分 EOF（正常结束）和真正的错误</li>
+      <li>提供 <code>my_strerror()</code> 将错误码转为可读字符串</li>
+      <li>错误路径统一通过 <code>goto cleanup</code> 处理，结合 RAII 模式</li>
+    </ul>
+  </div>
+
+  <div class="chapter-nav">
+    <button class="btn-nav" onclick="goTo('ch8')">← 上一章</button>
+    <button class="btn-nav primary" onclick="goTo('ch10')">下一章 →</button>
+  </div>
+</section>
+
+<!-- ========================= CHAPTER 10 ========================= -->
+<section class="chapter" id="ch10">
+  <div class="chapter-badge">实践总结 · 10</div>
+  <h2>综合对比与实践建议</h2>
+  <p class="chapter-subtitle">各模式适用场景、优先级与组合使用建议</p>
+
+  <h3>设计模式全览</h3>
+
+  <table>
+    <thead>
+      <tr>
+        <th>模式</th>
+        <th>libuv 来源</th>
+        <th>核心价值</th>
+        <th>适用场景</th>
+        <th>实现难度</th>
+      </tr>
+    </thead>
+    <tbody>
+      <tr>
+        <td><strong>RAII</strong></td>
+        <td>Handle lifecycle rules</td>
+        <td>消除资源泄漏</td>
+        <td>所有 C 语言项目</td>
+        <td>⭐</td>
+      </tr>
+      <tr>
+        <td><strong>Handle/Request 分离</strong></td>
+        <td>Design overview</td>
+        <td>生命周期解耦</td>
+        <td>连接管理、I/O 操作</td>
+        <td>⭐⭐</td>
+      </tr>
+      <tr>
+        <td><strong>事件循环</strong></td>
+        <td>The I/O loop</td>
+        <td>高并发、低延迟</td>
+        <td>网络服务、I/O 密集型</td>
+        <td>⭐⭐⭐</td>
+      </tr>
+      <tr>
+        <td><strong>void* data 上下文</strong></td>
+        <td>Storing context</td>
+        <td>回调间安全传数据</td>
+        <td>所有回调驱动代码</td>
+        <td>⭐</td>
+      </tr>
+      <tr>
+        <td><strong>线程池 + 双回调</strong></td>
+        <td>uv_queue_work</td>
+        <td>阻塞操作异步化</td>
+        <td>文件 I/O、CPU 密集任务</td>
+        <td>⭐⭐⭐</td>
+      </tr>
+      <tr>
+        <td><strong>引用计数</strong></td>
+        <td>uv_ref / uv_unref</td>
+        <td>精细生命周期控制</td>
+        <td>守护进程、后台定时任务</td>
+        <td>⭐⭐</td>
+      </tr>
+      <tr>
+        <td><strong>Baton 模式</strong></td>
+        <td>Passing data to worker</td>
+        <td>一次 free 释放全部</td>
+        <td>线程池任务数据传递</td>
+        <td>⭐</td>
+      </tr>
+      <tr>
+        <td><strong>跨线程 async</strong></td>
+        <td>uv_async / Inter-thread</td>
+        <td>线程安全唤醒 loop</td>
+        <td>多线程 + 事件循环混用</td>
+        <td>⭐⭐⭐</td>
+      </tr>
+      <tr>
+        <td><strong>统一错误处理</strong></td>
+        <td>Error handling</td>
+        <td>错误路径清晰一致</td>
+        <td>所有 C 语言项目</td>
+        <td>⭐</td>
+      </tr>
+    </tbody>
+  </table>
+
+  <h3>模式组合关系图</h3>
+
+  <div class="diagram-wrap">
+    <svg viewBox="0 0 700 320" xmlns="http://www.w3.org/2000/svg" style="min-width:380px">
+      <defs>
+        <marker id="fa" markerWidth="7" markerHeight="5" refX="7" refY="2.5" orient="auto">
+          <polygon points="0 0, 7 2.5, 0 5" fill="#484f58"/>
+        </marker>
+      </defs>
+
+      <!-- Foundation -->
+      <rect x="10" y="260" width="680" height="50" rx="8" fill="rgba(88,166,255,0.07)" stroke="#58a6ff" stroke-width="1.5" stroke-dasharray="5,3"/>
+      <text x="350" y="280" fill="#58a6ff" font-size="10" text-anchor="middle" font-weight="700">基础层（所有项目均适用）</text>
+      <rect x="50" y="270" width="120" height="30" rx="5" fill="#21262d" stroke="#58a6ff"/>
+      <text x="110" y="290" fill="#c9d1d9" font-size="9" text-anchor="middle">RAII 资源管理</text>
+      <rect x="200" y="270" width="120" height="30" rx="5" fill="#21262d" stroke="#58a6ff"/>
+      <text x="260" y="290" fill="#c9d1d9" font-size="9" text-anchor="middle">void* 上下文传递</text>
+      <rect x="350" y="270" width="120" height="30" rx="5" fill="#21262d" stroke="#58a6ff"/>
+      <text x="410" y="290" fill="#c9d1d9" font-size="9" text-anchor="middle">统一错误处理</text>
+      <rect x="500" y="270" width="120" height="30" rx="5" fill="#21262d" stroke="#58a6ff"/>
+      <text x="560" y="290" fill="#c9d1d9" font-size="9" text-anchor="middle">Baton 数据传递</text>
+
+      <!-- Middle -->
+      <rect x="10" y="170" width="680" height="70" rx="8" fill="rgba(255,166,87,0.05)" stroke="#ffa657" stroke-width="1.5" stroke-dasharray="5,3"/>
+      <text x="350" y="188" fill="#ffa657" font-size="10" text-anchor="middle" font-weight="700">中间层（I/O 密集、服务型程序）</text>
+      <rect x="50" y="196" width="140" height="36" rx="5" fill="#21262d" stroke="#ffa657"/>
+      <text x="120" y="210" fill="#ffa657" font-size="9" text-anchor="middle">事件循环架构</text>
+      <text x="120" y="224" fill="#8b949e" font-size="8" text-anchor="middle">epoll/kqueue/select</text>
+      <rect x="220" y="196" width="140" height="36" rx="5" fill="#21262d" stroke="#ffa657"/>
+      <text x="290" y="210" fill="#ffa657" font-size="9" text-anchor="middle">Handle/Request 分离</text>
+      <text x="290" y="224" fill="#8b949e" font-size="8" text-anchor="middle">连接 + 操作解耦</text>
+      <rect x="390" y="196" width="140" height="36" rx="5" fill="#21262d" stroke="#ffa657"/>
+      <text x="460" y="210" fill="#ffa657" font-size="9" text-anchor="middle">引用计数</text>
+      <text x="460" y="224" fill="#8b949e" font-size="8" text-anchor="middle">Loop 存活控制</text>
+
+      <!-- Top -->
+      <rect x="10" y="80" width="680" height="70" rx="8" fill="rgba(188,140,255,0.05)" stroke="#bc8cff" stroke-width="1.5" stroke-dasharray="5,3"/>
+      <text x="350" y="98" fill="#bc8cff" font-size="10" text-anchor="middle" font-weight="700">高级层（多线程 + 事件循环混合架构）</text>
+      <rect x="80" y="106" width="160" height="36" rx="5" fill="#21262d" stroke="#bc8cff"/>
+      <text x="160" y="120" fill="#bc8cff" font-size="9" text-anchor="middle">线程池 + 双回调</text>
+      <text x="160" y="134" fill="#8b949e" font-size="8" text-anchor="middle">阻塞操作异步化</text>
+      <rect x="280" y="106" width="160" height="36" rx="5" fill="#21262d" stroke="#bc8cff"/>
+      <text x="360" y="120" fill="#bc8cff" font-size="9" text-anchor="middle">跨线程 async</text>
+      <text x="360" y="134" fill="#8b949e" font-size="8" text-anchor="middle">线程安全唤醒 loop</text>
+      <rect x="480" y="106" width="160" height="36" rx="5" fill="#21262d" stroke="#bc8cff"/>
+      <text x="560" y="120" fill="#bc8cff" font-size="9" text-anchor="middle">uv_once / 线程局部存储</text>
+      <text x="560" y="134" fill="#8b949e" font-size="8" text-anchor="middle">单次初始化 / TLS</text>
+
+      <!-- Layer arrows -->
+      <line x1="200" y1="260" x2="200" y2="240" stroke="#484f58" stroke-width="1" marker-end="url(#fa)"/>
+      <line x1="350" y1="168" x2="350" y2="142" stroke="#484f58" stroke-width="1" marker-end="url(#fa)"/>
+
+      <!-- Title -->
+      <text x="350" y="30" fill="#6e7681" font-size="10" text-anchor="middle">建议：从基础层开始逐步引入，按需选用中间层和高级层</text>
+    </svg>
+    <p class="diagram-caption">图10 · libuv 设计模式分层适用指南</p>
+  </div>
+
+  <h3>学习路线建议</h3>
+
+  <div class="card-grid">
+    <div class="card">
+      <div class="card-icon">🌱</div>
+      <h4>入门（立即可用）</h4>
+      <p>① RAII + goto cleanup<br>② void* userdata 字段<br>③ 统一负数错误码</p>
+    </div>
+    <div class="card">
+      <div class="card-icon">🚀</div>
+      <h4>进阶（I/O 服务）</h4>
+      <p>④ 自建 epoll 事件循环<br>⑤ Handle/Request 结构分离<br>⑥ Baton 模式传递数据</p>
+    </div>
+    <div class="card">
+      <div class="card-icon">⚡</div>
+      <h4>高级（多线程架构）</h4>
+      <p>⑦ 线程池 + work/after 模式<br>⑧ eventfd/管道 跨线程通信<br>⑨ 引用计数生命周期管理</p>
+    </div>
+  </div>
+
+  <h3>官方文档参考链接</h3>
+  <ul class="styled">
+    <li><a href="https://docs.libuv.org/en/v1.x/design.html" target="_blank">Design overview — libuv documentation</a>（Handle/Request 分离、I/O loop 阶段）</li>
+    <li><a href="https://docs.libuv.org/en/v1.x/guide/basics.html" target="_blank">Basics of libuv</a>（事件循环基础、Storing context）</li>
+    <li><a href="https://docs.libuv.org/en/v1.x/guide/threads.html" target="_blank">Threads — libuv guide</a>（线程池、跨线程通信）</li>
+    <li><a href="https://docs.libuv.org/en/v1.x/guide/utilities.html" target="_blank">Utilities — libuv guide</a>（Baton 模式、引用计数、Idle 模式）</li>
+    <li><a href="https://docs.libuv.org/en/v1.x/handle.html" target="_blank">uv_handle_t — Base handle</a>（RAII 生命周期规则）</li>
+    <li><a href="https://docs.libuv.org/en/v1.x/errors.html" target="_blank">Error constants — libuv documentation</a>（UV_E* 错误码定义）</li>
+  </ul>
+
+  <div class="callout callout-tip">
+    <div class="callout-title">✅ 核心总结</div>
+    <p style="margin: 0; font-size: 0.9rem;">
+      libuv 最值得借鉴的思想，按优先级排序：<br>
+      <strong>1. RAII（init/cleanup 配对 + goto 统一出口）</strong> — 消除内存泄漏，零成本引入<br>
+      <strong>2. void* data 上下文字段</strong> — 避免全局变量，适用所有回调场景<br>
+      <strong>3. 负数错误码规范</strong> — 使错误路径清晰可测试<br>
+      <strong>4. Handle/Request 分离</strong> — 长期资源与短期操作生命周期解耦<br>
+      <strong>5. Baton 一次性释放</strong> — 简化多层结构的内存管理<br>
+      以上前 3 条可在任何 C 项目中立即采用，后两条在 I/O 密集型服务中价值最大。
+    </p>
+  </div>
+
+  <div class="chapter-nav">
+    <button class="btn-nav" onclick="goTo('ch9')">← 上一章</button>
+    <button class="btn-nav" onclick="goTo('ch0')">↑ 回到顶部</button>
+  </div>
+</section>
+
+</div><!-- #main -->
+
+<div id="scroll-top" onclick="window.scrollTo({top:0,behavior:'smooth'})" title="回到顶部">↑</div>
+
+<script>
+// ===== Chapter IDs =====
+const chapters = ['ch0','ch1','ch2','ch3','ch4','ch5','ch6','ch7','ch8','ch9','ch10'];
+const navItems = document.querySelectorAll('.nav-item');
+
+// ===== Navigation =====
+function goTo(id) {
+  const el = document.getElementById(id);
+  if (el) {
+    el.scrollIntoView({ behavior: 'smooth', block: 'start' });
+    closeSidebar();
+  }
+}
+
+// ===== Sidebar Toggle =====
+function toggleSidebar() {
+  const sidebar = document.getElementById('sidebar');
+  const overlay = document.getElementById('overlay');
+  sidebar.classList.toggle('open');
+  overlay.classList.toggle('show');
+}
+function closeSidebar() {
+  if (window.innerWidth <= 768) {
+    document.getElementById('sidebar').classList.remove('open');
+    document.getElementById('overlay').classList.remove('show');
+  }
+}
+
+// ===== Keyboard Navigation =====
+let currentChapterIndex = 0;
+document.addEventListener('keydown', (e) => {
+  if (e.key === 'ArrowRight' || e.key === 'ArrowDown') {
+    e.preventDefault();
+    if (currentChapterIndex < chapters.length - 1) {
+      currentChapterIndex++;
+      goTo(chapters[currentChapterIndex]);
+    }
+  } else if (e.key === 'ArrowLeft' || e.key === 'ArrowUp') {
+    e.preventDefault();
+    if (currentChapterIndex > 0) {
+      currentChapterIndex--;
+      goTo(chapters[currentChapterIndex]);
+    }
+  }
+});
+
+// ===== Progress Bar + Nav Highlight + Scroll Top =====
+const progressBar = document.getElementById('progress-bar');
+const scrollTopBtn = document.getElementById('scroll-top');
+const chapterEls = chapters.map(id => document.getElementById(id));
+
+function onScroll() {
+  // Progress bar
+  const scrollTop = window.scrollY;
+  const docHeight = document.documentElement.scrollHeight - window.innerHeight;
+  const pct = docHeight > 0 ? (scrollTop / docHeight) * 100 : 0;
+  progressBar.style.width = pct + '%';
+
+  // Scroll-to-top button
+  if (scrollTop > 300) scrollTopBtn.classList.add('show');
+  else scrollTopBtn.classList.remove('show');
+
+  // Nav highlight: find which chapter is most visible
+  let activeIdx = 0;
+  for (let i = 0; i < chapterEls.length; i++) {
+    const rect = chapterEls[i].getBoundingClientRect();
+    if (rect.top <= 120) activeIdx = i;
+  }
+
+  currentChapterIndex = activeIdx;
+  navItems.forEach((item, i) => {
+    item.classList.toggle('active', i === activeIdx);
+  });
+
+  // Scroll active nav item into view
+  const activeNav = navItems[activeIdx];
+  if (activeNav) {
+    activeNav.scrollIntoView({ block: 'nearest', behavior: 'smooth' });
+  }
+}
+
+window.addEventListener('scroll', onScroll, { passive: true });
+onScroll(); // init
+
+// ===== Responsive: close sidebar on resize =====
+window.addEventListener('resize', () => {
+  if (window.innerWidth > 768) {
+    document.getElementById('sidebar').classList.remove('open');
+    document.getElementById('overlay').classList.remove('show');
+  }
+});
+</script>
+</body>
+</html>

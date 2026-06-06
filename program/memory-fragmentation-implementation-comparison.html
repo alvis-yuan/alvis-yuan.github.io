@@ -1,0 +1,1770 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>C开源项目内存碎片化处理方式深度对比</title>
+<style>
+  :root {
+    --bg: #0f1117;
+    --surface: #1a1d27;
+    --surface2: #22263a;
+    --border: #2e3354;
+    --accent: #5b8dee;
+    --accent2: #7c5cfc;
+    --accent3: #3ecf8e;
+    --accent4: #f5a623;
+    --accent5: #e8445a;
+    --text: #e2e8f0;
+    --text-muted: #8892a4;
+    --text-dim: #5a6478;
+    --nav-w: 270px;
+    --header-h: 56px;
+  }
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  html { scroll-behavior: smooth; }
+  body {
+    font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', 'PingFang SC', 'Microsoft YaHei', sans-serif;
+    background: var(--bg);
+    color: var(--text);
+    line-height: 1.7;
+    overflow-x: hidden;
+  }
+
+  /* ========== PROGRESS BAR ========== */
+  #progress-bar {
+    position: fixed;
+    top: 0; left: 0;
+    height: 3px;
+    background: linear-gradient(90deg, var(--accent), var(--accent2));
+    z-index: 9999;
+    width: 0%;
+    transition: width 0.1s;
+  }
+
+  /* ========== HEADER ========== */
+  header {
+    position: fixed;
+    top: 0; left: 0; right: 0;
+    height: var(--header-h);
+    background: rgba(15,17,23,0.95);
+    backdrop-filter: blur(12px);
+    border-bottom: 1px solid var(--border);
+    display: flex;
+    align-items: center;
+    padding: 0 20px;
+    z-index: 100;
+    gap: 12px;
+  }
+  .hamburger {
+    display: none;
+    flex-direction: column;
+    gap: 5px;
+    cursor: pointer;
+    padding: 8px;
+    border-radius: 8px;
+    background: var(--surface2);
+    border: 1px solid var(--border);
+    flex-shrink: 0;
+  }
+  .hamburger span {
+    display: block;
+    width: 20px;
+    height: 2px;
+    background: var(--text);
+    border-radius: 2px;
+    transition: all 0.3s;
+  }
+  .header-title {
+    font-size: 0.95rem;
+    font-weight: 600;
+    color: var(--text);
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+  }
+  .header-badge {
+    margin-left: auto;
+    font-size: 0.72rem;
+    color: var(--text-muted);
+    white-space: nowrap;
+  }
+
+  /* ========== NAV ========== */
+  nav#sidebar {
+    position: fixed;
+    top: var(--header-h);
+    left: 0;
+    width: var(--nav-w);
+    height: calc(100vh - var(--header-h));
+    background: var(--surface);
+    border-right: 1px solid var(--border);
+    overflow-y: auto;
+    padding: 16px 0;
+    z-index: 80;
+    transition: transform 0.3s ease;
+  }
+  nav#sidebar::-webkit-scrollbar { width: 4px; }
+  nav#sidebar::-webkit-scrollbar-thumb { background: var(--border); border-radius: 2px; }
+
+  .nav-group { margin-bottom: 6px; }
+  .nav-group-title {
+    font-size: 0.68rem;
+    font-weight: 700;
+    color: var(--text-dim);
+    letter-spacing: 0.1em;
+    text-transform: uppercase;
+    padding: 10px 20px 4px;
+  }
+  .nav-item {
+    display: block;
+    padding: 7px 20px 7px 28px;
+    font-size: 0.83rem;
+    color: var(--text-muted);
+    text-decoration: none;
+    border-left: 2px solid transparent;
+    transition: all 0.2s;
+    cursor: pointer;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+  }
+  .nav-item:hover { color: var(--text); background: var(--surface2); }
+  .nav-item.active {
+    color: var(--accent);
+    border-left-color: var(--accent);
+    background: rgba(91,141,238,0.08);
+    font-weight: 600;
+  }
+
+  /* ========== OVERLAY ========== */
+  #overlay {
+    display: none;
+    position: fixed;
+    inset: 0;
+    background: rgba(0,0,0,0.6);
+    z-index: 70;
+  }
+
+  /* ========== MAIN ========== */
+  main {
+    margin-left: var(--nav-w);
+    margin-top: var(--header-h);
+    padding: 40px 48px;
+    max-width: 900px;
+  }
+
+  /* ========== SECTIONS ========== */
+  section { margin-bottom: 72px; scroll-margin-top: 72px; }
+  h1.page-title {
+    font-size: 2rem;
+    font-weight: 800;
+    background: linear-gradient(135deg, var(--accent), var(--accent2));
+    -webkit-background-clip: text;
+    -webkit-text-fill-color: transparent;
+    background-clip: text;
+    line-height: 1.3;
+    margin-bottom: 12px;
+  }
+  .page-subtitle {
+    color: var(--text-muted);
+    font-size: 0.95rem;
+    margin-bottom: 32px;
+    border-bottom: 1px solid var(--border);
+    padding-bottom: 24px;
+  }
+  h2 {
+    font-size: 1.4rem;
+    font-weight: 700;
+    color: var(--text);
+    margin-bottom: 20px;
+    display: flex;
+    align-items: center;
+    gap: 10px;
+  }
+  h2::before {
+    content: '';
+    display: inline-block;
+    width: 4px;
+    height: 1.4rem;
+    background: linear-gradient(180deg, var(--accent), var(--accent2));
+    border-radius: 2px;
+    flex-shrink: 0;
+  }
+  h3 {
+    font-size: 1.05rem;
+    font-weight: 600;
+    color: var(--accent);
+    margin: 24px 0 12px;
+  }
+  p { margin-bottom: 14px; color: var(--text); font-size: 0.92rem; }
+  ul, ol { padding-left: 20px; margin-bottom: 14px; }
+  li { font-size: 0.92rem; margin-bottom: 6px; color: var(--text); }
+  strong { color: var(--accent4); }
+  code {
+    font-family: 'JetBrains Mono', 'Fira Code', 'Cascadia Code', monospace;
+    background: var(--surface2);
+    border: 1px solid var(--border);
+    padding: 2px 6px;
+    border-radius: 4px;
+    font-size: 0.82rem;
+    color: var(--accent3);
+  }
+  a { color: var(--accent); text-decoration: none; }
+  a:hover { text-decoration: underline; }
+
+  /* ========== CARDS ========== */
+  .card {
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: 12px;
+    padding: 24px;
+    margin-bottom: 20px;
+  }
+  .card-header {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    margin-bottom: 16px;
+  }
+  .card-icon {
+    width: 36px;
+    height: 36px;
+    border-radius: 8px;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    font-size: 1.1rem;
+    flex-shrink: 0;
+  }
+  .card-title { font-size: 1rem; font-weight: 700; color: var(--text); }
+  .card-subtitle { font-size: 0.78rem; color: var(--text-muted); }
+
+  .tag {
+    display: inline-block;
+    padding: 2px 8px;
+    border-radius: 4px;
+    font-size: 0.72rem;
+    font-weight: 600;
+    letter-spacing: 0.04em;
+    margin-right: 4px;
+    margin-bottom: 4px;
+  }
+  .tag-blue { background: rgba(91,141,238,0.15); color: var(--accent); border: 1px solid rgba(91,141,238,0.3); }
+  .tag-green { background: rgba(62,207,142,0.15); color: var(--accent3); border: 1px solid rgba(62,207,142,0.3); }
+  .tag-orange { background: rgba(245,166,35,0.15); color: var(--accent4); border: 1px solid rgba(245,166,35,0.3); }
+  .tag-red { background: rgba(232,68,90,0.15); color: var(--accent5); border: 1px solid rgba(232,68,90,0.3); }
+  .tag-purple { background: rgba(124,92,252,0.15); color: var(--accent2); border: 1px solid rgba(124,92,252,0.3); }
+
+  .pros-cons {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 16px;
+    margin-top: 16px;
+  }
+  .pros, .cons {
+    padding: 14px 16px;
+    border-radius: 8px;
+    font-size: 0.85rem;
+  }
+  .pros {
+    background: rgba(62,207,142,0.07);
+    border: 1px solid rgba(62,207,142,0.2);
+  }
+  .cons {
+    background: rgba(232,68,90,0.07);
+    border: 1px solid rgba(232,68,90,0.2);
+  }
+  .pros-title { color: var(--accent3); font-weight: 700; margin-bottom: 8px; }
+  .cons-title { color: var(--accent5); font-weight: 700; margin-bottom: 8px; }
+  .pros li, .cons li { margin-bottom: 5px; color: var(--text-muted); }
+
+  /* ========== COMPARISON TABLE ========== */
+  .table-wrap { overflow-x: auto; margin-bottom: 20px; border-radius: 10px; border: 1px solid var(--border); }
+  table { width: 100%; border-collapse: collapse; font-size: 0.83rem; min-width: 600px; }
+  th {
+    background: var(--surface2);
+    padding: 12px 14px;
+    text-align: left;
+    font-weight: 700;
+    color: var(--text-muted);
+    font-size: 0.78rem;
+    letter-spacing: 0.05em;
+    text-transform: uppercase;
+    border-bottom: 1px solid var(--border);
+  }
+  td {
+    padding: 11px 14px;
+    border-bottom: 1px solid rgba(46,51,84,0.5);
+    color: var(--text);
+    vertical-align: top;
+  }
+  tr:last-child td { border-bottom: none; }
+  tr:hover td { background: rgba(91,141,238,0.04); }
+
+  /* ========== SOURCE LINK ========== */
+  .source-link {
+    display: inline-flex;
+    align-items: center;
+    gap: 5px;
+    font-size: 0.75rem;
+    color: var(--text-dim);
+    background: var(--surface2);
+    border: 1px solid var(--border);
+    border-radius: 4px;
+    padding: 3px 8px;
+    margin: 6px 0;
+  }
+  .source-link a { color: var(--text-muted); font-size: 0.75rem; }
+  .source-link a:hover { color: var(--accent); }
+
+  /* ========== SVG DIAGRAMS ========== */
+  .diagram-wrap {
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: 12px;
+    padding: 24px;
+    margin: 20px 0;
+    overflow-x: auto;
+  }
+  .diagram-title {
+    font-size: 0.82rem;
+    color: var(--text-muted);
+    text-align: center;
+    margin-bottom: 16px;
+    font-weight: 600;
+    letter-spacing: 0.04em;
+    text-transform: uppercase;
+  }
+  svg { display: block; margin: 0 auto; max-width: 100%; }
+
+  /* ========== DECISION TREE ========== */
+  .decision-node {
+    cursor: pointer;
+    transition: opacity 0.2s;
+  }
+  .decision-node:hover { opacity: 0.85; }
+
+  /* ========== CALLOUT ========== */
+  .callout {
+    border-radius: 8px;
+    padding: 14px 18px;
+    margin: 16px 0;
+    display: flex;
+    gap: 12px;
+    font-size: 0.88rem;
+  }
+  .callout-info { background: rgba(91,141,238,0.08); border: 1px solid rgba(91,141,238,0.25); }
+  .callout-warn { background: rgba(245,166,35,0.08); border: 1px solid rgba(245,166,35,0.25); }
+  .callout-tip { background: rgba(62,207,142,0.08); border: 1px solid rgba(62,207,142,0.25); }
+  .callout-icon { font-size: 1.1rem; flex-shrink: 0; margin-top: 1px; }
+  .callout-content { color: var(--text-muted); }
+  .callout-content strong { color: var(--text); }
+
+  /* ========== KEYBOARD HINT ========== */
+  .kbd-hint {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    font-size: 0.78rem;
+    color: var(--text-dim);
+    margin-top: 8px;
+  }
+  kbd {
+    display: inline-block;
+    padding: 2px 7px;
+    background: var(--surface2);
+    border: 1px solid var(--border);
+    border-bottom-width: 2px;
+    border-radius: 4px;
+    font-family: inherit;
+    font-size: 0.72rem;
+    color: var(--text-muted);
+  }
+
+  /* ========== RESPONSIVE ========== */
+  @media (max-width: 768px) {
+    :root { --nav-w: 260px; }
+    nav#sidebar { transform: translateX(-100%); }
+    nav#sidebar.open { transform: translateX(0); }
+    #overlay.open { display: block; }
+    main { margin-left: 0; padding: 24px 18px; }
+    .hamburger { display: flex; }
+    .pros-cons { grid-template-columns: 1fr; }
+    h1.page-title { font-size: 1.5rem; }
+    h2 { font-size: 1.15rem; }
+    main { padding-bottom: 60px; }
+    table { font-size: 0.78rem; }
+  }
+  @media (min-width: 769px) and (max-width: 1100px) {
+    main { padding: 32px 32px; }
+  }
+</style>
+</head>
+<body>
+
+<div id="progress-bar"></div>
+
+<header>
+  <div class="hamburger" id="hamburger" aria-label="菜单">
+    <span></span><span></span><span></span>
+  </div>
+  <div class="header-title">C开源项目内存碎片化处理对比</div>
+  <div class="header-badge">深度技术分析 · 2024</div>
+</header>
+
+<div id="overlay"></div>
+
+<nav id="sidebar">
+  <div class="nav-group">
+    <div class="nav-group-title">概述</div>
+    <a class="nav-item" data-section="intro">📖 背景与问题定义</a>
+    <a class="nav-item" data-section="concepts">🧩 核心概念</a>
+  </div>
+  <div class="nav-group">
+    <div class="nav-group-title">各项目实现</div>
+    <a class="nav-item" data-section="glibc">⚙️ glibc ptmalloc2</a>
+    <a class="nav-item" data-section="glib">🔷 GLib Slice Allocator</a>
+    <a class="nav-item" data-section="apr">🔶 Apache APR Pool</a>
+    <a class="nav-item" data-section="libuv">🔵 libuv 内存管理</a>
+    <a class="nav-item" data-section="jemalloc">🟢 jemalloc</a>
+    <a class="nav-item" data-section="tcmalloc">🟡 tcmalloc</a>
+    <a class="nav-item" data-section="kernel">🐧 Linux Kernel SLUB</a>
+  </div>
+  <div class="nav-group">
+    <div class="nav-group-title">对比与分析</div>
+    <a class="nav-item" data-section="comparison">📊 横向对比</a>
+    <a class="nav-item" data-section="patterns">🧱 策略总结</a>
+  </div>
+  <div class="nav-group">
+    <div class="nav-group-title">实践指南</div>
+    <a class="nav-item" data-section="decision">🌳 决策树</a>
+    <a class="nav-item" data-section="practice">🔧 实践建议</a>
+  </div>
+</nav>
+
+<main>
+
+<!-- ====== INTRO ====== -->
+<section id="intro">
+  <h1 class="page-title">C开源项目内存碎片化<br>处理方式深度对比</h1>
+  <p class="page-subtitle">
+    综合 glibc ptmalloc2、GLib Slice Allocator、Apache APR、libuv、jemalloc、tcmalloc 及 Linux Kernel SLUB 等权威来源，系统梳理各项目对内存碎片化的原理、实现与取舍。
+  </p>
+  <div class="kbd-hint">
+    <kbd>←</kbd><kbd>→</kbd> 方向键切换章节 &nbsp;|&nbsp; 点击左侧导航跳转
+  </div>
+
+  <h2>背景与问题定义</h2>
+  <p>
+    内存碎片化是动态内存管理中最核心的难题之一。在长期运行的服务端程序中，频繁的 <code>malloc/free</code> 操作会导致堆空间出现大量不连续的小空闲块，进而引发两类问题：
+  </p>
+  <div style="display:grid;grid-template-columns:1fr 1fr;gap:14px;margin:16px 0;">
+    <div class="card" style="margin:0;">
+      <div class="card-header">
+        <div class="card-icon" style="background:rgba(232,68,90,0.15);">🔴</div>
+        <div><div class="card-title">内部碎片</div><div class="card-subtitle">Internal Fragmentation</div></div>
+      </div>
+      <p style="font-size:0.85rem;color:var(--text-muted);">分配器给出的内存块大于实际请求大小，多余的字节被浪费在块内部，无法被其他分配使用。</p>
+    </div>
+    <div class="card" style="margin:0;">
+      <div class="card-header">
+        <div class="card-icon" style="background:rgba(245,166,35,0.15);">🟠</div>
+        <div><div class="card-title">外部碎片</div><div class="card-subtitle">External Fragmentation</div></div>
+      </div>
+      <p style="font-size:0.85rem;color:var(--text-muted);">空闲内存总量足够但不连续，无法满足一次大块分配请求，迫使分配器向 OS 请求新内存。</p>
+    </div>
+  </div>
+
+  <div class="callout callout-warn">
+    <span class="callout-icon">⚠️</span>
+    <div class="callout-content">
+      <strong>真实案例：</strong>Google 工程师在 Apache Subversion 中发现，当 Apache 以线程模式长期运行时，APR Pool 的全局池会逐渐碎片化成细小碎块，APR 不断向 OS malloc 新内存而不回收，导致确定性内存泄漏。来源：<a href="https://dev.apr.apache.narkive.com/pXZhwGG1/apr-pools-memory-leaks" target="_blank">apr-dev 邮件列表 2008</a>
+    </div>
+  </div>
+
+  <div class="diagram-wrap">
+    <div class="diagram-title">内存碎片化示意图</div>
+    <svg viewBox="0 0 700 160" width="700" height="160" xmlns="http://www.w3.org/2000/svg">
+      <defs>
+        <pattern id="hatch" patternUnits="userSpaceOnUse" width="6" height="6" patternTransform="rotate(45)">
+          <line x1="0" y1="0" x2="0" y2="6" stroke="#2e3354" stroke-width="2"/>
+        </pattern>
+      </defs>
+      <!-- 初始状态 -->
+      <text x="20" y="22" font-size="11" fill="#8892a4" font-family="sans-serif">初始状态（连续可用）</text>
+      <rect x="20" y="30" width="660" height="36" rx="4" fill="#22263a" stroke="#2e3354"/>
+      <text x="340" y="53" font-size="11" fill="#3ecf8e" text-anchor="middle" font-family="sans-serif">680B 连续可用空间</text>
+
+      <!-- 碎片化状态 -->
+      <text x="20" y="96" font-size="11" fill="#8892a4" font-family="sans-serif">碎片化后（已无法分配 200B 的连续块）</text>
+      <!-- 已分配块 -->
+      <rect x="20" y="104" width="80" height="36" rx="2" fill="rgba(91,141,238,0.3)" stroke="#5b8dee"/>
+      <text x="60" y="127" font-size="10" fill="#5b8dee" text-anchor="middle" font-family="sans-serif">A:80B</text>
+      <!-- 空闲 -->
+      <rect x="100" y="104" width="50" height="36" rx="2" fill="url(#hatch)" stroke="#3ecf8e"/>
+      <text x="125" y="127" font-size="10" fill="#3ecf8e" text-anchor="middle" font-family="sans-serif">50B</text>
+      <!-- 已分配 -->
+      <rect x="150" y="104" width="100" height="36" rx="2" fill="rgba(124,92,252,0.3)" stroke="#7c5cfc"/>
+      <text x="200" y="127" font-size="10" fill="#7c5cfc" text-anchor="middle" font-family="sans-serif">B:100B</text>
+      <!-- 空闲 -->
+      <rect x="250" y="104" width="40" height="36" rx="2" fill="url(#hatch)" stroke="#3ecf8e"/>
+      <text x="270" y="127" font-size="10" fill="#3ecf8e" text-anchor="middle" font-family="sans-serif">40B</text>
+      <!-- 已分配 -->
+      <rect x="290" y="104" width="120" height="36" rx="2" fill="rgba(245,166,35,0.3)" stroke="#f5a623"/>
+      <text x="350" y="127" font-size="10" fill="#f5a623" text-anchor="middle" font-family="sans-serif">C:120B</text>
+      <!-- 空闲 -->
+      <rect x="410" y="104" width="60" height="36" rx="2" fill="url(#hatch)" stroke="#3ecf8e"/>
+      <text x="440" y="127" font-size="10" fill="#3ecf8e" text-anchor="middle" font-family="sans-serif">60B</text>
+      <!-- 已分配 -->
+      <rect x="470" y="104" width="90" height="36" rx="2" fill="rgba(232,68,90,0.3)" stroke="#e8445a"/>
+      <text x="515" y="127" font-size="10" fill="#e8445a" text-anchor="middle" font-family="sans-serif">D:90B</text>
+      <!-- 空闲 -->
+      <rect x="560" y="104" width="120" height="36" rx="2" fill="url(#hatch)" stroke="#3ecf8e"/>
+      <text x="620" y="127" font-size="10" fill="#3ecf8e" text-anchor="middle" font-family="sans-serif">120B</text>
+
+      <!-- 箭头与标注 -->
+      <text x="350" y="155" font-size="10" fill="#e8445a" text-anchor="middle" font-family="sans-serif">空闲总量 270B，但无法分配 200B 连续块 → 外部碎片</text>
+    </svg>
+  </div>
+</section>
+
+<!-- ====== CONCEPTS ====== -->
+<section id="concepts">
+  <h2>核心概念</h2>
+  <p>理解各项目实现前，需要掌握以下关键概念：</p>
+
+  <div class="diagram-wrap">
+    <div class="diagram-title">内存分配器核心策略全貌</div>
+    <svg viewBox="0 0 700 220" width="700" height="220" xmlns="http://www.w3.org/2000/svg">
+      <defs>
+        <marker id="arr" markerWidth="8" markerHeight="6" refX="8" refY="3" orient="auto">
+          <polygon points="0 0,8 3,0 6" fill="#5b8dee"/>
+        </marker>
+      </defs>
+      <!-- 策略框 -->
+      <rect x="10" y="10" width="150" height="60" rx="8" fill="#22263a" stroke="#5b8dee"/>
+      <text x="85" y="35" font-size="11" fill="#5b8dee" text-anchor="middle" font-family="sans-serif" font-weight="bold">Slab/Slice 分配器</text>
+      <text x="85" y="52" font-size="9.5" fill="#8892a4" text-anchor="middle" font-family="sans-serif">固定大小对象缓存</text>
+      <text x="85" y="65" font-size="9" fill="#5a6478" text-anchor="middle" font-family="sans-serif">GLib · Linux SLUB</text>
+
+      <rect x="185" y="10" width="150" height="60" rx="8" fill="#22263a" stroke="#7c5cfc"/>
+      <text x="260" y="35" font-size="11" fill="#7c5cfc" text-anchor="middle" font-family="sans-serif" font-weight="bold">Pool 分配器</text>
+      <text x="260" y="52" font-size="9.5" fill="#8892a4" text-anchor="middle" font-family="sans-serif">生命周期批量管理</text>
+      <text x="260" y="65" font-size="9" fill="#5a6478" text-anchor="middle" font-family="sans-serif">APR · nginx</text>
+
+      <rect x="360" y="10" width="150" height="60" rx="8" fill="#22263a" stroke="#f5a623"/>
+      <text x="435" y="35" font-size="11" fill="#f5a623" text-anchor="middle" font-family="sans-serif" font-weight="bold">Arena 分配器</text>
+      <text x="435" y="52" font-size="9.5" fill="#8892a4" text-anchor="middle" font-family="sans-serif">多线程隔离竞争</text>
+      <text x="435" y="65" font-size="9" fill="#5a6478" text-anchor="middle" font-family="sans-serif">jemalloc · ptmalloc2</text>
+
+      <rect x="535" y="10" width="150" height="60" rx="8" fill="#22263a" stroke="#3ecf8e"/>
+      <text x="610" y="35" font-size="11" fill="#3ecf8e" text-anchor="middle" font-family="sans-serif" font-weight="bold">Thread Cache</text>
+      <text x="610" y="52" font-size="9.5" fill="#8892a4" text-anchor="middle" font-family="sans-serif">线程本地无锁缓存</text>
+      <text x="610" y="65" font-size="9" fill="#5a6478" text-anchor="middle" font-family="sans-serif">tcmalloc · jemalloc tcache</text>
+
+      <!-- 第二行 -->
+      <rect x="97" y="110" width="170" height="60" rx="8" fill="#22263a" stroke="#e8445a"/>
+      <text x="182" y="135" font-size="11" fill="#e8445a" text-anchor="middle" font-family="sans-serif" font-weight="bold">Buddy System</text>
+      <text x="182" y="152" font-size="9.5" fill="#8892a4" text-anchor="middle" font-family="sans-serif">2次幂合并/分裂</text>
+      <text x="182" y="165" font-size="9" fill="#5a6478" text-anchor="middle" font-family="sans-serif">Linux Buddy 页分配器</text>
+
+      <rect x="297" y="110" width="170" height="60" rx="8" fill="#22263a" stroke="#5b8dee"/>
+      <text x="382" y="135" font-size="11" fill="#5b8dee" text-anchor="middle" font-family="sans-serif" font-weight="bold">Free-list Bins</text>
+      <text x="382" y="152" font-size="9.5" fill="#8892a4" text-anchor="middle" font-family="sans-serif">空闲链表 + 合并</text>
+      <text x="382" y="165" font-size="9" fill="#5a6478" text-anchor="middle" font-family="sans-serif">glibc malloc</text>
+
+      <rect x="497" y="110" width="170" height="60" rx="8" fill="#22263a" stroke="#7c5cfc"/>
+      <text x="582" y="135" font-size="11" fill="#7c5cfc" text-anchor="middle" font-family="sans-serif" font-weight="bold">Defragmentation</text>
+      <text x="582" y="152" font-size="9.5" fill="#8892a4" text-anchor="middle" font-family="sans-serif">主动整理/迁移</text>
+      <text x="582" y="165" font-size="9" fill="#5a6478" text-anchor="middle" font-family="sans-serif">Redis activedefrag</text>
+
+      <!-- 连线 -->
+      <line x1="350" y1="100" x2="350" y2="106" stroke="#2e3354" stroke-width="1"/>
+      <text x="350" y="102" font-size="9" fill="#5a6478" text-anchor="middle" font-family="sans-serif">碎片化对抗策略层级</text>
+      <line x1="20" y1="100" x2="680" y2="100" stroke="#2e3354" stroke-width="1" stroke-dasharray="4,3"/>
+    </svg>
+  </div>
+
+  <div class="card">
+    <h3 style="margin-top:0">关键术语速查</h3>
+    <div class="table-wrap" style="margin-bottom:0;">
+      <table>
+        <thead><tr><th>术语</th><th>定义</th><th>代表场景</th></tr></thead>
+        <tbody>
+          <tr><td><strong>Slab</strong></td><td>一块连续内存，被切割为等大小对象的数组，附带对象状态位图</td><td>Linux kmem_cache，GLib GSlice</td></tr>
+          <tr><td><strong>Arena</strong></td><td>独立的内存池，包含自己的 bins/freelist，减少多线程锁竞争</td><td>glibc malloc arena，jemalloc arena</td></tr>
+          <tr><td><strong>Bin</strong></td><td>按大小分类的空闲块链表，快速匹配最合适的空闲块</td><td>glibc fastbin/smallbin/largebin</td></tr>
+          <tr><td><strong>Tcache</strong></td><td>线程本地的小块缓存，避免 arena 加锁，glibc 2.26+ 引入</td><td>glibc tcache，jemalloc tcache</td></tr>
+          <tr><td><strong>Coalescing</strong></td><td>相邻空闲块合并，减少外部碎片</td><td>glibc 合并相邻 chunk</td></tr>
+          <tr><td><strong>Pool</strong></td><td>应用层内存域，统一生命周期，批量释放避免逐一 free</td><td>APR pool，nginx pool</td></tr>
+        </tbody>
+      </table>
+    </div>
+  </div>
+</section>
+
+<!-- ====== GLIBC ====== -->
+<section id="glibc">
+  <h2>glibc ptmalloc2</h2>
+  <div class="source-link">📄 原文参考：<a href="https://sourceware.org/glibc/wiki/MallocInternals" target="_blank">MallocInternals – sourceware.org</a> &nbsp;|&nbsp; <a href="https://4xura.com/binex/glibc/ptmalloc2/ptmalloc-the-gnu-allocator-a-deep-gothrough-on-how-malloc-free-works/" target="_blank">深度解析 ptmalloc2</a></div>
+
+  <p>glibc 使用的 <strong>ptmalloc2</strong>（POSIX thread malloc 2）是 Wolfram Gloger 在 dlmalloc 基础上改造的多线程通用分配器，是 Linux 下绝大多数程序的默认内存管理后端。</p>
+
+  <h3>核心数据结构：malloc_chunk</h3>
+  <p>每个内存块（无论使用中还是空闲）都以 <code>malloc_chunk</code> 结构管理：</p>
+  <div class="card">
+    <code style="display:block;white-space:pre;line-height:1.6;font-size:0.82rem;color:#3ecf8e;">struct malloc_chunk {
+  INTERNAL_SIZE_T  prev_size;  /* 前一块空闲时记录其大小 */
+  INTERNAL_SIZE_T  size;       /* 本块大小（含 flags） */
+  struct malloc_chunk* fd;     /* 空闲时：前向指针 */
+  struct malloc_chunk* bk;     /* 空闲时：后向指针 */
+  /* 仅大块使用 */
+  struct malloc_chunk* fd_nextsize;
+  struct malloc_chunk* bk_nextsize;
+};</code>
+    <div class="source-link" style="margin-top:8px;">📄 <a href="https://github.com/lattera/glibc/blob/master/malloc/malloc.c#L1138" target="_blank">glibc malloc.c L1138</a></div>
+  </div>
+
+  <h3>分层 Bin 体系（碎片化对抗核心）</h3>
+  <div class="diagram-wrap">
+    <div class="diagram-title">ptmalloc2 分配路径与 Bin 层次结构</div>
+    <svg viewBox="0 0 700 260" width="700" height="260" xmlns="http://www.w3.org/2000/svg">
+      <!-- 请求 -->
+      <rect x="290" y="8" width="120" height="34" rx="6" fill="rgba(91,141,238,0.2)" stroke="#5b8dee"/>
+      <text x="350" y="30" font-size="11" fill="#5b8dee" text-anchor="middle" font-family="sans-serif" font-weight="bold">malloc(size)</text>
+      <!-- 箭头 -->
+      <line x1="350" y1="42" x2="350" y2="56" stroke="#5b8dee" stroke-width="1.5" marker-end="url(#arr)"/>
+      <!-- Tcache -->
+      <rect x="240" y="58" width="220" height="34" rx="6" fill="rgba(62,207,142,0.15)" stroke="#3ecf8e"/>
+      <text x="350" y="75" font-size="10.5" fill="#3ecf8e" text-anchor="middle" font-family="sans-serif" font-weight="bold">① Tcache（线程本地，无锁）</text>
+      <text x="350" y="87" font-size="9" fill="#5a6478" text-anchor="middle" font-family="sans-serif">≤ 1032B，64个 size class，≤7个/class（glibc 2.26+）</text>
+      <line x1="350" y1="92" x2="350" y2="106" stroke="#5b8dee" stroke-width="1.5" marker-end="url(#arr)"/>
+      <!-- Fastbin -->
+      <rect x="200" y="108" width="300" height="34" rx="6" fill="rgba(245,166,35,0.12)" stroke="#f5a623"/>
+      <text x="350" y="125" font-size="10.5" fill="#f5a623" text-anchor="middle" font-family="sans-serif" font-weight="bold">② Fastbin（单链表 LIFO，不合并）</text>
+      <text x="350" y="137" font-size="9" fill="#5a6478" text-anchor="middle" font-family="sans-serif">≤ 176B（64位），速度最快，不触发 coalesce</text>
+      <line x1="350" y1="142" x2="350" y2="156" stroke="#5b8dee" stroke-width="1.5" marker-end="url(#arr)"/>
+      <!-- Unsorted bin -->
+      <rect x="160" y="158" width="380" height="34" rx="6" fill="rgba(124,92,252,0.12)" stroke="#7c5cfc"/>
+      <text x="350" y="175" font-size="10.5" fill="#7c5cfc" text-anchor="middle" font-family="sans-serif" font-weight="bold">③ Unsorted Bin（最近释放 chunk 的中转站）</text>
+      <text x="350" y="187" font-size="9" fill="#5a6478" text-anchor="middle" font-family="sans-serif">非 fastbin 释放先入此，下次 malloc 可直接取用</text>
+      <line x1="350" y1="192" x2="350" y2="206" stroke="#5b8dee" stroke-width="1.5" marker-end="url(#arr)"/>
+      <!-- Small/Large bin -->
+      <rect x="100" y="208" width="230" height="34" rx="6" fill="rgba(91,141,238,0.1)" stroke="#5b8dee" stroke-dasharray="4,2"/>
+      <text x="215" y="225" font-size="10" fill="#5b8dee" text-anchor="middle" font-family="sans-serif" font-weight="bold">④ Small Bin（&lt;1024B）</text>
+      <text x="215" y="237" font-size="9" fill="#5a6478" text-anchor="middle" font-family="sans-serif">62个 class，精确匹配</text>
+      <rect x="370" y="208" width="230" height="34" rx="6" fill="rgba(232,68,90,0.1)" stroke="#e8445a" stroke-dasharray="4,2"/>
+      <text x="485" y="225" font-size="10" fill="#e8445a" text-anchor="middle" font-family="sans-serif" font-weight="bold">⑤ Large Bin（≥1024B）</text>
+      <text x="485" y="237" font-size="9" fill="#5a6478" text-anchor="middle" font-family="sans-serif">63个 class，范围匹配 + 分割</text>
+    </svg>
+  </div>
+
+  <h3>碎片化对抗机制</h3>
+  <ul>
+    <li><strong>Coalescing（合并）：</strong>释放非 fastbin chunk 时，检查物理相邻的前后 chunk 是否空闲，若是则合并（boundary tag 技术，O(1) 查找相邻块）。</li>
+    <li><strong>Consolidation（整合）：</strong>调用 <code>malloc_consolidate()</code> 将 fastbin 中碎块合并到 unsorted bin，在大块请求或特定阈值时触发。</li>
+    <li><strong>Trim（裁剪）：</strong><code>systrim()</code> 在 top chunk 超过 <code>trim_threshold</code>（默认 128KB）时通过 <code>sbrk(-n)</code> 将顶部内存归还 OS。</li>
+    <li><strong>多 Arena：</strong>减少多线程争锁，但每个 arena 独立管理内存，跨 arena 碎片无法合并，<strong>可用 <code>MALLOC_ARENA_MAX</code> 环境变量限制 arena 数量</strong>。</li>
+  </ul>
+
+  <div class="pros-cons">
+    <div class="pros">
+      <div class="pros-title">✅ 优势</div>
+      <ul>
+        <li>通用性强，零配置开箱即用</li>
+        <li>Tcache 使常用路径接近无锁</li>
+        <li>Coalescing 有效减少外部碎片</li>
+        <li>大块直接 mmap，可随时归还 OS</li>
+        <li><code>mallopt/malloc_info</code> 可观测</li>
+      </ul>
+    </div>
+    <div class="cons">
+      <div class="cons-title">❌ 劣势</div>
+      <ul>
+        <li>多线程高竞争时 arena 碎片积累</li>
+        <li>Fastbin 不合并，短期内部碎片高</li>
+        <li>长期运行碎片率上升，RSS 持续增长</li>
+        <li>大量小对象分配 metadata 开销大</li>
+        <li>无主动整理/压缩机制</li>
+      </ul>
+    </div>
+  </div>
+</section>
+
+<!-- ====== GLIB ====== -->
+<section id="glib">
+  <h2>GLib Slice Allocator</h2>
+  <div class="source-link">📄 原文参考：<a href="https://web.mit.edu/barnowl/share/gtk-doc/html/glib/glib-Memory-Slices.html" target="_blank">GLib Memory Slices – MIT</a> &nbsp;|&nbsp; <a href="http://citeseer.ist.psu.edu/bonwick94slab.html" target="_blank">Bonwick94 Slab Allocator Paper</a></div>
+
+  <p>GLib（GNOME 基础库）的 <strong>Slice Allocator</strong> 是专为大量等大小对象高效分配设计的分配器，灵感来源于 Jeff Bonwick 1994 年的经典论文《The Slab Allocator》。</p>
+
+  <div class="callout callout-info">
+    <span class="callout-icon">📌</span>
+    <div class="callout-content">
+      <strong>官方描述（原文）：</strong>"The slice allocator uses a sophisticated, layered design that has been inspired by Bonwick's slab allocator. It uses <code>posix_memalign()</code> to optimize allocations of many equally-sized chunks, and has per-thread free lists (the so-called magazine layer) to quickly satisfy allocation requests of already known structure sizes."
+      <br>— <a href="https://web.mit.edu/barnowl/share/gtk-doc/html/glib/glib-Memory-Slices.html" target="_blank">GLib Memory Slices 官方文档</a>
+    </div>
+  </div>
+
+  <h3>设计原理</h3>
+  <div class="diagram-wrap">
+    <div class="diagram-title">GLib Slice Allocator 三层结构</div>
+    <svg viewBox="0 0 700 200" width="700" height="200" xmlns="http://www.w3.org/2000/svg">
+      <!-- 层1 -->
+      <rect x="20" y="20" width="660" height="48" rx="8" fill="rgba(62,207,142,0.1)" stroke="#3ecf8e"/>
+      <text x="350" y="40" font-size="11" fill="#3ecf8e" text-anchor="middle" font-family="sans-serif" font-weight="bold">第一层：Magazine（per-thread 无锁 free list）</text>
+      <text x="350" y="58" font-size="9.5" fill="#8892a4" text-anchor="middle" font-family="sans-serif">每线程维护各 size class 的空闲链表，已知大小直接取用，缓存适应锁竞争场景</text>
+
+      <!-- 层2 -->
+      <rect x="20" y="84" width="660" height="48" rx="8" fill="rgba(91,141,238,0.1)" stroke="#5b8dee"/>
+      <text x="350" y="104" font-size="11" fill="#5b8dee" text-anchor="middle" font-family="sans-serif" font-weight="bold">第二层：Slab 管理（posix_memalign 对齐分配）</text>
+      <text x="350" y="122" font-size="9.5" fill="#8892a4" text-anchor="middle" font-family="sans-serif">等大小块从对齐的 slab 区域分配，cache colorization 分散地址，提升 CPU cache 命中率</text>
+
+      <!-- 层3 -->
+      <rect x="20" y="148" width="660" height="40" rx="8" fill="rgba(245,166,35,0.08)" stroke="#f5a623" stroke-dasharray="5,3"/>
+      <text x="350" y="165" font-size="11" fill="#f5a623" text-anchor="middle" font-family="sans-serif" font-weight="bold">第三层：系统 malloc() 回退</text>
+      <text x="350" y="180" font-size="9.5" fill="#8892a4" text-anchor="middle" font-family="sans-serif">大块（超阈值）直接委托给 glibc malloc，不走 slice 路径</text>
+    </svg>
+  </div>
+
+  <h3>关键特性</h3>
+  <ul>
+    <li><strong>Cache colorization（缓存着色）：</strong>对齐约束产生的 padding 字节被用于随机化对象起始地址，避免多个对象共享同一 CPU cache 行（官方原文："Memory that is unused due to alignment constraints is used for cache colorization"）</li>
+    <li><strong>无 per-block overhead：</strong>与 malloc 不同，Slice Allocator 不在每个块前储存元数据，节省空间（官方："unlike malloc(), it does not reserve extra space per block"）</li>
+    <li>最小分配 <strong>2 × sizeof(void*)</strong>，适合节点类小对象</li>
+    <li><code>g_slice_alloc(size)</code> / <code>g_slice_free1(size, ptr)</code>：分配时须提供大小，释放时也须提供大小（因无 per-block header）</li>
+    <li>环境变量 <code>G_SLICE=always-malloc</code> 可强制回退到 glibc malloc（调试用）</li>
+  </ul>
+
+  <h3>典型 API 使用</h3>
+  <div class="card">
+    <code style="display:block;white-space:pre;line-height:1.6;font-size:0.82rem;color:#3ecf8e;">/* 分配等大小对象 */
+GRealArray *array = g_slice_new(GRealArray);  /* sizeof(GRealArray) */
+/* 等价于 */
+array = g_slice_alloc(sizeof(GRealArray));
+
+/* 释放时必须提供相同大小 */
+g_slice_free(GRealArray, array);
+g_slice_free1(sizeof(GRealArray), array);</code>
+  </div>
+
+  <div class="pros-cons">
+    <div class="pros">
+      <div class="pros-title">✅ 优势</div>
+      <ul>
+        <li>等大小对象零碎片（内部碎片为零）</li>
+        <li>per-thread 无锁路径，并发性能优异</li>
+        <li>Cache colorization 提升 CPU 利用率</li>
+        <li>无 per-block header 节省内存</li>
+      </ul>
+    </div>
+    <div class="cons">
+      <div class="cons-title">❌ 劣势</div>
+      <ul>
+        <li>只适合等大小对象，不支持 resize</li>
+        <li>释放须记住分配大小（无法像 free() 只传指针）</li>
+        <li>freed 内存暂不归还 OS（有延迟释放）</li>
+        <li>不同大小对象混用效果下降</li>
+      </ul>
+    </div>
+  </div>
+</section>
+
+<!-- ====== APR ====== -->
+<section id="apr">
+  <h2>Apache APR Pool</h2>
+  <div class="source-link">📄 原文参考：<a href="https://github.com/apache/apr/blob/trunk/memory/unix/apr_pools.c" target="_blank">apache/apr apr_pools.c – GitHub</a> &nbsp;|&nbsp; <a href="https://dev.apr.apache.narkive.com/pXZhwGG1/apr-pools-memory-leaks" target="_blank">apr-dev: Memory Leak Analysis 2008</a></div>
+
+  <p>Apache Portable Runtime（APR）的内存管理核心是 <strong>Pool（内存池）</strong> 设计模式——不追踪单个对象的生命周期，而是将内存的存活时间与业务逻辑（请求、连接等）绑定，批量释放。</p>
+
+  <h3>Pool 结构与分配逻辑</h3>
+  <div class="diagram-wrap">
+    <div class="diagram-title">APR Pool 层级与内存节点管理</div>
+    <svg viewBox="0 0 700 230" width="700" height="230" xmlns="http://www.w3.org/2000/svg">
+      <!-- 根池 -->
+      <rect x="270" y="10" width="160" height="44" rx="8" fill="rgba(91,141,238,0.2)" stroke="#5b8dee"/>
+      <text x="350" y="30" font-size="11" fill="#5b8dee" text-anchor="middle" font-family="sans-serif" font-weight="bold">Global Pool（进程级）</text>
+      <text x="350" y="46" font-size="9" fill="#8892a4" text-anchor="middle" font-family="sans-serif">生命周期=进程</text>
+
+      <!-- 连线 -->
+      <line x1="230" y1="68" x2="140" y2="82" stroke="#2e3354" stroke-width="1.2"/>
+      <line x1="350" y1="54" x2="350" y2="82" stroke="#2e3354" stroke-width="1.2"/>
+      <line x1="470" y1="68" x2="560" y2="82" stroke="#2e3354" stroke-width="1.2"/>
+
+      <!-- 子池 -->
+      <rect x="70" y="82" width="140" height="44" rx="8" fill="rgba(124,92,252,0.15)" stroke="#7c5cfc"/>
+      <text x="140" y="102" font-size="10" fill="#7c5cfc" text-anchor="middle" font-family="sans-serif" font-weight="bold">Connection Pool</text>
+      <text x="140" y="116" font-size="9" fill="#8892a4" text-anchor="middle" font-family="sans-serif">生命周期=连接</text>
+
+      <rect x="270" y="82" width="160" height="44" rx="8" fill="rgba(62,207,142,0.15)" stroke="#3ecf8e"/>
+      <text x="350" y="102" font-size="10" fill="#3ecf8e" text-anchor="middle" font-family="sans-serif" font-weight="bold">Request Pool</text>
+      <text x="350" y="116" font-size="9" fill="#8892a4" text-anchor="middle" font-family="sans-serif">生命周期=单次请求</text>
+
+      <rect x="490" y="82" width="140" height="44" rx="8" fill="rgba(245,166,35,0.15)" stroke="#f5a623"/>
+      <text x="560" y="102" font-size="10" fill="#f5a623" text-anchor="middle" font-family="sans-serif" font-weight="bold">Config Pool</text>
+      <text x="560" y="116" font-size="9" fill="#8892a4" text-anchor="middle" font-family="sans-serif">生命周期=配置</text>
+
+      <!-- memnode 区域 -->
+      <rect x="20" y="148" width="660" height="64" rx="8" fill="#22263a" stroke="#2e3354"/>
+      <text x="50" y="168" font-size="10" fill="#8892a4" font-family="sans-serif">apr_memnode_t 链表（按 size index 分桶）：</text>
+      <rect x="40" y="176" width="80" height="26" rx="3" fill="rgba(91,141,238,0.15)" stroke="#5b8dee"/>
+      <text x="80" y="194" font-size="9" fill="#5b8dee" text-anchor="middle" font-family="sans-serif">index=0 (4KB)</text>
+      <rect x="132" y="176" width="80" height="26" rx="3" fill="rgba(91,141,238,0.15)" stroke="#5b8dee"/>
+      <text x="172" y="194" font-size="9" fill="#5b8dee" text-anchor="middle" font-family="sans-serif">index=1 (8KB)</text>
+      <rect x="224" y="176" width="80" height="26" rx="3" fill="rgba(91,141,238,0.15)" stroke="#5b8dee"/>
+      <text x="264" y="194" font-size="9" fill="#5b8dee" text-anchor="middle" font-family="sans-serif">index=2 (12KB)</text>
+      <text x="360" y="194" font-size="11" fill="#5a6478" text-anchor="middle" font-family="sans-serif">…</text>
+      <rect x="400" y="176" width="100" height="26" rx="3" fill="rgba(232,68,90,0.1)" stroke="#e8445a"/>
+      <text x="450" y="194" font-size="9" fill="#e8445a" text-anchor="middle" font-family="sans-serif">MAX_INDEX（sink）</text>
+      <text x="530" y="194" font-size="9.5" fill="#5a6478" font-family="sans-serif">→ 归还 OS 或回收列表</text>
+    </svg>
+  </div>
+
+  <h3>内存节点分配逻辑（源码摘录）</h3>
+  <div class="card">
+    <code style="display:block;white-space:pre;line-height:1.6;font-size:0.81rem;color:#3ecf8e;">/* allocator_free: 按 index 将节点放回对应 size 桶 */
+if (index < MAX_INDEX) {
+    node->next = allocator->free[index];
+    allocator->free[index] = node;   /* LIFO 回收 */
+} else {
+    /* 大块放入 sink（MAX_INDEX），超 max_free_index 则 free() */
+    node->next = allocator->free[MAX_INDEX];
+}
+
+/* 分配时先查当前 active 节点，不足则查 next，
+   保持 active 列表按剩余空间降序排列 */</code>
+    <div class="source-link" style="margin-top:8px;">📄 <a href="https://github.com/apache/apr/blob/trunk/memory/unix/apr_pools.c" target="_blank">apache/apr/memory/unix/apr_pools.c</a></div>
+  </div>
+
+  <h3>碎片化问题（权威来源记录）</h3>
+  <div class="callout callout-warn">
+    <span class="callout-icon">⚠️</span>
+    <div class="callout-content">
+      <strong>Google 工程师分析（2008年，apr-dev 邮件列表原文）：</strong>"In a nutshell, it never recombines recycled memory. ...If I create a subpool that requires 20k, whoops, it just goes and malloc()s 20k from the OS, rather than combining four adjacent blocks from the 'free' list."
+      <br>—— <a href="https://dev.apr.apache.narkive.com/pXZhwGG1/apr-pools-memory-leaks" target="_blank">apr-dev 邮件列表 2008-10</a>
+      <br><br>
+      APR 的 <code>max_free_index</code>（对应 httpd 的 <code>MaxMemFree</code> 指令）本意是限制回收列表大小，但 Google 发现它在实际中"didn't seem to work"，导致长期运行进程持续泄漏。
+    </div>
+  </div>
+
+  <h3>典型使用模式</h3>
+  <div class="card">
+    <code style="display:block;white-space:pre;line-height:1.6;font-size:0.81rem;color:#3ecf8e;">apr_pool_t *mp;
+apr_pool_create(&mp, NULL);    /* 创建池 */
+
+char *buf1 = apr_palloc(mp, 512);   /* 从池分配 */
+char *buf2 = apr_palloc(mp, 1024);
+
+/* 请求结束：销毁整个池，一次性释放所有 */
+apr_pool_destroy(mp);
+
+/* 或只清空（保留底层节点供复用）*/
+apr_pool_clear(mp);</code>
+  </div>
+
+  <div class="pros-cons">
+    <div class="pros">
+      <div class="pros-title">✅ 优势</div>
+      <ul>
+        <li>短生命周期场景零碎片（批量释放）</li>
+        <li>简化程序员内存管理，无需逐一 free</li>
+        <li>内存局部性好，pool 内分配连续</li>
+        <li>子池继承父池生命周期，层级清晰</li>
+      </ul>
+    </div>
+    <div class="cons">
+      <div class="cons-title">❌ 劣势</div>
+      <ul>
+        <li>不合并回收的碎块，长期运行碎片积累</li>
+        <li>无法细粒度释放单个对象</li>
+        <li>pool 内已分配内存提前无法回收</li>
+        <li>MaxMemFree 限制实际效果存疑</li>
+      </ul>
+    </div>
+  </div>
+</section>
+
+<!-- ====== LIBUV ====== -->
+<section id="libuv">
+  <h2>libuv 内存管理</h2>
+  <div class="source-link">📄 原文参考：<a href="https://docs.libuv.org/en/v1.x/misc.html" target="_blank">libuv Miscellaneous utilities – docs.libuv.org</a> &nbsp;|&nbsp; <a href="https://github.com/libuv/libuv/blob/v1.x/docs/src/misc.rst" target="_blank">libuv misc.rst – GitHub</a></div>
+
+  <p>libuv 是跨平台异步 I/O 库（Node.js 底层），其内存管理策略与前面几个项目不同——它<strong>不自己实现分配算法</strong>，而是提供标准化的<strong>分配器替换接口</strong>，将内存策略的选择权交给用户。</p>
+
+  <h3>核心接口：uv_replace_allocator</h3>
+  <div class="callout callout-info">
+    <span class="callout-icon">📌</span>
+    <div class="callout-content">
+      <strong>官方文档原文（v1.6.0+）：</strong>"Override the use of the standard library's <code>malloc(3)</code>, <code>calloc(3)</code>, <code>realloc(3)</code>, <code>free(3)</code>, memory allocation functions. This function must be called before any other libuv function is called or after all resources have been freed and thus libuv doesn't reference any allocated memory chunk."
+      <br>— <a href="https://docs.libuv.org/en/v1.x/misc.html" target="_blank">libuv 官方文档</a>
+    </div>
+  </div>
+
+  <div class="card">
+    <code style="display:block;white-space:pre;line-height:1.6;font-size:0.82rem;color:#3ecf8e;">/* 自定义分配器替换 libuv 内部所有 malloc/free */
+int uv_replace_allocator(
+    uv_malloc_func  malloc_func,
+    uv_realloc_func realloc_func,
+    uv_calloc_func  calloc_func,
+    uv_free_func    free_func
+);
+/* 返回 0 成功，UV_EINVAL 若有 NULL 指针 */
+/* 警告：分配器必须线程安全 */</code>
+    <div class="source-link" style="margin-top:8px;">📄 <a href="https://docs.libuv.org/en/v1.x/misc.html" target="_blank">docs.libuv.org/en/v1.x/misc.html</a></div>
+  </div>
+
+  <h3>Buffer 分配模式</h3>
+  <p>libuv 的 I/O 读操作通过 <code>alloc_callback</code> 让用户控制 Buffer 的分配，典型模式是配合自定义 buffer pool 复用缓冲区：</p>
+  <div class="card">
+    <code style="display:block;white-space:pre;line-height:1.6;font-size:0.82rem;color:#3ecf8e;">/* 用户提供缓冲区，libuv 不强制 malloc */
+void alloc_cb(uv_handle_t *handle, size_t suggested_size, uv_buf_t *buf) {
+    /* 从自定义 pool 获取缓冲区，避免频繁 malloc */
+    void *ptr = bufpool_acquire(handle->loop->data, &suggested_size);
+    *buf = uv_buf_init(ptr, suggested_size);
+}</code>
+    <div class="source-link" style="margin-top:8px;">📄 参考：<a href="https://stackoverflow.com/questions/28511541/libuv-allocated-memory-buffers-re-use-techniques" target="_blank">StackOverflow: libuv buffer reuse</a></div>
+  </div>
+
+  <h3>设计哲学</h3>
+  <div class="diagram-wrap">
+    <div class="diagram-title">libuv 内存策略设计思路</div>
+    <svg viewBox="0 0 700 130" width="700" height="130" xmlns="http://www.w3.org/2000/svg">
+      <rect x="20" y="20" width="200" height="90" rx="8" fill="rgba(62,207,142,0.08)" stroke="#3ecf8e"/>
+      <text x="120" y="45" font-size="10" fill="#3ecf8e" text-anchor="middle" font-family="sans-serif" font-weight="bold">默认行为</text>
+      <text x="120" y="62" font-size="9" fill="#8892a4" text-anchor="middle" font-family="sans-serif">使用系统 malloc/free</text>
+      <text x="120" y="78" font-size="9" fill="#8892a4" text-anchor="middle" font-family="sans-serif">行为由底层 glibc/</text>
+      <text x="120" y="93" font-size="9" fill="#8892a4" text-anchor="middle" font-family="sans-serif">jemalloc 决定</text>
+
+      <text x="260" y="68" font-size="18" fill="#5b8dee" text-anchor="middle" font-family="sans-serif">→</text>
+
+      <rect x="290" y="20" width="200" height="90" rx="8" fill="rgba(91,141,238,0.08)" stroke="#5b8dee"/>
+      <text x="390" y="45" font-size="10" fill="#5b8dee" text-anchor="middle" font-family="sans-serif" font-weight="bold">uv_replace_allocator</text>
+      <text x="390" y="62" font-size="9" fill="#8892a4" text-anchor="middle" font-family="sans-serif">注入 jemalloc/tcmalloc</text>
+      <text x="390" y="78" font-size="9" fill="#8892a4" text-anchor="middle" font-family="sans-serif">或自定义 pool</text>
+      <text x="390" y="93" font-size="9" fill="#5a6478" text-anchor="middle" font-family="sans-serif">（Node.js 线上常见做法）</text>
+
+      <text x="530" y="68" font-size="18" fill="#5b8dee" text-anchor="middle" font-family="sans-serif">+</text>
+
+      <rect x="550" y="20" width="130" height="90" rx="8" fill="rgba(245,166,35,0.08)" stroke="#f5a623"/>
+      <text x="615" y="45" font-size="10" fill="#f5a623" text-anchor="middle" font-family="sans-serif" font-weight="bold">alloc_callback</text>
+      <text x="615" y="62" font-size="9" fill="#8892a4" text-anchor="middle" font-family="sans-serif">Buffer Pool 复用</text>
+      <text x="615" y="78" font-size="9" fill="#8892a4" text-anchor="middle" font-family="sans-serif">减少 I/O 分配</text>
+      <text x="615" y="93" font-size="9" fill="#8892a4" text-anchor="middle" font-family="sans-serif">碎片化</text>
+    </svg>
+  </div>
+
+  <div class="pros-cons">
+    <div class="pros">
+      <div class="pros-title">✅ 优势</div>
+      <ul>
+        <li>极度灵活，可注入任意分配器</li>
+        <li>不绑定具体内存策略，适应性强</li>
+        <li>Buffer 回调模式支持零拷贝池化</li>
+        <li>库本身内存占用极小</li>
+      </ul>
+    </div>
+    <div class="cons">
+      <div class="cons-title">❌ 劣势</div>
+      <ul>
+        <li>默认不解决碎片问题（依赖底层）</li>
+        <li>分配器必须全局替换，粒度粗</li>
+        <li>替换后不能再次更改（有残留风险）</li>
+        <li>需用户自行设计 buffer pool</li>
+      </ul>
+    </div>
+  </div>
+</section>
+
+<!-- ====== JEMALLOC ====== -->
+<section id="jemalloc">
+  <h2>jemalloc</h2>
+  <div class="source-link">📄 原文参考：<a href="https://sites.google.com/site/developersremarks/scalable-memory-allocation-using-jemalloc" target="_blank">Scalable memory allocation using jemalloc – Facebook/Developer's Remarks</a></div>
+
+  <p>jemalloc 最初由 Jason Evans 为 FreeBSD libc 开发，后被 Facebook 大规模采用并持续优化。Redis 默认使用 jemalloc，Firefox 也嵌入了 jemalloc。</p>
+
+  <div class="callout callout-info">
+    <span class="callout-icon">📌</span>
+    <div class="callout-content">
+      <strong>设计原则（官方原文）：</strong>"Segregate small objects according to size class, and prefer low addresses during re-use. This layout policy originated in phkmalloc, and is the key to jemalloc's predictable low fragmentation behavior."
+      <br>— <a href="https://sites.google.com/site/developersremarks/scalable-memory-allocation-using-jemalloc" target="_blank">jemalloc 设计文档</a>
+    </div>
+  </div>
+
+  <h3>三级大小分类与 Arena 体系</h3>
+  <div class="diagram-wrap">
+    <div class="diagram-title">jemalloc 内存布局：Arena → Chunk → Run → Object</div>
+    <svg viewBox="0 0 700 230" width="700" height="230" xmlns="http://www.w3.org/2000/svg">
+      <!-- Small -->
+      <rect x="15" y="20" width="200" height="90" rx="8" fill="rgba(62,207,142,0.08)" stroke="#3ecf8e"/>
+      <text x="115" y="40" font-size="10.5" fill="#3ecf8e" text-anchor="middle" font-family="sans-serif" font-weight="bold">Small Objects</text>
+      <text x="115" y="56" font-size="9" fill="#8892a4" text-anchor="middle" font-family="sans-serif">[8B], [16,32,...,128B]</text>
+      <text x="115" y="70" font-size="9" fill="#8892a4" text-anchor="middle" font-family="sans-serif">[192,256,...,512B]</text>
+      <text x="115" y="84" font-size="9" fill="#8892a4" text-anchor="middle" font-family="sans-serif">[768,1024,...,3840B]</text>
+      <text x="115" y="100" font-size="9" fill="#5a6478" text-anchor="middle" font-family="sans-serif">Slab 管理，O(1) 元数据</text>
+
+      <!-- Large -->
+      <rect x="250" y="20" width="200" height="90" rx="8" fill="rgba(91,141,238,0.08)" stroke="#5b8dee"/>
+      <text x="350" y="40" font-size="10.5" fill="#5b8dee" text-anchor="middle" font-family="sans-serif" font-weight="bold">Large Objects</text>
+      <text x="350" y="56" font-size="9" fill="#8892a4" text-anchor="middle" font-family="sans-serif">[4KiB, 8KiB, ..., 4072KiB]</text>
+      <text x="350" y="72" font-size="9" fill="#8892a4" text-anchor="middle" font-family="sans-serif">整页对齐，run 管理</text>
+      <text x="350" y="88" font-size="9" fill="#5a6478" text-anchor="middle" font-family="sans-serif">O(1) 元数据查找</text>
+
+      <!-- Huge -->
+      <rect x="485" y="20" width="200" height="90" rx="8" fill="rgba(245,166,35,0.08)" stroke="#f5a623"/>
+      <text x="585" y="40" font-size="10.5" fill="#f5a623" text-anchor="middle" font-family="sans-serif" font-weight="bold">Huge Objects</text>
+      <text x="585" y="56" font-size="9" fill="#8892a4" text-anchor="middle" font-family="sans-serif">[4MiB, 8MiB, ...]</text>
+      <text x="585" y="72" font-size="9" fill="#8892a4" text-anchor="middle" font-family="sans-serif">直接 mmap</text>
+      <text x="585" y="88" font-size="9" fill="#5a6478" text-anchor="middle" font-family="sans-serif">全局红黑树，O(log n)</text>
+
+      <!-- Arena -->
+      <rect x="100" y="136" width="500" height="46" rx="8" fill="rgba(124,92,252,0.08)" stroke="#7c5cfc"/>
+      <text x="350" y="156" font-size="11" fill="#7c5cfc" text-anchor="middle" font-family="sans-serif" font-weight="bold">多 Arena（线程 round-robin 分配）</text>
+      <text x="350" y="172" font-size="9.5" fill="#8892a4" text-anchor="middle" font-family="sans-serif">每个 Arena 独立锁，减少竞争 · 默认 Arena 数 = 4×CPU核数</text>
+
+      <!-- Tcache -->
+      <rect x="170" y="198" width="360" height="26" rx="6" fill="rgba(62,207,142,0.08)" stroke="#3ecf8e" stroke-dasharray="4,2"/>
+      <text x="350" y="215" font-size="10" fill="#3ecf8e" text-anchor="middle" font-family="sans-serif">Thread Cache（tcache）：小对象无锁快速路径</text>
+    </svg>
+  </div>
+
+  <h3>碎片化控制机制</h3>
+  <ul>
+    <li><strong>Size class 精细分级：</strong>减少内部碎片，官方承诺元数据开销小于总内存的 2%（原文："jemalloc limits metadata to less than 2% of total memory usage"）</li>
+    <li><strong>低地址优先复用：</strong>释放后优先从低地址重新分配，使活跃内存集中在少数页，减少 RSS 和 swap 压力</li>
+    <li><strong>Dirty page purging：</strong>脏页衰减释放（<code>dirty_decay_ms</code>）和 muzzy page（<code>muzzy_decay_ms</code>），异步将空闲页通过 <code>madvise(MADV_FREE)</code> 归还 OS</li>
+    <li><strong>背景线程：</strong>jemalloc 5.x 支持 <code>background_thread</code>，后台异步 purge，避免主线程延迟</li>
+    <li><strong>Arena 互斥细化：</strong>针对每个 small size class 各加一把锁，原文："we added one mutex per small size class"，消除 mmap/munmap 时的大粒度锁阻塞</li>
+  </ul>
+
+  <h3>Redis 中的实际表现</h3>
+  <div class="callout callout-tip">
+    <span class="callout-icon">💡</span>
+    <div class="callout-content">
+      Redis 使用 jemalloc 时，<code>mem_fragmentation_ratio = used_memory_rss / used_memory</code>，正常应维持在 <strong>1.0–1.25</strong>。系统 malloc 在长期运行后常见 <strong>2–5</strong>。Redis 4.0+ 的 <code>activedefrag yes</code> 配合 jemalloc 可主动迁移碎片化对象。来源：<a href="https://oneuptime.com/blog/post/2026-03-31-redis-jemalloc-memory-allocator/view" target="_blank">Redis jemalloc 分析 2026</a>
+    </div>
+  </div>
+
+  <div class="pros-cons">
+    <div class="pros">
+      <div class="pros-title">✅ 优势</div>
+      <ul>
+        <li>多核扩展性强，arena 减少竞争</li>
+        <li>碎片率低且可预测</li>
+        <li>后台 purge 主动释放 OS 内存</li>
+        <li>详细统计 API（mallctl）</li>
+        <li>生产级别，FreeBSD/Redis/Firefox 验证</li>
+      </ul>
+    </div>
+    <div class="cons">
+      <div class="cons-title">❌ 劣势</div>
+      <ul>
+        <li>小对象元数据比 tcmalloc 略多</li>
+        <li>背景线程在 fork 场景有语义风险</li>
+        <li>配置项复杂，需调优</li>
+        <li>RSS 短暂比 tcmalloc 高（tcache 延迟返还）</li>
+      </ul>
+    </div>
+  </div>
+</section>
+
+<!-- ====== TCMALLOC ====== -->
+<section id="tcmalloc">
+  <h2>tcmalloc（Google）</h2>
+  <div class="source-link">📄 原文参考：<a href="https://beefed.ai/en/choose-memory-allocator-jemalloc-tcmalloc-mimalloc" target="_blank">jemalloc vs tcmalloc vs mimalloc 对比 2025</a> &nbsp;|&nbsp; <a href="https://www.kunalganglani.com/blog/jemalloc-vs-malloc-tcmalloc-p99-latency" target="_blank">P99 Latency 深度分析 2026</a></div>
+
+  <p>tcmalloc（Thread-Caching Malloc）是 Google 开发的高性能分配器，其核心思想是：<strong>给每个线程一个独立的本地缓存</strong>，使小对象分配完全无锁。</p>
+
+  <h3>架构：Thread Cache + Central Heap</h3>
+  <div class="diagram-wrap">
+    <div class="diagram-title">tcmalloc 三层分配架构</div>
+    <svg viewBox="0 0 700 190" width="700" height="190" xmlns="http://www.w3.org/2000/svg">
+      <!-- Thread caches -->
+      <rect x="10" y="10" width="680" height="60" rx="8" fill="rgba(62,207,142,0.08)" stroke="#3ecf8e"/>
+      <text x="350" y="30" font-size="11" fill="#3ecf8e" text-anchor="middle" font-family="sans-serif" font-weight="bold">Thread-local Cache（每线程独立，零锁竞争）</text>
+      <!-- Per-thread slots -->
+      <rect x="30" y="38" width="100" height="24" rx="3" fill="rgba(62,207,142,0.15)" stroke="#3ecf8e"/>
+      <text x="80" y="54" font-size="9" fill="#3ecf8e" text-anchor="middle" font-family="sans-serif">Thread-1 Cache</text>
+      <rect x="145" y="38" width="100" height="24" rx="3" fill="rgba(62,207,142,0.15)" stroke="#3ecf8e"/>
+      <text x="195" y="54" font-size="9" fill="#3ecf8e" text-anchor="middle" font-family="sans-serif">Thread-2 Cache</text>
+      <rect x="260" y="38" width="100" height="24" rx="3" fill="rgba(62,207,142,0.15)" stroke="#3ecf8e"/>
+      <text x="310" y="54" font-size="9" fill="#3ecf8e" text-anchor="middle" font-family="sans-serif">Thread-3 Cache</text>
+      <text x="420" y="54" font-size="11" fill="#5a6478" text-anchor="start" font-family="sans-serif">…（每线程 LIFO 链表，按 size class）</text>
+
+      <!-- 箭头 -->
+      <line x1="350" y1="70" x2="350" y2="84" stroke="#5b8dee" stroke-width="1.5" marker-end="url(#arr)"/>
+      <text x="460" y="80" font-size="9" fill="#5a6478" font-family="sans-serif">cache miss / 超限归还</text>
+
+      <!-- Central heap -->
+      <rect x="100" y="90" width="500" height="46" rx="8" fill="rgba(91,141,238,0.08)" stroke="#5b8dee"/>
+      <text x="350" y="110" font-size="11" fill="#5b8dee" text-anchor="middle" font-family="sans-serif" font-weight="bold">Central Free List（span 管理，含锁）</text>
+      <text x="350" y="126" font-size="9.5" fill="#8892a4" text-anchor="middle" font-family="sans-serif">按 size class 维护 span 链表，批量向线程 cache 补充或回收</text>
+
+      <!-- 箭头 -->
+      <line x1="350" y1="136" x2="350" y2="150" stroke="#5b8dee" stroke-width="1.5" marker-end="url(#arr)"/>
+
+      <!-- Page heap -->
+      <rect x="180" y="156" width="340" height="30" rx="8" fill="rgba(245,166,35,0.08)" stroke="#f5a623"/>
+      <text x="350" y="175" font-size="10.5" fill="#f5a623" text-anchor="middle" font-family="sans-serif">Page Heap（mmap，按页管理大对象）</text>
+    </svg>
+  </div>
+
+  <h3>碎片化控制</h3>
+  <ul>
+    <li><strong>size class 设计：</strong>小对象按精细 size class 分类，减少内部碎片；size class 间距离约 12%，最坏情况内部碎片 ~12%</li>
+    <li><strong>Thread cache GC：</strong>当线程 cache 超过 <code>TCMALLOC_MAX_TOTAL_THREAD_CACHE_BYTES</code>（默认 32MB），触发 GC 将 cache 中的对象归还 Central Heap</li>
+    <li><strong>Span 合并：</strong>page heap 层相邻空闲 span 合并，减少外部碎片</li>
+    <li><strong>Temeraire（hugepage-aware）：</strong>现代 tcmalloc 加入 Temeraire 组件，优化 hugepage 覆盖，减少 TLB miss</li>
+  </ul>
+
+  <div class="callout callout-info">
+    <span class="callout-icon">📌</span>
+    <div class="callout-content">
+      <strong>线程 cache 与碎片的权衡（原文）：</strong>"tcmalloc trades higher memory usage for speed, since each thread holds its own cache that may sit partially unused"
+      <br>Cloudflare 在 RocksDB 场景切换 tcmalloc 后，RSS 下降约 2.5×。
+      <br>来源：<a href="https://beefed.ai/en/choose-memory-allocator-jemalloc-tcmalloc-mimalloc" target="_blank">beefed.ai 2025</a>
+    </div>
+  </div>
+
+  <div class="pros-cons">
+    <div class="pros">
+      <div class="pros-title">✅ 优势</div>
+      <ul>
+        <li>小对象分配几乎零锁，延迟最低</li>
+        <li>Google 超大规模生产验证</li>
+        <li>Temeraire hugepage 支持，减少 TLB miss</li>
+        <li>Heap profiler 内置，分析方便</li>
+      </ul>
+    </div>
+    <div class="cons">
+      <div class="cons-title">❌ 劣势</div>
+      <ul>
+        <li>线程 cache 保留内存导致 RSS 偏高</li>
+        <li>线程频繁创建销毁时 cache 频繁 flush</li>
+        <li>TCMALLOC_MAX_TOTAL_THREAD_CACHE_BYTES 需调优</li>
+        <li>多 arena 场景不如 jemalloc 扩展</li>
+      </ul>
+    </div>
+  </div>
+</section>
+
+<!-- ====== KERNEL SLUB ====== -->
+<section id="kernel">
+  <h2>Linux Kernel SLUB 分配器</h2>
+  <div class="source-link">📄 原文参考：<a href="https://lwn.net/Articles/229096/" target="_blank">SLUB: The unqueued slab allocator V6 – LWN.net (Christoph Lameter, 2007)</a> &nbsp;|&nbsp; <a href="https://github.com/PaoloMonti42/salt/blob/master/docs/0x00_SLUB_refresher.md" target="_blank">SLUB 深度解析</a></div>
+
+  <p>SLUB 于 Linux 2.6.23（2007年）成为内核默认 slab 分配器，并于 Linux 6.8（2024年）成为<strong>唯一</strong>通用 slab 分配器（SLAB 已移除，SLOB 于 6.4 移除）。</p>
+
+  <h3>SLUB vs SLAB 核心改进（原文摘录）</h3>
+  <div class="card">
+    <p style="font-size:0.85rem;color:var(--text-muted);margin-bottom:14px;">以下为 Christoph Lameter 在 LWN 原始 patch 中描述的改进，引自 <a href="https://lwn.net/Articles/229096/" target="_blank">lwn.net/Articles/229096</a>：</p>
+    <ul style="font-size:0.85rem;">
+      <li><strong>A. 无对象队列：</strong>SLAB 有复杂的 per-node/per-CPU 队列，SLUB 直接从 per-CPU slab 取对象，无需队列管理</li>
+      <li><strong>B. 队列存储开销消除：</strong>SLAB 在 1k 节点/处理器系统上，光队列引用就占用数 GB 内存。SLUB 无此问题</li>
+      <li><strong>C. 元数据零 overhead：</strong>SLAB 在每个 slab 开头存元数据，导致对象无法自然对齐。SLUB 将元数据存于 <code>page_struct</code>，128B 对象可完美填充 4K 页无浪费</li>
+      <li><strong>F. 全局 partial slab 池：</strong>SLAB 的 per-node partial 列表难以跨节点复用。SLUB 维护全局 partial slab 池，"will consume slabs from that pool to decrease fragmentation"</li>
+      <li><strong>G. Slab 合并：</strong>SLUB 启动时检测参数相同的 slab cache 并合并，"About 50% of all caches can be eliminated through slab merging. This will also decrease slab fragmentation because partial allocated slabs can be filled up again."</li>
+    </ul>
+  </div>
+
+  <h3>SLUB 核心数据结构</h3>
+  <div class="diagram-wrap">
+    <div class="diagram-title">SLUB 分配路径：kmem_cache_cpu → kmem_cache_node → 新 Slab</div>
+    <svg viewBox="0 0 700 190" width="700" height="190" xmlns="http://www.w3.org/2000/svg">
+      <!-- CPU slot -->
+      <rect x="20" y="20" width="200" height="70" rx="8" fill="rgba(62,207,142,0.1)" stroke="#3ecf8e"/>
+      <text x="120" y="42" font-size="10.5" fill="#3ecf8e" text-anchor="middle" font-family="sans-serif" font-weight="bold">kmem_cache_cpu</text>
+      <text x="120" y="58" font-size="9.5" fill="#8892a4" text-anchor="middle" font-family="sans-serif">当前 CPU 活跃 slab</text>
+      <text x="120" y="72" font-size="9" fill="#5a6478" text-anchor="middle" font-family="sans-serif">freelist 指针（无锁路径）</text>
+      <text x="120" y="84" font-size="9" fill="#5a6478" text-anchor="middle" font-family="sans-serif">per-CPU 私有</text>
+
+      <text x="240" y="62" font-size="14" fill="#5b8dee" text-anchor="middle" font-family="sans-serif">→</text>
+      <text x="240" y="76" font-size="9" fill="#5a6478" text-anchor="middle" font-family="sans-serif">miss</text>
+
+      <!-- Node partial -->
+      <rect x="260" y="20" width="200" height="70" rx="8" fill="rgba(91,141,238,0.1)" stroke="#5b8dee"/>
+      <text x="360" y="42" font-size="10.5" fill="#5b8dee" text-anchor="middle" font-family="sans-serif" font-weight="bold">kmem_cache_node</text>
+      <text x="360" y="58" font-size="9.5" fill="#8892a4" text-anchor="middle" font-family="sans-serif">partial slab 全局列表</text>
+      <text x="360" y="72" font-size="9" fill="#5a6478" text-anchor="middle" font-family="sans-serif">跨 CPU 复用，需 spinlock</text>
+      <text x="360" y="84" font-size="9" fill="#5a6478" text-anchor="middle" font-family="sans-serif">减少 slab 碎片</text>
+
+      <text x="480" y="62" font-size="14" fill="#5b8dee" text-anchor="middle" font-family="sans-serif">→</text>
+      <text x="480" y="76" font-size="9" fill="#5a6478" text-anchor="middle" font-family="sans-serif">空</text>
+
+      <!-- New slab -->
+      <rect x="500" y="20" width="180" height="70" rx="8" fill="rgba(245,166,35,0.1)" stroke="#f5a623"/>
+      <text x="590" y="42" font-size="10.5" fill="#f5a623" text-anchor="middle" font-family="sans-serif" font-weight="bold">新 Slab 分配</text>
+      <text x="590" y="58" font-size="9.5" fill="#8892a4" text-anchor="middle" font-family="sans-serif">调用 Buddy 系统</text>
+      <text x="590" y="72" font-size="9" fill="#5a6478" text-anchor="middle" font-family="sans-serif">获取新页面</text>
+
+      <!-- slab 内部结构 -->
+      <rect x="20" y="110" width="660" height="70" rx="8" fill="#22263a" stroke="#2e3354"/>
+      <text x="40" y="130" font-size="10" fill="#8892a4" font-family="sans-serif">Slab 内部：对象连续存储，free 对象通过内嵌 next 指针链接（SLUB 无额外 metadata，100% 利用率）</text>
+      <!-- Object slots -->
+      <rect x="40" y="138" width="50" height="30" rx="3" fill="rgba(62,207,142,0.2)" stroke="#3ecf8e"/>
+      <text x="65" y="158" font-size="9" fill="#3ecf8e" text-anchor="middle" font-family="sans-serif">obj[0]</text>
+      <rect x="100" y="138" width="50" height="30" rx="3" fill="rgba(62,207,142,0.2)" stroke="#3ecf8e"/>
+      <text x="125" y="158" font-size="9" fill="#3ecf8e" text-anchor="middle" font-family="sans-serif">obj[1]</text>
+      <rect x="160" y="138" width="50" height="30" rx="3" fill="url(#hatch)" stroke="#5a6478"/>
+      <text x="185" y="158" font-size="9" fill="#8892a4" text-anchor="middle" font-family="sans-serif">free</text>
+      <rect x="220" y="138" width="50" height="30" rx="3" fill="rgba(62,207,142,0.2)" stroke="#3ecf8e"/>
+      <text x="245" y="158" font-size="9" fill="#3ecf8e" text-anchor="middle" font-family="sans-serif">obj[3]</text>
+      <rect x="280" y="138" width="50" height="30" rx="3" fill="url(#hatch)" stroke="#5a6478"/>
+      <text x="305" y="158" font-size="9" fill="#8892a4" text-anchor="middle" font-family="sans-serif">free→</text>
+      <text x="390" y="155" font-size="9" fill="#5a6478" text-anchor="middle" font-family="sans-serif">… 空闲对象内嵌 next 指针，无额外空间开销</text>
+    </svg>
+  </div>
+
+  <h3>核心 API</h3>
+  <div class="card">
+    <code style="display:block;white-space:pre;line-height:1.6;font-size:0.82rem;color:#3ecf8e;">/* 创建 cache（对象类型专属分配器） */
+struct kmem_cache *kmem_cache_create(
+    const char *name, size_t size, size_t align,
+    unsigned long flags, void (*ctor)(void *));
+
+/* 分配/释放 */
+void *kmem_cache_alloc(struct kmem_cache *c, gfp_t flags);
+void  kmem_cache_free(struct kmem_cache *c, void *obj);
+
+/* 通用小对象（kmalloc 系列） */
+void *kmalloc(size_t size, gfp_t flags);
+void  kfree(const void *ptr);</code>
+  </div>
+
+  <div class="pros-cons">
+    <div class="pros">
+      <div class="pros-title">✅ 优势</div>
+      <ul>
+        <li>对象级零内部碎片（等大小对象）</li>
+        <li>slab 合并消除约 50% 冗余 cache</li>
+        <li>全局 partial 池减少外部碎片</li>
+        <li>无 per-slab metadata，对齐完美</li>
+        <li>调试支持（slab_debug，redzoning）</li>
+      </ul>
+    </div>
+    <div class="cons">
+      <div class="cons-title">❌ 劣势</div>
+      <ul>
+        <li>仅适用于内核态（用户态不可用）</li>
+        <li>固定对象大小，不支持变长分配</li>
+        <li>slab 合并可能隐藏内存损坏 bug</li>
+        <li>partial slab 本身带来一定碎片</li>
+      </ul>
+    </div>
+  </div>
+</section>
+
+<!-- ====== COMPARISON ====== -->
+<section id="comparison">
+  <h2>横向对比</h2>
+
+  <div class="diagram-wrap">
+    <div class="diagram-title">各项目碎片化控制能力雷达图（满分5分）</div>
+    <svg viewBox="0 0 600 380" width="600" height="380" xmlns="http://www.w3.org/2000/svg">
+      <defs>
+        <style>.radar-label { font-size: 11px; font-family: sans-serif; fill: #8892a4; }</style>
+      </defs>
+      <!-- 背景网格 -->
+      <g transform="translate(300,190)">
+        <!-- 5层六边形网格 -->
+        <polygon points="0,-120 103.9,-60 103.9,60 0,120 -103.9,60 -103.9,-60" fill="none" stroke="#2e3354" stroke-width="0.8"/>
+        <polygon points="0,-96 83.1,-48 83.1,48 0,96 -83.1,48 -83.1,-48" fill="none" stroke="#2e3354" stroke-width="0.8"/>
+        <polygon points="0,-72 62.4,-36 62.4,36 0,72 -62.4,36 -62.4,-36" fill="none" stroke="#2e3354" stroke-width="0.8"/>
+        <polygon points="0,-48 41.6,-24 41.6,24 0,48 -41.6,24 -41.6,-24" fill="none" stroke="#2e3354" stroke-width="0.8"/>
+        <polygon points="0,-24 20.8,-12 20.8,12 0,24 -20.8,12 -20.8,-12" fill="none" stroke="#2e3354" stroke-width="0.5"/>
+        <!-- 轴线 -->
+        <line x1="0" y1="0" x2="0" y2="-120" stroke="#2e3354" stroke-width="0.8"/>
+        <line x1="0" y1="0" x2="103.9" y2="-60" stroke="#2e3354" stroke-width="0.8"/>
+        <line x1="0" y1="0" x2="103.9" y2="60" stroke="#2e3354" stroke-width="0.8"/>
+        <line x1="0" y1="0" x2="0" y2="120" stroke="#2e3354" stroke-width="0.8"/>
+        <line x1="0" y1="0" x2="-103.9" y2="60" stroke="#2e3354" stroke-width="0.8"/>
+        <line x1="0" y1="0" x2="-103.9" y2="-60" stroke="#2e3354" stroke-width="0.8"/>
+        <!-- 轴标签 -->
+        <text x="0" y="-130" class="radar-label" text-anchor="middle">内部碎片控制</text>
+        <text x="116" y="-66" class="radar-label" text-anchor="start">外部碎片控制</text>
+        <text x="116" y="72" class="radar-label" text-anchor="start">多线程扩展性</text>
+        <text x="0" y="140" class="radar-label" text-anchor="middle">分配速度</text>
+        <text x="-116" y="72" class="radar-label" text-anchor="end">内存归还 OS</text>
+        <text x="-116" y="-66" class="radar-label" text-anchor="end">调试可观测性</text>
+
+        <!-- jemalloc: [5,4,5,4,5,4] -->
+        <polygon points="0,-120 83.1,-48 83.1,48 0,96 -103.9,60 -83.1,-48"
+          fill="rgba(62,207,142,0.15)" stroke="#3ecf8e" stroke-width="2"/>
+        <!-- glibc: [3,3,3,4,3,4] -->
+        <polygon points="0,-72 62.4,-36 62.4,36 0,96 -62.4,36 -83.1,-48"
+          fill="rgba(91,141,238,0.1)" stroke="#5b8dee" stroke-width="1.5" stroke-dasharray="4,2"/>
+        <!-- tcmalloc: [4,3,5,5,3,4] -->
+        <polygon points="0,-96 62.4,-36 103.9,60 0,120 -62.4,36 -83.1,-48"
+          fill="rgba(245,166,35,0.08)" stroke="#f5a623" stroke-width="1.5" stroke-dasharray="3,3"/>
+        <!-- APR: [5,1,2,5,2,2] -->
+        <polygon points="0,-120 20.8,-12 41.6,24 0,48 -41.6,24 -41.6,-24"
+          fill="rgba(232,68,90,0.08)" stroke="#e8445a" stroke-width="1.5" stroke-dasharray="2,4"/>
+      </g>
+      <!-- 图例 -->
+      <rect x="20" y="330" width="12" height="4" rx="2" fill="#3ecf8e"/>
+      <text x="38" y="338" font-size="11" fill="#8892a4" font-family="sans-serif">jemalloc</text>
+      <rect x="110" y="330" width="12" height="4" rx="2" fill="#5b8dee"/>
+      <text x="128" y="338" font-size="11" fill="#8892a4" font-family="sans-serif">glibc ptmalloc2</text>
+      <rect x="240" y="330" width="12" height="4" rx="2" fill="#f5a623"/>
+      <text x="258" y="338" font-size="11" fill="#8892a4" font-family="sans-serif">tcmalloc</text>
+      <rect x="330" y="330" width="12" height="4" rx="2" fill="#e8445a"/>
+      <text x="348" y="338" font-size="11" fill="#8892a4" font-family="sans-serif">APR Pool</text>
+    </svg>
+  </div>
+
+  <div class="table-wrap">
+    <table>
+      <thead>
+        <tr>
+          <th>项目</th>
+          <th>核心策略</th>
+          <th>碎片控制手段</th>
+          <th>适用场景</th>
+          <th>归还 OS</th>
+          <th>线程安全</th>
+        </tr>
+      </thead>
+      <tbody>
+        <tr>
+          <td><span class="tag tag-blue">glibc ptmalloc2</span></td>
+          <td>分层 bin + 多 arena</td>
+          <td>Coalescing, Consolidation, Trim, tcache</td>
+          <td>通用，默认场景</td>
+          <td>部分（trim/mmap）</td>
+          <td>✅ 多 arena</td>
+        </tr>
+        <tr>
+          <td><span class="tag tag-purple">GLib Slice</span></td>
+          <td>Slab + 线程 magazine</td>
+          <td>等大小零碎片，cache 着色</td>
+          <td>大量等大小对象（GTK widget）</td>
+          <td>延迟</td>
+          <td>✅ per-thread free list</td>
+        </tr>
+        <tr>
+          <td><span class="tag tag-orange">APR Pool</span></td>
+          <td>线性 bump 分配 + 子池层级</td>
+          <td>生命周期绑定批量释放，无合并</td>
+          <td>请求/连接级内存</td>
+          <td>池销毁时</td>
+          <td>⚠️ 单池单线程</td>
+        </tr>
+        <tr>
+          <td><span class="tag tag-blue">libuv</span></td>
+          <td>分配器替换接口</td>
+          <td>委托给注入的分配器</td>
+          <td>异步 I/O，可插拔</td>
+          <td>取决于注入分配器</td>
+          <td>✅ 需注入分配器线程安全</td>
+        </tr>
+        <tr>
+          <td><span class="tag tag-green">jemalloc</span></td>
+          <td>Arena + Slab + tcache</td>
+          <td>size class 分级，低地址复用，后台 purge</td>
+          <td>服务端长期运行，Redis</td>
+          <td>✅ 后台 decay purge</td>
+          <td>✅ 多 arena</td>
+        </tr>
+        <tr>
+          <td><span class="tag tag-orange">tcmalloc</span></td>
+          <td>Thread cache + Central heap</td>
+          <td>Thread GC，span 合并，hugepage</td>
+          <td>高并发低延迟，Google 服务</td>
+          <td>⚠️ 延迟（cache 保留）</td>
+          <td>✅ per-thread 无锁</td>
+        </tr>
+        <tr>
+          <td><span class="tag tag-red">Linux SLUB</span></td>
+          <td>Slab + 全局 partial 池</td>
+          <td>等大小完美填充，slab 合并，global partial</td>
+          <td>内核态对象管理</td>
+          <td>✅ Buddy 系统</td>
+          <td>✅ per-CPU + spinlock</td>
+        </tr>
+      </tbody>
+    </table>
+  </div>
+</section>
+
+<!-- ====== PATTERNS ====== -->
+<section id="patterns">
+  <h2>碎片化对抗策略总结</h2>
+  <p>从以上项目中，可以归纳出以下五大核心策略：</p>
+
+  <div class="diagram-wrap">
+    <div class="diagram-title">五大策略示意</div>
+    <svg viewBox="0 0 700 300" width="700" height="300" xmlns="http://www.w3.org/2000/svg">
+      <!-- 策略1 -->
+      <rect x="10" y="10" width="200" height="130" rx="10" fill="rgba(62,207,142,0.07)" stroke="#3ecf8e"/>
+      <text x="110" y="36" font-size="11.5" fill="#3ecf8e" text-anchor="middle" font-family="sans-serif" font-weight="bold">① 对象池化</text>
+      <text x="110" y="54" font-size="9.5" fill="#8892a4" text-anchor="middle" font-family="sans-serif">固定大小 slab/slice</text>
+      <text x="110" y="68" font-size="9.5" fill="#8892a4" text-anchor="middle" font-family="sans-serif">消灭内部碎片</text>
+      <text x="110" y="82" font-size="9.5" fill="#8892a4" text-anchor="middle" font-family="sans-serif">• GLib Slice</text>
+      <text x="110" y="96" font-size="9.5" fill="#8892a4" text-anchor="middle" font-family="sans-serif">• Linux SLUB</text>
+      <text x="110" y="110" font-size="9.5" fill="#8892a4" text-anchor="middle" font-family="sans-serif">• jemalloc slab</text>
+      <text x="110" y="130" font-size="8.5" fill="#5a6478" text-anchor="middle" font-family="sans-serif">适合：频繁分配同类型对象</text>
+
+      <!-- 策略2 -->
+      <rect x="225" y="10" width="200" height="130" rx="10" fill="rgba(91,141,238,0.07)" stroke="#5b8dee"/>
+      <text x="325" y="36" font-size="11.5" fill="#5b8dee" text-anchor="middle" font-family="sans-serif" font-weight="bold">② 生命周期管理</text>
+      <text x="325" y="54" font-size="9.5" fill="#8892a4" text-anchor="middle" font-family="sans-serif">Pool 绑定业务生命周期</text>
+      <text x="325" y="68" font-size="9.5" fill="#8892a4" text-anchor="middle" font-family="sans-serif">批量释放避碎片</text>
+      <text x="325" y="82" font-size="9.5" fill="#8892a4" text-anchor="middle" font-family="sans-serif">• APR Pool</text>
+      <text x="325" y="96" font-size="9.5" fill="#8892a4" text-anchor="middle" font-family="sans-serif">• nginx pool</text>
+      <text x="325" y="110" font-size="9.5" fill="#8892a4" text-anchor="middle" font-family="sans-serif">• 请求级/连接级</text>
+      <text x="325" y="130" font-size="8.5" fill="#5a6478" text-anchor="middle" font-family="sans-serif">适合：有明确生命周期的场景</text>
+
+      <!-- 策略3 -->
+      <rect x="440" y="10" width="250" height="130" rx="10" fill="rgba(245,166,35,0.07)" stroke="#f5a623"/>
+      <text x="565" y="36" font-size="11.5" fill="#f5a623" text-anchor="middle" font-family="sans-serif" font-weight="bold">③ 合并与整理</text>
+      <text x="565" y="54" font-size="9.5" fill="#8892a4" text-anchor="middle" font-family="sans-serif">相邻空闲块合并</text>
+      <text x="565" y="68" font-size="9.5" fill="#8892a4" text-anchor="middle" font-family="sans-serif">减少外部碎片</text>
+      <text x="565" y="82" font-size="9.5" fill="#8892a4" text-anchor="middle" font-family="sans-serif">• glibc Coalescing</text>
+      <text x="565" y="96" font-size="9.5" fill="#8892a4" text-anchor="middle" font-family="sans-serif">• SLUB slab merging</text>
+      <text x="565" y="110" font-size="9.5" fill="#8892a4" text-anchor="middle" font-family="sans-serif">• Redis activedefrag</text>
+      <text x="565" y="130" font-size="8.5" fill="#5a6478" text-anchor="middle" font-family="sans-serif">适合：通用分配器后台任务</text>
+
+      <!-- 策略4 -->
+      <rect x="10" y="158" width="320" height="130" rx="10" fill="rgba(124,92,252,0.07)" stroke="#7c5cfc"/>
+      <text x="170" y="182" font-size="11.5" fill="#7c5cfc" text-anchor="middle" font-family="sans-serif" font-weight="bold">④ 线程隔离（Arena/Thread Cache）</text>
+      <text x="170" y="200" font-size="9.5" fill="#8892a4" text-anchor="middle" font-family="sans-serif">减少多线程锁竞争，同时限制跨线程碎片扩散</text>
+      <text x="170" y="218" font-size="9.5" fill="#8892a4" text-anchor="middle" font-family="sans-serif">• jemalloc 多 Arena（round-robin）</text>
+      <text x="170" y="234" font-size="9.5" fill="#8892a4" text-anchor="middle" font-family="sans-serif">• tcmalloc thread-local cache</text>
+      <text x="170" y="250" font-size="9.5" fill="#8892a4" text-anchor="middle" font-family="sans-serif">• glibc ptmalloc2 multi-arena</text>
+      <text x="170" y="278" font-size="8.5" fill="#5a6478" text-anchor="middle" font-family="sans-serif">适合：高并发服务端</text>
+
+      <!-- 策略5 -->
+      <rect x="348" y="158" width="342" height="130" rx="10" fill="rgba(232,68,90,0.07)" stroke="#e8445a"/>
+      <text x="519" y="182" font-size="11.5" fill="#e8445a" text-anchor="middle" font-family="sans-serif" font-weight="bold">⑤ OS 内存归还（Purge/Trim）</text>
+      <text x="519" y="200" font-size="9.5" fill="#8892a4" text-anchor="middle" font-family="sans-serif">空闲内存通过 madvise/munmap 还给 OS</text>
+      <text x="519" y="218" font-size="9.5" fill="#8892a4" text-anchor="middle" font-family="sans-serif">• jemalloc dirty/muzzy decay</text>
+      <text x="519" y="234" font-size="9.5" fill="#8892a4" text-anchor="middle" font-family="sans-serif">• glibc systrim（sbrk 负参数）</text>
+      <text x="519" y="250" font-size="9.5" fill="#8892a4" text-anchor="middle" font-family="sans-serif">• Redis MEMORY PURGE</text>
+      <text x="519" y="278" font-size="8.5" fill="#5a6478" text-anchor="middle" font-family="sans-serif">适合：内存敏感的长期服务</text>
+    </svg>
+  </div>
+</section>
+
+<!-- ====== DECISION TREE ====== -->
+<section id="decision">
+  <h2>实践决策树</h2>
+  <p>根据项目特征选择合适的内存管理策略：</p>
+
+  <div class="diagram-wrap">
+    <div class="diagram-title">内存碎片化控制策略决策树</div>
+    <svg viewBox="0 0 760 580" width="760" height="580" xmlns="http://www.w3.org/2000/svg">
+      <defs>
+        <marker id="arr2" markerWidth="8" markerHeight="6" refX="8" refY="3" orient="auto">
+          <polygon points="0 0,8 3,0 6" fill="#5b8dee"/>
+        </marker>
+        <marker id="arr3" markerWidth="8" markerHeight="6" refX="8" refY="3" orient="auto">
+          <polygon points="0 0,8 3,0 6" fill="#3ecf8e"/>
+        </marker>
+        <marker id="arr4" markerWidth="8" markerHeight="6" refX="8" refY="3" orient="auto">
+          <polygon points="0 0,8 3,0 6" fill="#e8445a"/>
+        </marker>
+      </defs>
+
+      <!-- 根节点 -->
+      <rect x="280" y="10" width="200" height="46" rx="10" fill="rgba(91,141,238,0.2)" stroke="#5b8dee" stroke-width="2"/>
+      <text x="380" y="30" font-size="11" fill="#5b8dee" text-anchor="middle" font-family="sans-serif" font-weight="bold">新项目需要内存管理策略？</text>
+      <text x="380" y="47" font-size="9.5" fill="#8892a4" text-anchor="middle" font-family="sans-serif">评估以下维度</text>
+
+      <!-- 分支1：内核态 -->
+      <line x1="280" y1="34" x2="100" y2="100" stroke="#5b8dee" stroke-width="1.5" marker-end="url(#arr2)"/>
+      <text x="175" y="72" font-size="9" fill="#5b8dee" text-anchor="middle" font-family="sans-serif">内核态？</text>
+      <rect x="20" y="100" width="160" height="40" rx="8" fill="rgba(232,68,90,0.15)" stroke="#e8445a"/>
+      <text x="100" y="118" font-size="10" fill="#e8445a" text-anchor="middle" font-family="sans-serif" font-weight="bold">Linux SLUB</text>
+      <text x="100" y="133" font-size="8.5" fill="#8892a4" text-anchor="middle" font-family="sans-serif">kmem_cache_create</text>
+
+      <!-- 分支2：等大小对象 -->
+      <line x1="380" y1="56" x2="380" y2="108" stroke="#5b8dee" stroke-width="1.5" marker-end="url(#arr2)"/>
+      <!-- 菱形判断 -->
+      <polygon points="380,108 440,138 380,168 320,138" fill="rgba(91,141,238,0.12)" stroke="#5b8dee" stroke-width="1.5"/>
+      <text x="380" y="134" font-size="9.5" fill="#5b8dee" text-anchor="middle" font-family="sans-serif">大量等大小</text>
+      <text x="380" y="148" font-size="9.5" fill="#5b8dee" text-anchor="middle" font-family="sans-serif">对象？</text>
+
+      <!-- 是 -> GLib Slice -->
+      <line x1="440" y1="138" x2="560" y2="138" stroke="#3ecf8e" stroke-width="1.5" marker-end="url(#arr3)"/>
+      <text x="500" y="128" font-size="9" fill="#3ecf8e" text-anchor="middle" font-family="sans-serif">是</text>
+      <rect x="560" y="118" width="170" height="40" rx="8" fill="rgba(62,207,142,0.12)" stroke="#3ecf8e"/>
+      <text x="645" y="135" font-size="10" fill="#3ecf8e" text-anchor="middle" font-family="sans-serif" font-weight="bold">GLib g_slice_new(T)</text>
+      <text x="645" y="150" font-size="8.5" fill="#8892a4" text-anchor="middle" font-family="sans-serif">或自实现 slab cache</text>
+
+      <!-- 否 -->
+      <line x1="380" y1="168" x2="380" y2="216" stroke="#5b8dee" stroke-width="1.5" marker-end="url(#arr2)"/>
+      <text x="392" y="196" font-size="9" fill="#e8445a" text-anchor="middle" font-family="sans-serif">否</text>
+
+      <!-- 菱形：有明确生命周期 -->
+      <polygon points="380,216 450,250 380,284 310,250" fill="rgba(91,141,238,0.12)" stroke="#5b8dee" stroke-width="1.5"/>
+      <text x="380" y="246" font-size="9.5" fill="#5b8dee" text-anchor="middle" font-family="sans-serif">有明确</text>
+      <text x="380" y="260" font-size="9.5" fill="#5b8dee" text-anchor="middle" font-family="sans-serif">生命周期？</text>
+
+      <!-- 是 -> APR Pool -->
+      <line x1="450" y1="250" x2="560" y2="250" stroke="#3ecf8e" stroke-width="1.5" marker-end="url(#arr3)"/>
+      <text x="503" y="240" font-size="9" fill="#3ecf8e" text-anchor="middle" font-family="sans-serif">是（请求/连接）</text>
+      <rect x="560" y="228" width="175" height="46" rx="8" fill="rgba(124,92,252,0.12)" stroke="#7c5cfc"/>
+      <text x="647" y="248" font-size="10" fill="#7c5cfc" text-anchor="middle" font-family="sans-serif" font-weight="bold">APR Pool / Arena</text>
+      <text x="647" y="263" font-size="8.5" fill="#8892a4" text-anchor="middle" font-family="sans-serif">apr_pool_create + 批量释放</text>
+
+      <!-- 否 -->
+      <line x1="380" y1="284" x2="380" y2="332" stroke="#5b8dee" stroke-width="1.5" marker-end="url(#arr2)"/>
+      <text x="392" y="312" font-size="9" fill="#e8445a" text-anchor="middle" font-family="sans-serif">否</text>
+
+      <!-- 菱形：高并发多线程 -->
+      <polygon points="380,332 455,366 380,400 305,366" fill="rgba(91,141,238,0.12)" stroke="#5b8dee" stroke-width="1.5"/>
+      <text x="380" y="362" font-size="9.5" fill="#5b8dee" text-anchor="middle" font-family="sans-serif">高并发</text>
+      <text x="380" y="376" font-size="9.5" fill="#5b8dee" text-anchor="middle" font-family="sans-serif">多线程？</text>
+
+      <!-- 是 -->
+      <line x1="455" y1="366" x2="560" y2="366" stroke="#3ecf8e" stroke-width="1.5" marker-end="url(#arr3)"/>
+      <text x="505" y="356" font-size="9" fill="#3ecf8e" text-anchor="middle" font-family="sans-serif">是</text>
+
+      <!-- 菱形：低延迟优先还是低碎片优先 -->
+      <polygon points="645,366 710,390 645,414 580,390" fill="rgba(62,207,142,0.1)" stroke="#3ecf8e" stroke-width="1.5"/>
+      <text x="645" y="386" font-size="9.5" fill="#3ecf8e" text-anchor="middle" font-family="sans-serif">延迟</text>
+      <text x="645" y="400" font-size="9.5" fill="#3ecf8e" text-anchor="middle" font-family="sans-serif">优先？</text>
+
+      <!-- tcmalloc -->
+      <line x1="710" y1="390" x2="740" y2="430" stroke="#f5a623" stroke-width="1.5" marker-end="url(#arr2)"/>
+      <text x="735" y="424" font-size="9" fill="#f5a623" text-anchor="start" font-family="sans-serif">是</text>
+      <rect x="670" y="438" width="80" height="38" rx="8" fill="rgba(245,166,35,0.12)" stroke="#f5a623"/>
+      <text x="710" y="455" font-size="9.5" fill="#f5a623" text-anchor="middle" font-family="sans-serif" font-weight="bold">tcmalloc</text>
+      <text x="710" y="468" font-size="8" fill="#8892a4" text-anchor="middle" font-family="sans-serif">Thread-local cache</text>
+
+      <!-- jemalloc -->
+      <line x1="645" y1="414" x2="600" y2="438" stroke="#3ecf8e" stroke-width="1.5" marker-end="url(#arr3)"/>
+      <text x="615" y="432" font-size="9" fill="#3ecf8e" text-anchor="end" font-family="sans-serif">否</text>
+      <rect x="530" y="438" width="80" height="38" rx="8" fill="rgba(62,207,142,0.12)" stroke="#3ecf8e"/>
+      <text x="570" y="455" font-size="9.5" fill="#3ecf8e" text-anchor="middle" font-family="sans-serif" font-weight="bold">jemalloc</text>
+      <text x="570" y="468" font-size="8" fill="#8892a4" text-anchor="middle" font-family="sans-serif">低碎片，Arena</text>
+
+      <!-- 否（非高并发） -->
+      <line x1="380" y1="400" x2="380" y2="448" stroke="#5b8dee" stroke-width="1.5" marker-end="url(#arr2)"/>
+      <text x="366" y="428" font-size="9" fill="#e8445a" text-anchor="middle" font-family="sans-serif">否</text>
+
+      <!-- 菱形：内存敏感 -->
+      <polygon points="380,448 445,474 380,500 315,474" fill="rgba(91,141,238,0.12)" stroke="#5b8dee" stroke-width="1.5"/>
+      <text x="380" y="470" font-size="9.5" fill="#5b8dee" text-anchor="middle" font-family="sans-serif">内存极度</text>
+      <text x="380" y="484" font-size="9.5" fill="#5b8dee" text-anchor="middle" font-family="sans-serif">敏感？</text>
+
+      <!-- 是 -> 自定义 pool/arena -->
+      <line x1="445" y1="474" x2="520" y2="530" stroke="#3ecf8e" stroke-width="1.5" marker-end="url(#arr3)"/>
+      <text x="500" y="500" font-size="9" fill="#3ecf8e" text-anchor="start" font-family="sans-serif">是</text>
+      <rect x="440" y="535" width="150" height="38" rx="8" fill="rgba(62,207,142,0.1)" stroke="#3ecf8e"/>
+      <text x="515" y="552" font-size="9.5" fill="#3ecf8e" text-anchor="middle" font-family="sans-serif" font-weight="bold">自定义 slab pool</text>
+      <text x="515" y="566" font-size="8" fill="#8892a4" text-anchor="middle" font-family="sans-serif">+ jemalloc/tcmalloc 底层</text>
+
+      <!-- 否 -> 默认 malloc -->
+      <line x1="315" y1="474" x2="170" y2="530" stroke="#e8445a" stroke-width="1.5" marker-end="url(#arr4)"/>
+      <text x="238" y="502" font-size="9" fill="#e8445a" text-anchor="middle" font-family="sans-serif">否</text>
+      <rect x="80" y="535" width="180" height="38" rx="8" fill="rgba(91,141,238,0.1)" stroke="#5b8dee"/>
+      <text x="170" y="552" font-size="9.5" fill="#5b8dee" text-anchor="middle" font-family="sans-serif" font-weight="bold">glibc malloc（默认）</text>
+      <text x="170" y="566" font-size="8" fill="#8892a4" text-anchor="middle" font-family="sans-serif">配合 MALLOC_ARENA_MAX 调优</text>
+    </svg>
+  </div>
+
+  <div class="callout callout-tip">
+    <span class="callout-icon">💡</span>
+    <div class="callout-content">
+      <strong>快速决策口诀：</strong>
+      <ul style="margin-top:8px;padding-left:16px;">
+        <li>内核态 → <strong>SLUB kmem_cache</strong></li>
+        <li>大量同类型等大小对象 → <strong>GLib g_slice / 自实现 slab</strong></li>
+        <li>明确生命周期（请求/连接）→ <strong>APR Pool</strong></li>
+        <li>高并发 + 延迟敏感 → <strong>tcmalloc</strong>（TCMALLOC_MAX_TOTAL_THREAD_CACHE_BYTES 调优）</li>
+        <li>高并发 + 内存碎片敏感 → <strong>jemalloc</strong>（dirty_decay_ms 调优）</li>
+        <li>I/O 密集异步 → <strong>libuv + 注入 jemalloc + buffer pool</strong></li>
+        <li>简单场景 → <strong>glibc + MALLOC_ARENA_MAX=2~4</strong></li>
+      </ul>
+    </div>
+  </div>
+</section>
+
+<!-- ====== PRACTICE ====== -->
+<section id="practice">
+  <h2>实践建议与调优</h2>
+
+  <h3>可观测性：发现碎片问题</h3>
+  <div class="table-wrap">
+    <table>
+      <thead><tr><th>工具/命令</th><th>用途</th><th>适用场景</th></tr></thead>
+      <tbody>
+        <tr><td><code>malloc_info(0, stdout)</code></td><td>输出 glibc arena/bin 状态 XML</td><td>glibc 进程调试</td></tr>
+        <tr><td><code>mallopt(M_ARENA_MAX, N)</code></td><td>限制 arena 数量减少碎片积累</td><td>多线程 glibc 调优</td></tr>
+        <tr><td><code>je_mallctl("stats.allocated", ...)</code></td><td>jemalloc 精细统计</td><td>jemalloc 进程</td></tr>
+        <tr><td><code>MALLOC_CONF=stats_print:true</code></td><td>jemalloc 启动时打印统计</td><td>生产诊断</td></tr>
+        <tr><td><code>redis-cli INFO memory</code></td><td>mem_fragmentation_ratio 监控</td><td>Redis</td></tr>
+        <tr><td><code>/proc/slabinfo</code> / <code>/sys/kernel/slab</code></td><td>内核 slab 使用情况</td><td>Linux 内核分析</td></tr>
+        <tr><td><code>valgrind --tool=massif</code></td><td>堆内存快照分析</td><td>开发调试</td></tr>
+      </tbody>
+    </table>
+  </div>
+
+  <h3>关键调优参数速查</h3>
+  <div class="card">
+    <code style="display:block;white-space:pre;line-height:1.8;font-size:0.82rem;color:#3ecf8e;"># glibc 环境变量
+export MALLOC_ARENA_MAX=4          # 限制 arena 数（默认 8×core）
+export MALLOC_MMAP_THRESHOLD_=65536 # 超过此大小用 mmap
+
+# jemalloc 环境变量
+export MALLOC_CONF="dirty_decay_ms:5000,muzzy_decay_ms:10000,background_thread:true"
+
+# tcmalloc 环境变量
+export TCMALLOC_MAX_TOTAL_THREAD_CACHE_BYTES=16777216  # 16MB
+
+# Redis 配置
+activedefrag yes
+active-defrag-ignore-bytes 100mb
+active-defrag-threshold-lower 10
+active-defrag-threshold-upper 100
+jemalloc-bg-thread yes</code>
+  </div>
+
+  <h3>常见陷阱</h3>
+  <div class="callout callout-warn">
+    <span class="callout-icon">⚠️</span>
+    <div class="callout-content">
+      <strong>陷阱1：混用多个分配器</strong><br>在同一进程中混合使用 jemalloc 和 glibc malloc 可能导致 double-free、内存损坏。使用 <code>LD_PRELOAD</code> 替换时必须全局替换。
+    </div>
+  </div>
+  <div class="callout callout-warn">
+    <span class="callout-icon">⚠️</span>
+    <div class="callout-content">
+      <strong>陷阱2：APR Pool 对象间依赖</strong><br>不同池的对象相互引用时，若销毁顺序错误会导致 use-after-free。APR 子池销毁时会自动销毁所有子池，但跨池引用需手动管理。
+    </div>
+  </div>
+  <div class="callout callout-warn">
+    <span class="callout-icon">⚠️</span>
+    <div class="callout-content">
+      <strong>陷阱3：jemalloc background_thread + fork</strong><br>jemalloc 的背景线程在 <code>fork()</code> 后的子进程中会变成孤儿线程，可能导致死锁。在 fork 前调用 <code>mallctl("background_thread", NULL, NULL, &amp;false, sz)</code> 关闭背景线程。
+    </div>
+  </div>
+  <div class="callout callout-warn">
+    <span class="callout-icon">⚠️</span>
+    <div class="callout-content">
+      <strong>陷阱4：GLib Slice 释放大小不匹配</strong><br>Slice Allocator 无 per-block header，释放时必须提供与分配时完全相同的大小，否则进入错误的 size class 链表，导致内存损坏。
+    </div>
+  </div>
+
+  <h3>参考资料与原始出处</h3>
+  <div class="card">
+    <ul style="font-size:0.85rem;">
+      <li>📄 <a href="https://sourceware.org/glibc/wiki/MallocInternals" target="_blank">glibc MallocInternals – sourceware.org</a></li>
+      <li>📄 <a href="https://web.mit.edu/barnowl/share/gtk-doc/html/glib/glib-Memory-Slices.html" target="_blank">GLib Memory Slices 官方文档 – MIT</a></li>
+      <li>📄 <a href="https://github.com/apache/apr/blob/trunk/memory/unix/apr_pools.c" target="_blank">APR apr_pools.c 源码 – GitHub</a></li>
+      <li>📄 <a href="https://dev.apr.apache.narkive.com/pXZhwGG1/apr-pools-memory-leaks" target="_blank">APR Memory Leaks 分析 – apr-dev 邮件列表 2008</a></li>
+      <li>📄 <a href="https://docs.libuv.org/en/v1.x/misc.html" target="_blank">libuv uv_replace_allocator 官方文档</a></li>
+      <li>📄 <a href="https://sites.google.com/site/developersremarks/scalable-memory-allocation-using-jemalloc" target="_blank">Scalable memory allocation using jemalloc – Facebook</a></li>
+      <li>📄 <a href="https://lwn.net/Articles/229096/" target="_blank">SLUB: The unqueued slab allocator – LWN.net (Christoph Lameter, 2007)</a></li>
+      <li>📄 <a href="http://citeseer.ist.psu.edu/bonwick94slab.html" target="_blank">Bonwick94: The Slab Allocator – USENIX 1994</a></li>
+      <li>📄 <a href="https://oneuptime.com/blog/post/2026-03-31-redis-jemalloc-memory-allocator/view" target="_blank">Redis jemalloc 内存分配器分析 – oneuptime 2026</a></li>
+      <li>📄 <a href="https://github.com/PaoloMonti42/salt/blob/master/docs/0x00_SLUB_refresher.md" target="_blank">SLUB 深度解析 – GitHub</a></li>
+    </ul>
+  </div>
+
+  <div style="margin-top:40px;padding:20px;border-radius:10px;background:var(--surface2);border:1px solid var(--border);text-align:center;">
+    <p style="font-size:0.8rem;color:var(--text-dim);margin:0;">本文档严格基于以上权威来源整理，所有技术描述均有原始出处支撑。如发现有误，请对照原始文档。</p>
+  </div>
+</section>
+
+</main>
+
+<script>
+  // ============ SECTIONS ============
+  const sections = [
+    'intro','concepts','glibc','glib','apr','libuv','jemalloc','tcmalloc','kernel','comparison','patterns','decision','practice'
+  ];
+
+  // ============ PROGRESS BAR ============
+  const progressBar = document.getElementById('progress-bar');
+  function updateProgress() {
+    const scrollTop = window.scrollY;
+    const docHeight = document.documentElement.scrollHeight - window.innerHeight;
+    const progress = docHeight > 0 ? (scrollTop / docHeight) * 100 : 0;
+    progressBar.style.width = progress + '%';
+  }
+
+  // ============ ACTIVE NAV ============
+  const navItems = document.querySelectorAll('.nav-item[data-section]');
+
+  function setActive(id) {
+    navItems.forEach(item => {
+      item.classList.toggle('active', item.dataset.section === id);
+    });
+  }
+
+  function updateActiveNav() {
+    let current = sections[0];
+    const offset = 80;
+    for (const id of sections) {
+      const el = document.getElementById(id);
+      if (el && el.getBoundingClientRect().top <= offset) {
+        current = id;
+      }
+    }
+    setActive(current);
+  }
+
+  // ============ NAV CLICK ============
+  navItems.forEach(item => {
+    item.addEventListener('click', () => {
+      const id = item.dataset.section;
+      const el = document.getElementById(id);
+      if (el) {
+        el.scrollIntoView({ behavior: 'smooth', block: 'start' });
+        // Close mobile nav
+        sidebar.classList.remove('open');
+        overlay.classList.remove('open');
+      }
+    });
+  });
+
+  // ============ HAMBURGER ============
+  const hamburger = document.getElementById('hamburger');
+  const sidebar = document.getElementById('sidebar');
+  const overlay = document.getElementById('overlay');
+
+  hamburger.addEventListener('click', () => {
+    sidebar.classList.toggle('open');
+    overlay.classList.toggle('open');
+  });
+  overlay.addEventListener('click', () => {
+    sidebar.classList.remove('open');
+    overlay.classList.remove('open');
+  });
+
+  // ============ KEYBOARD NAVIGATION ============
+  document.addEventListener('keydown', e => {
+    if (e.key === 'ArrowRight' || e.key === 'ArrowLeft') {
+      // Find current active section
+      const activeEl = document.querySelector('.nav-item.active');
+      const currentId = activeEl ? activeEl.dataset.section : sections[0];
+      const currentIdx = sections.indexOf(currentId);
+      let nextIdx;
+      if (e.key === 'ArrowRight') {
+        nextIdx = Math.min(currentIdx + 1, sections.length - 1);
+      } else {
+        nextIdx = Math.max(currentIdx - 1, 0);
+      }
+      const nextId = sections[nextIdx];
+      const el = document.getElementById(nextId);
+      if (el) {
+        el.scrollIntoView({ behavior: 'smooth', block: 'start' });
+        setActive(nextId);
+      }
+    }
+  });
+
+  // ============ SCROLL ============
+  window.addEventListener('scroll', () => {
+    updateProgress();
+    updateActiveNav();
+  }, { passive: true });
+
+  // Init
+  updateProgress();
+  updateActiveNav();
+</script>
+</body>
+</html>
