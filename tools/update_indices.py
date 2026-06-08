@@ -59,7 +59,7 @@ SKIP_URL_RE = re.compile(
 
 DIR_INTROS = {
     '': '嵌入式与网络协议技术笔记库：蓝牙、WiFi、TLS、网络协议、内核、文件系统、程序设计、总线、驱动、Buildroot、命令行工具等专题。',
-    'program': 'C 语言标准、Linux 系统编程、并发与设计模式等程序设计笔记。',
+    'program': 'C 语言标准、编程规范、并发、设计模式、GCC 分析与 Linux 系统编程笔记。',
     'bt': '蓝牙 Core 规范导读、信令索引、抓包流程与深度专题。',
     'bt/overview': 'Bluetooth Core 6.0 各协议层规范概览（Vol 1 / Part A–H）。',
     'bt/misc': '经典蓝牙与 BLE 深度专题：配对演进、报文解析、基带/射频、L2CAP/ATT/SDP 等。',
@@ -104,12 +104,41 @@ MODULE_GROUPS = {
             'c_standards_guide.html', 'c_functions_safe_overview.html',
             'c_header_safe_func_guide.html',
         ]),
+        ('编程规范框架', '类型、字符串、错误处理、并发规范', [
+            'c-programming-specification-framework.html', 'c-type-guide.html',
+            'c-string-handling-comparison.html', 'c-error-handling-comparison-report.html',
+            'c-multi-threading-programming-specification.html',
+            'c-multi-threading-paradigm-guide.html', 'c-concurrency-guide.html',
+        ]),
         ('系统编程导读', 'Linux 系统编程经典书籍笔记', [
             'linux_system_programming_2nd_guide.html', 'system_program_with_linux_guide.html',
         ]),
-        ('GCC 扩展', 'GCC 语言与编译器扩展', ['gcc_extension_guide.html']),
-        ('并发与设计', 'pthread、状态机、设计模式', [
-            'pthread_guide.html', 'fsm_guide.html', 'design_pattern_guide.html',
+        ('GCC 与静态分析', '扩展、编译期检查、原子操作封装', [
+            'gcc_extension_guide.html', 'gcc-static-analysis-guide.html',
+            'gcc-c99-static-analysis-guide.html', 'gcc-compile-time-checks.html',
+            'gcc-atomic-operations-wrapper.html',
+        ]),
+        ('并发与定时器', 'pthread、mutex、定时器实现', [
+            'pthread_guide.html', 'mutex-lock-tutorial.html',
+            'c-timer-implementation-and-analysis.html', 'min-heap-timer-implementation.html',
+        ]),
+        ('设计模式', 'FSM、GLib、libuv、内核设计模式', [
+            'fsm_guide.html', 'design_pattern_guide.html',
+            'glib-design-patterns-guide.html', 'libuv-design-patterns.html',
+            'linux-kernel-design-patterns.html',
+        ]),
+        ('内核机制用户态实现', 'list、notifier、workqueue、kfifo', [
+            'linux-kernel-list-implementation.html', 'linux-kernel-notifier-guide.html',
+            'user-space-workqueue.html', 'user-space-notification-chain.html',
+            'user-space-kfifo.html',
+        ]),
+        ('内存与 glibc', '碎片分析与 glibc 开发模式', [
+            'linux-memory-fragmentation-analysis-guide.html',
+            'memory-fragmentation-implementation-comparison.html',
+            'analyze-glibc-development-patterns.html',
+        ]),
+        ('POSIX 接口', '头文件与安全属性', [
+            'posix-header-guide.html', 'posix-safety-attributes*.html',
         ]),
     ],
     'bt': [
@@ -282,6 +311,16 @@ MODULE_GROUPS = {
             'buildroot_build_frame.html', 'buildroot_build_system.html',
         ]),
         ('包编译', '单包编译流程分析', ['buildroot_package_compilation_analysis.html']),
+        ('构建系统深入', 'Autotools、CMake 构建流程', [
+            'autotools-build-process-analysis.html', 'cmake-build-process-analysis.html',
+        ]),
+        ('工具链分析', 'MIPS 交叉编译、头文件分析', [
+            'mips-cross-compilation-toolchain-analysis.html',
+            'analyze-toolchain-header-files.html',
+        ]),
+        ('U-Boot / SPL', 'X2600 MIPS SPL 技术分析', [
+            'x2600mips-uboot-spl-technical-analysis.html',
+        ]),
         ('内核构建', 'kernel image 与 configuration', [
             'kernel_image_guide.html', 'kernel_configuration_guide.html',
         ]),

@@ -1,0 +1,336 @@
+#!/usr/bin/env python3
+"""Generate skill reference/ch24.md and normalize reference/raii.h."""
+
+from __future__ import annotations
+
+import re
+from pathlib import Path
+
+ROOT = Path(__file__).resolve().parents[1]
+RAII_H = ROOT / ".cursor/skills/c-programming-spec/reference/raii.h"
+GCC_CLEANUP_DOCS = "https://gcc.gnu.org/onlinedocs/gcc/Variable-Attributes.html"
+
+
+def raii_h_content() -> str:
+    """Return normalized raii.h (header guard, REQUIRE inside guard)."""
+    if RAII_H.is_file():
+        text = RAII_H.read_text(encoding="utf-8")
+    else:
+        text = ""
+
+    text = text.replace("UTILS_MACRO_H", "RAII_H")
+    text = re.sub(
+        r"#endif\s*\n\s*#define REQUIRE\(cond, msg\).*?while \(0\)\s*$",
+        '#define REQUIRE(cond, msg) do { if (!(cond)) { LogError("%s", msg); goto out; } } while (0)\n\n#endif /* RAII_H */\n',
+        text,
+        flags=re.DOTALL,
+    )
+    if "#define REQUIRE" not in text.split("#endif")[0]:
+        text = text.replace(
+            "#endif",
+            '#define REQUIRE(cond, msg) do { if (!(cond)) { LogError("%s", msg); goto out; } } while (0)\n\n#endif /* RAII_H */',
+            1,
+        )
+    return text
+
+
+def write_raii_header(ref_dir: Path) -> None:
+    (ref_dir / "raii.h").write_text(raii_h_content(), encoding="utf-8")
+
+
+def raii_chapter_md() -> str:
+    header = f"""# RAII 风格资源管理（GCC cleanup）
+
+*24高级主题 · 错误处理与资源释放*
+
+参考来源：[raii.h](raii.h)、[GCC Variable Attributes — cleanup]({GCC_CLEANUP_DOCS})、[第10章 错误处理机制](ch10.md)、[第14章 内存管理](ch14.md)
+
+> 本章规范适用于 **GCC/Clang + GNU 扩展**（`__attribute__((cleanup))`）的用户态程序。宏定义见同目录 [raii.h](raii.h)。依赖 POSIX（`pthread`、`close`、`mmap` 等）。
+
+"""
+    body = r"""## 24.1 使用场景与选型
+
+### [建议] 函数内存在多处退出路径且需释放资源时，优先使用 raii.h；仅单一返回点可用原生接口
+
+**选型原则：**
+
+| 退出路径 | 资源类型 | 推荐方案 |
+| --- | --- | --- |
+| **单一 `return`**（无中间错误分支） | fd / FILE* / 堆内存 / 锁 | **原生接口**：`close()`、`fclose()`、`free()`、`pthread_mutex_unlock()` |
+| **多处 `return` / `goto out` / 嵌套错误** | 同上 | **[raii.h](raii.h)**：`autofd`、`autofp`、`autofree`、`autoptr`、`WITH_LOCK` + `REQUIRE` |
+| 需把资源**转移给调用者** | fd / FILE* / 堆指针 | `autofd_steal` / `autofp_steal` / `autoptr_steal` |
+| 引用计数对象 | 带 `ref_count` 字段的结构体 | `DEFINE_AUTOREF_OPS` + `autoref` |
+
+**核心规则：**
+
+1. **只有一个正常返回点、无错误分支** → 不必引入 cleanup 宏，直接写原生释放即可（更简单、可移植性更好）。
+2. **两个及以上退出点**（含 `goto out`、多个 `return`、循环内 break 到清理）→ **必须**保证每条路径都释放资源；优先用 [raii.h](raii.h) 的 `autofd` / `autofree` 等，或严格遵循 [第10章](ch10.md) 的 goto 清理链。
+3. **`REQUIRE(cond, msg)`** 仅在与 **`goto out`** 标签配合时使用（见 24.6）；`out` 标签处资源仍由 cleanup 属性或显式清理完成。
+
+**反面示例（多处 return — 遗漏 close，泄漏 fd）**
+
+```c
+int load_config(const char *path)
+{
+    int fd = open(path, O_RDONLY);
+    if (fd < 0)
+        return -1;
+
+    char *buf = malloc(4096);
+    if (buf == NULL) {
+        close(fd);   /* 容易在后续分支遗漏 */
+        return -1;
+    }
+
+    if (read(fd, buf, 4096) < 0) {
+        free(buf);
+        return -1;   /* ❌ 忘记 close(fd) */
+    }
+
+    free(buf);
+    close(fd);
+    return 0;
+}
+```
+
+**正面示例（单一返回 — 原生接口即可，无需 raii.h）**
+
+```c
+int get_page_size(void)
+{
+    long n = sysconf(_SC_PAGESIZE);
+    if (n <= 0)
+        return -1;
+    return (int)n;   /* 无 fd/堆/锁，单 return，无需 cleanup 宏 */
+}
+```
+
+**正面示例（多处退出 — 使用 autofd + autofree + REQUIRE）**
+
+```c
+#include "raii.h"
+
+int load_config(const char *path)
+{
+    int ret = -1;
+    autofd int fd = open(path, O_RDONLY);
+    autofree char *buf = malloc(4096);
+
+    REQUIRE(fd >= 0, "open failed");
+    REQUIRE(buf != NULL, "malloc failed");
+    REQUIRE(read(fd, buf, 4096) >= 0, "read failed");
+
+    ret = 0;
+out:
+    return ret;   /* fd、buf 由 cleanup 自动释放 */
+}
+```
+
+**正面示例（锁 — 多分支时用 WITH_LOCK）**
+
+```c
+#include "raii.h"
+
+int update_counter(pthread_mutex_t *lock, int *counter, int delta)
+{
+    WITH_LOCK(lock) {
+        *counter += delta;
+        if (*counter < 0)
+            return -1;   /* 离开 WITH_LOCK 作用域仍会自动 unlock */
+    }
+    return 0;
+}
+```
+
+---
+
+## 24.2 机制说明
+
+GCC **`__attribute__((cleanup(func)))`**：局部变量离开作用域（正常结束、`return`、`goto` 跳出块、异常 unwinding 不适用 C）时，编译器插入对 `func(&var)` 的调用。
+
+[raii.h](raii.h) 通过 `auto_cleanup` 包装该属性，并提供常见资源类型的 cleanup 函数。
+
+| 机制 | 说明 |
+| --- | --- |
+| `auto_cleanup(fn)` | 通用 cleanup 绑定 |
+| `autofd` / `autofp` | 作用域结束 `close` / `fclose`，并将变量置为 -1 / NULL |
+| `*_steal` | 转移所有权，cleanup 不再释放 |
+| `autofree` | 作用域结束 `free` |
+| `autoptr(T)` | 自定义类型的 cleanup（需 `DEFINE_AUTOPTR_CLEANUP_FUNC`） |
+| `autoref(T)` | 引用计数对象作用域结束 `unref` |
+| `WITH_LOCK` | 限定作用域内持锁，结束自动 `pthread_mutex_unlock` |
+
+---
+
+## 24.3 API 参考（与 raii.h 一致）
+
+### 日志与断言
+
+| 宏 | 说明 |
+| --- | --- |
+| `LogError(fmt, ...)` | 向 stderr 输出带函数名、行号的错误日志 |
+| `LogInfo(fmt, ...)` | 向 stdout 输出信息日志 |
+| `REQUIRE(cond, msg)` | 条件为假时 `LogError` 并 `goto out`（须定义 `out:` 标签） |
+
+### 文件描述符 / FILE*
+
+| 宏 / 函数 | 说明 |
+| --- | --- |
+| `autofd` | 声明 `int` fd，作用域结束自动 `close` |
+| `autofd_steal(int *fd)` | 取走 fd 并置 -1，避免重复 close |
+| `autofp` | 声明 `FILE *`，作用域结束自动 `fclose` |
+| `autofp_steal(FILE **fp)` | 取走 FILE* 并置 NULL |
+
+### 堆内存
+
+| 宏 | 说明 |
+| --- | --- |
+| `autofree` | 指针离开作用域自动 `free`（基于 `autoptr_cleanup(_macro_autofree_t)`） |
+| `autoptr_steal(ptr)` | 转移指针所有权 |
+
+### 自定义类型与引用计数
+
+| 宏 | 说明 |
+| --- | --- |
+| `DEFINE_AUTOPTR_CLEANUP_FUNC(T, fn)` | 为类型 `T` 生成 cleanup，结束时调用 `fn` |
+| `autoptr(T)` | 声明 `T *` 并绑定 cleanup |
+| `DECLARE_AUTOREF_OPS(T)` / `DEFINE_AUTOREF_OPS(T, destroy)` | 生成 `T_ref` / `T_unref` 与 cleanup |
+| `AUTOREF_INIT` / `AUTOREF_INC` / `AUTOREF_DEC` / `AUTOREF_COUNT` | 引用计数操作（`__atomic_*`） |
+| `autoref(T)` | 作用域结束自动 `T_unref` |
+
+### 互斥锁
+
+| 宏 | 说明 |
+| --- | --- |
+| `WITH_LOCK(mutex_addr)` | 单作用域持锁，块结束自动解锁 |
+
+---
+
+## 24.4 自定义 autoptr 示例
+
+**正面示例**
+
+```c
+#include "raii.h"
+
+typedef struct buffer buffer_t;
+
+static void buffer_destroy(buffer_t *b);
+
+DEFINE_AUTOPTR_CLEANUP_FUNC(buffer_t, buffer_destroy);
+
+int process(void)
+{
+    int ret = -1;
+    autoptr(buffer_t) buf = buffer_create(1024);
+
+    REQUIRE(buf != NULL, "buffer_create failed");
+    /* ... */
+    ret = 0;
+out:
+    return ret;
+}
+```
+
+---
+
+## 24.5 引用计数 autoref 示例
+
+**正面示例**
+
+```c
+typedef struct widget {
+    int ref_count;
+    /* ... */
+} widget_t;
+
+static void widget_destroy(widget_t *w);
+
+DEFINE_AUTOREF_OPS(widget_t, widget_destroy);
+
+int use_widget(void)
+{
+    widget_t *w = widget_create();
+    AUTOREF_INIT(w);
+
+    {
+        autoref(widget_t) local = widget_ref(w);
+        /* 使用 local ... */
+    }   /* 作用域结束 widget_unref(local) */
+
+    widget_unref(w);
+    return 0;
+}
+```
+
+---
+
+## 24.6 REQUIRE 与 goto out 约定
+
+### [必须] 使用 `REQUIRE` 的函数必须提供 `out:` 标签，且 `return` 前资源已由 cleanup 或 out 块处理
+
+`REQUIRE` 展开为 `goto out`，因此：
+
+- 函数末尾应有 `out:` 标签（通常紧挨最终 `return`）。
+- 需要 cleanup 的变量须在 `out:` **之前** 的同一作用域内声明（cleanup 在离开作用域时运行）。
+- 若不用 `REQUIRE`，多出口函数仍可用 [第10章](ch10.md) 的手写 `goto out_free` 链。
+
+**反面示例（使用 REQUIRE 但无 out 标签 — 编译失败）**
+
+```c
+int bad(void)
+{
+    autofd int fd = open("x", O_RDONLY);
+    REQUIRE(fd >= 0, "open failed");
+    return 0;   /* ❌ REQUIRE 需要 goto out */
+}
+```
+
+**正面示例**
+
+```c
+int good(void)
+{
+    int ret = -1;
+    autofd int fd = open("x", O_RDONLY);
+    REQUIRE(fd >= 0, "open failed");
+    ret = 0;
+out:
+    return ret;
+}
+```
+
+---
+
+## 24.7 何时不必使用 raii.h
+
+### [可选] 下列情况使用原生接口或第 10 章 goto 链即可
+
+- 函数**仅一个 return**，且路径上无未释放的 fd/内存/锁。
+- 目标编译器**不支持** GCC `cleanup` 属性（需可移植到 MSVC 等）。
+- 资源生命周期**长于函数**（返回给调用者：用 `*_steal` 或明确所有权文档，见 [第15章](ch15.md)）。
+
+---
+
+## 24.8 与第 10、14、18 章的关系
+
+| 主题 | 第 10 / 14 / 18 章 | 本章 |
+| --- | --- | --- |
+| goto 清理链 | ✅ 多出口主方案（手写标签） | cleanup 宏减少遗漏 |
+| malloc/free 配对 | ✅ 第 14 章 | `autofree` 自动 free |
+| 单 return 简单函数 | ✅ 原生 free/close | 不必引入 raii.h |
+| 多出口 + 多资源 | goto 或 raii | **优先 raii.h** |
+| 线程锁 | 第 18 章 mutex 规范 | `WITH_LOCK` 限定作用域 |
+
+编写或审查代码时：**先数清退出点与资源数量 → 单出口用原生接口 → 多出口用 [raii.h](raii.h) 或 ch10 goto 链**。
+"""
+    return header + body
+
+
+def write_raii_chapter(ref_dir: Path) -> None:
+    write_raii_header(ref_dir)
+    (ref_dir / "ch24.md").write_text(raii_chapter_md(), encoding="utf-8")
+
+
+if __name__ == "__main__":
+    print(raii_chapter_md())
