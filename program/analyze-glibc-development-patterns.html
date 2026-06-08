@@ -1,0 +1,2538 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>glibc 编程模式与 GCC 特性借鉴指南</title>
+<style>
+  :root {
+    --bg: #0f1117;
+    --sidebar-bg: #161b22;
+    --surface: #1c2128;
+    --surface2: #22272e;
+    --border: #30363d;
+    --text: #e6edf3;
+    --text-muted: #8b949e;
+    --accent: #58a6ff;
+    --accent2: #3fb950;
+    --accent3: #d2a8ff;
+    --accent4: #ffa657;
+    --accent5: #ff7b72;
+    --tag-bg: #1f3a5f;
+    --code-bg: #161b22;
+    --highlight: #2d333b;
+    --sidebar-w: 280px;
+    --progress-h: 3px;
+  }
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  html { scroll-behavior: smooth; }
+  body {
+    font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', 'PingFang SC', 'Hiragino Sans GB', 'Microsoft YaHei', sans-serif;
+    background: var(--bg);
+    color: var(--text);
+    line-height: 1.7;
+    overflow-x: hidden;
+  }
+
+  /* ── 进度条 ── */
+  #progress-bar {
+    position: fixed;
+    top: 0; left: 0;
+    height: var(--progress-h);
+    width: 0%;
+    background: linear-gradient(90deg, var(--accent), var(--accent2));
+    z-index: 9999;
+    transition: width 0.1s linear;
+  }
+
+  /* ── 顶部栏 ── */
+  #topbar {
+    position: fixed;
+    top: var(--progress-h);
+    left: 0; right: 0;
+    height: 52px;
+    background: rgba(15,17,23,0.9);
+    backdrop-filter: blur(12px);
+    border-bottom: 1px solid var(--border);
+    display: flex;
+    align-items: center;
+    padding: 0 18px;
+    z-index: 1000;
+    gap: 12px;
+  }
+  #hamburger {
+    display: none;
+    background: none;
+    border: none;
+    cursor: pointer;
+    padding: 6px;
+    color: var(--text);
+    font-size: 20px;
+    flex-shrink: 0;
+  }
+  #topbar h1 {
+    font-size: 15px;
+    font-weight: 600;
+    color: var(--accent);
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+  }
+  .topbar-nav {
+    margin-left: auto;
+    display: flex;
+    gap: 8px;
+    flex-shrink: 0;
+  }
+  .topbar-nav button {
+    background: var(--surface2);
+    border: 1px solid var(--border);
+    color: var(--text);
+    border-radius: 6px;
+    padding: 4px 12px;
+    font-size: 13px;
+    cursor: pointer;
+    transition: background 0.2s;
+  }
+  .topbar-nav button:hover { background: var(--highlight); }
+
+  /* ── 侧边栏 ── */
+  #sidebar {
+    position: fixed;
+    top: calc(52px + var(--progress-h));
+    left: 0;
+    width: var(--sidebar-w);
+    height: calc(100vh - 52px - var(--progress-h));
+    overflow-y: auto;
+    background: var(--sidebar-bg);
+    border-right: 1px solid var(--border);
+    padding: 12px 0 40px;
+    z-index: 900;
+    transition: transform 0.3s ease;
+  }
+  #sidebar::-webkit-scrollbar { width: 4px; }
+  #sidebar::-webkit-scrollbar-thumb { background: var(--border); border-radius: 2px; }
+
+  .nav-group-title {
+    font-size: 10px;
+    font-weight: 700;
+    letter-spacing: 0.1em;
+    text-transform: uppercase;
+    color: var(--text-muted);
+    padding: 14px 18px 4px;
+  }
+  .nav-item {
+    display: block;
+    padding: 7px 18px;
+    font-size: 13px;
+    color: var(--text-muted);
+    text-decoration: none;
+    border-left: 3px solid transparent;
+    transition: all 0.15s;
+    cursor: pointer;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+  }
+  .nav-item:hover { color: var(--text); background: var(--highlight); }
+  .nav-item.active { color: var(--accent); border-left-color: var(--accent); background: rgba(88,166,255,0.08); }
+
+  /* ── 遮罩 ── */
+  #overlay {
+    display: none;
+    position: fixed;
+    inset: 0;
+    background: rgba(0,0,0,0.5);
+    z-index: 850;
+  }
+
+  /* ── 主内容 ── */
+  #main {
+    margin-left: var(--sidebar-w);
+    padding: calc(52px + var(--progress-h) + 32px) 0 80px;
+  }
+  .content-wrapper {
+    max-width: 860px;
+    margin: 0 auto;
+    padding: 0 32px;
+  }
+
+  /* ── 章节 ── */
+  .chapter {
+    margin-bottom: 80px;
+    scroll-margin-top: 72px;
+  }
+  .chapter-header {
+    display: flex;
+    align-items: center;
+    gap: 14px;
+    margin-bottom: 24px;
+    padding-bottom: 14px;
+    border-bottom: 1px solid var(--border);
+  }
+  .chapter-num {
+    font-size: 11px;
+    font-weight: 700;
+    color: var(--accent);
+    background: rgba(88,166,255,0.12);
+    padding: 3px 10px;
+    border-radius: 20px;
+    letter-spacing: 0.05em;
+    flex-shrink: 0;
+  }
+  .chapter-title {
+    font-size: 24px;
+    font-weight: 700;
+    color: var(--text);
+  }
+  .chapter-tag {
+    font-size: 11px;
+    padding: 2px 8px;
+    border-radius: 4px;
+    background: var(--tag-bg);
+    color: var(--accent);
+    flex-shrink: 0;
+  }
+
+  .section-title {
+    font-size: 17px;
+    font-weight: 600;
+    color: var(--accent3);
+    margin: 28px 0 12px;
+    display: flex;
+    align-items: center;
+    gap: 8px;
+  }
+  .section-title::before {
+    content: '';
+    display: inline-block;
+    width: 3px; height: 18px;
+    background: var(--accent3);
+    border-radius: 2px;
+    flex-shrink: 0;
+  }
+
+  p { margin-bottom: 12px; color: var(--text); font-size: 14.5px; }
+
+  /* ── 代码块 ── */
+  .code-block {
+    background: var(--code-bg);
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    margin: 16px 0;
+    overflow: hidden;
+  }
+  .code-header {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    padding: 8px 16px;
+    background: var(--surface2);
+    border-bottom: 1px solid var(--border);
+    font-size: 12px;
+    color: var(--text-muted);
+  }
+  .code-lang {
+    font-weight: 600;
+    color: var(--accent4);
+  }
+  .copy-btn {
+    background: none;
+    border: 1px solid var(--border);
+    color: var(--text-muted);
+    padding: 2px 10px;
+    border-radius: 4px;
+    font-size: 11px;
+    cursor: pointer;
+    transition: all 0.2s;
+  }
+  .copy-btn:hover { color: var(--text); border-color: var(--text-muted); }
+  pre {
+    padding: 16px;
+    overflow-x: auto;
+    font-family: 'JetBrains Mono', 'Fira Code', 'Cascadia Code', Consolas, monospace;
+    font-size: 13px;
+    line-height: 1.7;
+    tab-size: 4;
+  }
+  pre::-webkit-scrollbar { height: 5px; }
+  pre::-webkit-scrollbar-thumb { background: var(--border); border-radius: 3px; }
+
+  /* 语法高亮 */
+  .kw  { color: #ff7b72; }
+  .cm  { color: #8b949e; font-style: italic; }
+  .st  { color: #a5d6ff; }
+  .nm  { color: #79c0ff; }
+  .pp  { color: #ffa657; }
+  .fn  { color: #d2a8ff; }
+  .num { color: #a8d8a8; }
+
+  /* ── SVG 图表 ── */
+  .diagram-wrap {
+    margin: 20px 0;
+    background: var(--code-bg);
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    padding: 20px;
+    overflow-x: auto;
+  }
+  .diagram-title {
+    font-size: 12px;
+    color: var(--text-muted);
+    text-align: center;
+    margin-top: 10px;
+  }
+  svg text { font-family: -apple-system, BlinkMacSystemFont, 'Microsoft YaHei', sans-serif; }
+
+  /* ── 提示框 ── */
+  .tip {
+    border-left: 3px solid var(--accent2);
+    background: rgba(63,185,80,0.07);
+    padding: 12px 16px;
+    border-radius: 0 6px 6px 0;
+    margin: 14px 0;
+    font-size: 13.5px;
+  }
+  .tip .tip-title {
+    font-weight: 700;
+    color: var(--accent2);
+    margin-bottom: 4px;
+    font-size: 13px;
+  }
+  .warn {
+    border-left: 3px solid var(--accent4);
+    background: rgba(255,166,87,0.07);
+    padding: 12px 16px;
+    border-radius: 0 6px 6px 0;
+    margin: 14px 0;
+    font-size: 13.5px;
+  }
+  .warn .tip-title { color: var(--accent4); }
+
+  .ref {
+    font-size: 12px;
+    color: var(--text-muted);
+    margin: 8px 0 0;
+    padding: 6px 10px;
+    background: var(--surface2);
+    border-radius: 4px;
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+  }
+  .ref a { color: var(--accent); text-decoration: none; }
+  .ref a:hover { text-decoration: underline; }
+
+  /* ── 比较表 ── */
+  table {
+    width: 100%;
+    border-collapse: collapse;
+    font-size: 13.5px;
+    margin: 16px 0;
+  }
+  th, td {
+    padding: 9px 14px;
+    border: 1px solid var(--border);
+    text-align: left;
+  }
+  th {
+    background: var(--surface2);
+    color: var(--accent);
+    font-weight: 600;
+  }
+  tr:nth-child(even) td { background: var(--surface); }
+  td code {
+    background: var(--code-bg);
+    padding: 1px 5px;
+    border-radius: 3px;
+    font-family: monospace;
+    font-size: 12px;
+    color: var(--accent4);
+  }
+
+  /* ── 响应式 ── */
+  @media (max-width: 768px) {
+    :root { --sidebar-w: 260px; }
+    #hamburger { display: flex; }
+    #sidebar { transform: translateX(-100%); }
+    #sidebar.open { transform: translateX(0); }
+    #overlay.show { display: block; }
+    #main { margin-left: 0; }
+    .content-wrapper { padding: 0 16px; }
+    .chapter-title { font-size: 20px; }
+    #topbar h1 { font-size: 13px; }
+    .topbar-nav button { padding: 4px 8px; font-size: 12px; }
+  }
+  @media (max-width: 480px) {
+    .content-wrapper { padding: 0 12px; }
+    pre { font-size: 12px; }
+  }
+
+  /* ── 其他 ── */
+  ul, ol { padding-left: 22px; margin-bottom: 10px; }
+  li { margin: 5px 0; font-size: 14px; }
+  strong { color: var(--accent4); }
+  .pill {
+    display: inline-block;
+    font-size: 11px;
+    padding: 2px 8px;
+    border-radius: 20px;
+    margin: 2px;
+  }
+  .pill-blue { background: rgba(88,166,255,0.15); color: var(--accent); }
+  .pill-green { background: rgba(63,185,80,0.15); color: var(--accent2); }
+  .pill-purple { background: rgba(210,168,255,0.15); color: var(--accent3); }
+  .pill-orange { background: rgba(255,166,87,0.15); color: var(--accent4); }
+  .pill-red { background: rgba(255,123,114,0.15); color: var(--accent5); }
+
+  .chapter-intro {
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    padding: 14px 18px;
+    margin-bottom: 20px;
+    font-size: 14px;
+    color: var(--text-muted);
+    line-height: 1.6;
+  }
+
+  hr { border: none; border-top: 1px solid var(--border); margin: 24px 0; }
+</style>
+</head>
+<body>
+
+<div id="progress-bar"></div>
+
+<!-- 顶部栏 -->
+<div id="topbar">
+  <button id="hamburger" onclick="toggleSidebar()" aria-label="菜单">
+    <svg width="20" height="20" viewBox="0 0 20 20" fill="currentColor">
+      <rect y="3" width="20" height="2" rx="1"/>
+      <rect y="9" width="20" height="2" rx="1"/>
+      <rect y="15" width="20" height="2" rx="1"/>
+    </svg>
+  </button>
+  <h1>glibc 编程模式 &amp; GCC 特性借鉴指南</h1>
+  <div class="topbar-nav">
+    <button onclick="prevChapter()">← 上一章</button>
+    <button onclick="nextChapter()">下一章 →</button>
+  </div>
+</div>
+
+<!-- 遮罩 -->
+<div id="overlay" onclick="closeSidebar()"></div>
+
+<!-- 侧边栏 -->
+<nav id="sidebar">
+  <div class="nav-group-title">概述</div>
+  <a class="nav-item" href="#ch0" onclick="closeSidebarMobile()">导言：为何学习 glibc</a>
+
+  <div class="nav-group-title">函数与符号</div>
+  <a class="nav-item" href="#ch1" onclick="closeSidebarMobile()">§1 强/弱符号与别名</a>
+  <a class="nav-item" href="#ch2" onclick="closeSidebarMobile()">§2 符号可见性控制</a>
+  <a class="nav-item" href="#ch3" onclick="closeSidebarMobile()">§3 内联与不内联属性</a>
+
+  <div class="nav-group-title">编译期优化</div>
+  <a class="nav-item" href="#ch4" onclick="closeSidebarMobile()">§4 分支预测提示</a>
+  <a class="nav-item" href="#ch5" onclick="closeSidebarMobile()">§5 函数语义属性</a>
+  <a class="nav-item" href="#ch6" onclick="closeSidebarMobile()">§6 编译期类型检查宏</a>
+
+  <div class="nav-group-title">资源与内存</div>
+  <a class="nav-item" href="#ch7" onclick="closeSidebarMobile()">§7 cleanup 属性与 RAII</a>
+  <a class="nav-item" href="#ch8" onclick="closeSidebarMobile()">§8 灵活数组与内存布局</a>
+  <a class="nav-item" href="#ch9" onclick="closeSidebarMobile()">§9 offsetof 与 container_of</a>
+
+  <div class="nav-group-title">初始化与生命周期</div>
+  <a class="nav-item" href="#ch10" onclick="closeSidebarMobile()">§10 constructor/destructor</a>
+  <a class="nav-item" href="#ch11" onclick="closeSidebarMobile()">§11 线程局部存储 (TLS)</a>
+
+  <div class="nav-group-title">接口与诊断</div>
+  <a class="nav-item" href="#ch12" onclick="closeSidebarMobile()">§12 format/nonnull/deprecated</a>
+  <a class="nav-item" href="#ch13" onclick="closeSidebarMobile()">§13 特性检测宏模式</a>
+  <a class="nav-item" href="#ch14" onclick="closeSidebarMobile()">§14 链接警告与弃用</a>
+</nav>
+
+<!-- 主内容 -->
+<main id="main">
+<div class="content-wrapper">
+
+<!-- ══════════════ 导言 ══════════════ -->
+<section class="chapter" id="ch0">
+  <div class="chapter-header">
+    <span class="chapter-num">导言</span>
+    <h2 class="chapter-title">为何学习 glibc 源码模式</h2>
+  </div>
+  <div class="chapter-intro">
+    glibc（GNU C Library）是 Linux 用户态最核心的基础库，承载着数十年的工程积累。它大量使用了 GCC 扩展特性与 C 语言编程技巧，这些模式在追求性能、健壮性与可维护性的工程中极具参考价值。本文聚焦于<strong>用户态开发可直接借鉴</strong>的内容，并附完整注释的 C 代码示例。
+  </div>
+
+  <!-- 架构总览 SVG -->
+  <div class="diagram-wrap">
+    <svg width="100%" viewBox="0 0 700 260" xmlns="http://www.w3.org/2000/svg">
+      <defs>
+        <marker id="arr" markerWidth="8" markerHeight="6" refX="8" refY="3" orient="auto">
+          <polygon points="0 0, 8 3, 0 6" fill="#58a6ff"/>
+        </marker>
+      </defs>
+      <!-- 背景框 -->
+      <rect x="10" y="10" width="680" height="240" rx="8" fill="#161b22" stroke="#30363d"/>
+      <!-- 用户代码 -->
+      <rect x="40" y="40" width="140" height="60" rx="6" fill="#1f3a5f" stroke="#58a6ff"/>
+      <text x="110" y="68" text-anchor="middle" font-size="13" fill="#e6edf3" font-weight="600">用户态应用</text>
+      <text x="110" y="86" text-anchor="middle" font-size="11" fill="#8b949e">user space app</text>
+      <!-- glibc -->
+      <rect x="280" y="30" width="160" height="80" rx="6" fill="#1a3a2a" stroke="#3fb950"/>
+      <text x="360" y="55" text-anchor="middle" font-size="13" fill="#e6edf3" font-weight="600">glibc</text>
+      <text x="360" y="72" text-anchor="middle" font-size="11" fill="#8b949e">GNU C Library</text>
+      <text x="360" y="89" text-anchor="middle" font-size="10" fill="#3fb950">libc.so / libpthread.so</text>
+      <!-- 内核 -->
+      <rect x="540" y="40" width="120" height="60" rx="6" fill="#2d1b2d" stroke="#d2a8ff"/>
+      <text x="600" y="65" text-anchor="middle" font-size="13" fill="#e6edf3" font-weight="600">Linux Kernel</text>
+      <text x="600" y="83" text-anchor="middle" font-size="11" fill="#8b949e">syscalls</text>
+      <!-- 箭头 -->
+      <line x1="180" y1="70" x2="278" y2="70" stroke="#58a6ff" stroke-width="1.5" marker-end="url(#arr)"/>
+      <line x1="440" y1="70" x2="538" y2="70" stroke="#58a6ff" stroke-width="1.5" marker-end="url(#arr)"/>
+      <!-- 技巧分类 -->
+      <rect x="40" y="140" width="600" height="90" rx="6" fill="#22272e" stroke="#30363d"/>
+      <text x="340" y="160" text-anchor="middle" font-size="12" fill="#8b949e">可借鉴的编程模式</text>
+      <!-- pills -->
+      <rect x="55" y="170" width="110" height="22" rx="11" fill="rgba(88,166,255,0.15)" stroke="#58a6ff" stroke-width="0.5"/>
+      <text x="110" y="185" text-anchor="middle" font-size="11" fill="#58a6ff">符号/可见性</text>
+      <rect x="175" y="170" width="110" height="22" rx="11" fill="rgba(63,185,80,0.15)" stroke="#3fb950" stroke-width="0.5"/>
+      <text x="230" y="185" text-anchor="middle" font-size="11" fill="#3fb950">编译期优化</text>
+      <rect x="295" y="170" width="110" height="22" rx="11" fill="rgba(210,168,255,0.15)" stroke="#d2a8ff" stroke-width="0.5"/>
+      <text x="350" y="185" text-anchor="middle" font-size="11" fill="#d2a8ff">资源管理</text>
+      <rect x="415" y="170" width="110" height="22" rx="11" fill="rgba(255,166,87,0.15)" stroke="#ffa657" stroke-width="0.5"/>
+      <text x="470" y="185" text-anchor="middle" font-size="11" fill="#ffa657">接口诊断</text>
+      <rect x="535" y="170" width="90" height="22" rx="11" fill="rgba(255,123,114,0.15)" stroke="#ff7b72" stroke-width="0.5"/>
+      <text x="580" y="185" text-anchor="middle" font-size="11" fill="#ff7b72">生命周期</text>
+
+      <text x="55" y="218" font-size="10" fill="#8b949e">来源参考：</text>
+      <text x="115" y="218" font-size="10" fill="#58a6ff">include/libc-symbols.h</text>
+      <text x="270" y="218" font-size="10" fill="#58a6ff">misc/sys/cdefs.h</text>
+      <text x="390" y="218" font-size="10" fill="#58a6ff">malloc/malloc.c</text>
+      <text x="510" y="218" font-size="10" fill="#58a6ff">nptl/pthread_create.c</text>
+    </svg>
+    <div class="diagram-title">图 0-1：glibc 在 Linux 用户态栈中的位置及本文覆盖的编程模式</div>
+  </div>
+
+  <p class="ref">
+    🔗 官方来源：
+    <a href="https://sourceware.org/glibc/manual/latest/html_mono/libc.html" target="_blank">GNU C Library 官方手册</a>
+    ·
+    <a href="https://github.com/bminor/glibc" target="_blank">bminor/glibc（GitHub 镜像）</a>
+  </p>
+</section>
+
+<!-- ══════════════ 第1章 ══════════════ -->
+<section class="chapter" id="ch1">
+  <div class="chapter-header">
+    <span class="chapter-num">§ 1</span>
+    <h2 class="chapter-title">强符号、弱符号与函数别名</h2>
+    <span class="chapter-tag">链接器技巧</span>
+  </div>
+  <div class="chapter-intro">
+    glibc 在 <code>include/libc-symbols.h</code> 中定义了一套完整的符号别名宏。<strong>strong_alias</strong> 让同一份函数代码拥有两个对外名字；<strong>weak_alias</strong> 则允许用户在链接时覆盖库的默认实现。这在插件系统、单元测试 mock 与平台适配中非常有用。
+  </div>
+
+  <!-- SVG 图解 -->
+  <div class="diagram-wrap">
+    <svg width="100%" viewBox="0 0 620 200" xmlns="http://www.w3.org/2000/svg">
+      <defs>
+        <marker id="arr2" markerWidth="7" markerHeight="5" refX="7" refY="2.5" orient="auto">
+          <polygon points="0 0, 7 2.5, 0 5" fill="#3fb950"/>
+        </marker>
+        <marker id="arr3" markerWidth="7" markerHeight="5" refX="7" refY="2.5" orient="auto">
+          <polygon points="0 0, 7 2.5, 0 5" fill="#ffa657"/>
+        </marker>
+      </defs>
+      <!-- 函数实体 -->
+      <rect x="20" y="70" width="140" height="50" rx="6" fill="#1a3a2a" stroke="#3fb950"/>
+      <text x="90" y="92" text-anchor="middle" font-size="13" fill="#e6edf3" font-weight="600">__real_func()</text>
+      <text x="90" y="108" text-anchor="middle" font-size="10" fill="#8b949e">实际函数体</text>
+      <!-- strong alias -->
+      <rect x="230" y="30" width="140" height="44" rx="6" fill="#1f3a5f" stroke="#58a6ff"/>
+      <text x="300" y="50" text-anchor="middle" font-size="12" fill="#e6edf3" font-weight="600">func()</text>
+      <text x="300" y="66" text-anchor="middle" font-size="10" fill="#58a6ff">strong alias → 相同优先级</text>
+      <!-- weak alias -->
+      <rect x="230" y="110" width="140" height="44" rx="6" fill="#2d1b14" stroke="#ffa657"/>
+      <text x="300" y="130" text-anchor="middle" font-size="12" fill="#e6edf3" font-weight="600">func_alt()</text>
+      <text x="300" y="146" text-anchor="middle" font-size="10" fill="#ffa657">weak alias → 可被覆盖</text>
+      <!-- 用户覆盖 -->
+      <rect x="460" y="110" width="130" height="44" rx="6" fill="#3a1a1a" stroke="#ff7b72" stroke-dasharray="4,3"/>
+      <text x="525" y="130" text-anchor="middle" font-size="12" fill="#ff7b72" font-weight="600">func_alt()</text>
+      <text x="525" y="146" text-anchor="middle" font-size="10" fill="#8b949e">用户自定义覆盖</text>
+      <!-- 箭头 -->
+      <line x1="160" y1="90" x2="228" y2="52" stroke="#3fb950" stroke-width="1.5" marker-end="url(#arr2)"/>
+      <line x1="160" y1="95" x2="228" y2="128" stroke="#ffa657" stroke-width="1.5" marker-end="url(#arr3)"/>
+      <line x1="370" y1="132" x2="458" y2="132" stroke="#ff7b72" stroke-width="1.5" stroke-dasharray="5,3" marker-end="url(#arr3)"/>
+      <text x="405" y="126" text-anchor="middle" font-size="10" fill="#ff7b72">链接时胜出</text>
+      <!-- 标注 -->
+      <text x="90" y="160" text-anchor="middle" font-size="10" fill="#8b949e">函数实现（内部命名）</text>
+    </svg>
+    <div class="diagram-title">图 1-1：strong_alias 与 weak_alias 的链接关系</div>
+  </div>
+
+  <div class="code-block">
+    <div class="code-header">
+      <span class="code-lang">C — 强弱符号与别名（源自 include/libc-symbols.h）</span>
+      <button class="copy-btn" onclick="copyCode(this)">复制</button>
+    </div>
+    <pre><span class="cm">/*
+ * 来源：glibc/include/libc-symbols.h
+ * 官方仓库：https://github.com/bminor/glibc/blob/master/include/libc-symbols.h
+ *
+ * ── 章节 1：强符号别名 (strong_alias) 与弱符号别名 (weak_alias) ──
+ *
+ * 核心原理：
+ *   - GCC 的 __attribute__((alias("name"))) 让编译器在目标文件中生成
+ *     一个指向同一符号的别名条目，零运行时开销。
+ *   - __attribute__((weak)) 将符号标记为弱定义，链接器在遇到同名强定义
+ *     时会优先使用强定义，实现「可覆盖」语义。
+ *   - __typeof(name) 保留原符号的类型信息，编译器可做类型检查。
+ */</span>
+
+<span class="pp">#ifndef _MY_SYMBOLS_H
+#define _MY_SYMBOLS_H 1</span>
+
+<span class="cm">/* ── 强符号别名 ────────────────────────────────────────────────────
+ * 将 aliasname 定义为 name 的强别名（等价于同一函数体）。
+ * 用途：同一实现同时暴露两个公共名字（如 write / __write）。
+ *
+ * glibc 原始定义（libc-symbols.h）：
+ *   #define strong_alias(name, aliasname) _strong_alias(name, aliasname)
+ *   #define _strong_alias(name, aliasname) \
+ *     extern __typeof (name) aliasname __attribute__ ((alias (#name)));
+ * ─────────────────────────────────────────────────────────────────── */</span>
+<span class="pp">#define strong_alias(name, aliasname) \
+    extern __typeof(name) aliasname __attribute__((alias(#name)))</span>
+
+<span class="cm">/* ── 弱符号别名 ────────────────────────────────────────────────────
+ * 将 aliasname 定义为 name 的弱别名。
+ * 用途：库提供默认实现，用户可在自己的代码中定义同名函数覆盖它。
+ *       典型场景：hook / mock / 平台适配层。
+ * ─────────────────────────────────────────────────────────────────── */</span>
+<span class="pp">#define weak_alias(name, aliasname) \
+    extern __typeof(name) aliasname __attribute__((weak, alias(#name)))</span>
+
+<span class="cm">/* ── 弱函数属性 ────────────────────────────────────────────────────
+ * 直接在函数定义前使用，标记该函数本身为弱符号。
+ * 当用户链接自己的同名函数时，链接器选用用户的版本。
+ * ─────────────────────────────────────────────────────────────────── */</span>
+<span class="pp">#define weak_function  __attribute__((weak))</span>
+
+<span class="pp">#endif /* _MY_SYMBOLS_H */</span>
+
+<span class="cm">/* ══════════════════ 使用示例 ══════════════════════════════════════ */</span>
+
+<span class="pp">#include &lt;stdio.h&gt;
+#include &lt;stdlib.h&gt;</span>
+
+<span class="cm">/* 1. 内部实现函数（可带双下划线前缀，避免与用户符号冲突） */</span>
+<span class="kw">static int</span> <span class="fn">__my_log_impl</span>(<span class="kw">const char</span> *msg) {
+    <span class="kw">return</span> <span class="fn">printf</span>(<span class="st">"[LOG] %s\n"</span>, msg);
+}
+
+<span class="cm">/* 2. 对外暴露 my_log 为强符号（同等地位，两个名字指向相同代码） */</span>
+<span class="fn">strong_alias</span>(__my_log_impl, my_log);
+
+<span class="cm">/* 3. 提供 my_log_default 弱别名，用户可以自己定义 my_log_default 覆盖 */</span>
+<span class="fn">weak_alias</span>(__my_log_impl, my_log_default);
+
+<span class="cm">/* 4. 弱符号直接定义写法：库提供默认 on_exit_hook，用户可覆盖 */</span>
+<span class="fn">weak_function</span> <span class="kw">void</span> <span class="fn">on_exit_hook</span>(<span class="kw">void</span>) {
+    <span class="cm">/* 默认空实现，用户链接自己的 on_exit_hook 时此版本被忽略 */</span>
+}
+
+<span class="kw">int</span> <span class="fn">main</span>(<span class="kw">void</span>) {
+    <span class="fn">my_log</span>(<span class="st">"hello from strong alias"</span>);
+    <span class="fn">my_log_default</span>(<span class="st">"hello from weak alias"</span>);
+    <span class="fn">on_exit_hook</span>();
+    <span class="kw">return</span> <span class="num">0</span>;
+}</pre>
+  </div>
+
+  <div class="tip">
+    <div class="tip-title">✅ 借鉴要点</div>
+    在库开发中：用 <strong>strong_alias</strong> 给同一实现提供兼容别名（如 POSIX 名 + BSD 名）；用 <strong>weak_alias / weak_function</strong> 提供可覆盖的「钩子」接口，单元测试时无需链接实际实现即可 mock。
+  </div>
+  <p class="ref">🔗 <a href="https://github.com/bminor/glibc/blob/master/include/libc-symbols.h" target="_blank">glibc/include/libc-symbols.h</a></p>
+</section>
+
+<!-- ══════════════ 第2章 ══════════════ -->
+<section class="chapter" id="ch2">
+  <div class="chapter-header">
+    <span class="chapter-num">§ 2</span>
+    <h2 class="chapter-title">符号可见性控制（visibility）</h2>
+    <span class="chapter-tag">DSO 设计</span>
+  </div>
+  <div class="chapter-intro">
+    glibc 在 <code>misc/sys/cdefs.h</code> 和 <code>include/libc-symbols.h</code> 中使用 <code>__attribute__((visibility(...)))</code> 精确管理哪些符号对外可见。<strong>hidden</strong> 可见性让库内部调用绕过 PLT（过程链接表），显著减少运行时开销；配合编译选项 <code>-fvisibility=hidden</code> 可大幅缩减 DSO 导出符号数量。
+  </div>
+
+  <div class="diagram-wrap">
+    <svg width="100%" viewBox="0 0 640 220" xmlns="http://www.w3.org/2000/svg">
+      <!-- PLT 调用路径（默认 default visibility） -->
+      <rect x="20" y="20" width="580" height="80" rx="6" fill="#161b22" stroke="#ffa657"/>
+      <text x="310" y="38" text-anchor="middle" font-size="11" fill="#ffa657" font-weight="600">⚠ 默认可见性（default）：通过 PLT 调用，有重定向开销</text>
+      <rect x="40" y="48" width="100" height="36" rx="5" fill="#1f3a5f" stroke="#58a6ff"/>
+      <text x="90" y="70" text-anchor="middle" font-size="11" fill="#e6edf3">调用者</text>
+      <rect x="200" y="48" width="100" height="36" rx="5" fill="#22272e" stroke="#30363d"/>
+      <text x="250" y="70" text-anchor="middle" font-size="11" fill="#e6edf3">PLT stub</text>
+      <rect x="360" y="48" width="100" height="36" rx="5" fill="#22272e" stroke="#30363d"/>
+      <text x="410" y="70" text-anchor="middle" font-size="11" fill="#e6edf3">GOT</text>
+      <rect x="500" y="48" width="80" height="36" rx="5" fill="#1a3a2a" stroke="#3fb950"/>
+      <text x="540" y="70" text-anchor="middle" font-size="11" fill="#e6edf3">func()</text>
+      <line x1="140" y1="66" x2="198" y2="66" stroke="#ffa657" stroke-width="1.5" marker-end="url(#arr3)"/>
+      <line x1="300" y1="66" x2="358" y2="66" stroke="#ffa657" stroke-width="1.5" marker-end="url(#arr3)"/>
+      <line x1="460" y1="66" x2="498" y2="66" stroke="#ffa657" stroke-width="1.5" marker-end="url(#arr3)"/>
+
+      <!-- hidden 调用路径 -->
+      <rect x="20" y="120" width="580" height="80" rx="6" fill="#161b22" stroke="#3fb950"/>
+      <text x="310" y="138" text-anchor="middle" font-size="11" fill="#3fb950" font-weight="600">✅ hidden 可见性：直接跳转，无 PLT 开销（绕过动态链接重定向）</text>
+      <rect x="40" y="148" width="100" height="36" rx="5" fill="#1f3a5f" stroke="#58a6ff"/>
+      <text x="90" y="170" text-anchor="middle" font-size="11" fill="#e6edf3">调用者</text>
+      <rect x="460" y="148" width="100" height="36" rx="5" fill="#1a3a2a" stroke="#3fb950"/>
+      <text x="510" y="170" text-anchor="middle" font-size="11" fill="#e6edf3">__GI_func()</text>
+      <line x1="140" y1="166" x2="458" y2="166" stroke="#3fb950" stroke-width="2" marker-end="url(#arr2)"/>
+      <text x="300" y="160" text-anchor="middle" font-size="11" fill="#3fb950">直接 call 指令</text>
+    </svg>
+    <div class="diagram-title">图 2-1：default 与 hidden 可见性在 PLT 调用上的差异</div>
+  </div>
+
+  <div class="code-block">
+    <div class="code-header">
+      <span class="code-lang">C — 符号可见性控制（源自 glibc/misc/sys/cdefs.h 与 libc-symbols.h）</span>
+      <button class="copy-btn" onclick="copyCode(this)">复制</button>
+    </div>
+    <pre><span class="cm">/*
+ * 来源：glibc/misc/sys/cdefs.h
+ *       https://github.com/walac/glibc/blob/master/misc/sys/cdefs.h
+ *       glibc/include/libc-symbols.h
+ *
+ * ── 章节 2：符号可见性（Symbol Visibility）控制 ──
+ *
+ * GCC 提供四种 visibility 级别：
+ *   default  — 对外可见，参与动态符号解析（PLT），可被覆盖
+ *   hidden   — 仅在当前 DSO 内可见，直接调用，无 PLT 开销
+ *   protected— 类似 default，但不可被其他 DSO 覆盖
+ *   internal — 最严格，编译器可假设不会从外部调用
+ *
+ * glibc 编译选项：-fvisibility=hidden（默认隐藏所有符号）
+ * 然后用 attribute_hidden / attribute_visible 逐一控制
+ */</span>
+
+<span class="cm">/* ── 来自 glibc/misc/sys/cdefs.h 与 libc-symbols.h ── */</span>
+
+<span class="cm">/* 标记符号为「库内部，不对外导出」—— 绕过 PLT，提升调用性能 */</span>
+<span class="pp">#define attribute_hidden   __attribute__((visibility("hidden")))</span>
+
+<span class="cm">/* 标记符号为「公开导出」—— 对外可见，需经 PLT 动态解析 */</span>
+<span class="pp">#define attribute_visible  __attribute__((visibility("default")))</span>
+
+<span class="cm">/* ── 推荐的头文件组织方式 ──
+ *
+ * mylib.h（公开头文件）：
+ *   void my_public_api(int x);                  // 默认 visible（或显式标记）
+ *
+ * mylib_internal.h（内部头文件）：
+ *   void __my_internal_helper(int x) attribute_hidden;
+ *
+ * 编译时传入：-fvisibility=hidden
+ *   → 所有符号默认隐藏，只有显式 default 的才导出
+ */</span>
+
+<span class="cm">/* ── 示例：共享库内部实现 ── */</span>
+
+<span class="cm">/* 公开 API：跨 DSO 可调用，出现在导出符号表（nm -D 可见） */</span>
+<span class="fn">attribute_visible</span>
+<span class="kw">void</span> <span class="fn">my_public_function</span>(<span class="kw">int</span> x) {
+    <span class="cm">/* 实现 */</span>
+    (void)x;
+}
+
+<span class="cm">/* 内部辅助函数：仅供库内其他 .c 文件调用，不进入导出符号表。
+ * 调用方编译器直接生成 call 指令，无需经过 PLT/GOT，
+ * 省去动态链接器的重定向开销，还能让编译器跨 TU 内联优化。 */</span>
+<span class="fn">attribute_hidden</span>
+<span class="kw">void</span> <span class="fn">__my_internal_helper</span>(<span class="kw">int</span> x) {
+    (void)x;
+}
+
+<span class="cm">/* ── 使用 #pragma GCC visibility 批量设置 ──
+ * 适合大段内部函数声明，避免逐一写 attribute_hidden */</span>
+<span class="pp">#pragma GCC visibility push(hidden)</span>
+<span class="kw">void</span> <span class="fn">internal_a</span>(<span class="kw">void</span>);
+<span class="kw">void</span> <span class="fn">internal_b</span>(<span class="kw">void</span>);
+<span class="kw">void</span> <span class="fn">internal_c</span>(<span class="kw">void</span>);
+<span class="pp">#pragma GCC visibility pop</span>
+
+<span class="cm">/* ── 用 nm 验证效果 ──
+ * 编译：gcc -shared -fvisibility=hidden -o libmylib.so mylib.c
+ * 验证：nm -D libmylib.so | grep ' T '
+ *   只有 attribute_visible 的函数出现在动态符号表中
+ */</span></pre>
+  </div>
+
+  <table>
+    <tr><th>visibility 级别</th><th>能否被外部 DSO 覆盖</th><th>PLT 间接调用</th><th>典型用途</th></tr>
+    <tr><td><code>default</code></td><td>✅ 是</td><td>✅ 有</td><td>公开 API</td></tr>
+    <tr><td><code>hidden</code></td><td>❌ 否</td><td>❌ 直接调用</td><td>库内部函数</td></tr>
+    <tr><td><code>protected</code></td><td>❌ 否</td><td>✅ 有（自身引用直接）</td><td>不可覆盖的公开符号</td></tr>
+    <tr><td><code>internal</code></td><td>❌ 否</td><td>❌ 直接调用</td><td>仅供当前 TU</td></tr>
+  </table>
+
+  <p class="ref">🔗 <a href="https://gcc.gnu.org/onlinedocs/gcc/Function-Attributes.html" target="_blank">GCC Function Attributes 官方文档</a> · <a href="https://www.nedprod.com/programs/gccvisibility.html" target="_blank">GCC Symbol Visibility 详解</a></p>
+</section>
+
+<!-- ══════════════ 第3章 ══════════════ -->
+<section class="chapter" id="ch3">
+  <div class="chapter-header">
+    <span class="chapter-num">§ 3</span>
+    <h2 class="chapter-title">内联控制：always_inline 与 noinline</h2>
+    <span class="chapter-tag">性能调优</span>
+  </div>
+  <div class="chapter-intro">
+    glibc 中大量关键路径函数使用 <code>__attribute__((always_inline))</code> 强制内联以消除调用开销，而错误路径则使用 <code>__attribute__((noinline))</code> 防止内联污染热路径 icache。这一对组合是高性能 C 库的标准做法。
+  </div>
+
+  <div class="code-block">
+    <div class="code-header">
+      <span class="code-lang">C — 内联与不内联控制（源自 glibc sys/cdefs.h & 内部实现）</span>
+      <button class="copy-btn" onclick="copyCode(this)">复制</button>
+    </div>
+    <pre><span class="cm">/*
+ * 来源：glibc/misc/sys/cdefs.h
+ *       https://github.com/walac/glibc/blob/master/misc/sys/cdefs.h
+ *
+ * ── 章节 3：强制内联（always_inline）与禁止内联（noinline）──
+ *
+ * 问题背景：
+ *   - inline 关键字仅是「建议」，编译器不保证内联
+ *   - 高频路径：函数调用开销（保存寄存器、跳转、返回）不可接受
+ *   - 错误路径：不希望大段错误处理代码污染 I-cache
+ */</span>
+
+<span class="pp">#include &lt;stddef.h&gt;
+#include &lt;stdio.h&gt;</span>
+
+<span class="cm">/* ── 强制内联 ──────────────────────────────────────────────────────
+ * glibc 的 __always_inline 宏来自 sys/cdefs.h：
+ *   #define __always_inline __inline __attribute__((__always_inline__))
+ *
+ * 无论优化级别如何（-O0 也生效），函数体直接展开在调用处。
+ * 适合：频繁调用的小函数（如类型转换、位操作、原子读写包装）
+ * ─────────────────────────────────────────────────────────────────── */</span>
+<span class="pp">#define always_inline  __attribute__((__always_inline__)) static inline</span>
+
+<span class="cm">/* ── 禁止内联 ──────────────────────────────────────────────────────
+ * __attribute__((noinline))：确保函数不被内联。
+ * 适合：错误处理路径、调试函数、包含 __builtin_return_address 的函数。
+ * glibc 还用 noinline + noclone 组合防止编译器克隆优化：
+ *   #define __attribute_optimization_barrier__ \
+ *     __attribute__((noinline, noclone))      // 来自 glibc/include/sys/cdefs.h
+ * ─────────────────────────────────────────────────────────────────── */</span>
+<span class="pp">#define noinline       __attribute__((noinline))</span>
+
+<span class="cm">/* ── 实际使用示例 ── */</span>
+
+<span class="cm">/* 热路径：位对齐检查，always_inline 避免函数调用开销 */</span>
+<span class="fn">always_inline</span> <span class="kw">int</span> <span class="fn">is_aligned</span>(<span class="kw">const void</span> *ptr, <span class="nm">size_t</span> align) {
+    <span class="cm">/* align 必须是 2 的幂 */</span>
+    <span class="kw">return</span> ((__nm>uintptr_t</span>)ptr & (align - <span class="num">1</span>)) == <span class="num">0</span>;
+}
+
+<span class="cm">/* 冷路径：错误报告，noinline 避免污染调用方的 icache
+ * 同时 __attribute__((cold)) 让编译器将此函数放到 .text.unlikely 区段 */</span>
+<span class="kw">static</span> <span class="fn">noinline</span> __attribute__((cold))
+<span class="kw">void</span> <span class="fn">report_error</span>(<span class="kw">const char</span> *msg) {
+    <span class="fn">fprintf</span>(stderr, <span class="st">"Error: %s\n"</span>, msg);
+}
+
+<span class="cm">/* ── 组合使用示例：类似 glibc malloc 中的模式 ── */</span>
+<span class="kw">static</span> <span class="fn">always_inline</span> <span class="kw">int</span> <span class="fn">fast_path</span>(<span class="kw">int</span> x) {
+    <span class="kw">if</span> (__builtin_expect(x &lt; <span class="num">0</span>, <span class="num">0</span>)) {  <span class="cm">/* 冷分支 */</span>
+        <span class="fn">report_error</span>(<span class="st">"negative value"</span>);  <span class="cm">/* noinline，不污染热路径 */</span>
+        <span class="kw">return</span> -<span class="num">1</span>;
+    }
+    <span class="kw">return</span> x * <span class="num">2</span>;  <span class="cm">/* 热路径逻辑 */</span>
+}
+
+<span class="cm">/* ── __attribute__((flatten)) ──────────────────────────────────────
+ * glibc 偶尔使用：标记在某函数内，所有调用尽可能全部内联展开。
+ * 用于性能敏感的外层入口函数。
+ * ─────────────────────────────────────────────────────────────────── */</span>
+__attribute__((flatten))
+<span class="kw">int</span> <span class="fn">entry_with_all_inlined</span>(<span class="kw">int</span> a, <span class="kw">int</span> b) {
+    <span class="kw">return</span> <span class="fn">fast_path</span>(a) + <span class="fn">fast_path</span>(b);
+}</pre>
+  </div>
+
+  <div class="warn">
+    <div class="tip-title">⚠ 注意</div>
+    <code>always_inline</code> 会增大代码体积（代码膨胀），在频繁调用次数不确定或函数体较大时请谨慎使用。glibc 只对真正热路径的极小函数使用它。
+  </div>
+</section>
+
+<!-- ══════════════ 第4章 ══════════════ -->
+<section class="chapter" id="ch4">
+  <div class="chapter-header">
+    <span class="chapter-num">§ 4</span>
+    <h2 class="chapter-title">分支预测提示：likely / unlikely</h2>
+    <span class="chapter-tag">CPU 流水线优化</span>
+  </div>
+  <div class="chapter-intro">
+    glibc 广泛使用 <code>__glibc_likely</code> / <code>__glibc_unlikely</code>（内部为 <code>__builtin_expect</code>）告知编译器哪条分支是"热"的，让编译器将热路径代码放在顺序执行路径（fall-through），减少分支预测失效和 icache miss。
+  </div>
+
+  <div class="diagram-wrap">
+    <svg width="100%" viewBox="0 0 640 200" xmlns="http://www.w3.org/2000/svg">
+      <defs>
+        <marker id="arr4" markerWidth="7" markerHeight="5" refX="7" refY="2.5" orient="auto">
+          <polygon points="0 0, 7 2.5, 0 5" fill="#3fb950"/>
+        </marker>
+        <marker id="arr5" markerWidth="7" markerHeight="5" refX="7" refY="2.5" orient="auto">
+          <polygon points="0 0, 7 2.5, 0 5" fill="#ff7b72"/>
+        </marker>
+      </defs>
+      <!-- 不使用提示 -->
+      <rect x="10" y="10" width="295" height="180" rx="6" fill="#161b22" stroke="#30363d"/>
+      <text x="157" y="30" text-anchor="middle" font-size="11" fill="#8b949e" font-weight="600">不使用 __builtin_expect</text>
+      <rect x="100" y="42" width="120" height="30" rx="4" fill="#1f3a5f" stroke="#58a6ff"/>
+      <text x="160" y="62" text-anchor="middle" font-size="11" fill="#e6edf3">if (condition)</text>
+      <rect x="30" y="100" width="100" height="30" rx="4" fill="#22272e" stroke="#ffa657"/>
+      <text x="80" y="120" text-anchor="middle" font-size="11" fill="#ffa657">true_branch</text>
+      <rect x="180" y="100" width="100" height="30" rx="4" fill="#22272e" stroke="#ffa657"/>
+      <text x="230" y="120" text-anchor="middle" font-size="11" fill="#ffa657">false_branch</text>
+      <line x1="110" y1="72" x2="70" y2="98" stroke="#ffa657" stroke-width="1.5" marker-end="url(#arr5)"/>
+      <line x1="210" y1="72" x2="230" y2="98" stroke="#ffa657" stroke-width="1.5" marker-end="url(#arr5)"/>
+      <text x="157" y="160" text-anchor="middle" font-size="10" fill="#8b949e">CPU 无法知道哪条更常走</text>
+      <text x="157" y="178" text-anchor="middle" font-size="10" fill="#8b949e">可能预测失败导致流水线刷新</text>
+
+      <!-- 使用提示 -->
+      <rect x="330" y="10" width="295" height="180" rx="6" fill="#161b22" stroke="#3fb950"/>
+      <text x="477" y="30" text-anchor="middle" font-size="11" fill="#3fb950" font-weight="600">使用 likely(condition)</text>
+      <rect x="420" y="42" width="120" height="30" rx="4" fill="#1f3a5f" stroke="#58a6ff"/>
+      <text x="480" y="62" text-anchor="middle" font-size="11" fill="#e6edf3">if (likely(cond))</text>
+      <rect x="360" y="100" width="100" height="30" rx="4" fill="#1a3a2a" stroke="#3fb950" stroke-width="2"/>
+      <text x="410" y="120" text-anchor="middle" font-size="11" fill="#3fb950" font-weight="600">热路径 fall-through</text>
+      <rect x="500" y="100" width="100" height="30" rx="4" fill="#22272e" stroke="#8b949e" stroke-dasharray="4,3"/>
+      <text x="550" y="120" text-anchor="middle" font-size="11" fill="#8b949e">冷路径 jmp</text>
+      <line x1="438" y1="72" x2="400" y2="98" stroke="#3fb950" stroke-width="2" marker-end="url(#arr4)"/>
+      <line x1="530" y1="72" x2="540" y2="98" stroke="#8b949e" stroke-width="1" stroke-dasharray="3,2" marker-end="url(#arr5)"/>
+      <text x="477" y="160" text-anchor="middle" font-size="10" fill="#3fb950">热路径是顺序代码，icache 友好</text>
+      <text x="477" y="178" text-anchor="middle" font-size="10" fill="#3fb950">预测失效率大幅降低</text>
+    </svg>
+    <div class="diagram-title">图 4-1：__builtin_expect 如何影响代码布局与分支预测</div>
+  </div>
+
+  <div class="code-block">
+    <div class="code-header">
+      <span class="code-lang">C — 分支预测提示宏（源自 glibc/include/cdefs.h 及 pthread_create.c）</span>
+      <button class="copy-btn" onclick="copyCode(this)">复制</button>
+    </div>
+    <pre><span class="cm">/*
+ * 来源：glibc 内部宏 __glibc_likely / __glibc_unlikely
+ *       https://sourceware.org/glibc/manual/latest/html_mono/libc.html
+ *       glibc/nptl/pthread_create.c 中大量使用 __glibc_unlikely
+ *
+ * ── 章节 4：分支预测提示 likely / unlikely ──
+ *
+ * 原理：__builtin_expect(expr, expected_value)
+ *   向编译器报告 expr 最有可能等于 expected_value。
+ *   编译器据此重排汇编指令，将「更可能走」的分支放在 fall-through 路径。
+ *   x86/ARM 的 CPU 对 fall-through（无跳转）天然预测为「执行」，
+ *   而跳转指令则依赖 BPU 历史。
+ *
+ * glibc 定义（特性检测后）：
+ *   #define __glibc_likely(cond)   __builtin_expect(!!(cond), 1)
+ *   #define __glibc_unlikely(cond) __builtin_expect(!!(cond), 0)
+ */</span>
+
+<span class="cm">/* 用户代码可直接这样定义，与 Linux kernel 的 likely/unlikely 同理 */</span>
+<span class="pp">#define likely(x)    __builtin_expect(!!(x), 1)
+#define unlikely(x)  __builtin_expect(!!(x), 0)</span>
+
+<span class="pp">#include &lt;stdlib.h&gt;
+#include &lt;string.h&gt;
+#include &lt;errno.h&gt;</span>
+
+<span class="cm">/* ── 示例 1：内存分配检查（失败是小概率事件） ── */</span>
+<span class="kw">char</span> *<span class="fn">safe_strdup</span>(<span class="kw">const char</span> *src) {
+    <span class="kw">char</span> *dst = <span class="fn">malloc</span>(<span class="fn">strlen</span>(src) + <span class="num">1</span>);
+    <span class="cm">/* 分配失败极少发生 → unlikely；热路径是 dst != NULL 的情况 */</span>
+    <span class="kw">if</span> (<span class="fn">unlikely</span>(dst == NULL)) {
+        errno = ENOMEM;
+        <span class="kw">return</span> NULL;
+    }
+    <span class="kw">return</span> <span class="fn">strcpy</span>(dst, src);
+}
+
+<span class="cm">/* ── 示例 2：快速路径判断（类似 glibc malloc fastbin 路径） ── */</span>
+<span class="kw">typedef struct</span> { <span class="kw">int</span> valid; <span class="kw">int</span> data; } CacheEntry;
+
+<span class="kw">int</span> <span class="fn">cache_lookup</span>(CacheEntry *cache, <span class="kw">int</span> n, <span class="kw">int</span> key) {
+    <span class="kw">for</span> (<span class="kw">int</span> i = <span class="num">0</span>; i &lt; n; i++) {
+        <span class="cm">/* 缓存命中是常见情况 → likely */</span>
+        <span class="kw">if</span> (<span class="fn">likely</span>(cache[i].valid && cache[i].data == key))
+            <span class="kw">return</span> i;
+    }
+    <span class="kw">return</span> -<span class="num">1</span>;
+}
+
+<span class="cm">/* ── 示例 3：类似 glibc pthread_create.c 中的用法 ──
+ *   if (__glibc_unlikely(atomic_decrement_and_test(&__nptl_nthreads)))
+ *       exit(0);
+ * 线程退出时，通常不是最后一个线程 → unlikely */</span>
+<span class="kw">void</span> <span class="fn">thread_exit_check</span>(<span class="kw">int</span> *thread_count) {
+    <span class="cm">/* __sync_sub_and_fetch 原子递减，返回新值 */</span>
+    <span class="kw">int</span> remaining = __sync_sub_and_fetch(thread_count, <span class="num">1</span>);
+    <span class="kw">if</span> (<span class="fn">unlikely</span>(remaining == <span class="num">0</span>)) {
+        <span class="cm">/* 最后一个线程退出，终止进程 */</span>
+        <span class="fn">exit</span>(<span class="num">0</span>);
+    }
+}
+
+<span class="cm">/* ── C++20 / C23 标准替代 ──
+ * C++20 引入 [[likely]] / [[unlikely]] 属性，语义相同，无需宏：
+ *   if (ptr) [[likely]] { ... }
+ * C23 也计划引入，但目前 GCC/Clang 扩展仍是主流。
+ */</span></pre>
+  </div>
+
+  <div class="tip">
+    <div class="tip-title">✅ 使用原则</div>
+    只在你确实知道概率分布的地方使用。错误的 likely/unlikely 比不用更糟——它会欺骗 CPU 的动态分支预测器。一般建议：<strong>错误检查用 unlikely，主循环条件延续用 likely</strong>。
+  </div>
+  <p class="ref">🔗 <a href="https://tbrindus.ca/how-builtin-expect-works/" target="_blank">__builtin_expect 内部原理深度分析</a></p>
+</section>
+
+<!-- ══════════════ 第5章 ══════════════ -->
+<section class="chapter" id="ch5">
+  <div class="chapter-header">
+    <span class="chapter-num">§ 5</span>
+    <h2 class="chapter-title">函数语义属性：pure、const、noreturn、warn_unused_result</h2>
+    <span class="chapter-tag">编译器优化语义</span>
+  </div>
+  <div class="chapter-intro">
+    glibc 在函数声明上大量附加语义属性，帮助 GCC 执行更激进的优化（公共子表达式消除、死代码删除），同时让编译器在调用端发出更精确的警告。
+  </div>
+
+  <div class="code-block">
+    <div class="code-header">
+      <span class="code-lang">C — 函数语义属性（源自 glibc 公开头文件与 GCC 文档）</span>
+      <button class="copy-btn" onclick="copyCode(this)">复制</button>
+    </div>
+    <pre><span class="cm">/*
+ * 来源：
+ *   - GCC Function Attributes 官方文档
+ *     https://gcc.gnu.org/onlinedocs/gcc/Function-Attributes.html
+ *   - glibc/misc/sys/cdefs.h（__attribute_pure__, __attribute_const__ 等宏）
+ *   - glibc string.h / math.h 中的函数声明
+ *
+ * ── 章节 5：函数语义属性 ──
+ *
+ * 这些属性的本质是向编译器说明函数的副作用边界，
+ * 编译器据此做 CSE（公共子表达式消除）、删除无用调用等优化。
+ */</span>
+
+<span class="pp">#include &lt;stddef.h&gt;
+#include &lt;stdnoreturn.h&gt;  /* C11 noreturn */
+#include &lt;stdio.h&gt;
+#include &lt;stdlib.h&gt;</span>
+
+<span class="cm">/* ── pure：无副作用，可读全局内存 ────────────────────────────────
+ * glibc 定义：#define __attribute_pure__ __attribute__((__pure__))
+ * 约定：
+ *   - 函数不修改任何全局状态（无写操作）
+ *   - 可以读取内存（包括通过指针参数访问的内存）
+ *   - 相同参数 + 相同全局状态 → 相同返回值
+ *   - 编译器可缓存调用结果，消除重复调用
+ * 典型：strlen、memchr、checksum 计算
+ * ─────────────────────────────────────────────────────────────────── */</span>
+__attribute__((__pure__))
+<span class="nm">size_t</span> <span class="fn">my_strlen</span>(<span class="kw">const char</span> *s) {
+    <span class="nm">size_t</span> n = <span class="num">0</span>;
+    <span class="kw">while</span> (*s++) n++;
+    <span class="kw">return</span> n;
+}
+
+<span class="cm">/* ── const：严格无副作用，不读全局内存 ──────────────────────────
+ * glibc 定义：#define __attribute_const__ __attribute__((__const__))
+ * 约定（比 pure 更严格）：
+ *   - 返回值完全由参数决定，不访问任何全局/静态内存
+ *   - 相同参数必然相同返回值（纯函数，数学意义上）
+ *   - 编译器可在循环提升（loop-invariant code motion）中提取
+ * 典型：sin/cos/abs（数学函数）、位运算辅助函数
+ * ─────────────────────────────────────────────────────────────────── */</span>
+__attribute__((__const__))
+<span class="kw">unsigned long</span> <span class="fn">next_power_of_2</span>(<span class="kw">unsigned long</span> n) {
+    <span class="kw">if</span> (n == <span class="num">0</span>) <span class="kw">return</span> <span class="num">1</span>;
+    n--;
+    n |= n >> <span class="num">1</span>; n |= n >> <span class="num">2</span>;
+    n |= n >> <span class="num">4</span>; n |= n >> <span class="num">8</span>;
+    n |= n >> <span class="num">16</span>; n |= n >> <span class="num">32</span>;
+    <span class="kw">return</span> n + <span class="num">1</span>;
+}
+
+<span class="cm">/* ── noreturn：函数永不返回 ──────────────────────────────────────
+ * glibc：exit()、abort()、longjmp() 等使用 __attribute__((__noreturn__))
+ * 好处：
+ *   1. 调用后的代码编译器知道是死代码，可优化掉
+ *   2. 不需要在调用方补充 return 语句也不会发出警告
+ * ─────────────────────────────────────────────────────────────────── */</span>
+__attribute__((__noreturn__))
+<span class="kw">void</span> <span class="fn">fatal_error</span>(<span class="kw">const char</span> *msg) {
+    <span class="fn">fprintf</span>(stderr, <span class="st">"FATAL: %s\n"</span>, msg);
+    <span class="fn">abort</span>();
+    <span class="cm">/* 无需 return，编译器知道不会到达这里 */</span>
+}
+
+<span class="cm">/* ── warn_unused_result：强制调用方检查返回值 ─────────────────
+ * glibc 在 read()、write()、malloc() 等的 glibc 内部声明上使用。
+ * 调用方忽略返回值时编译器发出警告（配合 -Wunused-result）。
+ * ─────────────────────────────────────────────────────────────────── */</span>
+__attribute__((warn_unused_result))
+<span class="kw">int</span> <span class="fn">safe_write</span>(<span class="kw">int</span> fd, <span class="kw">const void</span> *buf, <span class="nm">size_t</span> len) {
+    (void)fd; (void)buf; (void)len;
+    <span class="kw">return</span> <span class="num">0</span>; <span class="cm">/* 简化示意，实际应检查 write() 返回值 */</span>
+}
+
+<span class="cm">/* ── malloc 属性：返回新分配的内存指针 ────────────────────────
+ * 告知编译器返回值是不与任何已知对象别名的指针，
+ * 编译器可据此做更激进的别名分析（alias analysis）。
+ * glibc 的 malloc() 自身即用此属性声明。
+ * ─────────────────────────────────────────────────────────────────── */</span>
+__attribute__((__malloc__))
+<span class="kw">void</span> *<span class="fn">my_pool_alloc</span>(<span class="nm">size_t</span> size) {
+    <span class="kw">return</span> <span class="fn">malloc</span>(size);
+}
+
+<span class="cm">/* ── hot / cold：标记热/冷函数 ──────────────────────────────────
+ * hot：链接器将热函数放在 .text 的开头，提升 icache 命中率
+ * cold：将冷函数放在 .text.cold，远离热代码
+ * glibc malloc 主路径标记为 hot，错误打印标记为 cold
+ * ─────────────────────────────────────────────────────────────────── */</span>
+__attribute__((hot))
+<span class="kw">int</span> <span class="fn">hot_path_process</span>(<span class="kw">int</span> x) { <span class="kw">return</span> x * <span class="num">3</span> + <span class="num">1</span>; }
+
+__attribute__((cold))
+<span class="kw">void</span> <span class="fn">cold_path_log</span>(<span class="kw">const char</span> *s) { <span class="fn">fprintf</span>(stderr, <span class="st">"%s\n"</span>, s); }</pre>
+  </div>
+
+  <table>
+    <tr><th>属性</th><th>访问全局内存</th><th>有副作用</th><th>主要优化效果</th></tr>
+    <tr><td><code>const</code></td><td>❌ 否</td><td>❌ 否</td><td>CSE、循环不变量提升</td></tr>
+    <tr><td><code>pure</code></td><td>✅ 只读</td><td>❌ 否</td><td>CSE（需考虑内存状态）</td></tr>
+    <tr><td><code>noreturn</code></td><td>-</td><td>-</td><td>消除死代码、省略 return</td></tr>
+    <tr><td><code>malloc</code></td><td>返回无别名指针</td><td>✅ 是</td><td>更精确别名分析</td></tr>
+    <tr><td><code>hot/cold</code></td><td>-</td><td>-</td><td>函数放置区段优化</td></tr>
+  </table>
+</section>
+
+<!-- ══════════════ 第6章 ══════════════ -->
+<section class="chapter" id="ch6">
+  <div class="chapter-header">
+    <span class="chapter-num">§ 6</span>
+    <h2 class="chapter-title">编译期类型检查宏：__typeof__ 与 typecheck</h2>
+    <span class="chapter-tag">类型安全</span>
+  </div>
+  <div class="chapter-intro">
+    glibc 和 Linux kernel 都使用 <code>__typeof__</code> 让宏在展开时保留类型信息，避免隐式类型转换导致的 bug，并能在编译期触发类型不匹配警告。这是 C 语言宏"类型安全化"的核心技巧。
+  </div>
+
+  <div class="code-block">
+    <div class="code-header">
+      <span class="code-lang">C — typeof 类型保留与编译期类型检查（源自 Linux kernel / glibc 宏）</span>
+      <button class="copy-btn" onclick="copyCode(this)">复制</button>
+    </div>
+    <pre><span class="cm">/*
+ * 来源：
+ *   - Linux kernel include/linux/minmax.h （min/max 宏的 typeof 用法）
+ *   - Stack Overflow: Typechecking macro arguments in C
+ *     https://stackoverflow.com/questions/4712720
+ *   - glibc libc-symbols.h 中 strong_alias 使用的 __typeof(name)
+ *
+ * ── 章节 6：__typeof__ 与编译期类型检查宏 ──
+ *
+ * 问题：C 的泛型宏（如 #define max(a,b) ((a)>(b)?(a):(b))）不做类型检查：
+ *   max(1.0, 2L)  → 整型与浮点混用，可能截断
+ *   max(ptr, 0)   → 指针与整数混用，未定义行为
+ *
+ * 解决方案：
+ *   1. __typeof__ 推导变量类型 → 用于定义临时变量
+ *   2. 利用指针比较触发类型不匹配警告（GCC 会在指针类型不同时警告）
+ */</span>
+
+<span class="pp">#include &lt;stddef.h&gt;</span>
+
+<span class="cm">/* ── 1. 类型安全的 min/max 宏 ──────────────────────────────────
+ * Linux kernel 的经典实现，glibc 内部亦有类似用法：
+ *   __typeof__(x) _x = (x); —— 保持 x 的完整类型（含 const/volatile）
+ *   (void)(&_x == &_y);     —— 触发指针类型不匹配警告（如 int* vs long*）
+ *                              GCC 对此发出 -Wtype-limits 兼容警告
+ * ─────────────────────────────────────────────────────────────────── */</span>
+<span class="pp">#define safe_min(x, y) ({               \
+    __typeof__(x) _x = (x);             \
+    __typeof__(y) _y = (y);             \
+    (void)(&_x == &_y);  /* 类型检查：不同类型指针比较触发警告 */ \
+    _x < _y ? _x : _y;                  \
+})</span>
+
+<span class="pp">#define safe_max(x, y) ({               \
+    __typeof__(x) _x = (x);             \
+    __typeof__(y) _y = (y);             \
+    (void)(&_x == &_y);                 \
+    _x > _y ? _x : _y;                  \
+})</span>
+
+<span class="cm">/* ── 2. 编译期类型断言（typecheck 宏） ──────────────────────────
+ * 思路：创建一个同类型的哑变量，再将 x 赋给它，
+ *       如果类型不兼容，编译器会警告/报错。
+ *       ({ ... 1; }) 是 GCC 语句表达式（statement expression）扩展，
+ *       结果为最后一条语句的值。
+ * ─────────────────────────────────────────────────────────────────── */</span>
+<span class="pp">#define typecheck(type, x)  ({  \
+    type __dummy;               \
+    __typeof__(x) __dummy2;     \
+    (void)(&__dummy == &__dummy2); /* 类型不同时 GCC 发出警告 */ \
+    1;                           \
+})</span>
+
+<span class="cm">/* ── 3. 参数副作用安全的宏包裹 ─────────────────────────────────
+ * 传统 #define ABS(x) ((x)<0?-(x):(x)) 在 ABS(i++) 时 i 自增两次。
+ * 用 __typeof__ + 临时变量彻底避免：
+ * ─────────────────────────────────────────────────────────────────── */</span>
+<span class="pp">#define safe_abs(x) ({          \
+    __typeof__(x) _v = (x);     \
+    _v < 0 ? -_v : _v;          \
+})</span>
+
+<span class="cm">/* ── 4. 类型保留的数组元素数宏 ─────────────────────────────────
+ * glibc 风格：
+ *   ARRAY_SIZE 在传入指针（而非数组）时，
+ *   利用 __typeof__ 在编译期检测（需要 GCC 扩展）
+ * ─────────────────────────────────────────────────────────────────── */</span>
+<span class="pp">#define ARRAY_SIZE(arr) (sizeof(arr) / sizeof((arr)[0]))</span>
+
+<span class="cm">/* 更严格版本：防止对指针误用（编译期触发 BUILD_BUG_ON 风格错误） */</span>
+<span class="pp">#define ARRAY_SIZE_SAFE(arr) (                         \
+    sizeof(arr) / sizeof((arr)[0])                     \
+    + (sizeof(arr) == sizeof(void *) ?                 \
+       0 : 0)   /* 仅示意，实际需 static_assert */     \
+)</span>
+
+<span class="cm">/* ── 5. 使用示例 ── */</span>
+<span class="kw">void</span> <span class="fn">example_typeof_usage</span>(<span class="kw">void</span>) {
+    <span class="kw">int</span>  a = <span class="num">10</span>, b = <span class="num">20</span>;
+    <span class="kw">long</span> c = <span class="num">30</span>;
+
+    <span class="kw">int</span>  r1 = <span class="fn">safe_min</span>(a, b);   <span class="cm">/* 正常：同为 int */</span>
+    <span class="cm">/* int  r2 = safe_min(a, c); */</span>  <span class="cm">/* ← GCC 将警告：int* vs long* */</span>
+    <span class="kw">int</span>  r3 = <span class="fn">safe_abs</span>(-a);     <span class="cm">/* 安全，无双重副作用 */</span>
+
+    <span class="kw">int</span>  arr[] = {<span class="num">1</span>,<span class="num">2</span>,<span class="num">3</span>,<span class="num">4</span>,<span class="num">5</span>};
+    <span class="nm">size_t</span> n = <span class="fn">ARRAY_SIZE</span>(arr);  <span class="cm">/* 5 */</span>
+
+    (void)r1; (void)r3; (void)n; (void)c;
+}</pre>
+  </div>
+
+  <div class="tip">
+    <div class="tip-title">✅ 借鉴要点</div>
+    在任何需要"泛型"行为的宏中，用 <code>__typeof__(x) _x = (x);</code> 替代直接展开参数：<strong>既避免副作用，又保留完整类型信息</strong>。配合指针比较可实现编译期类型断言。
+  </div>
+</section>
+
+<!-- ══════════════ 第7章 ══════════════ -->
+<section class="chapter" id="ch7">
+  <div class="chapter-header">
+    <span class="chapter-num">§ 7</span>
+    <h2 class="chapter-title">cleanup 属性：C 语言的 RAII</h2>
+    <span class="chapter-tag">资源管理</span>
+  </div>
+  <div class="chapter-intro">
+    <code>__attribute__((cleanup(func)))</code> 是 GCC/Clang 扩展，当变量离开作用域时自动调用清理函数。systemd、glibc 内部都大量使用这一模式实现类 C++ RAII 的资源自动释放，彻底消灭多路 goto 错误处理。
+  </div>
+
+  <div class="diagram-wrap">
+    <svg width="100%" viewBox="0 0 640 220" xmlns="http://www.w3.org/2000/svg">
+      <!-- 传统 goto 模式 -->
+      <rect x="10" y="10" width="295" height="200" rx="6" fill="#161b22" stroke="#ffa657"/>
+      <text x="157" y="30" text-anchor="middle" font-size="11" fill="#ffa657" font-weight="600">传统 goto 错误处理模式</text>
+      <rect x="25" y="42" width="260" height="24" rx="3" fill="#1f3a5f" stroke="none"/>
+      <text x="155" y="59" text-anchor="middle" font-size="10" fill="#e6edf3">a = acquire_A();  if(!a) goto err_a;</text>
+      <rect x="25" y="70" width="260" height="24" rx="3" fill="#1f3a5f" stroke="none"/>
+      <text x="155" y="87" text-anchor="middle" font-size="10" fill="#e6edf3">b = acquire_B();  if(!b) goto err_b;</text>
+      <rect x="25" y="98" width="260" height="24" rx="3" fill="#1f3a5f" stroke="none"/>
+      <text x="155" y="115" text-anchor="middle" font-size="10" fill="#e6edf3">c = acquire_C();  if(!c) goto err_c;</text>
+      <text x="155" y="145" text-anchor="middle" font-size="10" fill="#ffa657">err_c: release_C(c);</text>
+      <text x="155" y="161" text-anchor="middle" font-size="10" fill="#ffa657">err_b: release_B(b);</text>
+      <text x="155" y="177" text-anchor="middle" font-size="10" fill="#ffa657">err_a: release_A(a);</text>
+      <text x="155" y="198" text-anchor="middle" font-size="10" fill="#8b949e">每加一个资源，标签成倍增加</text>
+
+      <!-- cleanup 模式 -->
+      <rect x="330" y="10" width="295" height="200" rx="6" fill="#161b22" stroke="#3fb950"/>
+      <text x="477" y="30" text-anchor="middle" font-size="11" fill="#3fb950" font-weight="600">cleanup 属性模式</text>
+      <rect x="345" y="42" width="265" height="24" rx="3" fill="#1a3a2a" stroke="none"/>
+      <text x="477" y="59" text-anchor="middle" font-size="10" fill="#3fb950">cleanup(rel_A) A *a = acquire_A();</text>
+      <rect x="345" y="70" width="265" height="24" rx="3" fill="#1a3a2a" stroke="none"/>
+      <text x="477" y="87" text-anchor="middle" font-size="10" fill="#3fb950">cleanup(rel_B) B *b = acquire_B();</text>
+      <rect x="345" y="98" width="265" height="24" rx="3" fill="#1a3a2a" stroke="none"/>
+      <text x="477" y="115" text-anchor="middle" font-size="10" fill="#3fb950">cleanup(rel_C) C *c = acquire_C();</text>
+      <rect x="345" y="142" width="265" height="42" rx="3" fill="#22272e" stroke="#3fb950" stroke-dasharray="3,2"/>
+      <text x="477" y="160" text-anchor="middle" font-size="10" fill="#3fb950">return; // 任意路径退出</text>
+      <text x="477" y="176" text-anchor="middle" font-size="10" fill="#3fb950">// 编译器自动插入 rel_C/B/A</text>
+      <text x="477" y="198" text-anchor="middle" font-size="10" fill="#8b949e">无需手写 goto 标签，顺序清晰</text>
+    </svg>
+    <div class="diagram-title">图 7-1：goto 模式 vs cleanup 属性在多资源管理上的对比</div>
+  </div>
+
+  <div class="code-block">
+    <div class="code-header">
+      <span class="code-lang">C — cleanup 属性实现 RAII（GCC/Clang 扩展，systemd/glibc 风格）</span>
+      <button class="copy-btn" onclick="copyCode(this)">复制</button>
+    </div>
+    <pre><span class="cm">/*
+ * 来源：GCC __attribute__((cleanup)) 官方文档
+ *       systemd 的 _cleanup_free_ 等宏（参考 GCC HN 讨论）
+ *       https://yuankun.me/posts/the-cleanup-variable-attribute-in-gcc/
+ *
+ * ── 章节 7：cleanup 属性 —— C 语言的 RAII ──
+ *
+ * 语义：当声明了 cleanup(func) 的自动变量离开作用域时
+ *       （包括 return、goto 出作用域、以及函数异常退出），
+ *       编译器自动插入对 func(&var) 的调用。
+ *
+ * 约束：
+ *   1. 只能用于自动（栈）变量，不能用于函数参数或静态变量
+ *   2. cleanup 函数接收一个「指向该变量的指针」作为参数
+ *   3. cleanup 函数的返回值被忽略
+ *   4. 多个 cleanup 变量按声明的逆序（LIFO）调用清理函数
+ *   5. 建议初始化为 NULL/0，防止 cleanup 处理未初始化的值
+ */</span>
+
+<span class="pp">#include &lt;stdio.h&gt;
+#include &lt;stdlib.h&gt;
+#include &lt;string.h&gt;
+#include &lt;fcntl.h&gt;
+#include &lt;unistd.h&gt;</span>
+
+<span class="cm">/* ── 定义 cleanup 函数 ────────────────────────────────────────── */</span>
+
+<span class="cm">/* 释放堆内存（参数是 char** 因为 cleanup 传递的是变量的地址） */</span>
+<span class="kw">static void</span> <span class="fn">cleanup_free</span>(<span class="kw">void</span> *ptr_to_ptr) {
+    <span class="kw">void</span> **p = (<span class="kw">void</span> **)ptr_to_ptr;
+    <span class="fn">free</span>(*p);          <span class="cm">/* free(NULL) 是合法的，无需额外判断 */</span>
+}
+
+<span class="cm">/* 关闭文件描述符（-1 表示未打开）*/</span>
+<span class="kw">static void</span> <span class="fn">cleanup_close</span>(<span class="kw">int</span> *fdp) {
+    <span class="kw">if</span> (*fdp >= <span class="num">0</span>)
+        <span class="fn">close</span>(*fdp);
+}
+
+<span class="cm">/* 关闭 FILE* 流 */</span>
+<span class="kw">static void</span> <span class="fn">cleanup_fclose</span>(FILE **fp) {
+    <span class="kw">if</span> (*fp) <span class="fn">fclose</span>(*fp);
+}
+
+<span class="cm">/* ── 便捷宏定义（systemd 风格）── */</span>
+<span class="pp">#define _cleanup_free_   __attribute__((cleanup(cleanup_free)))
+#define _cleanup_close_  __attribute__((cleanup(cleanup_close)))
+#define _cleanup_fclose_ __attribute__((cleanup(cleanup_fclose)))</span>
+
+<span class="cm">/* ── 使用示例：多资源管理，无需 goto ── */</span>
+<span class="kw">int</span> <span class="fn">process_file</span>(<span class="kw">const char</span> *path) {
+    <span class="cm">/* 初始化为"空"状态，确保未成功分配时 cleanup 不误操作 */</span>
+    <span class="fn">_cleanup_free_</span>   <span class="kw">char</span> *buf  = NULL;
+    <span class="fn">_cleanup_close_</span>  <span class="kw">int</span>   fd   = -<span class="num">1</span>;
+    <span class="fn">_cleanup_fclose_</span> FILE *log  = NULL;
+
+    fd = <span class="fn">open</span>(path, O_RDONLY);
+    <span class="kw">if</span> (fd &lt; <span class="num">0</span>) <span class="kw">return</span> -<span class="num">1</span>;  <span class="cm">/* cleanup_close 不做任何事（fd=-1） */</span>
+
+    buf = <span class="fn">malloc</span>(<span class="num">4096</span>);
+    <span class="kw">if</span> (!buf) <span class="kw">return</span> -<span class="num">1</span>;     <span class="cm">/* cleanup_close 关闭 fd；cleanup_free(NULL) 无害 */</span>
+
+    log = <span class="fn">fopen</span>(<span class="st">"/tmp/proc.log"</span>, <span class="st">"w"</span>);
+    <span class="kw">if</span> (!log) <span class="kw">return</span> -<span class="num">1</span>;    <span class="cm">/* cleanup: fclose(log)=跳过, free(buf), close(fd) */</span>
+
+    <span class="cm">/* 主处理逻辑 */</span>
+    <span class="nm">ssize_t</span> n = <span class="fn">read</span>(fd, buf, <span class="num">4095</span>);
+    <span class="kw">if</span> (n &gt; <span class="num">0</span>) {
+        buf[n] = <span class="st">'\0'</span>;
+        <span class="fn">fprintf</span>(log, <span class="st">"Read %zd bytes\n"</span>, n);
+    }
+
+    <span class="kw">return</span> <span class="num">0</span>;
+    <span class="cm">/* 函数结束时，编译器自动按逆序调用：
+     *   cleanup_fclose(&log)  → fclose(log)
+     *   cleanup_close(&fd)    → close(fd)
+     *   cleanup_free(&buf)    → free(buf)
+     */</span>
+}
+
+<span class="cm">/* ── 泛型「scope guard」封装 ── */</span>
+<span class="kw">typedef struct</span> {
+    <span class="kw">void</span> (*fn)(<span class="kw">void</span> *);
+    <span class="kw">void</span> *ctx;
+} ScopeGuard;
+
+<span class="kw">static void</span> <span class="fn">scope_guard_run</span>(ScopeGuard *sg) {
+    <span class="kw">if</span> (sg->fn) sg->fn(sg->ctx);
+}
+
+<span class="pp">#define SCOPE_GUARD(cleanup_fn, context) \
+    ScopeGuard __attribute__((cleanup(scope_guard_run))) \
+    __scope_guard_##__LINE__ = { .fn = (cleanup_fn), .ctx = (void*)(context) }</span>
+
+<span class="kw">void</span> <span class="fn">demo_scope_guard</span>(<span class="kw">void</span>) {
+    <span class="kw">int</span> *data = <span class="fn">malloc</span>(<span class="kw">sizeof</span>(<span class="kw">int</span>) * <span class="num">10</span>);
+    <span class="fn">SCOPE_GUARD</span>(free, data);    <span class="cm">/* 离开作用域自动释放 */</span>
+    data[<span class="num">0</span>] = <span class="num">42</span>;
+    <span class="cm">/* ... 任意路径离开此作用域都会 free(data) */</span>
+}</pre>
+  </div>
+
+  <div class="tip">
+    <div class="tip-title">✅ 借鉴要点</div>
+    在处理多个资源（fd、内存、锁）的函数中，用 cleanup 替代多层 goto，代码线性可读。<strong>关键：所有变量初始化为"无效"状态（NULL/-1），防止未初始化时触发清理</strong>。
+  </div>
+</section>
+
+<!-- ══════════════ 第8章 ══════════════ -->
+<section class="chapter" id="ch8">
+  <div class="chapter-header">
+    <span class="chapter-num">§ 8</span>
+    <h2 class="chapter-title">灵活数组成员（FAM）与动态内存布局</h2>
+    <span class="chapter-tag">内存模型</span>
+  </div>
+  <div class="chapter-intro">
+    glibc 的 <code>malloc_chunk</code>、<code>pthread_attr_t</code> 等结构体大量使用灵活数组成员（Flexible Array Member，C99）来实现「头部固定 + 尾部变长」的内存布局，减少一次指针间接（pointer indirection），提升 cache 友好性。
+  </div>
+
+  <div class="diagram-wrap">
+    <svg width="100%" viewBox="0 0 640 180" xmlns="http://www.w3.org/2000/svg">
+      <!-- 双指针布局 -->
+      <rect x="10" y="10" width="285" height="160" rx="6" fill="#161b22" stroke="#ffa657"/>
+      <text x="152" y="28" text-anchor="middle" font-size="11" fill="#ffa657" font-weight="600">双指针方式（额外分配）</text>
+      <!-- header -->
+      <rect x="30" y="38" width="100" height="30" rx="3" fill="#1f3a5f" stroke="#58a6ff"/>
+      <text x="80" y="58" text-anchor="middle" font-size="10" fill="#e6edf3">header (len, ...)</text>
+      <!-- data pointer -->
+      <rect x="150" y="38" width="60" height="30" rx="3" fill="#1f3a5f" stroke="#58a6ff"/>
+      <text x="180" y="58" text-anchor="middle" font-size="10" fill="#e6edf3">*data</text>
+      <!-- data heap -->
+      <rect x="55" y="100" width="120" height="30" rx="3" fill="#22272e" stroke="#ffa657"/>
+      <text x="115" y="120" text-anchor="middle" font-size="10" fill="#ffa657">data[] 另一块堆内存</text>
+      <!-- arrow -->
+      <line x1="180" y1="68" x2="115" y2="98" stroke="#ffa657" stroke-width="1.5" stroke-dasharray="3,2"/>
+      <text x="152" y="150" text-anchor="middle" font-size="10" fill="#8b949e">两次 malloc，两块内存，缓存不友好</text>
+
+      <!-- FAM 布局 -->
+      <rect x="330" y="10" width="285" height="160" rx="6" fill="#161b22" stroke="#3fb950"/>
+      <text x="472" y="28" text-anchor="middle" font-size="11" fill="#3fb950" font-weight="600">灵活数组成员（FAM）</text>
+      <!-- 连续内存 -->
+      <rect x="350" y="42" width="100" height="30" rx="3" fill="#1a3a2a" stroke="#3fb950"/>
+      <text x="400" y="62" text-anchor="middle" font-size="10" fill="#3fb950">header</text>
+      <rect x="450" y="42" width="140" height="30" rx="3" fill="#1a3a2a" stroke="#3fb950"/>
+      <text x="520" y="62" text-anchor="middle" font-size="10" fill="#3fb950">data[0..n-1]</text>
+      <!-- 标注 -->
+      <text x="472" y="96" text-anchor="middle" font-size="10" fill="#3fb950">紧密相邻，一次 malloc</text>
+      <text x="472" y="112" text-anchor="middle" font-size="10" fill="#3fb950">sizeof(header) + n * sizeof(elem)</text>
+      <line x1="450" y1="72" x2="450" y2="42" stroke="#3fb950" stroke-width="0.5" stroke-dasharray="2,2"/>
+      <text x="472" y="145" text-anchor="middle" font-size="10" fill="#8b949e">连续内存，icache/dcache 友好，一次释放</text>
+    </svg>
+    <div class="diagram-title">图 8-1：双指针分离分配 vs 灵活数组成员的内存布局</div>
+  </div>
+
+  <div class="code-block">
+    <div class="code-header">
+      <span class="code-lang">C — 灵活数组成员（源自 glibc malloc_chunk 结构思路 + C99 标准）</span>
+      <button class="copy-btn" onclick="copyCode(this)">复制</button>
+    </div>
+    <pre><span class="cm">/*
+ * 来源：
+ *   - glibc/malloc/malloc.c  struct malloc_chunk
+ *     https://fossies.org/linux/glibc/malloc/malloc.c
+ *   - C99 标准 6.7.2.1 §18：灵活数组成员
+ *
+ * ── 章节 8：灵活数组成员（Flexible Array Member, FAM）──
+ *
+ * C99 允许在结构体最后一个成员处声明不指定大小的数组 data[]，
+ * 分配时：malloc(offsetof(T, data) + n * sizeof(elem_type))
+ * 释放时：free(p)  ← 只需一次
+ *
+ * glibc malloc_chunk 中类似的技巧（伪码）：
+ *   struct malloc_chunk {
+ *     size_t prev_size;
+ *     size_t size;
+ *     struct malloc_chunk *fd, *bk;
+ *     // 用户数据紧跟在后面 → mem = (char*)chunk + CHUNK_HDR_SZ
+ *   };
+ */</span>
+
+<span class="pp">#include &lt;stddef.h&gt;
+#include &lt;stdlib.h&gt;
+#include &lt;string.h&gt;
+#include &lt;stdio.h&gt;</span>
+
+<span class="cm">/* ── 带 FAM 的变长字符串结构 ── */</span>
+<span class="kw">typedef struct</span> {
+    <span class="nm">size_t</span>  len;       <span class="cm">/* 字符串长度（不含 '\0'） */</span>
+    <span class="nm">size_t</span>  capacity;  <span class="cm">/* 已分配的空间（字节数） */</span>
+    <span class="kw">char</span>    data[];    <span class="cm">/* C99 灵活数组成员：紧跟在结构体后 */</span>
+} MyString;
+
+<span class="cm">/* 创建：一次 malloc，结构体头部 + 字符串数据连续存放 */</span>
+MyString *<span class="fn">mystring_create</span>(<span class="kw">const char</span> *s) {
+    <span class="nm">size_t</span> len = <span class="fn">strlen</span>(s);
+    <span class="nm">size_t</span> total = <span class="fn">offsetof</span>(MyString, data) + len + <span class="num">1</span>;
+    <span class="cm">/* offsetof(MyString, data) 精确给出 data 字段的字节偏移 */</span>
+    MyString *ms = <span class="fn">malloc</span>(total);
+    <span class="kw">if</span> (!ms) <span class="kw">return</span> NULL;
+    ms->len      = len;
+    ms->capacity = len + <span class="num">1</span>;
+    <span class="fn">memcpy</span>(ms->data, s, len + <span class="num">1</span>);
+    <span class="kw">return</span> ms;
+    <span class="cm">/* data 与 ms 在同一块连续内存中，无额外指针间接 */</span>
+}
+
+<span class="cm">/* 销毁：一次 free */</span>
+<span class="kw">void</span> <span class="fn">mystring_free</span>(MyString *ms) { <span class="fn">free</span>(ms); }
+
+<span class="cm">/* ── 带 FAM 的消息帧（网络/IPC 场景） ── */</span>
+<span class="kw">typedef struct</span> __attribute__((packed)) {
+    <span class="kw">uint32_t</span> magic;    <span class="cm">/* 魔数 */</span>
+    <span class="kw">uint16_t</span> type;     <span class="cm">/* 消息类型 */</span>
+    <span class="kw">uint16_t</span> payload_len; <span class="cm">/* payload 字节数 */</span>
+    <span class="kw">uint8_t</span>  payload[]; <span class="cm">/* 变长 payload，紧跟头部 */</span>
+} MsgFrame;
+
+MsgFrame *<span class="fn">msg_create</span>(<span class="kw">uint16_t</span> type, <span class="kw">const void</span> *data, <span class="kw">uint16_t</span> dlen) {
+    MsgFrame *f = <span class="fn">malloc</span>(<span class="kw">sizeof</span>(MsgFrame) + dlen);
+    <span class="kw">if</span> (!f) <span class="kw">return</span> NULL;
+    f->magic       = <span class="num">0xDEADBEEF</span>;
+    f->type        = type;
+    f->payload_len = dlen;
+    <span class="fn">memcpy</span>(f->payload, data, dlen);
+    <span class="kw">return</span> f;
+}
+
+<span class="cm">/* ── 零长度数组（GCC 扩展，C89 时代的 FAM 前身） ──
+ * glibc 旧代码中可见 data[0]，C99 后应优先使用 data[] */</span>
+<span class="kw">typedef struct</span> {
+    <span class="kw">int</span> count;
+    <span class="kw">int</span> items[<span class="num">0</span>];   <span class="cm">/* GCC 扩展，等价于 C99 的 items[] */</span>
+} LegacyArray;
+
+<span class="kw">void</span> <span class="fn">demo_fam</span>(<span class="kw">void</span>) {
+    MyString *s = <span class="fn">mystring_create</span>(<span class="st">"hello, glibc"</span>);
+    <span class="fn">printf</span>(<span class="st">"len=%zu data=%s\n"</span>, s->len, s->data);
+    <span class="fn">mystring_free</span>(s);
+}</pre>
+  </div>
+</section>
+
+<!-- ══════════════ 第9章 ══════════════ -->
+<section class="chapter" id="ch9">
+  <div class="chapter-header">
+    <span class="chapter-num">§ 9</span>
+    <h2 class="chapter-title">offsetof 与 container_of：从成员指针还原父结构</h2>
+    <span class="chapter-tag">数据结构</span>
+  </div>
+  <div class="chapter-intro">
+    glibc 的 <code>malloc.c</code> 中频繁使用 <code>offsetof</code> 做内存指针算术（如 <code>bin_at</code> 宏）。Linux kernel 的 <code>container_of</code> 宏是同一思路的完美封装，是侵入式链表、事件系统等数据结构的基础。
+  </div>
+
+  <div class="diagram-wrap">
+    <svg width="100%" viewBox="0 0 600 200" xmlns="http://www.w3.org/2000/svg">
+      <defs>
+        <marker id="arr6" markerWidth="7" markerHeight="5" refX="7" refY="2.5" orient="auto">
+          <polygon points="0 0, 7 2.5, 0 5" fill="#d2a8ff"/>
+        </marker>
+      </defs>
+      <!-- 结构体内存布局 -->
+      <rect x="50" y="30" width="160" height="140" rx="4" fill="#161b22" stroke="#58a6ff"/>
+      <text x="130" y="20" text-anchor="middle" font-size="11" fill="#58a6ff" font-weight="600">struct MyNode</text>
+      <rect x="60" y="40" width="140" height="30" rx="3" fill="#1f3a5f"/>
+      <text x="130" y="60" text-anchor="middle" font-size="11" fill="#e6edf3">int value</text>
+      <rect x="60" y="74" width="140" height="30" rx="3" fill="#1a3a2a" stroke="#3fb950"/>
+      <text x="130" y="94" text-anchor="middle" font-size="11" fill="#3fb950">ListHead list ← member</text>
+      <rect x="60" y="108" width="140" height="30" rx="3" fill="#1f3a5f"/>
+      <text x="130" y="128" text-anchor="middle" font-size="11" fill="#e6edf3">char name[16]</text>
+      <!-- 偏移标注 -->
+      <line x1="50" y1="40" x2="30" y2="40" stroke="#8b949e" stroke-width="1"/>
+      <line x1="50" y1="74" x2="30" y2="74" stroke="#8b949e" stroke-width="1"/>
+      <line x1="30" y1="40" x2="30" y2="74" stroke="#8b949e" stroke-width="1"/>
+      <text x="12" y="60" font-size="9" fill="#ffa657">offset</text>
+      <text x="8" y="70" font-size="9" fill="#ffa657">of(list)</text>
+
+      <!-- 指针运算 -->
+      <rect x="290" y="60" width="260" height="80" rx="6" fill="#161b22" stroke="#d2a8ff"/>
+      <text x="420" y="80" text-anchor="middle" font-size="11" fill="#d2a8ff" font-weight="600">container_of 原理</text>
+      <text x="300" y="100" font-size="10" fill="#e6edf3">ptr   = &amp;node.list  (已知成员地址)</text>
+      <text x="300" y="116" font-size="10" fill="#ffa657">off   = offsetof(MyNode, list)</text>
+      <text x="300" y="132" font-size="10" fill="#3fb950">node* = (MyNode*)((char*)ptr - off)</text>
+
+      <!-- 箭头 -->
+      <line x1="200" y1="89" x2="288" y2="100" stroke="#d2a8ff" stroke-width="1.5" marker-end="url(#arr6)"/>
+      <text x="240" y="82" font-size="9" fill="#d2a8ff">member 地址已知</text>
+    </svg>
+    <div class="diagram-title">图 9-1：container_of 通过成员地址推导父结构体地址</div>
+  </div>
+
+  <div class="code-block">
+    <div class="code-header">
+      <span class="code-lang">C — offsetof 与 container_of（源自 glibc malloc.c bin_at 宏 + Linux kernel）</span>
+      <button class="copy-btn" onclick="copyCode(this)">复制</button>
+    </div>
+    <pre><span class="cm">/*
+ * 来源：
+ *   glibc/malloc/malloc.c：bin_at 宏使用 offsetof(struct malloc_chunk, fd)
+ *   https://fossies.org/linux/glibc/malloc/malloc.c
+ *   Linux kernel include/linux/container_of.h
+ *
+ * ── 章节 9：offsetof 与 container_of ──
+ *
+ * glibc malloc.c 中的 bin_at 宏：
+ *   #define bin_at(m, i) \
+ *     (mbinptr)(((char*)&((m)->bins[((i)-1)*2])) - offsetof(struct malloc_chunk, fd))
+ *
+ * 此宏将 bins 数组的某个地址「倒推」为一个 malloc_chunk* 的起始地址，
+ * 使 bin 头部可以直接当作 malloc_chunk 来操作，消除了特殊 case 处理。
+ *
+ * container_of 是同一模式的通用封装，是侵入式数据结构的基石。
+ */</span>
+
+<span class="pp">#include &lt;stddef.h&gt;
+#include &lt;stdint.h&gt;
+#include &lt;stdio.h&gt;</span>
+
+<span class="cm">/* ── container_of：带类型检查（Linux kernel 风格） ── */</span>
+<span class="pp">#define container_of(ptr, type, member) ({                      \
+    const __typeof__(((type *)0)->member) *__mptr = (ptr);      \
+    /* 类型检查：若 ptr 类型与 member 类型不一致，此处编译报错 */ \
+    (type *)((char *)__mptr - offsetof(type, member));           \
+})</span>
+
+<span class="cm">/* ── 侵入式双向链表实现 ── */</span>
+<span class="kw">typedef struct</span> ListHead {
+    <span class="kw">struct</span> ListHead *next, *prev;
+} ListHead;
+
+<span class="cm">/* 初始化：让链表头指向自身（空链表） */</span>
+<span class="kw">static inline void</span> <span class="fn">list_init</span>(ListHead *h) {
+    h->next = h->prev = h;
+}
+
+<span class="cm">/* 在 head 后插入节点（O(1)） */</span>
+<span class="kw">static inline void</span> <span class="fn">list_add</span>(ListHead *head, ListHead *node) {
+    node->next  = head->next;
+    node->prev  = head;
+    head->next->prev = node;
+    head->next  = node;
+}
+
+<span class="cm">/* 删除节点（不释放内存） */</span>
+<span class="kw">static inline void</span> <span class="fn">list_del</span>(ListHead *node) {
+    node->prev->next = node->next;
+    node->next->prev = node->prev;
+    node->next = node->prev = node;  <span class="cm">/* 防悬空指针 */</span>
+}
+
+<span class="cm">/* 遍历宏：从 list 成员还原到包含它的结构体 */</span>
+<span class="pp">#define list_for_each(pos, head) \
+    for (pos = (head)->next; pos != (head); pos = pos->next)</span>
+
+<span class="pp">#define list_entry(ptr, type, member) \
+    container_of(ptr, type, member)</span>
+
+<span class="cm">/* ── 示例：任务队列 ── */</span>
+<span class="kw">typedef struct</span> {
+    <span class="kw">int</span>      id;
+    <span class="kw">char</span>     name[<span class="num">32</span>];
+    ListHead list;      <span class="cm">/* 侵入式链表节点，嵌入在结构体中 */</span>
+} Task;
+
+<span class="kw">void</span> <span class="fn">demo_container_of</span>(<span class="kw">void</span>) {
+    ListHead queue;
+    <span class="fn">list_init</span>(&queue);
+
+    Task t1 = { .id=<span class="num">1</span>, .name=<span class="st">"parse"</span>  };
+    Task t2 = { .id=<span class="num">2</span>, .name=<span class="st">"render"</span> };
+    Task t3 = { .id=<span class="num">3</span>, .name=<span class="st">"upload"</span> };
+
+    <span class="fn">list_add</span>(&queue, &t1.list);
+    <span class="fn">list_add</span>(&queue, &t2.list);
+    <span class="fn">list_add</span>(&queue, &t3.list);
+
+    <span class="cm">/* 遍历：通过 list 成员地址恢复 Task* */</span>
+    ListHead *pos;
+    <span class="fn">list_for_each</span>(pos, &queue) {
+        Task *t = <span class="fn">list_entry</span>(pos, Task, list);
+        <span class="fn">printf</span>(<span class="st">"Task[%d]: %s\n"</span>, t->id, t->name);
+    }
+    <span class="cm">/* 输出：Task[3]: upload, Task[2]: render, Task[1]: parse */</span>
+}
+
+<span class="cm">/* ── glibc bin_at 宏等价演示 ────────────────────────────────────
+ * glibc 用此技巧让 bins[] 数组里的 fd/bk 字段
+ * 直接视作 malloc_chunk 的 fd/bk，省去哨兵节点的特殊处理。
+ * ─────────────────────────────────────────────────────────────────── */</span>
+<span class="kw">struct</span> FakeChunk { <span class="kw">int</span> prev; <span class="kw">int</span> size; <span class="kw">int</span> fd; <span class="kw">int</span> bk; };
+
+<span class="kw">static int</span> bins_storage[<span class="num">10</span>];  <span class="cm">/* 简化的 bins 数组 */</span>
+
+<span class="kw">static struct</span> FakeChunk *<span class="fn">bin_at_demo</span>(<span class="kw">int</span> i) {
+    <span class="cm">/* 将 bins[i] 的地址减去 fd 的偏移量，得到假想的 FakeChunk* */</span>
+    <span class="kw">return</span> (<span class="kw">struct</span> FakeChunk *)((<span class="kw">char</span> *)&bins_storage[i] - <span class="fn">offsetof</span>(<span class="kw">struct</span> FakeChunk, fd));
+}</pre>
+  </div>
+</section>
+
+<!-- ══════════════ 第10章 ══════════════ -->
+<section class="chapter" id="ch10">
+  <div class="chapter-header">
+    <span class="chapter-num">§ 10</span>
+    <h2 class="chapter-title">constructor / destructor：main 前后的初始化与清理</h2>
+    <span class="chapter-tag">生命周期</span>
+  </div>
+  <div class="chapter-intro">
+    glibc 自身的启动框架（<code>csu/libc-start.c</code>）在 <code>main()</code> 前后通过 <code>.init_array</code> / <code>.fini_array</code> 段调用标记了 <code>constructor</code> 和 <code>destructor</code> 属性的函数。这一机制在用户态库开发中可用于自动注册、资源预热与优雅清理。
+  </div>
+
+  <div class="diagram-wrap">
+    <svg width="100%" viewBox="0 0 600 150" xmlns="http://www.w3.org/2000/svg">
+      <defs>
+        <marker id="arr7" markerWidth="7" markerHeight="5" refX="7" refY="2.5" orient="auto">
+          <polygon points="0 0, 7 2.5, 0 5" fill="#58a6ff"/>
+        </marker>
+      </defs>
+      <!-- 时间线 -->
+      <line x1="30" y1="80" x2="570" y2="80" stroke="#30363d" stroke-width="2"/>
+      <!-- 节点 -->
+      <circle cx="60" cy="80" r="6" fill="#8b949e"/>
+      <text x="60" y="60" text-anchor="middle" font-size="10" fill="#8b949e">进程启动</text>
+      <text x="60" y="100" text-anchor="middle" font-size="9" fill="#8b949e">_start</text>
+
+      <circle cx="160" cy="80" r="8" fill="#d2a8ff"/>
+      <text x="160" y="58" text-anchor="middle" font-size="10" fill="#d2a8ff" font-weight="600">constructor</text>
+      <text x="160" y="46" text-anchor="middle" font-size="9" fill="#d2a8ff">priority 数小先执行</text>
+      <text x="160" y="100" text-anchor="middle" font-size="9" fill="#8b949e">.init_array</text>
+
+      <circle cx="290" cy="80" r="10" fill="#3fb950"/>
+      <text x="290" y="56" text-anchor="middle" font-size="12" fill="#3fb950" font-weight="700">main()</text>
+      <text x="290" y="106" text-anchor="middle" font-size="9" fill="#8b949e">用户代码</text>
+
+      <circle cx="420" cy="80" r="8" fill="#ffa657"/>
+      <text x="420" y="58" text-anchor="middle" font-size="10" fill="#ffa657" font-weight="600">destructor</text>
+      <text x="420" y="46" text-anchor="middle" font-size="9" fill="#ffa657">priority 数大先执行</text>
+      <text x="420" y="100" text-anchor="middle" font-size="9" fill="#8b949e">.fini_array</text>
+
+      <circle cx="540" cy="80" r="6" fill="#8b949e"/>
+      <text x="540" y="60" text-anchor="middle" font-size="10" fill="#8b949e">进程结束</text>
+      <text x="540" y="100" text-anchor="middle" font-size="9" fill="#8b949e">exit()</text>
+
+      <!-- 箭头 -->
+      <line x1="66" y1="80" x2="152" y2="80" stroke="#58a6ff" stroke-width="1.5" marker-end="url(#arr7)"/>
+      <line x1="168" y1="80" x2="280" y2="80" stroke="#58a6ff" stroke-width="1.5" marker-end="url(#arr7)"/>
+      <line x1="300" y1="80" x2="412" y2="80" stroke="#58a6ff" stroke-width="1.5" marker-end="url(#arr7)"/>
+      <line x1="428" y1="80" x2="534" y2="80" stroke="#58a6ff" stroke-width="1.5" marker-end="url(#arr7)"/>
+    </svg>
+    <div class="diagram-title">图 10-1：constructor / destructor 在进程生命周期中的执行位置</div>
+  </div>
+
+  <div class="code-block">
+    <div class="code-header">
+      <span class="code-lang">C — constructor / destructor 属性（GCC 官方文档 + glibc 启动框架）</span>
+      <button class="copy-btn" onclick="copyCode(this)">复制</button>
+    </div>
+    <pre><span class="cm">/*
+ * 来源：
+ *   GCC Function Attributes 官方文档
+ *   https://gcc.gnu.org/onlinedocs/gcc/Function-Attributes.html
+ *   glibc 内部 csu/libc-start.c 使用 .init_array 调用机制
+ *
+ * ── 章节 10：constructor 与 destructor 属性 ──
+ *
+ * __attribute__((constructor))   → 在 main() 之前自动执行
+ * __attribute__((destructor))    → 在 main() 返回或 exit() 后自动执行
+ * __attribute__((constructor(P)))→ P 为优先级（101~65535），数值越小越先执行
+ * __attribute__((destructor(P))) → P 越大越先执行（与 constructor 逆序）
+ *
+ * 底层机制：GCC 将这些函数的地址放入 ELF .init_array / .fini_array 段，
+ * glibc 的 __libc_start_main 在调用 main 前遍历 .init_array，
+ * exit() 时遍历 .fini_array（逆序）。
+ */</span>
+
+<span class="pp">#include &lt;stdio.h&gt;
+#include &lt;stdlib.h&gt;
+#include &lt;pthread.h&gt;</span>
+
+<span class="cm">/* ── 优先级示例：数字越小越早执行 ── */</span>
+<span class="pp">__attribute__((constructor(200)))</span>
+<span class="kw">static void</span> <span class="fn">init_logging</span>(<span class="kw">void</span>) {
+    <span class="fn">fprintf</span>(stderr, <span class="st">"[init/200] 日志系统初始化\n"</span>);
+    <span class="cm">/* 在 init_network (300) 之前执行 */</span>
+}
+
+<span class="pp">__attribute__((constructor(300)))</span>
+<span class="kw">static void</span> <span class="fn">init_network</span>(<span class="kw">void</span>) {
+    <span class="fn">fprintf</span>(stderr, <span class="st">"[init/300] 网络子系统初始化\n"</span>);
+}
+
+<span class="cm">/* ── 清理顺序：数字越大越先执行（即与 constructor 逆序） ── */</span>
+<span class="pp">__attribute__((destructor(300)))</span>
+<span class="kw">static void</span> <span class="fn">fini_network</span>(<span class="kw">void</span>) {
+    <span class="fn">fprintf</span>(stderr, <span class="st">"[fini/300] 网络子系统清理（先）\n"</span>);
+}
+
+<span class="pp">__attribute__((destructor(200)))</span>
+<span class="kw">static void</span> <span class="fn">fini_logging</span>(<span class="kw">void</span>) {
+    <span class="fn">fprintf</span>(stderr, <span class="st">"[fini/200] 日志系统清理（后）\n"</span>);
+}
+
+<span class="cm">/* ── 共享库场景：自动注册驱动 ──
+ * 无需暴露 init 函数给用户，dlopen 时自动执行 */</span>
+<span class="kw">static void</span> *plugin_registry[<span class="num">64</span>];
+<span class="kw">static int</span>   plugin_count = <span class="num">0</span>;
+
+<span class="pp">__attribute__((constructor))</span>
+<span class="kw">static void</span> <span class="fn">register_my_plugin</span>(<span class="kw">void</span>) {
+    <span class="cm">/* dlopen 时自动注册，无需用户调用 init() */</span>
+    <span class="kw">if</span> (plugin_count &lt; <span class="num">64</span>)
+        plugin_registry[plugin_count++] = (<span class="kw">void</span>*)<span class="fn">register_my_plugin</span>;
+}
+
+<span class="cm">/* ── 注意事项 ──────────────────────────────────────────────────
+ * 1. 优先级 0-100 保留给 glibc/libgcc 内部使用
+ * 2. constructor 中不应依赖 main 参数（argc/argv/envp）
+ * 3. 多个共享库中的 constructor 执行顺序依赖于链接顺序，
+ *    应通过优先级数字显式控制
+ * 4. 与 atexit() 的区别：atexit 在 destructor 之前执行
+ * ─────────────────────────────────────────────────────────────────── */</span>
+
+<span class="kw">int</span> <span class="fn">main</span>(<span class="kw">void</span>) {
+    <span class="fn">printf</span>(<span class="st">"[main] 程序主体运行\n"</span>);
+    <span class="kw">return</span> <span class="num">0</span>;
+}
+<span class="cm">/* 执行顺序输出：
+ * [init/200] 日志系统初始化
+ * [init/300] 网络子系统初始化
+ * [main] 程序主体运行
+ * [fini/300] 网络子系统清理（先）
+ * [fini/200] 日志系统清理（后）
+ */</span></pre>
+  </div>
+</section>
+
+<!-- ══════════════ 第11章 ══════════════ -->
+<section class="chapter" id="ch11">
+  <div class="chapter-header">
+    <span class="chapter-num">§ 11</span>
+    <h2 class="chapter-title">线程局部存储（TLS）：__thread 与 errno 模式</h2>
+    <span class="chapter-tag">多线程</span>
+  </div>
+  <div class="chapter-intro">
+    glibc 最经典的 TLS 应用是 <code>errno</code>——每个线程独立持有一份 errno 变量，通过 <code>__thread</code> 关键字（C11 用 <code>_Thread_local</code>）实现。glibc 还使用 <code>attribute_tls_model_ie</code>（initial-exec 模型）优化主模块内的 TLS 访问速度。
+  </div>
+
+  <div class="code-block">
+    <div class="code-header">
+      <span class="code-lang">C — 线程局部存储模式（源自 glibc errno 实现与 libc-symbols.h）</span>
+      <button class="copy-btn" onclick="copyCode(this)">复制</button>
+    </div>
+    <pre><span class="cm">/*
+ * 来源：
+ *   glibc/include/libc-symbols.h：attribute_tls_model_ie 宏
+ *   #define attribute_tls_model_ie __attribute__((tls_model("initial-exec")))
+ *   glibc errno 实现：sysdeps/unix/sysv/linux/errno-loc.c
+ *
+ * ── 章节 11：线程局部存储（TLS）——每线程独立状态 ──
+ *
+ * TLS 四种模型（访问速度从快到慢）：
+ *   1. local-exec    — 主可执行文件专属，最快（直接 fs: 寄存器偏移）
+ *   2. initial-exec  — 导入时知道偏移，仍很快（glibc 内部用此模型）
+ *   3. local-dynamic — 动态库内部，中速
+ *   4. global-dynamic— 通用，最慢（需调用 __tls_get_addr）
+ *
+ * glibc errno 的关键设计：
+ *   每个线程有独立 errno，__thread int errno 确保线程安全，
+ *   signal handler 也能安全读写而不影响其他线程。
+ */</span>
+
+<span class="pp">#include &lt;stdio.h&gt;
+#include &lt;pthread.h&gt;
+#include &lt;errno.h&gt;</span>
+
+<span class="cm">/* ── 1. 每线程错误码（errno 模式） ── */</span>
+<span class="cm">/* C11 标准关键字；GCC 扩展用 __thread，完全等价 */</span>
+<span class="kw">_Thread_local</span> <span class="kw">int</span> my_last_error = <span class="num">0</span>;  <span class="cm">/* 每线程独立副本，零初始化 */</span>
+
+<span class="kw">void</span> <span class="fn">set_error</span>(<span class="kw">int</span> code) { my_last_error = code; }
+<span class="kw">int</span>  <span class="fn">get_error</span>(<span class="kw">void</span>)     { <span class="kw">return</span> my_last_error; }
+
+<span class="cm">/* ── 2. 每线程缓存（替代全局缓存，消除锁竞争） ── */</span>
+<span class="pp">#define TLS_CACHE_SIZE 16</span>
+<span class="kw">typedef struct</span> {
+    <span class="kw">int</span>  keys[TLS_CACHE_SIZE];
+    <span class="kw">int</span>  vals[TLS_CACHE_SIZE];
+    <span class="kw">int</span>  count;
+} ThreadCache;
+
+<span class="kw">static</span> <span class="kw">_Thread_local</span> ThreadCache tls_cache;  <span class="cm">/* 自动零初始化 */</span>
+
+<span class="kw">void</span> <span class="fn">tls_cache_put</span>(<span class="kw">int</span> key, <span class="kw">int</span> val) {
+    <span class="kw">if</span> (tls_cache.count &lt; TLS_CACHE_SIZE) {
+        tls_cache.keys[tls_cache.count]   = key;
+        tls_cache.vals[tls_cache.count++] = val;
+    }
+}
+
+<span class="cm">/* ── 3. 每线程随机数种子（消除 rand() 的全局锁） ── */</span>
+<span class="kw">static</span> <span class="kw">_Thread_local</span> <span class="kw">unsigned long</span> tls_rand_seed;
+
+<span class="kw">static</span> <span class="kw">void</span> <span class="fn">tls_srand</span>(<span class="kw">unsigned long</span> seed) { tls_rand_seed = seed; }
+<span class="kw">static</span> <span class="kw">int</span>  <span class="fn">tls_rand</span>(<span class="kw">void</span>) {
+    <span class="cm">/* xorshift64：无锁、每线程独立 */</span>
+    tls_rand_seed ^= tls_rand_seed &lt;&lt; <span class="num">13</span>;
+    tls_rand_seed ^= tls_rand_seed >> <span class="num">7</span>;
+    tls_rand_seed ^= tls_rand_seed &lt;&lt; <span class="num">17</span>;
+    <span class="kw">return</span> (<span class="kw">int</span>)(tls_rand_seed & <span class="num">0x7FFFFFFF</span>);
+}
+
+<span class="cm">/* ── 4. TLS 初始化：与 constructor 结合 ── */</span>
+<span class="kw">static</span> <span class="kw">_Thread_local</span> <span class="kw">int</span> tls_initialized = <span class="num">0</span>;
+
+<span class="kw">static void</span> <span class="fn">ensure_tls_init</span>(<span class="kw">void</span>) {
+    <span class="kw">if</span> (__builtin_expect(!tls_initialized, <span class="num">0</span>)) {
+        <span class="cm">/* 仅在当前线程第一次调用时初始化 */</span>
+        <span class="fn">tls_srand</span>((<span class="kw">unsigned long</span>)<span class="fn">pthread_self</span>());
+        tls_initialized = <span class="num">1</span>;
+    }
+}
+
+<span class="cm">/* ── 5. glibc attribute_tls_model_ie 提速 ────────────────────
+ * 当变量在主可执行文件（非动态库）中，使用 initial-exec 模型
+ * 访问只需一条指令（相对 FS 寄存器偏移），最接近局部变量速度。
+ * glibc 定义：
+ *   #define attribute_tls_model_ie \
+ *     __attribute__((tls_model("initial-exec")))
+ * 注意：initial-exec 不能用于通过 dlopen 加载的共享库！
+ * ─────────────────────────────────────────────────────────────────── */</span>
+<span class="kw">static</span> __attribute__((<span class="fn">tls_model</span>(<span class="st">"initial-exec"</span>)))
+<span class="kw">_Thread_local</span> <span class="kw">int</span> fast_tls_counter = <span class="num">0</span>;  <span class="cm">/* 极速访问的线程计数器 */</span>
+
+<span class="kw">void</span> <span class="fn">increment_fast_tls</span>(<span class="kw">void</span>) { fast_tls_counter++; }
+<span class="kw">int</span>  <span class="fn">get_fast_tls</span>(<span class="kw">void</span>)      { <span class="kw">return</span> fast_tls_counter; }</pre>
+  </div>
+
+  <div class="tip">
+    <div class="tip-title">✅ 借鉴要点</div>
+    对每线程独立的状态（错误码、缓冲区、随机种子、计数器），优先用 <code>_Thread_local</code> 替代带锁的全局变量。如果是主程序内的 TLS（非 dlopen 场景），加 <code>tls_model("initial-exec")</code> 可获得接近局部变量的访问速度。
+  </div>
+  <p class="ref">🔗 <a href="https://github.com/bminor/glibc/blob/master/include/libc-symbols.h" target="_blank">libc-symbols.h attribute_tls_model_ie 定义</a></p>
+</section>
+
+<!-- ══════════════ 第12章 ══════════════ -->
+<section class="chapter" id="ch12">
+  <div class="chapter-header">
+    <span class="chapter-num">§ 12</span>
+    <h2 class="chapter-title">接口标注：format、nonnull、deprecated、sentinel</h2>
+    <span class="chapter-tag">编译器警告</span>
+  </div>
+  <div class="chapter-intro">
+    glibc 的公开头文件（<code>stdio.h</code>、<code>string.h</code> 等）在函数声明上附加了大量诊断属性，让编译器在调用端发出精确警告，替代运行时崩溃。这是"把 bug 推向编译期"的最佳实践。
+  </div>
+
+  <div class="code-block">
+    <div class="code-header">
+      <span class="code-lang">C — 接口诊断属性（源自 glibc stdio.h / sys/cdefs.h 官方声明）</span>
+      <button class="copy-btn" onclick="copyCode(this)">复制</button>
+    </div>
+    <pre><span class="cm">/*
+ * 来源：
+ *   GCC Function Attributes 官方文档
+ *   https://gcc.gnu.org/onlinedocs/gcc/Function-Attributes.html
+ *   glibc/misc/sys/cdefs.h 中的 __attribute_deprecated__、__nonnull__ 等宏
+ *   glibc stdio.h 中 printf 系列的 format 声明
+ *
+ * ── 章节 12：接口诊断属性 ──
+ */</span>
+
+<span class="pp">#include &lt;stdarg.h&gt;
+#include &lt;stddef.h&gt;
+#include &lt;stdio.h&gt;</span>
+
+<span class="cm">/* ── format：格式字符串类型检查 ──────────────────────────────
+ * glibc stdio.h 中 printf 的声明（简化）：
+ *   extern int printf(const char *__fmt, ...) __attribute__((__format__(__printf__, 1, 2)));
+ *
+ * __attribute__((format(printf, m, n)))
+ *   m：格式字符串是第 m 个参数（1-based）
+ *   n：可变参数列表（...）从第 n 个参数开始
+ *   编译器按 printf 规则检查参数类型匹配
+ *
+ * __attribute__((format(scanf, m, n)))
+ *   类似，但检查 scanf 语义（指针参数）
+ * ─────────────────────────────────────────────────────────────────── */</span>
+
+<span class="cm">/* 自定义带格式检查的日志函数 */</span>
+<span class="kw">void</span> <span class="fn">my_log</span>(<span class="kw">const char</span> *level, <span class="kw">const char</span> *fmt, ...)
+    __attribute__((<span class="fn">format</span>(printf, <span class="num">2</span>, <span class="num">3</span>)));   <span class="cm">/* fmt 是第2个参数，... 从第3个 */</span>
+
+<span class="kw">void</span> <span class="fn">my_log</span>(<span class="kw">const char</span> *level, <span class="kw">const char</span> *fmt, ...) {
+    va_list ap;
+    <span class="fn">printf</span>(<span class="st">"[%s] "</span>, level);
+    va_start(ap, fmt);
+    <span class="fn">vprintf</span>(fmt, ap);
+    va_end(ap);
+    <span class="fn">putchar</span>(<span class="st">'\n'</span>);
+}
+
+<span class="cm">/* 用法：my_log("INFO", "value=%d", some_string); ← 编译器警告：格式不匹配 */</span>
+
+<span class="cm">/* ── nonnull：参数非空检查 ───────────────────────────────────
+ * glibc 的 memcpy、strcpy 等函数均用 __nonnull__ 标记关键指针参数。
+ * 编译器在检测到明确传 NULL 时发出警告。
+ *
+ * __attribute__((nonnull))          → 所有指针参数不得为 NULL
+ * __attribute__((nonnull(1, 3)))    → 第 1、3 个参数不得为 NULL
+ * ─────────────────────────────────────────────────────────────────── */</span>
+<span class="kw">void</span> *<span class="fn">my_memcpy</span>(<span class="kw">void</span> *dst, <span class="kw">const void</span> *src, <span class="nm">size_t</span> n)
+    __attribute__((<span class="fn">nonnull</span>(<span class="num">1</span>, <span class="num">2</span>)));  <span class="cm">/* dst、src 不得为 NULL */</span>
+
+<span class="kw">void</span> *<span class="fn">my_memcpy</span>(<span class="kw">void</span> *dst, <span class="kw">const void</span> *src, <span class="nm">size_t</span> n) {
+    <span class="kw">const char</span> *s = (<span class="kw">const char</span> *)src;
+    <span class="kw">char</span> *d = (<span class="kw">char</span> *)dst;
+    <span class="kw">while</span> (n--) *d++ = *s++;
+    <span class="kw">return</span> dst;
+}
+
+<span class="cm">/* ── deprecated：标记废弃接口 ────────────────────────────────
+ * glibc 用此标记即将移除的旧 API，提供迁移消息。
+ * #define __attribute_deprecated_msg__(msg) \
+ *     __attribute__((__deprecated__(msg)))
+ * ─────────────────────────────────────────────────────────────────── */</span>
+<span class="kw">void</span> <span class="fn">old_api</span>(<span class="kw">void</span>)
+    __attribute__((<span class="fn">deprecated</span>(<span class="st">"请使用 new_api() 替代，将在 v3.0 移除"</span>)));
+
+<span class="kw">void</span> <span class="fn">old_api</span>(<span class="kw">void</span>) { <span class="cm">/* 旧实现 */</span> }
+<span class="kw">void</span> <span class="fn">new_api</span>(<span class="kw">void</span>) { <span class="cm">/* 新实现 */</span> }
+
+<span class="cm">/* ── sentinel：可变参数列表必须以 NULL 结尾 ─────────────────
+ * glibc execl()、execlp() 等函数使用 sentinel 确保参数列表
+ * 以 NULL 结束，防止越界读取。
+ * __attribute__((sentinel))     → 最后一个参数必须是 NULL
+ * __attribute__((sentinel(1)))  → 倒数第 2 个参数是 NULL（0-based 偏移）
+ * ─────────────────────────────────────────────────────────────────── */</span>
+<span class="kw">int</span> <span class="fn">run_commands</span>(<span class="kw">const char</span> *first, ...)
+    __attribute__((<span class="fn">sentinel</span>));  <span class="cm">/* 最后一个参数必须是 (char*)NULL */</span>
+
+<span class="kw">int</span> <span class="fn">run_commands</span>(<span class="kw">const char</span> *first, ...) {
+    va_list ap; <span class="kw">int</span> cnt = <span class="num">0</span>;
+    <span class="kw">const char</span> *arg = first;
+    va_start(ap, first);
+    <span class="kw">while</span> (arg) { cnt++; arg = va_arg(ap, <span class="kw">const char</span> *); }
+    va_end(ap);
+    <span class="kw">return</span> cnt;
+}
+<span class="cm">/* 正确：run_commands("ls", "-l", NULL);
+ * 错误（编译警告）：run_commands("ls", "-l");  ← 缺少 NULL */</span>
+
+<span class="cm">/* ── warn_unused_result 与 must_check 组合 ────────────────── */</span>
+<span class="kw">int</span> <span class="fn">lock_acquire</span>(<span class="kw">void</span> *mutex)
+    __attribute__((warn_unused_result, nonnull));  <span class="cm">/* 返回值必须检查 */</span>
+
+<span class="kw">int</span> <span class="fn">lock_acquire</span>(<span class="kw">void</span> *mutex) {
+    (void)mutex; <span class="kw">return</span> <span class="num">0</span>;
+}</pre>
+  </div>
+</section>
+
+<!-- ══════════════ 第13章 ══════════════ -->
+<section class="chapter" id="ch13">
+  <div class="chapter-header">
+    <span class="chapter-num">§ 13</span>
+    <h2 class="chapter-title">特性检测宏模式：__GNUC_PREREQ 与条件编译</h2>
+    <span class="chapter-tag">可移植性</span>
+  </div>
+  <div class="chapter-intro">
+    glibc 的 <code>features.h</code> 和 <code>sys/cdefs.h</code> 定义了一套完整的编译器/版本检测宏体系，让同一套头文件在 GCC 2.x 到最新版、Clang、以及不支持扩展的标准 C 编译器上均能正确工作。
+  </div>
+
+  <div class="code-block">
+    <div class="code-header">
+      <span class="code-lang">C — 特性检测宏（源自 glibc/misc/sys/cdefs.h 与 features.h）</span>
+      <button class="copy-btn" onclick="copyCode(this)">复制</button>
+    </div>
+    <pre><span class="cm">/*
+ * 来源：
+ *   glibc/misc/sys/cdefs.h（__GNUC_PREREQ, __THROW, __LEAF 等）
+ *   https://github.com/walac/glibc/blob/master/misc/sys/cdefs.h
+ *   gnulib/lib/libc-config.h（__GNUC_PREREQ 可移植版本）
+ *   https://github.com/coreutils/gnulib/blob/master/lib/libc-config.h
+ *
+ * ── 章节 13：特性检测宏与条件编译 ──
+ *
+ * 核心思想：将「是否支持某扩展」的判断集中在宏定义中，
+ * 业务代码只用语义清晰的宏名，无需散布 #ifdef __GNUC__ 判断。
+ */</span>
+
+<span class="cm">/* ── 1. 编译器版本检测 ───────────────────────────────────────
+ * glibc features.h 原始定义：
+ *   #define __GNUC_PREREQ(maj, min) \
+ *     ((__GNUC__ << 16) + __GNUC_MINOR__ >= ((maj) << 16) + (min))
+ *
+ * gnulib 更严谨的版本（避免整数溢出）：
+ *   #define __GNUC_PREREQ(maj, min) \
+ *     ((maj) < __GNUC__ + ((min) <= __GNUC_MINOR__))
+ * ─────────────────────────────────────────────────────────────────── */</span>
+<span class="pp">#if defined __GNUC__ && defined __GNUC_MINOR__
+#  define GNUC_PREREQ(maj, min) \
+     ((maj) < __GNUC__ + ((min) <= __GNUC_MINOR__))
+#else
+#  define GNUC_PREREQ(maj, min) 0
+#endif</span>
+
+<span class="cm">/* Clang 版本检测（glibc 2.38+ 开始支持 __glibc_clang_prereq） */</span>
+<span class="pp">#if defined __clang_major__ && defined __clang_minor__
+#  define CLANG_PREREQ(maj, min) \
+     ((maj) < __clang_major__ + ((min) <= __clang_minor__))
+#else
+#  define CLANG_PREREQ(maj, min) 0
+#endif</span>
+
+<span class="cm">/* ── 2. __THROW：标记函数不抛异常（glibc sys/cdefs.h 原文） ─
+ * glibc 定义：
+ *   #if !defined __cplusplus && __GNUC_PREREQ(3, 3)
+ *   #  define __THROW  __attribute__((__nothrow__ __LEAF))
+ *   ...
+ * 用途：C 库函数在 C++ 中被视为不会抛异常，有助于优化。
+ * ─────────────────────────────────────────────────────────────────── */</span>
+<span class="pp">#if !defined(__cplusplus) && GNUC_PREREQ(3, 3)
+#  define MY_THROW  __attribute__((__nothrow__))
+#elif defined(__cplusplus) && GNUC_PREREQ(2, 8)
+#  define MY_THROW  throw()
+#else
+#  define MY_THROW  /* 不支持 */
+#endif</span>
+
+<span class="cm">/* ── 3. always_inline 可移植封装（glibc __always_inline 风格） ── */</span>
+<span class="pp">#if GNUC_PREREQ(3, 2) || CLANG_PREREQ(1, 0)
+#  define MY_ALWAYS_INLINE  __attribute__((__always_inline__)) static inline
+#else
+#  define MY_ALWAYS_INLINE  static inline
+#endif</span>
+
+<span class="cm">/* ── 4. __BEGIN_DECLS / __END_DECLS：C/C++ 兼容头文件 ───────
+ * glibc sys/cdefs.h 原始定义（完全照录）：
+ *   #ifdef __cplusplus
+ *   # define __BEGIN_DECLS  extern "C" {
+ *   # define __END_DECLS    }
+ *   #else
+ *   # define __BEGIN_DECLS
+ *   # define __END_DECLS
+ *   #endif
+ * 任何对外头文件都应使用此对，让 C++ 可以直接包含 C 库头文件。
+ * ─────────────────────────────────────────────────────────────────── */</span>
+<span class="pp">#ifdef __cplusplus
+#  define BEGIN_DECLS  extern "C" {
+#  define END_DECLS    }
+#else
+#  define BEGIN_DECLS
+#  define END_DECLS
+#endif</span>
+
+<span class="cm">/* ── 5. __STRING / __CONCAT：字符串化与连接（glibc cdefs.h）── */</span>
+<span class="pp">#define MY_STRING(x)    #x
+#define MY_CONCAT(x, y) x##y</span>
+
+<span class="cm">/* 版本宏自动生成：MY_CONCAT(v, 3) → v3 */</span>
+<span class="pp">#define API_VERSION MY_CONCAT(api_v, 2)</span>
+
+<span class="cm">/* ── 6. 编译期静态断言（glibc 内部使用 _Static_assert） ──────
+ * glibc/include/sys/cdefs.h：
+ *   #define _Static_assert(expr, diagnostic) \
+ *     _Static_assert(expr, diagnostic)   // 强制使用双参数形式
+ * C11 标准提供 static_assert，glibc 确保在 C99 模式下也可用。
+ * ─────────────────────────────────────────────────────────────────── */</span>
+<span class="pp">#if defined(__STDC_VERSION__) && __STDC_VERSION__ >= 201112L
+#  define STATIC_ASSERT(cond, msg)  _Static_assert(cond, msg)
+#else
+  /* C99 兜底：利用负长度数组触发编译错误 */
+#  define STATIC_ASSERT(cond, msg) \
+     typedef char __static_assert_##__LINE__[(cond) ? 1 : -1]
+#endif</span>
+
+<span class="cm">/* 使用示例：编译期验证结构体大小 */</span>
+<span class="kw">typedef struct</span> { <span class="kw">int</span> a; <span class="kw">int</span> b; } MyPair;
+<span class="fn">STATIC_ASSERT</span>(<span class="kw">sizeof</span>(MyPair) == <span class="num">8</span>, <span class="st">"MyPair size must be 8 bytes"</span>);
+
+<span class="cm">/* ── 7. 完整的对外头文件模板 ── */</span>
+<span class="cm">/*
+ * mylib.h 模板：
+ *
+ * #ifndef MYLIB_H
+ * #define MYLIB_H 1
+ *
+ * #include <sys/cdefs.h>  // 获取 __BEGIN_DECLS 等
+ *
+ * BEGIN_DECLS
+ *
+ * extern int mylib_init(void)   MY_THROW __attribute__((warn_unused_result));
+ * extern void mylib_cleanup(void) MY_THROW;
+ * extern int mylib_process(const char *input, char *output, size_t outlen)
+ *     MY_THROW __attribute__((nonnull(1,2))) __attribute__((warn_unused_result));
+ *
+ * END_DECLS
+ *
+ * #endif // MYLIB_H
+ */</span></pre>
+  </div>
+</section>
+
+<!-- ══════════════ 第14章 ══════════════ -->
+<section class="chapter" id="ch14">
+  <div class="chapter-header">
+    <span class="chapter-num">§ 14</span>
+    <h2 class="chapter-title">链接警告、符号版本控制与综合模式总结</h2>
+    <span class="chapter-tag">工程实践</span>
+  </div>
+  <div class="chapter-intro">
+    glibc 通过 <code>link_warning</code> 宏在链接时发出警告、通过 <code>versioned_symbol</code> 实现 ABI 版本兼容。本章将所有技巧整合为一套完整的用户态库开发模板。
+  </div>
+
+  <div class="code-block">
+    <div class="code-header">
+      <span class="code-lang">C — 链接警告与综合最佳实践模板（源自 glibc libc-symbols.h + 各章汇总）</span>
+      <button class="copy-btn" onclick="copyCode(this)">复制</button>
+    </div>
+    <pre><span class="cm">/*
+ * 来源：
+ *   glibc/include/libc-symbols.h  link_warning 宏
+ *   https://github.com/bminor/glibc/blob/master/include/libc-symbols.h
+ *   GCC 官方文档 section attribute
+ *
+ * ── 章节 14：链接警告与综合最佳实践 ──
+ *
+ * link_warning：在引用了某个符号时让链接器发出警告消息。
+ * glibc 原始定义：
+ *   #define link_warning(symbol, msg) \
+ *     __make_section_unallocated(".gnu.warning." #symbol) \
+ *     static const char __evoke_link_warning_##symbol[] \
+ *       __attribute__((used, section(".gnu.warning." #symbol))) = msg;
+ *
+ * 原理：将警告字符串放入 .gnu.warning.<symbol> 特殊段；
+ *       链接器在解析该符号时检测到此段并打印字符串。
+ */</span>
+
+<span class="cm">/* ── 链接警告宏（用户态简化版，GCC 支持）── */</span>
+<span class="pp">#define link_warning(symbol, msg)                                    \
+    static const char __link_warn_##symbol[]                         \
+        __attribute__((used, section(".gnu.warning." #symbol))) = msg</span>
+
+<span class="cm">/* 对旧接口 old_unsafe_api 添加链接警告 */</span>
+<span class="fn">link_warning</span>(old_unsafe_api,
+    <span class="st">"old_unsafe_api 不安全，请迁移到 new_safe_api()"</span>);
+
+<span class="kw">void</span> <span class="fn">old_unsafe_api</span>(<span class="kw">void</span>) {}  <span class="cm">/* 旧实现 */</span>
+<span class="kw">void</span> <span class="fn">new_safe_api</span>(<span class="kw">void</span>)   {}  <span class="cm">/* 新实现 */</span>
+
+<span class="cm">/* ════════════════════════════════════════════════════════════════
+ *  综合模式：一个生产就绪的 C 库模块模板
+ * ════════════════════════════════════════════════════════════════
+ *
+ * 将前 13 章的技巧组合成一个完整示例，体现 glibc 风格的 C 库设计。
+ */</span>
+
+<span class="pp">#include &lt;stdlib.h&gt;
+#include &lt;string.h&gt;
+#include &lt;stdio.h&gt;
+#include &lt;errno.h&gt;
+#include &lt;stddef.h&gt;</span>
+
+<span class="cm">/* §2 符号可见性（所有内部符号默认隐藏，编译时传 -fvisibility=hidden） */</span>
+<span class="pp">#define EXPORT  __attribute__((visibility("default")))  /* 公开 API */
+#define INTERN  __attribute__((visibility("hidden")))   /* 内部实现 */</span>
+
+<span class="cm">/* §4 分支预测 */</span>
+<span class="pp">#define likely(x)   __builtin_expect(!!(x), 1)
+#define unlikely(x) __builtin_expect(!!(x), 0)</span>
+
+<span class="cm">/* §3 内联控制 */</span>
+<span class="pp">#define ALWAYS_INLINE  __attribute__((__always_inline__)) static inline
+#define NOINLINE       __attribute__((noinline))</span>
+
+<span class="cm">/* §8 灵活数组成员：连接池条目 */</span>
+<span class="kw">typedef struct</span> ConnEntry {
+    <span class="kw">int</span>    fd;
+    <span class="kw">int</span>    flags;
+    <span class="nm">size_t</span> data_len;
+    <span class="kw">char</span>   data[];   <span class="cm">/* 变长 payload */</span>
+} ConnEntry;
+
+<span class="cm">/* §9 侵入式链表节点 */</span>
+<span class="kw">typedef struct</span> ListNode { <span class="kw">struct</span> ListNode *next, *prev; } ListNode;
+
+<span class="pp">#define list_entry(ptr, type, member) ({ \
+    const __typeof__(((type*)0)->member) *__p = (ptr); \
+    (type*)((char*)__p - offsetof(type, member)); \
+})</span>
+
+<span class="cm">/* §11 线程局部错误状态（替代 errno 的应用层封装） */</span>
+<span class="kw">static</span> <span class="kw">_Thread_local</span> <span class="kw">int</span> _ctx_errno = <span class="num">0</span>;
+
+<span class="cm">/* §5 语义属性：pure 函数 */</span>
+INTERN __attribute__((__pure__)) <span class="kw">int</span> <span class="fn">ctx_errno</span>(<span class="kw">void</span>) {
+    <span class="kw">return</span> _ctx_errno;
+}
+
+<span class="cm">/* §3+§5：内部辅助：计算对齐大小（always_inline + const 属性） */</span>
+INTERN ALWAYS_INLINE __attribute__((__const__))
+<span class="nm">size_t</span> <span class="fn">align_up</span>(<span class="nm">size_t</span> n, <span class="nm">size_t</span> align) {
+    <span class="kw">return</span> (n + align - <span class="num">1</span>) & ~(align - <span class="num">1</span>);
+}
+
+<span class="cm">/* §5：错误路径（noinline + cold，不污染热路径 icache） */</span>
+INTERN NOINLINE __attribute__((cold))
+<span class="kw">void</span> <span class="fn">_ctx_oom</span>(<span class="nm">size_t</span> requested) {
+    _ctx_errno = ENOMEM;
+    <span class="fn">fprintf</span>(stderr, <span class="st">"OOM: requested %zu bytes\n"</span>, requested);
+}
+
+<span class="cm">/* §12 对外公开接口：带完整诊断属性 */</span>
+EXPORT ConnEntry *<span class="fn">conn_entry_create</span>(<span class="kw">int</span> fd, <span class="kw">const void</span> *data, <span class="nm">size_t</span> dlen)
+    __attribute__((warn_unused_result, nonnull(<span class="num">2</span>)));
+
+<span class="cm">/* §7 实现体：cleanup 保证异常路径不泄漏 */</span>
+EXPORT ConnEntry *<span class="fn">conn_entry_create</span>(<span class="kw">int</span> fd, <span class="kw">const void</span> *data, <span class="nm">size_t</span> dlen) {
+    <span class="nm">size_t</span> total = <span class="fn">align_up</span>(<span class="fn">offsetof</span>(ConnEntry, data) + dlen, <span class="num">8</span>);
+    ConnEntry *e = <span class="fn">malloc</span>(total);
+    <span class="kw">if</span> (<span class="fn">unlikely</span>(!e)) {           <span class="cm">/* §4 失败是小概率 */</span>
+        <span class="fn">_ctx_oom</span>(total);          <span class="cm">/* §5 冷路径 */</span>
+        <span class="kw">return</span> NULL;
+    }
+    e->fd       = fd;
+    e->data_len = dlen;
+    e->flags    = <span class="num">0</span>;
+    <span class="fn">memcpy</span>(e->data, data, dlen);
+    <span class="kw">return</span> e;
+}
+
+<span class="cm">/* §1 弱符号钩子：允许用户自定义内存分配器 */</span>
+<span class="kw">void</span> *<span class="fn">__ctx_alloc</span>(<span class="nm">size_t</span> n) __attribute__((<span class="nm">weak</span>));
+<span class="kw">void</span> *<span class="fn">__ctx_alloc</span>(<span class="nm">size_t</span> n) { <span class="kw">return</span> <span class="fn">malloc</span>(n); }  <span class="cm">/* 默认实现 */</span>
+
+<span class="cm">/* §10 自动初始化 */</span>
+__attribute__((constructor(<span class="num">200</span>)))
+<span class="kw">static void</span> <span class="fn">_ctx_module_init</span>(<span class="kw">void</span>) {
+    <span class="cm">/* 模块加载时自动初始化，无需用户调用 */</span>
+}
+
+__attribute__((destructor(<span class="num">200</span>)))
+<span class="kw">static void</span> <span class="fn">_ctx_module_fini</span>(<span class="kw">void</span>) {
+    <span class="cm">/* 进程退出时自动清理 */</span>
+}</pre>
+  </div>
+
+  <!-- 总结表格 -->
+  <div class="section-title">全章技巧总结</div>
+
+  <div class="diagram-wrap">
+    <svg width="100%" viewBox="0 0 680 380" xmlns="http://www.w3.org/2000/svg">
+      <rect x="5" y="5" width="670" height="370" rx="8" fill="#161b22" stroke="#30363d"/>
+      <text x="340" y="28" text-anchor="middle" font-size="13" fill="#e6edf3" font-weight="700">glibc 编程模式借鉴全景图</text>
+
+      <!-- 分类框 -->
+      <!-- 符号/链接 -->
+      <rect x="20" y="42" width="155" height="130" rx="5" fill="#1f3a5f" stroke="#58a6ff"/>
+      <text x="97" y="58" text-anchor="middle" font-size="11" fill="#58a6ff" font-weight="700">符号 &amp; 链接</text>
+      <text x="30" y="74" font-size="10" fill="#e6edf3">§1 strong/weak_alias</text>
+      <text x="30" y="89" font-size="10" fill="#e6edf3">§2 visibility(hidden)</text>
+      <text x="30" y="104" font-size="10" fill="#e6edf3">§14 link_warning</text>
+      <text x="30" y="119" font-size="10" fill="#e6edf3">§14 versioned_symbol</text>
+      <text x="30" y="154" font-size="9" fill="#58a6ff">→ 减少 PLT，控制接口</text>
+
+      <!-- 编译优化 -->
+      <rect x="185" y="42" width="155" height="130" rx="5" fill="#1a3a2a" stroke="#3fb950"/>
+      <text x="262" y="58" text-anchor="middle" font-size="11" fill="#3fb950" font-weight="700">编译优化</text>
+      <text x="195" y="74" font-size="10" fill="#e6edf3">§3 always_inline/noinline</text>
+      <text x="195" y="89" font-size="10" fill="#e6edf3">§4 likely/unlikely</text>
+      <text x="195" y="104" font-size="10" fill="#e6edf3">§5 pure/const/hot/cold</text>
+      <text x="195" y="119" font-size="10" fill="#e6edf3">§6 __typeof__ 类型检查</text>
+      <text x="195" y="154" font-size="9" fill="#3fb950">→ icache/分支预测优化</text>
+
+      <!-- 资源管理 -->
+      <rect x="350" y="42" width="155" height="130" rx="5" fill="#2d1b2d" stroke="#d2a8ff"/>
+      <text x="427" y="58" text-anchor="middle" font-size="11" fill="#d2a8ff" font-weight="700">资源管理</text>
+      <text x="360" y="74" font-size="10" fill="#e6edf3">§7 cleanup (RAII)</text>
+      <text x="360" y="89" font-size="10" fill="#e6edf3">§8 灵活数组成员 FAM</text>
+      <text x="360" y="104" font-size="10" fill="#e6edf3">§9 container_of</text>
+      <text x="360" y="154" font-size="9" fill="#d2a8ff">→ 内存连续，自动释放</text>
+
+      <!-- 接口诊断 -->
+      <rect x="515" y="42" width="150" height="130" rx="5" fill="#2d1a0a" stroke="#ffa657"/>
+      <text x="590" y="58" text-anchor="middle" font-size="11" fill="#ffa657" font-weight="700">接口诊断</text>
+      <text x="525" y="74" font-size="10" fill="#e6edf3">§12 format/nonnull</text>
+      <text x="525" y="89" font-size="10" fill="#e6edf3">§12 deprecated/sentinel</text>
+      <text x="525" y="104" font-size="10" fill="#e6edf3">§13 __GNUC_PREREQ</text>
+      <text x="525" y="119" font-size="10" fill="#e6edf3">§13 BEGIN/END_DECLS</text>
+      <text x="525" y="154" font-size="9" fill="#ffa657">→ 编译期捕获调用错误</text>
+
+      <!-- 生命周期 -->
+      <rect x="20" y="190" width="310" height="100" rx="5" fill="#2a1a1a" stroke="#ff7b72"/>
+      <text x="175" y="207" text-anchor="middle" font-size="11" fill="#ff7b72" font-weight="700">生命周期 &amp; 多线程</text>
+      <text x="30" y="222" font-size="10" fill="#e6edf3">§10 constructor(P)/destructor(P)  — 优先级控制的自动初始化</text>
+      <text x="30" y="237" font-size="10" fill="#e6edf3">§11 _Thread_local / __thread       — 线程私有状态，无锁访问</text>
+      <text x="30" y="252" font-size="10" fill="#e6edf3">§11 tls_model("initial-exec")     — 主程序 TLS 极速访问</text>
+      <text x="30" y="274" font-size="9" fill="#ff7b72">→ 消除初始化竞争，线程安全的局部状态</text>
+
+      <!-- 设计原则 -->
+      <rect x="340" y="190" width="325" height="100" rx="5" fill="#1a2a1a" stroke="#3fb950"/>
+      <text x="502" y="207" text-anchor="middle" font-size="11" fill="#3fb950" font-weight="700">设计原则归纳</text>
+      <text x="350" y="222" font-size="10" fill="#e6edf3">① 热路径：always_inline + likely + hidden visibility</text>
+      <text x="350" y="237" font-size="10" fill="#e6edf3">② 冷路径：noinline + cold + unlikely</text>
+      <text x="350" y="252" font-size="10" fill="#e6edf3">③ 接口：nonnull + format + warn_unused_result</text>
+      <text x="350" y="267" font-size="10" fill="#e6edf3">④ 资源：cleanup + FAM + container_of</text>
+
+      <!-- 底部引用 -->
+      <rect x="20" y="308" width="645" height="52" rx="5" fill="#22272e" stroke="#30363d"/>
+      <text x="340" y="325" text-anchor="middle" font-size="10" fill="#8b949e" font-weight="600">官方参考来源</text>
+      <text x="28" y="342" font-size="9" fill="#58a6ff">glibc/include/libc-symbols.h</text>
+      <text x="200" y="342" font-size="9" fill="#58a6ff">glibc/misc/sys/cdefs.h</text>
+      <text x="355" y="342" font-size="9" fill="#58a6ff">glibc/malloc/malloc.c</text>
+      <text x="490" y="342" font-size="9" fill="#58a6ff">gcc.gnu.org/onlinedocs/gcc</text>
+      <text x="28" y="355" font-size="9" fill="#8b949e">https://github.com/bminor/glibc</text>
+      <text x="230" y="355" font-size="9" fill="#8b949e">https://sourceware.org/glibc/manual/</text>
+      <text x="490" y="355" font-size="9" fill="#8b949e">https://fossies.org/linux/glibc/</text>
+    </svg>
+    <div class="diagram-title">图 14-1：glibc 编程模式全景总结（共 14 章）</div>
+  </div>
+
+  <table>
+    <tr><th>章节</th><th>技巧</th><th>核心宏/属性</th><th>主要收益</th></tr>
+    <tr><td>§1</td><td>强/弱符号别名</td><td><code>strong_alias / weak_alias</code></td><td>兼容名、可覆盖钩子</td></tr>
+    <tr><td>§2</td><td>符号可见性</td><td><code>visibility("hidden")</code></td><td>绕过 PLT，缩减导出表</td></tr>
+    <tr><td>§3</td><td>内联控制</td><td><code>always_inline / noinline</code></td><td>热路径零开销/冷路径隔离</td></tr>
+    <tr><td>§4</td><td>分支预测</td><td><code>likely / unlikely</code></td><td>icache 友好，减少误预测</td></tr>
+    <tr><td>§5</td><td>函数语义属性</td><td><code>pure / const / noreturn / hot</code></td><td>编译器 CSE、死码消除</td></tr>
+    <tr><td>§6</td><td>类型安全宏</td><td><code>__typeof__ / typecheck</code></td><td>编译期类型断言</td></tr>
+    <tr><td>§7</td><td>RAII 资源管理</td><td><code>cleanup(func)</code></td><td>消灭 goto，自动清理</td></tr>
+    <tr><td>§8</td><td>灵活数组成员</td><td><code>data[]</code></td><td>连续内存，减少指针间接</td></tr>
+    <tr><td>§9</td><td>container_of</td><td><code>offsetof + __typeof__</code></td><td>侵入式数据结构</td></tr>
+    <tr><td>§10</td><td>自动初始化</td><td><code>constructor(P) / destructor(P)</code></td><td>库自管理生命周期</td></tr>
+    <tr><td>§11</td><td>线程局部存储</td><td><code>_Thread_local / tls_model</code></td><td>无锁线程私有状态</td></tr>
+    <tr><td>§12</td><td>接口诊断</td><td><code>format / nonnull / deprecated</code></td><td>编译期捕获调用错误</td></tr>
+    <tr><td>§13</td><td>特性检测宏</td><td><code>__GNUC_PREREQ / STATIC_ASSERT</code></td><td>跨编译器可移植性</td></tr>
+    <tr><td>§14</td><td>链接警告</td><td><code>link_warning / .gnu.warning</code></td><td>链接期迁移提示</td></tr>
+  </table>
+
+  <div class="tip">
+    <div class="tip-title">📚 延伸阅读</div>
+    <ul>
+      <li><a href="https://sourceware.org/glibc/manual/latest/html_mono/libc.html" target="_blank" style="color:var(--accent)">GNU C Library 官方完整手册</a></li>
+      <li><a href="https://github.com/bminor/glibc/blob/master/include/libc-symbols.h" target="_blank" style="color:var(--accent)">glibc/include/libc-symbols.h（符号宏定义源文件）</a></li>
+      <li><a href="https://gcc.gnu.org/onlinedocs/gcc/Function-Attributes.html" target="_blank" style="color:var(--accent)">GCC Function Attributes 官方文档</a></li>
+      <li><a href="https://fossies.org/linux/glibc/malloc/malloc.c" target="_blank" style="color:var(--accent)">glibc/malloc/malloc.c（offsetof、bin_at 宏使用场景）</a></li>
+    </ul>
+  </div>
+</section>
+
+</div><!-- content-wrapper -->
+</main>
+
+<script>
+// ── 侧边栏控制 ──
+function toggleSidebar() {
+  document.getElementById('sidebar').classList.toggle('open');
+  document.getElementById('overlay').classList.toggle('show');
+}
+function closeSidebar() {
+  document.getElementById('sidebar').classList.remove('open');
+  document.getElementById('overlay').classList.remove('show');
+}
+function closeSidebarMobile() {
+  if (window.innerWidth <= 768) closeSidebar();
+}
+
+// ── 进度条 ──
+window.addEventListener('scroll', () => {
+  const doc = document.documentElement;
+  const scrolled = doc.scrollTop || document.body.scrollTop;
+  const total = doc.scrollHeight - doc.clientHeight;
+  const pct = total > 0 ? (scrolled / total) * 100 : 0;
+  document.getElementById('progress-bar').style.width = pct + '%';
+  updateNavHighlight();
+});
+
+// ── 导航高亮 ──
+const navItems = document.querySelectorAll('.nav-item[href^="#"]');
+const chapters = document.querySelectorAll('.chapter');
+
+function updateNavHighlight() {
+  const scrollY = window.scrollY + 100;
+  let current = '';
+  chapters.forEach(ch => {
+    if (ch.offsetTop <= scrollY) current = '#' + ch.id;
+  });
+  navItems.forEach(a => {
+    a.classList.toggle('active', a.getAttribute('href') === current);
+  });
+}
+updateNavHighlight();
+
+// ── 键盘翻章 ──
+const chapterIds = Array.from(chapters).map(c => c.id);
+let currentIdx = 0;
+
+function scrollToChapter(idx) {
+  if (idx < 0 || idx >= chapterIds.length) return;
+  currentIdx = idx;
+  const el = document.getElementById(chapterIds[idx]);
+  if (el) el.scrollIntoView({ behavior: 'smooth' });
+}
+
+function prevChapter() {
+  const scrollY = window.scrollY + 80;
+  let idx = 0;
+  chapters.forEach((ch, i) => { if (ch.offsetTop <= scrollY) idx = i; });
+  scrollToChapter(Math.max(0, idx - 1));
+}
+function nextChapter() {
+  const scrollY = window.scrollY + 80;
+  let idx = 0;
+  chapters.forEach((ch, i) => { if (ch.offsetTop <= scrollY) idx = i; });
+  scrollToChapter(Math.min(chapterIds.length - 1, idx + 1));
+}
+
+document.addEventListener('keydown', e => {
+  if (e.key === 'ArrowLeft')  { e.preventDefault(); prevChapter(); }
+  if (e.key === 'ArrowRight') { e.preventDefault(); nextChapter(); }
+});
+
+// ── 复制代码 ──
+function copyCode(btn) {
+  const pre = btn.closest('.code-block').querySelector('pre');
+  const text = pre.innerText || pre.textContent;
+  navigator.clipboard.writeText(text).then(() => {
+    const orig = btn.textContent;
+    btn.textContent = '✓ 已复制';
+    btn.style.color = 'var(--accent2)';
+    setTimeout(() => { btn.textContent = orig; btn.style.color = ''; }, 2000);
+  });
+}
+
+// ── 点击侧边栏链接平滑滚动 ──
+navItems.forEach(a => {
+  a.addEventListener('click', e => {
+    e.preventDefault();
+    const target = document.querySelector(a.getAttribute('href'));
+    if (target) target.scrollIntoView({ behavior: 'smooth' });
+  });
+});
+</script>
+</body>
+</html>

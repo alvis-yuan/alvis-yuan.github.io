@@ -1,0 +1,1818 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>GCC 针对 C99 代码的静态检查能力全解析</title>
+<style>
+  :root {
+    --bg: #0f1117;
+    --bg2: #161b27;
+    --bg3: #1e2535;
+    --border: #2a3350;
+    --accent: #4f8ef7;
+    --accent2: #7c5af7;
+    --accent3: #34d399;
+    --accent4: #fbbf24;
+    --accent5: #f87171;
+    --text: #e2e8f0;
+    --text2: #94a3b8;
+    --text3: #64748b;
+    --nav-width: 280px;
+    --header-h: 56px;
+    --progress-h: 3px;
+  }
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  html { scroll-behavior: smooth; }
+  body {
+    font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', 'PingFang SC', 'Noto Sans CJK SC', sans-serif;
+    background: var(--bg);
+    color: var(--text);
+    line-height: 1.7;
+    overflow-x: hidden;
+  }
+
+  /* ─── Progress Bar ─── */
+  #progress-bar {
+    position: fixed; top: 0; left: 0; height: var(--progress-h);
+    background: linear-gradient(90deg, var(--accent), var(--accent2));
+    width: 0%; z-index: 9999; transition: width 0.1s linear;
+  }
+
+  /* ─── Top Header ─── */
+  header {
+    position: fixed; top: var(--progress-h); left: 0; right: 0; height: var(--header-h);
+    background: rgba(15,17,23,0.95); backdrop-filter: blur(12px);
+    border-bottom: 1px solid var(--border);
+    display: flex; align-items: center; justify-content: space-between;
+    padding: 0 20px; z-index: 1000;
+  }
+  .header-left { display: flex; align-items: center; gap: 14px; }
+  .logo-badge {
+    background: linear-gradient(135deg, var(--accent), var(--accent2));
+    color: #fff; font-size: 11px; font-weight: 700; letter-spacing: 1px;
+    padding: 3px 8px; border-radius: 4px;
+  }
+  .header-title {
+    font-size: 15px; font-weight: 600; color: var(--text);
+    white-space: nowrap; overflow: hidden; text-overflow: ellipsis; max-width: 420px;
+  }
+  #hamburger {
+    display: none; flex-direction: column; gap: 5px; cursor: pointer;
+    padding: 6px; border-radius: 6px; background: transparent; border: none;
+  }
+  #hamburger span {
+    display: block; width: 22px; height: 2px; background: var(--text2);
+    transition: all 0.3s;
+  }
+  #hamburger.open span:nth-child(1) { transform: translateY(7px) rotate(45deg); }
+  #hamburger.open span:nth-child(2) { opacity: 0; }
+  #hamburger.open span:nth-child(3) { transform: translateY(-7px) rotate(-45deg); }
+  .key-hint {
+    font-size: 12px; color: var(--text3);
+    display: flex; align-items: center; gap: 6px;
+  }
+  kbd {
+    display: inline-flex; align-items: center; justify-content: center;
+    background: var(--bg3); border: 1px solid var(--border);
+    border-radius: 4px; padding: 1px 6px; font-size: 11px; color: var(--text2);
+    font-family: monospace;
+  }
+
+  /* ─── Layout ─── */
+  #overlay {
+    display: none; position: fixed; inset: 0;
+    background: rgba(0,0,0,0.6); z-index: 900; backdrop-filter: blur(2px);
+  }
+  #overlay.show { display: block; }
+
+  #sidebar {
+    position: fixed; top: calc(var(--progress-h) + var(--header-h)); left: 0;
+    width: var(--nav-width); bottom: 0;
+    background: var(--bg2); border-right: 1px solid var(--border);
+    overflow-y: auto; z-index: 800;
+    transition: transform 0.3s ease;
+  }
+  #sidebar::-webkit-scrollbar { width: 4px; }
+  #sidebar::-webkit-scrollbar-track { background: transparent; }
+  #sidebar::-webkit-scrollbar-thumb { background: var(--border); border-radius: 2px; }
+
+  #main {
+    margin-left: var(--nav-width);
+    padding-top: calc(var(--progress-h) + var(--header-h));
+    min-height: 100vh;
+  }
+
+  /* ─── Sidebar Nav ─── */
+  .nav-group { border-bottom: 1px solid var(--border); }
+  .nav-group-title {
+    padding: 10px 16px 6px;
+    font-size: 10px; font-weight: 700; letter-spacing: 1.5px;
+    text-transform: uppercase; color: var(--text3);
+    display: flex; align-items: center; gap: 8px;
+  }
+  .nav-group-title .gnum {
+    background: var(--bg3); border: 1px solid var(--border);
+    border-radius: 3px; padding: 1px 5px; font-size: 9px; color: var(--text3);
+  }
+  .nav-item {
+    display: flex; align-items: flex-start; gap: 10px;
+    padding: 7px 16px 7px 20px; cursor: pointer;
+    border-left: 3px solid transparent;
+    transition: all 0.2s; text-decoration: none; color: var(--text2);
+    font-size: 13px; line-height: 1.5;
+  }
+  .nav-item:hover { background: var(--bg3); color: var(--text); }
+  .nav-item.active {
+    border-left-color: var(--accent); background: rgba(79,142,247,0.08);
+    color: var(--accent); font-weight: 500;
+  }
+  .nav-num {
+    min-width: 20px; font-size: 11px; color: var(--text3);
+    font-variant-numeric: tabular-nums; padding-top: 1px;
+  }
+
+  /* ─── Content ─── */
+  .content-wrap {
+    max-width: 860px; margin: 0 auto; padding: 48px 40px 100px;
+  }
+
+  section {
+    margin-bottom: 80px; scroll-margin-top: calc(var(--progress-h) + var(--header-h) + 20px);
+  }
+  .section-header {
+    display: flex; align-items: flex-start; gap: 16px; margin-bottom: 28px;
+  }
+  .section-icon {
+    width: 44px; height: 44px; border-radius: 10px; flex-shrink: 0;
+    display: flex; align-items: center; justify-content: center; font-size: 20px;
+  }
+  .s1 { background: rgba(79,142,247,0.15); }
+  .s2 { background: rgba(124,90,247,0.15); }
+  .s3 { background: rgba(52,211,153,0.15); }
+  .s4 { background: rgba(251,191,36,0.15); }
+  .s5 { background: rgba(248,113,113,0.15); }
+  .s6 { background: rgba(79,142,247,0.15); }
+  .s7 { background: rgba(124,90,247,0.15); }
+  .s8 { background: rgba(52,211,153,0.15); }
+  .s9 { background: rgba(251,191,36,0.15); }
+  .s10 { background: rgba(248,113,113,0.15); }
+
+  .section-title-block {}
+  .section-num { font-size: 12px; color: var(--text3); margin-bottom: 2px; }
+  h2 {
+    font-size: 22px; font-weight: 700; color: var(--text);
+    line-height: 1.3; margin-bottom: 4px;
+  }
+  .section-sub { font-size: 13px; color: var(--text3); }
+
+  p { color: var(--text2); margin-bottom: 14px; font-size: 15px; }
+  p strong { color: var(--text); }
+
+  /* ─── Warning Cards ─── */
+  .warn-grid {
+    display: grid; grid-template-columns: 1fr 1fr; gap: 14px; margin: 20px 0;
+  }
+  .warn-card {
+    background: var(--bg2); border: 1px solid var(--border);
+    border-radius: 10px; padding: 16px; transition: border-color 0.2s;
+  }
+  .warn-card:hover { border-color: var(--accent); }
+  .warn-flag {
+    font-family: 'Courier New', monospace; font-size: 13px;
+    color: var(--accent3); font-weight: 600; margin-bottom: 6px;
+    display: flex; align-items: center; gap: 6px; flex-wrap: wrap;
+  }
+  .warn-flag .badge {
+    font-size: 10px; padding: 1px 6px; border-radius: 3px; font-family: sans-serif;
+    font-weight: 600; letter-spacing: 0.5px;
+  }
+  .badge-wall { background: rgba(79,142,247,0.2); color: var(--accent); }
+  .badge-extra { background: rgba(124,90,247,0.2); color: var(--accent2); }
+  .badge-manual { background: rgba(52,211,153,0.2); color: var(--accent3); }
+  .badge-analyzer { background: rgba(251,191,36,0.2); color: var(--accent4); }
+  .badge-kernel { background: rgba(248,113,113,0.2); color: var(--accent5); }
+  .warn-desc { font-size: 13px; color: var(--text2); line-height: 1.5; }
+
+  /* ─── Code blocks ─── */
+  .code-block {
+    background: #0a0d16; border: 1px solid var(--border); border-radius: 10px;
+    margin: 18px 0; overflow: hidden;
+  }
+  .code-header {
+    display: flex; align-items: center; justify-content: space-between;
+    padding: 8px 16px; background: var(--bg3); border-bottom: 1px solid var(--border);
+  }
+  .code-lang { font-size: 11px; color: var(--text3); text-transform: uppercase; letter-spacing: 1px; }
+  .code-label { font-size: 11px; color: var(--text3); }
+  pre {
+    padding: 16px 18px; overflow-x: auto; font-size: 13px;
+    line-height: 1.6; font-family: 'Courier New', Cascadia Code, monospace;
+  }
+  pre::-webkit-scrollbar { height: 4px; }
+  pre::-webkit-scrollbar-thumb { background: var(--border); }
+  .c-kw { color: #c792ea; }
+  .c-type { color: #80cbc4; }
+  .c-fn { color: #82aaff; }
+  .c-str { color: #c3e88d; }
+  .c-num { color: #f78c6c; }
+  .c-cmt { color: #546e7a; font-style: italic; }
+  .c-flag { color: var(--accent4); }
+  .c-err { color: var(--accent5); }
+  .c-ok { color: var(--accent3); }
+
+  /* ─── Info boxes ─── */
+  .info-box {
+    border-radius: 8px; padding: 14px 18px; margin: 16px 0;
+    font-size: 14px; line-height: 1.6;
+    display: flex; gap: 12px; align-items: flex-start;
+  }
+  .info-box .icon { font-size: 18px; flex-shrink: 0; padding-top: 1px; }
+  .info-note { background: rgba(79,142,247,0.08); border-left: 3px solid var(--accent); }
+  .info-warn { background: rgba(251,191,36,0.08); border-left: 3px solid var(--accent4); }
+  .info-danger { background: rgba(248,113,113,0.08); border-left: 3px solid var(--accent5); }
+  .info-ok { background: rgba(52,211,153,0.08); border-left: 3px solid var(--accent3); }
+  .info-box .body { color: var(--text2); }
+  .info-box .body strong { color: var(--text); }
+
+  /* ─── Tables ─── */
+  .table-wrap { overflow-x: auto; margin: 16px 0; }
+  table { width: 100%; border-collapse: collapse; font-size: 13.5px; }
+  th {
+    background: var(--bg3); color: var(--text2); font-weight: 600;
+    padding: 10px 14px; text-align: left; border-bottom: 2px solid var(--border);
+  }
+  td { padding: 9px 14px; border-bottom: 1px solid var(--border); color: var(--text2); }
+  tr:hover td { background: var(--bg3); }
+  td code, th code {
+    font-family: 'Courier New', monospace; font-size: 12px;
+    background: var(--bg3); padding: 1px 5px; border-radius: 3px; color: var(--accent3);
+  }
+  .tag { display: inline-block; font-size: 11px; padding: 1px 6px; border-radius: 3px; font-weight: 600; }
+  .tag-on { background: rgba(52,211,153,0.2); color: var(--accent3); }
+  .tag-off { background: rgba(100,116,139,0.2); color: var(--text3); }
+  .tag-warn { background: rgba(251,191,36,0.2); color: var(--accent4); }
+  .tag-err { background: rgba(248,113,113,0.2); color: var(--accent5); }
+
+  /* ─── SVG Diagrams ─── */
+  .diagram-wrap {
+    margin: 24px 0; display: flex; justify-content: center;
+  }
+  .diagram-wrap svg { max-width: 100%; height: auto; }
+
+  /* ─── Chapter nav buttons ─── */
+  .chapter-nav {
+    display: flex; justify-content: space-between; align-items: center;
+    margin-top: 60px; padding-top: 24px; border-top: 1px solid var(--border);
+  }
+  .chap-btn {
+    display: flex; align-items: center; gap: 8px; padding: 10px 18px;
+    background: var(--bg2); border: 1px solid var(--border); border-radius: 8px;
+    cursor: pointer; color: var(--text2); font-size: 13px;
+    transition: all 0.2s; text-decoration: none;
+  }
+  .chap-btn:hover { border-color: var(--accent); color: var(--accent); }
+  .chap-btn.disabled { opacity: 0.3; pointer-events: none; }
+
+  /* ─── Hero section ─── */
+  .hero {
+    background: linear-gradient(135deg, rgba(79,142,247,0.06) 0%, rgba(124,90,247,0.06) 100%);
+    border: 1px solid var(--border); border-radius: 14px; padding: 36px 36px 30px;
+    margin-bottom: 40px;
+  }
+  .hero h1 { font-size: 26px; font-weight: 800; color: var(--text); margin-bottom: 12px; line-height: 1.3; }
+  .hero .subtitle { font-size: 15px; color: var(--text2); margin-bottom: 20px; }
+  .hero-meta {
+    display: flex; flex-wrap: wrap; gap: 16px; font-size: 13px; color: var(--text3);
+  }
+  .hero-meta a { color: var(--accent); text-decoration: none; }
+  .hero-meta a:hover { text-decoration: underline; }
+
+  /* ─── Section divider ─── */
+  .section-divider {
+    height: 1px; background: linear-gradient(90deg, var(--border), transparent);
+    margin: 40px 0;
+  }
+
+  h3 { font-size: 16px; color: var(--text); margin: 22px 0 10px; font-weight: 600; }
+  ul, ol { padding-left: 22px; margin-bottom: 14px; }
+  li { color: var(--text2); font-size: 14px; margin-bottom: 5px; line-height: 1.6; }
+  li code { font-family: monospace; color: var(--accent3); font-size: 13px;
+    background: var(--bg3); padding: 1px 4px; border-radius: 3px; }
+
+  /* ─── Responsive ─── */
+  @media (max-width: 900px) {
+    :root { --nav-width: 0px; }
+    #sidebar {
+      transform: translateX(-280px); width: 280px;
+    }
+    #sidebar.open {
+      transform: translateX(0);
+    }
+    #main { margin-left: 0; }
+    #hamburger { display: flex; }
+    .key-hint { display: none; }
+    .header-title { max-width: 220px; font-size: 13px; }
+    .warn-grid { grid-template-columns: 1fr; }
+    .content-wrap { padding: 32px 18px 80px; }
+    h2 { font-size: 19px; }
+    .hero { padding: 22px 18px 18px; }
+    .hero h1 { font-size: 20px; }
+  }
+  @media (max-width: 600px) {
+    .header-title { display: none; }
+    .content-wrap { padding: 24px 14px 80px; }
+    .section-header { gap: 10px; }
+    .section-icon { width: 36px; height: 36px; font-size: 17px; }
+    h2 { font-size: 17px; }
+  }
+</style>
+</head>
+<body>
+
+<div id="progress-bar"></div>
+
+<header>
+  <div class="header-left">
+    <button id="hamburger" onclick="toggleSidebar()" aria-label="菜单">
+      <span></span><span></span><span></span>
+    </button>
+    <span class="logo-badge">GCC</span>
+    <span class="header-title">C99 编译期静态检查能力全解析</span>
+  </div>
+  <div class="key-hint">
+    <kbd>←</kbd><kbd>→</kbd> 翻章节
+  </div>
+</header>
+
+<div id="overlay" onclick="closeSidebar()"></div>
+
+<nav id="sidebar">
+  <div class="nav-group">
+    <div class="nav-group-title">导论</div>
+    <a class="nav-item active" href="#intro" onclick="closeOnMobile()">
+      <span class="nav-num">§0</span><span>概述与工作原理</span>
+    </a>
+  </div>
+  <div class="nav-group">
+    <div class="nav-group-title">类型与声明 <span class="gnum">§1</span></div>
+    <a class="nav-item" href="#s1" onclick="closeOnMobile()">
+      <span class="nav-num">§1</span><span>类型安全与隐式转换</span>
+    </a>
+  </div>
+  <div class="nav-group">
+    <div class="nav-group-title">控制流 <span class="gnum">§2</span></div>
+    <a class="nav-item" href="#s2" onclick="closeOnMobile()">
+      <span class="nav-num">§2</span><span>控制流与分支检查</span>
+    </a>
+  </div>
+  <div class="nav-group">
+    <div class="nav-group-title">内存与指针 <span class="gnum">§3</span></div>
+    <a class="nav-item" href="#s3" onclick="closeOnMobile()">
+      <span class="nav-num">§3</span><span>内存与指针安全</span>
+    </a>
+  </div>
+  <div class="nav-group">
+    <div class="nav-group-title">格式化 <span class="gnum">§4</span></div>
+    <a class="nav-item" href="#s4" onclick="closeOnMobile()">
+      <span class="nav-num">§4</span><span>格式化字符串检查</span>
+    </a>
+  </div>
+  <div class="nav-group">
+    <div class="nav-group-title">函数 <span class="gnum">§5</span></div>
+    <a class="nav-item" href="#s5" onclick="closeOnMobile()">
+      <span class="nav-num">§5</span><span>函数声明与原型</span>
+    </a>
+  </div>
+  <div class="nav-group">
+    <div class="nav-group-title">未定义行为 <span class="gnum">§6</span></div>
+    <a class="nav-item" href="#s6" onclick="closeOnMobile()">
+      <span class="nav-num">§6</span><span>未定义行为检测</span>
+    </a>
+  </div>
+  <div class="nav-group">
+    <div class="nav-group-title">符合标准 <span class="gnum">§7</span></div>
+    <a class="nav-item" href="#s7" onclick="closeOnMobile()">
+      <span class="nav-num">§7</span><span>C99 标准符合性</span>
+    </a>
+  </div>
+  <div class="nav-group">
+    <div class="nav-group-title">静态分析器 <span class="gnum">§8</span></div>
+    <a class="nav-item" href="#s8" onclick="closeOnMobile()">
+      <span class="nav-num">§8</span><span>-fanalyzer 过程间分析</span>
+    </a>
+  </div>
+  <div class="nav-group">
+    <div class="nav-group-title">Linux 内核实践 <span class="gnum">§9</span></div>
+    <a class="nav-item" href="#s9" onclick="closeOnMobile()">
+      <span class="nav-num">§9</span><span>Linux 内核工程实践</span>
+    </a>
+  </div>
+  <div class="nav-group">
+    <div class="nav-group-title">汇总 <span class="gnum">§10</span></div>
+    <a class="nav-item" href="#s10" onclick="closeOnMobile()">
+      <span class="nav-num">§10</span><span>推荐配置与速查表</span>
+    </a>
+  </div>
+</nav>
+
+<main id="main">
+<div class="content-wrap">
+
+<!-- ══════════════════════════════════════════════════════════════ -->
+<section id="intro">
+  <div class="hero">
+    <h1>GCC 针对 C99 代码的编译期静态检查能力</h1>
+    <p class="subtitle">
+      基于 GCC 官方文档与 Linux 内核构建系统的系统性梳理，涵盖警告选项、静态分析器、标准符合性检查及开源工程实践。
+    </p>
+    <div class="hero-meta">
+      <span>📖 资料来源：
+        <a href="https://gcc.gnu.org/onlinedocs/gcc/Warning-Options.html" target="_blank">GCC Warning Options</a> ·
+        <a href="https://gcc.gnu.org/onlinedocs/gcc/Static-Analyzer-Options.html" target="_blank">GCC Static Analyzer</a> ·
+        <a href="https://github.com/torvalds/linux/blob/master/Makefile" target="_blank">Linux kernel Makefile</a> ·
+        <a href="https://github.com/WukLab/LegoOS/blob/master/scripts/Makefile.extrawarn" target="_blank">Makefile.extrawarn</a>
+      </span>
+    </div>
+  </div>
+
+  <p>
+    GCC（GNU Compiler Collection）的静态检查能力远不止于报告语法错误。在 <strong>编译阶段</strong>（不运行程序），它可以对代码的类型安全、控制流、内存操作、格式字符串、标准符合性等多个维度执行分析，帮助开发者在运行前发现潜在缺陷。
+  </p>
+  <p>
+    针对 C99 标准（<code>-std=c99</code>），GCC 的静态检查主要分为三个层次：<strong>警告选项（Warning Options）</strong>、<strong>过程间静态分析器（-fanalyzer）</strong>以及<strong>标准符合性强制检查（-pedantic/-pedantic-errors）</strong>。
+  </p>
+
+  <!-- SVG: 三层架构图 -->
+  <div class="diagram-wrap">
+    <svg viewBox="0 0 720 220" xmlns="http://www.w3.org/2000/svg" width="720" height="220">
+      <defs>
+        <linearGradient id="g1" x1="0%" y1="0%" x2="100%" y2="0%">
+          <stop offset="0%" style="stop-color:#4f8ef7;stop-opacity:0.8"/>
+          <stop offset="100%" style="stop-color:#7c5af7;stop-opacity:0.8"/>
+        </linearGradient>
+        <linearGradient id="g2" x1="0%" y1="0%" x2="100%" y2="0%">
+          <stop offset="0%" style="stop-color:#34d399;stop-opacity:0.8"/>
+          <stop offset="100%" style="stop-color:#4f8ef7;stop-opacity:0.8"/>
+        </linearGradient>
+        <linearGradient id="g3" x1="0%" y1="0%" x2="100%" y2="0%">
+          <stop offset="0%" style="stop-color:#fbbf24;stop-opacity:0.8"/>
+          <stop offset="100%" style="stop-color:#f87171;stop-opacity:0.8"/>
+        </linearGradient>
+      </defs>
+      <!-- Background -->
+      <rect width="720" height="220" fill="#0f1117" rx="12"/>
+
+      <!-- Title -->
+      <text x="360" y="24" text-anchor="middle" fill="#94a3b8" font-size="11" font-family="sans-serif" letter-spacing="1">GCC 编译期静态检查三层架构</text>
+
+      <!-- Layer 1 -->
+      <rect x="30" y="38" width="200" height="68" rx="8" fill="url(#g1)" fill-opacity="0.15" stroke="url(#g1)" stroke-width="1.5"/>
+      <text x="130" y="64" text-anchor="middle" fill="#a5c0ff" font-size="13" font-weight="bold" font-family="sans-serif">① 警告选项</text>
+      <text x="130" y="82" text-anchor="middle" fill="#64748b" font-size="11" font-family="sans-serif">-Wall / -Wextra</text>
+      <text x="130" y="97" text-anchor="middle" fill="#64748b" font-size="11" font-family="sans-serif">单次编译 · 快速 · 轻量</text>
+
+      <!-- Arrow 1→2 -->
+      <line x1="230" y1="72" x2="258" y2="72" stroke="#2a3350" stroke-width="1.5" marker-end="url(#arrow)"/>
+
+      <!-- Layer 2 -->
+      <rect x="260" y="38" width="200" height="68" rx="8" fill="url(#g2)" fill-opacity="0.15" stroke="url(#g2)" stroke-width="1.5"/>
+      <text x="360" y="64" text-anchor="middle" fill="#86efac" font-size="13" font-weight="bold" font-family="sans-serif">② 静态分析器</text>
+      <text x="360" y="82" text-anchor="middle" fill="#64748b" font-size="11" font-family="sans-serif">-fanalyzer</text>
+      <text x="360" y="97" text-anchor="middle" fill="#64748b" font-size="11" font-family="sans-serif">跨函数 · 路径敏感 · 重量级</text>
+
+      <!-- Arrow 2→3 -->
+      <line x1="460" y1="72" x2="488" y2="72" stroke="#2a3350" stroke-width="1.5" marker-end="url(#arrow)"/>
+
+      <!-- Layer 3 -->
+      <rect x="490" y="38" width="200" height="68" rx="8" fill="url(#g3)" fill-opacity="0.15" stroke="url(#g3)" stroke-width="1.5"/>
+      <text x="590" y="64" text-anchor="middle" fill="#fde68a" font-size="13" font-weight="bold" font-family="sans-serif">③ 标准符合性</text>
+      <text x="590" y="82" text-anchor="middle" fill="#64748b" font-size="11" font-family="sans-serif">-pedantic / -std=c99</text>
+      <text x="590" y="97" text-anchor="middle" fill="#64748b" font-size="11" font-family="sans-serif">ISO 合规 · 严格模式</text>
+
+      <!-- Arrow marker -->
+      <defs>
+        <marker id="arrow" markerWidth="8" markerHeight="8" refX="4" refY="4" orient="auto">
+          <path d="M0,1 L6,4 L0,7 Z" fill="#2a3350"/>
+        </marker>
+      </defs>
+
+      <!-- Bottom: input/output -->
+      <rect x="30" y="128" width="660" height="70" rx="8" fill="#161b27" stroke="#2a3350" stroke-width="1"/>
+      <text x="360" y="150" text-anchor="middle" fill="#94a3b8" font-size="12" font-family="sans-serif" font-weight="600">编译管道视图</text>
+
+      <!-- Pipeline stages -->
+      <rect x="50" y="158" width="100" height="26" rx="5" fill="#1e2535" stroke="#2a3350"/>
+      <text x="100" y="175" text-anchor="middle" fill="#64748b" font-size="11" font-family="sans-serif">源代码 .c</text>
+
+      <text x="165" y="175" text-anchor="middle" fill="#4f8ef7" font-size="16" font-family="monospace">→</text>
+
+      <rect x="185" y="158" width="100" height="26" rx="5" fill="#1e2535" stroke="#4f8ef7" stroke-opacity="0.5"/>
+      <text x="235" y="175" text-anchor="middle" fill="#82aaff" font-size="11" font-family="sans-serif">预处理 / 解析</text>
+
+      <text x="300" y="175" text-anchor="middle" fill="#4f8ef7" font-size="16" font-family="monospace">→</text>
+
+      <rect x="320" y="158" width="100" height="26" rx="5" fill="#1e2535" stroke="#34d399" stroke-opacity="0.5"/>
+      <text x="370" y="175" text-anchor="middle" fill="#86efac" font-size="11" font-family="sans-serif">AST / 语义分析</text>
+
+      <text x="435" y="175" text-anchor="middle" fill="#4f8ef7" font-size="16" font-family="monospace">→</text>
+
+      <rect x="455" y="158" width="100" height="26" rx="5" fill="#1e2535" stroke="#fbbf24" stroke-opacity="0.5"/>
+      <text x="505" y="175" text-anchor="middle" fill="#fde68a" font-size="11" font-family="sans-serif">中间表示 (GIMPLE)</text>
+
+      <text x="570" y="175" text-anchor="middle" fill="#4f8ef7" font-size="16" font-family="monospace">→</text>
+
+      <rect x="590" y="158" width="82" height="26" rx="5" fill="#1e2535" stroke="#2a3350"/>
+      <text x="631" y="175" text-anchor="middle" fill="#64748b" font-size="11" font-family="sans-serif">目标代码</text>
+    </svg>
+  </div>
+
+  <div class="info-note info-box">
+    <span class="icon">📌</span>
+    <div class="body">
+      <strong>重要说明：</strong>本文所有选项均来自
+      <a href="https://gcc.gnu.org/onlinedocs/gcc/Warning-Options.html" target="_blank" style="color:var(--accent)">GCC 官方文档（Warning Options）</a> 及
+      <a href="https://gcc.gnu.org/onlinedocs/gcc/Static-Analyzer-Options.html" target="_blank" style="color:var(--accent)">Static Analyzer Options</a>，开源参考来自 Linux 内核
+      <a href="https://github.com/WukLab/LegoOS/blob/master/scripts/Makefile.extrawarn" target="_blank" style="color:var(--accent)">scripts/Makefile.extrawarn</a>（W=1/2/3 机制）。
+    </div>
+  </div>
+
+  <div class="chapter-nav">
+    <span class="chap-btn disabled">← 上一章</span>
+    <a class="chap-btn" href="#s1">类型安全与隐式转换 →</a>
+  </div>
+</section>
+
+<!-- ══════════════════════════════════════════════════════════════ -->
+<section id="s1">
+  <div class="section-header">
+    <div class="section-icon s1">🔤</div>
+    <div class="section-title-block">
+      <div class="section-num">§ 1</div>
+      <h2>类型安全与隐式转换检查</h2>
+      <div class="section-sub">类型不匹配、隐式截断、符号性错误</div>
+    </div>
+  </div>
+
+  <p>
+    C99 的类型系统相对宽松，GCC 可在编译期捕获大量因类型不匹配或隐式转换而引发的潜在错误。以下选项均来自官方 <a href="https://gcc.gnu.org/onlinedocs/gcc/Warning-Options.html" target="_blank" style="color:var(--accent)">Warning Options</a>。
+  </p>
+
+  <div class="warn-grid">
+    <div class="warn-card">
+      <div class="warn-flag"><code>-Wconversion</code> <span class="badge badge-manual">手动启用</span></div>
+      <div class="warn-desc">警告可能改变值的隐式转换，如将 <code>int</code> 赋给 <code>char</code>、有符号转无符号可能溢出等。Linux 内核 W=3 级别启用。</div>
+    </div>
+    <div class="warn-card">
+      <div class="warn-flag"><code>-Wsign-compare</code> <span class="badge badge-extra">-Wextra</span></div>
+      <div class="warn-desc">比较有符号与无符号整数时，若有符号值为负则转换为无符号后结果错误。<code>-Wextra</code> 在 C 语言中启用。</div>
+    </div>
+    <div class="warn-card">
+      <div class="warn-flag"><code>-Wchar-subscripts</code> <span class="badge badge-wall">-Wall</span></div>
+      <div class="warn-desc">以 <code>char</code> 类型作为数组下标。在某些平台 <code>char</code> 有符号，可能产生负数下标，访问非法内存。</div>
+    </div>
+    <div class="warn-card">
+      <div class="warn-flag"><code>-Wdouble-promotion</code> <span class="badge badge-manual">手动启用</span></div>
+      <div class="warn-desc">警告 <code>float</code> 被隐式提升为 <code>double</code>。在嵌入式系统中可导致浮点运算意外地使用双精度。</div>
+    </div>
+    <div class="warn-card">
+      <div class="warn-flag"><code>-Wpointer-sign</code> <span class="badge badge-wall">-Wall</span></div>
+      <div class="warn-desc">指针传递或赋值时符号性不同（如 <code>char*</code> 与 <code>unsigned char*</code>）。C 和 Objective-C 专用，-pedantic-errors 下升级为错误。</div>
+    </div>
+    <div class="warn-card">
+      <div class="warn-flag"><code>-Wincompatible-pointer-types</code> <span class="badge badge-wall">默认启用</span></div>
+      <div class="warn-desc">不兼容指针类型之间的赋值或传参，如将 <code>int*</code> 赋给 <code>float*</code>。</div>
+    </div>
+    <div class="warn-card">
+      <div class="warn-flag"><code>-Wint-conversion</code> <span class="badge badge-wall">默认启用</span></div>
+      <div class="warn-desc">整数与指针之间的隐式转换，在 C99 中通常是错误的来源。</div>
+    </div>
+    <div class="warn-card">
+      <div class="warn-flag"><code>-Wenum-compare</code> <span class="badge badge-wall">-Wall</span></div>
+      <div class="warn-desc">比较两个不同枚举类型的值，提示潜在的逻辑错误。</div>
+    </div>
+    <div class="warn-card">
+      <div class="warn-flag"><code>-Wenum-int-mismatch</code> <span class="badge badge-wall">-Wall</span></div>
+      <div class="warn-desc">枚举类型与整数类型之间不匹配的赋值或比较（C 和 Objective-C）。</div>
+    </div>
+    <div class="warn-card">
+      <div class="warn-flag"><code>-Wbad-function-cast</code> <span class="badge badge-manual">手动启用</span></div>
+      <div class="warn-desc">将函数调用结果强制转换为不匹配类型。Linux 内核 W=3 级别使用。</div>
+    </div>
+    <div class="warn-card">
+      <div class="warn-flag"><code>-Wcast-qual</code> <span class="badge badge-manual">手动启用</span></div>
+      <div class="warn-desc">指针强制转换丢失类型限定符（如 <code>const</code> 或 <code>volatile</code>）。Linux 内核 W=3 级别使用。</div>
+    </div>
+    <div class="warn-card">
+      <div class="warn-flag"><code>-Wcast-align</code> <span class="badge badge-manual">W=2</span></div>
+      <div class="warn-desc">将指针强转为对齐要求更高的类型，如 <code>char*</code> 转 <code>int*</code>。可能在某些架构上导致总线错误。Linux 内核 W=2 级别启用。</div>
+    </div>
+  </div>
+
+  <div class="code-block">
+    <div class="code-header">
+      <span class="code-lang">C (C99)</span>
+      <span class="code-label">类型转换警告示例</span>
+    </div>
+    <pre><span class="c-kw">#include</span> <span class="c-str">&lt;stdio.h&gt;</span>
+
+<span class="c-type">int</span> <span class="c-fn">main</span>(<span class="c-type">void</span>) {
+    <span class="c-type">unsigned int</span> u = <span class="c-num">10</span>;
+    <span class="c-type">int</span> i = <span class="c-num">-1</span>;
+    <span class="c-cmt">/* -Wsign-compare: 有符号 -1 与无符号 10 比较，结果可能出人意料 */</span>
+    <span class="c-kw">if</span> (i < u) {   <span class="c-err">/* warning: comparison of integer expressions of different signedness */</span>
+        <span class="c-fn">printf</span>(<span class="c-str">"i < u\n"</span>);
+    }
+
+    <span class="c-type">char</span> arr[<span class="c-num">256</span>];
+    <span class="c-type">char</span> idx = <span class="c-num">-1</span>;
+    <span class="c-cmt">/* -Wchar-subscripts: char 作为数组下标，可能为负 */</span>
+    arr[idx] = <span class="c-num">0</span>;  <span class="c-err">/* warning: array subscript has type 'char' */</span>
+    <span class="c-kw">return</span> <span class="c-num">0</span>;
+}</pre>
+  </div>
+
+  <div class="chapter-nav">
+    <a class="chap-btn" href="#intro">← 概述</a>
+    <a class="chap-btn" href="#s2">控制流检查 →</a>
+  </div>
+</section>
+
+<!-- ══════════════════════════════════════════════════════════════ -->
+<section id="s2">
+  <div class="section-header">
+    <div class="section-icon s2">🔀</div>
+    <div class="section-title-block">
+      <div class="section-num">§ 2</div>
+      <h2>控制流与分支检查</h2>
+      <div class="section-sub">switch、return、初始化、序列点</div>
+    </div>
+  </div>
+
+  <p>
+    控制流缺陷是 C 程序中最常见的一类错误，GCC 可在编译期静态分析代码路径，捕获以下问题。
+  </p>
+
+  <!-- SVG: 控制流检查类型 -->
+  <div class="diagram-wrap">
+    <svg viewBox="0 0 680 190" xmlns="http://www.w3.org/2000/svg" width="680" height="190">
+      <rect width="680" height="190" fill="#0f1117" rx="10"/>
+      <text x="340" y="22" text-anchor="middle" fill="#94a3b8" font-size="11" font-family="sans-serif" letter-spacing="1">控制流检查分类</text>
+
+      <!-- switch -->
+      <rect x="20" y="36" width="140" height="130" rx="8" fill="#161b27" stroke="#7c5af7" stroke-opacity="0.4"/>
+      <text x="90" y="58" text-anchor="middle" fill="#c4b5fd" font-size="12" font-weight="bold" font-family="sans-serif">switch 语句</text>
+      <text x="90" y="76" text-anchor="middle" fill="#64748b" font-size="10" font-family="monospace">-Wswitch</text>
+      <text x="90" y="92" text-anchor="middle" fill="#64748b" font-size="10" font-family="monospace">-Wswitch-default</text>
+      <text x="90" y="108" text-anchor="middle" fill="#64748b" font-size="10" font-family="monospace">-Wswitch-enum</text>
+      <text x="90" y="124" text-anchor="middle" fill="#64748b" font-size="10" font-family="monospace">-Wimplicit-fallthrough</text>
+      <text x="90" y="140" text-anchor="middle" fill="#64748b" font-size="10" font-family="monospace">-Wduplicated-cond</text>
+
+      <!-- return -->
+      <rect x="175" y="36" width="140" height="130" rx="8" fill="#161b27" stroke="#4f8ef7" stroke-opacity="0.4"/>
+      <text x="245" y="58" text-anchor="middle" fill="#93c5fd" font-size="12" font-weight="bold" font-family="sans-serif">返回值</text>
+      <text x="245" y="76" text-anchor="middle" fill="#64748b" font-size="10" font-family="monospace">-Wreturn-type</text>
+      <text x="245" y="92" text-anchor="middle" fill="#64748b" font-size="10" font-family="monospace">-Wmissing-return</text>
+      <text x="245" y="108" text-anchor="middle" fill="#64748b" font-size="10" font-family="monospace">-Wreturn-local-addr</text>
+      <text x="245" y="124" text-anchor="middle" fill="#64748b" font-size="10" font-family="monospace">-Waggregate-return</text>
+
+      <!-- init -->
+      <rect x="330" y="36" width="140" height="130" rx="8" fill="#161b27" stroke="#34d399" stroke-opacity="0.4"/>
+      <text x="400" y="58" text-anchor="middle" fill="#86efac" font-size="12" font-weight="bold" font-family="sans-serif">初始化</text>
+      <text x="400" y="76" text-anchor="middle" fill="#64748b" font-size="10" font-family="monospace">-Wuninitialized</text>
+      <text x="400" y="92" text-anchor="middle" fill="#64748b" font-size="10" font-family="monospace">-Wmaybe-uninitialized</text>
+      <text x="400" y="108" text-anchor="middle" fill="#64748b" font-size="10" font-family="monospace">-Wmissing-braces</text>
+      <text x="400" y="124" text-anchor="middle" fill="#64748b" font-size="10" font-family="monospace">-Winit-self</text>
+      <text x="400" y="140" text-anchor="middle" fill="#64748b" font-size="10" font-family="monospace">-Wmissing-field-initializers</text>
+
+      <!-- misc -->
+      <rect x="485" y="36" width="170" height="130" rx="8" fill="#161b27" stroke="#fbbf24" stroke-opacity="0.4"/>
+      <text x="570" y="58" text-anchor="middle" fill="#fde68a" font-size="12" font-weight="bold" font-family="sans-serif">表达式与逻辑</text>
+      <text x="570" y="76" text-anchor="middle" fill="#64748b" font-size="10" font-family="monospace">-Wsequence-point</text>
+      <text x="570" y="92" text-anchor="middle" fill="#64748b" font-size="10" font-family="monospace">-Wparentheses</text>
+      <text x="570" y="108" text-anchor="middle" fill="#64748b" font-size="10" font-family="monospace">-Wlogical-op</text>
+      <text x="570" y="124" text-anchor="middle" fill="#64748b" font-size="10" font-family="monospace">-Wtautological-compare</text>
+      <text x="570" y="140" text-anchor="middle" fill="#64748b" font-size="10" font-family="monospace">-Wdangling-else</text>
+    </svg>
+  </div>
+
+  <div class="warn-grid">
+    <div class="warn-card">
+      <div class="warn-flag"><code>-Wreturn-type</code> <span class="badge badge-wall">-Wall</span></div>
+      <div class="warn-desc">函数声明返回类型为非 void，但缺少 <code>return</code> 语句，或返回类型与 <code>return</code> 后的表达式类型不符。</div>
+    </div>
+    <div class="warn-card">
+      <div class="warn-flag"><code>-Wswitch</code> <span class="badge badge-wall">-Wall</span></div>
+      <div class="warn-desc"><code>switch</code> 语句对枚举类型进行匹配，但缺少对枚举成员的某个 case，或出现不属于枚举的 case 值。</div>
+    </div>
+    <div class="warn-card">
+      <div class="warn-flag"><code>-Wimplicit-fallthrough</code> <span class="badge badge-extra">-Wextra</span></div>
+      <div class="warn-desc"><code>switch</code> 的某个 case 分支没有 <code>break</code> 也没有显式的 fallthrough 注释（<code>/* fallthrough */</code>），静默穿透是常见 Bug 来源。</div>
+    </div>
+    <div class="warn-card">
+      <div class="warn-flag"><code>-Wuninitialized</code> <span class="badge badge-wall">-Wall</span></div>
+      <div class="warn-desc">变量在使用前未初始化。GCC 通过数据流分析在编译期（通常需开启 <code>-O1</code> 及以上）检测。</div>
+    </div>
+    <div class="warn-card">
+      <div class="warn-flag"><code>-Wmaybe-uninitialized</code> <span class="badge badge-wall">-Wall</span></div>
+      <div class="warn-desc">变量在某些代码路径上可能未初始化即被使用。比 <code>-Wuninitialized</code> 更宽泛，依赖优化器的数据流分析。</div>
+    </div>
+    <div class="warn-card">
+      <div class="warn-flag"><code>-Wsequence-point</code> <span class="badge badge-wall">-Wall</span></div>
+      <div class="warn-desc">违反 C99 序列点规则，如 <code>i = i++</code>，导致未定义行为。</div>
+    </div>
+    <div class="warn-card">
+      <div class="warn-flag"><code>-Wparentheses</code> <span class="badge badge-wall">-Wall</span></div>
+      <div class="warn-desc">因缺少括号而导致意义不明的表达式，如 <code>a &lt;&lt; b + c</code>（加法优先级高于移位）。</div>
+    </div>
+    <div class="warn-card">
+      <div class="warn-flag"><code>-Wlogical-op</code> <span class="badge badge-manual">W=2 内核</span></div>
+      <div class="warn-desc">逻辑操作符的可疑用法，如在预期使用位操作的地方使用逻辑操作符，或操作数相同。Linux 内核 W=2 启用。</div>
+    </div>
+    <div class="warn-card">
+      <div class="warn-flag"><code>-Wduplicated-cond</code> <span class="badge badge-manual">手动启用</span></div>
+      <div class="warn-desc">在 if-else if 链中条件重复，逻辑上不可能同时为真的分支。</div>
+    </div>
+    <div class="warn-card">
+      <div class="warn-flag"><code>-Wduplicated-branches</code> <span class="badge badge-manual">手动启用</span></div>
+      <div class="warn-desc">if/else 的两个分支代码完全相同，通常是复制粘贴错误。</div>
+    </div>
+    <div class="warn-card">
+      <div class="warn-flag"><code>-Wdangling-else</code> <span class="badge badge-wall">-Wall</span></div>
+      <div class="warn-desc">悬空 else 问题：else 与哪个 if 配对存在歧义，通常与预期不符。</div>
+    </div>
+    <div class="warn-card">
+      <div class="warn-flag"><code>-Wmisleading-indentation</code> <span class="badge badge-wall">-Wall</span></div>
+      <div class="warn-desc">代码缩进与实际语义不符，如将误缩进为 if 体内的语句实际在体外（Apple SSL "goto fail" 类型漏洞）。</div>
+    </div>
+  </div>
+
+  <div class="code-block">
+    <div class="code-header">
+      <span class="code-lang">C (C99)</span>
+      <span class="code-label">控制流警告示例</span>
+    </div>
+    <pre><span class="c-type">int</span> <span class="c-fn">get_val</span>(<span class="c-type">int</span> x) {
+    <span class="c-kw">if</span> (x > <span class="c-num">0</span>)
+        <span class="c-kw">return</span> x;
+    <span class="c-cmt">/* -Wreturn-type: 非 void 函数缺少 return，未定义行为 */</span>
+}   <span class="c-err">/* warning: control reaches end of non-void function */</span>
+
+<span class="c-type">void</span> <span class="c-fn">check</span>(<span class="c-type">int</span> n) {
+    <span class="c-type">int</span> val;          <span class="c-cmt">/* 声明但未初始化 */</span>
+    <span class="c-kw">if</span> (n > <span class="c-num">0</span>)
+        val = n;
+    <span class="c-fn">printf</span>(<span class="c-str">"%d\n"</span>, val); <span class="c-err">/* warning: 'val' may be used uninitialized */</span>
+
+    <span class="c-type">int</span> a = <span class="c-num">5</span>;
+    a = a++;           <span class="c-err">/* warning: operation on 'a' may be undefined (-Wsequence-point) */</span>
+}</pre>
+  </div>
+
+  <div class="chapter-nav">
+    <a class="chap-btn" href="#s1">← 类型安全</a>
+    <a class="chap-btn" href="#s3">内存与指针 →</a>
+  </div>
+</section>
+
+<!-- ══════════════════════════════════════════════════════════════ -->
+<section id="s3">
+  <div class="section-header">
+    <div class="section-icon s3">🔒</div>
+    <div class="section-title-block">
+      <div class="section-num">§ 3</div>
+      <h2>内存与指针安全检查</h2>
+      <div class="section-sub">数组越界、空指针、restrict 违规、内存泄漏</div>
+    </div>
+  </div>
+
+  <p>
+    内存安全是 C 代码中最危险的问题域，GCC 提供了多层次的静态检查能力，从简单的编译期常量分析到复杂的路径敏感分析（后者由 <code>-fanalyzer</code> 完成，详见§8）。
+  </p>
+
+  <div class="warn-grid">
+    <div class="warn-card">
+      <div class="warn-flag"><code>-Warray-bounds=2</code> <span class="badge badge-manual">手动启用</span></div>
+      <div class="warn-desc">访问数组时下标超出静态边界（需 <code>-O2</code>）。=1 级别由 <code>-Wall</code> 启用，=2 更激进，可能有误报。</div>
+    </div>
+    <div class="warn-card">
+      <div class="warn-flag"><code>-Wstringop-overflow</code> <span class="badge badge-wall">-Wall</span></div>
+      <div class="warn-desc">调用字符串处理函数（<code>memcpy</code>/<code>strcpy</code> 等）时，目标缓冲区大小不足。</div>
+    </div>
+    <div class="warn-card">
+      <div class="warn-flag"><code>-Wrestrict</code> <span class="badge badge-wall">-Wall</span></div>
+      <div class="warn-desc"><code>restrict</code> 限定参数被另一个参数别名，或两个 restrict 区间重叠，违反 C99 的 restrict 语义承诺。</div>
+    </div>
+    <div class="warn-card">
+      <div class="warn-flag"><code>-Wnonnull</code> <span class="badge badge-wall">-Wall</span></div>
+      <div class="warn-desc">向标注了 <code>__attribute__((nonnull))</code> 的参数传递空指针常量。</div>
+    </div>
+    <div class="warn-card">
+      <div class="warn-flag"><code>-Wnull-dereference</code> <span class="badge badge-manual">需 -O2</span></div>
+      <div class="warn-desc">通过数据流分析检测编译期可确定的空指针解引用路径。需启用优化（<code>-O2</code>）以激活。</div>
+    </div>
+    <div class="warn-card">
+      <div class="warn-flag"><code>-Wuse-after-free=2</code> <span class="badge badge-wall">-Wall</span></div>
+      <div class="warn-desc">检测 <code>free()</code> 后继续使用指针的情况。GCC 12+ 支持，<code>-Wall</code> 启用 =2 级别。</div>
+    </div>
+    <div class="warn-card">
+      <div class="warn-flag"><code>-Wmismatched-dealloc</code> <span class="badge badge-wall">-Wall</span></div>
+      <div class="warn-desc">分配与释放函数不匹配，如用 <code>free</code> 释放 <code>new</code> 分配的内存。</div>
+    </div>
+    <div class="warn-card">
+      <div class="warn-flag"><code>-Wdangling-pointer=2</code> <span class="badge badge-wall">-Wall</span></div>
+      <div class="warn-desc">检测悬空指针：指针指向栈帧上的局部变量，但该栈帧已退出。</div>
+    </div>
+    <div class="warn-card">
+      <div class="warn-flag"><code>-Walloca-larger-than=N</code> <span class="badge badge-manual">手动启用</span></div>
+      <div class="warn-desc"><code>alloca</code> 调用分配超过 N 字节，可能引发栈溢出，或使用了无界 <code>alloca</code>。</div>
+    </div>
+    <div class="warn-card">
+      <div class="warn-flag"><code>-Wvla-larger-than=N</code> <span class="badge badge-wall">默认启用</span></div>
+      <div class="warn-desc">VLA（可变长数组）大小超过 N 字节，或大小无界，可能在内核/嵌入式中引发栈溢出。</div>
+    </div>
+    <div class="warn-card">
+      <div class="warn-flag"><code>-Wsizeof-pointer-div</code> <span class="badge badge-wall">-Wall</span></div>
+      <div class="warn-desc">用 <code>sizeof(ptr)/sizeof(*ptr)</code> 试图计算数组长度，但 <code>ptr</code> 是指针而非数组，结果错误。</div>
+    </div>
+    <div class="warn-card">
+      <div class="warn-flag"><code>-Wsizeof-pointer-memaccess</code> <span class="badge badge-wall">-Wall</span></div>
+      <div class="warn-desc"><code>memset/memcpy</code> 等函数的 size 参数传入了指针的 <code>sizeof</code>，而非指向对象的大小。</div>
+    </div>
+  </div>
+
+  <div class="info-warn info-box">
+    <span class="icon">⚠️</span>
+    <div class="body">
+      <strong>关于 -Warray-bounds：</strong>此选项在编译期只能检测<strong>编译期常量可计算</strong>的越界访问。运行期的动态越界（如用户输入的下标）需要 AddressSanitizer（<code>-fsanitize=address</code>）或 <code>-fanalyzer</code> 结合代码路径分析。
+    </div>
+  </div>
+
+  <div class="code-block">
+    <div class="code-header">
+      <span class="code-lang">C (C99)</span>
+      <span class="code-label">内存安全警告示例</span>
+    </div>
+    <pre><span class="c-kw">#include</span> <span class="c-str">&lt;string.h&gt;</span>
+<span class="c-kw">#include</span> <span class="c-str">&lt;stdlib.h&gt;</span>
+
+<span class="c-type">void</span> <span class="c-fn">mem_bugs</span>(<span class="c-type">void</span>) {
+    <span class="c-type">char</span> buf[<span class="c-num">8</span>];
+    <span class="c-cmt">/* -Wstringop-overflow: 向 8 字节缓冲区复制 16 字节 */</span>
+    <span class="c-fn">memcpy</span>(buf, <span class="c-str">"Hello, World!XX"</span>, <span class="c-num">16</span>); <span class="c-err">/* warning */</span>
+
+    <span class="c-type">int</span> *p = (<span class="c-type">int</span>*)<span class="c-fn">malloc</span>(<span class="c-kw">sizeof</span>(<span class="c-type">int</span>));
+    <span class="c-fn">free</span>(p);
+    *p = <span class="c-num">42</span>;  <span class="c-err">/* warning: use after free (-Wuse-after-free) */</span>
+
+    <span class="c-cmt">/* -Wsizeof-pointer-div: ptr 是指针，不是数组 */</span>
+    <span class="c-type">int</span> *arr = (<span class="c-type">int</span>[<span class="c-num">10</span>]){};
+    <span class="c-type">int</span> n = <span class="c-kw">sizeof</span>(arr) / <span class="c-kw">sizeof</span>(arr[<span class="c-num">0</span>]); <span class="c-err">/* warning */</span>
+}</pre>
+  </div>
+
+  <div class="chapter-nav">
+    <a class="chap-btn" href="#s2">← 控制流</a>
+    <a class="chap-btn" href="#s4">格式字符串 →</a>
+  </div>
+</section>
+
+<!-- ══════════════════════════════════════════════════════════════ -->
+<section id="s4">
+  <div class="section-header">
+    <div class="section-icon s4">📝</div>
+    <div class="section-title-block">
+      <div class="section-num">§ 4</div>
+      <h2>格式化字符串检查</h2>
+      <div class="section-sub">printf/scanf 格式与参数类型匹配、安全漏洞</div>
+    </div>
+  </div>
+
+  <p>
+    格式字符串漏洞（Format String Vulnerability）是历史上非常严重的安全问题类型。GCC 通过静态分析格式字符串与实际参数，在编译期捕获大量此类问题。相关内容见官方文档
+    <a href="https://gcc.gnu.org/onlinedocs/gcc/Warning-Options.html" target="_blank" style="color:var(--accent)">-Wformat</a> 选项族。
+  </p>
+
+  <div class="table-wrap">
+    <table>
+      <thead>
+        <tr><th>选项</th><th>包含于</th><th>检测内容</th><th>严重性</th></tr>
+      </thead>
+      <tbody>
+        <tr>
+          <td><code>-Wformat=1</code></td>
+          <td><span class="tag tag-on">-Wall</span></td>
+          <td>格式符与参数类型不匹配，如 <code>%d</code> 传入 <code>double</code></td>
+          <td><span class="tag tag-err">高</span></td>
+        </tr>
+        <tr>
+          <td><code>-Wformat=2</code></td>
+          <td><span class="tag tag-off">手动</span></td>
+          <td>包含 =1，加上 <code>-Wformat-nonliteral</code> + <code>-Wformat-security</code></td>
+          <td><span class="tag tag-err">高</span></td>
+        </tr>
+        <tr>
+          <td><code>-Wformat-security</code></td>
+          <td><span class="tag tag-off">手动</span></td>
+          <td>格式字符串不是字面量且无格式参数，如 <code>printf(user_input)</code>，可被攻击者利用</td>
+          <td><span class="tag tag-err">严重</span></td>
+        </tr>
+        <tr>
+          <td><code>-Wformat-nonliteral</code></td>
+          <td><span class="tag tag-off">手动</span></td>
+          <td>格式字符串不是字符串字面量，GCC 无法验证其内容</td>
+          <td><span class="tag tag-warn">中</span></td>
+        </tr>
+        <tr>
+          <td><code>-Wformat-overflow=1</code></td>
+          <td><span class="tag tag-on">-Wall</span></td>
+          <td><code>sprintf/snprintf</code> 等可能向目标缓冲区写入超过其容量的内容</td>
+          <td><span class="tag tag-err">高</span></td>
+        </tr>
+        <tr>
+          <td><code>-Wformat-truncation=1</code></td>
+          <td><span class="tag tag-on">-Wall</span></td>
+          <td><code>snprintf</code> 结果可能被截断</td>
+          <td><span class="tag tag-warn">中</span></td>
+        </tr>
+        <tr>
+          <td><code>-Wformat-extra-args</code></td>
+          <td><span class="tag tag-on">-Wall</span></td>
+          <td>格式字符串后提供了多余的参数（C 标准规定忽略，但通常是 Bug）</td>
+          <td><span class="tag tag-warn">低</span></td>
+        </tr>
+        <tr>
+          <td><code>-Wformat-zero-length</code></td>
+          <td><span class="tag tag-on">-Wall</span></td>
+          <td>格式字符串为空字符串 <code>""</code></td>
+          <td><span class="tag tag-warn">低</span></td>
+        </tr>
+        <tr>
+          <td><code>-Wformat-signedness</code></td>
+          <td><span class="tag tag-off">手动</span></td>
+          <td>格式说明符与参数的符号性不匹配，如 <code>%u</code> 传入有符号整数</td>
+          <td><span class="tag tag-warn">中</span></td>
+        </tr>
+        <tr>
+          <td><code>-Wmissing-format-attribute</code></td>
+          <td><span class="tag tag-off">W=1 内核</span></td>
+          <td>函数接收格式字符串但缺少 <code>__attribute__((format(...)))</code> 标注，导致 GCC 无法检查调用方</td>
+          <td><span class="tag tag-warn">中</span></td>
+        </tr>
+      </tbody>
+    </table>
+  </div>
+
+  <div class="code-block">
+    <div class="code-header">
+      <span class="code-lang">C (C99)</span>
+      <span class="code-label">格式字符串安全示例</span>
+    </div>
+    <pre><span class="c-kw">#include</span> <span class="c-str">&lt;stdio.h&gt;</span>
+
+<span class="c-type">void</span> <span class="c-fn">log_msg</span>(<span class="c-kw">const</span> <span class="c-type">char</span> *user_input) {
+    <span class="c-cmt">/* -Wformat-security: 格式字符串来自用户，%n 攻击！ */</span>
+    <span class="c-fn">printf</span>(user_input);  <span class="c-err">/* warning: format not a string literal and no format arguments */</span>
+
+    <span class="c-cmt">/* 正确做法：使用 %s */</span>
+    <span class="c-fn">printf</span>(<span class="c-str">"%s"</span>, user_input);  <span class="c-ok">/* OK */</span>
+
+    <span class="c-type">double</span> d = <span class="c-num">3.14</span>;
+    <span class="c-cmt">/* -Wformat=1: %d 不能用于 double */</span>
+    <span class="c-fn">printf</span>(<span class="c-str">"%d\n"</span>, d);  <span class="c-err">/* warning: format '%d' expects argument of type 'int' */</span>
+
+    <span class="c-type">char</span> small[<span class="c-num">4</span>];
+    <span class="c-cmt">/* -Wformat-overflow: "Hello" (6 bytes) 无法放入 4 字节缓冲区 */</span>
+    <span class="c-fn">sprintf</span>(small, <span class="c-str">"Hello"</span>);  <span class="c-err">/* warning: output truncated before terminating nul */</span>
+}</pre>
+  </div>
+
+  <div class="chapter-nav">
+    <a class="chap-btn" href="#s3">← 内存与指针</a>
+    <a class="chap-btn" href="#s5">函数声明 →</a>
+  </div>
+</section>
+
+<!-- ══════════════════════════════════════════════════════════════ -->
+<section id="s5">
+  <div class="section-header">
+    <div class="section-icon s5">🔧</div>
+    <div class="section-title-block">
+      <div class="section-num">§ 5</div>
+      <h2>函数声明与原型检查</h2>
+      <div class="section-sub">隐式声明、原型缺失、参数类型、unused</div>
+    </div>
+  </div>
+
+  <p>
+    C99 相比 C89 对函数声明的要求更严格：<strong>禁止隐式 int 和隐式函数声明</strong>（即调用未见到原型的函数）。GCC 通过以下选项在编译期强制执行这些规则。Linux 内核显式地将部分此类选项升级为错误（<code>-Werror=implicit-int</code>、<code>-Werror=strict-prototypes</code>）。
+  </p>
+
+  <div class="warn-grid">
+    <div class="warn-card">
+      <div class="warn-flag"><code>-Wimplicit-function-declaration</code> <span class="badge badge-wall">-Wall</span></div>
+      <div class="warn-desc">调用未经声明的函数。在 C99 中是约束违规。Linux 内核用 <code>-Werror=implicit-function-declaration</code> 将其升为错误。</div>
+    </div>
+    <div class="warn-card">
+      <div class="warn-flag"><code>-Wimplicit-int</code> <span class="badge badge-wall">-Wall</span></div>
+      <div class="warn-desc">声明未指定类型（C89 的隐式 int）。C99 明确禁止此行为。Linux 内核用 <code>-Werror=implicit-int</code> 强制。</div>
+    </div>
+    <div class="warn-card">
+      <div class="warn-flag"><code>-Wstrict-prototypes</code> <span class="badge badge-kernel">内核 Werror</span></div>
+      <div class="warn-desc">函数声明或定义未指定参数类型（如 <code>int foo()</code> 而非 <code>int foo(void)</code>）。Linux 内核用 <code>-Werror=strict-prototypes</code>。</div>
+    </div>
+    <div class="warn-card">
+      <div class="warn-flag"><code>-Wmissing-prototypes</code> <span class="badge badge-manual">W=1 内核</span></div>
+      <div class="warn-desc">全局函数在定义前无原型声明。函数应先在头文件中声明再定义，以便其他编译单元检查调用正确性。</div>
+    </div>
+    <div class="warn-card">
+      <div class="warn-flag"><code>-Wmissing-declarations</code> <span class="badge badge-manual">W=1 内核</span></div>
+      <div class="warn-desc">全局函数定义前缺少声明（更通用的版本，C 和 C++ 均适用）。</div>
+    </div>
+    <div class="warn-card">
+      <div class="warn-flag"><code>-Wold-style-definition</code> <span class="badge badge-manual">W=1 内核</span></div>
+      <div class="warn-desc">函数使用旧式 K&R 风格定义（如 <code>int foo(x) int x;</code>），不符合 C99 标准。</div>
+    </div>
+    <div class="warn-card">
+      <div class="warn-flag"><code>-Wnested-externs</code> <span class="badge badge-manual">W=2 内核</span></div>
+      <div class="warn-desc">在函数内部出现 <code>extern</code> 声明，通常是错误做法，应放在文件作用域。</div>
+    </div>
+    <div class="warn-card">
+      <div class="warn-flag"><code>-Wmain</code> <span class="badge badge-wall">-Wall</span></div>
+      <div class="warn-desc"><code>main</code> 函数签名可疑，如返回类型不为 <code>int</code>，或参数数量/类型不合法。</div>
+    </div>
+    <div class="warn-card">
+      <div class="warn-flag"><code>-Wredundant-decls</code> <span class="badge badge-manual">W=3 内核</span></div>
+      <div class="warn-desc">同一作用域内对同一符号多次声明，即使合法也发出警告。Linux 内核 W=3 启用。</div>
+    </div>
+    <div class="warn-card">
+      <div class="warn-flag"><code>-Wunused-function</code> <span class="badge badge-wall">-Wall</span></div>
+      <div class="warn-desc">声明为 static 的函数从未被使用，可能是遗留代码或逻辑错误。</div>
+    </div>
+    <div class="warn-card">
+      <div class="warn-flag"><code>-Wunused-parameter</code> <span class="badge badge-manual">-Wextra</span></div>
+      <div class="warn-desc">函数参数在函数体内未被使用。Linux 内核在 W=1 中启用，但排除 <code>-Wno-unused-parameter</code>。</div>
+    </div>
+    <div class="warn-card">
+      <div class="warn-flag"><code>-Waggregate-return</code> <span class="badge badge-manual">W=2 内核</span></div>
+      <div class="warn-desc">函数返回结构体或联合体。某些 ABI 下性能开销较大，也可能隐藏逻辑错误。</div>
+    </div>
+  </div>
+
+  <div class="code-block">
+    <div class="code-header">
+      <span class="code-lang">C (C99)</span>
+      <span class="code-label">Linux 内核 Makefile 相关配置（节选）</span>
+    </div>
+    <pre><span class="c-cmt"># 来源：Linux kernel Makefile / Petalinux kernel Makefile</span>
+<span class="c-cmt"># https://github.com/Petalinux/Kernel/blob/master/Makefile</span>
+
+<span class="c-cmt"># disallow errors like 'EXPORT_GPL(foo);' with missing header</span>
+<span class="c-flag">KBUILD_CFLAGS += $(call cc-option,-Werror=implicit-int)</span>
+
+<span class="c-cmt"># require functions to have arguments in prototypes, not empty 'int foo()'</span>
+<span class="c-flag">KBUILD_CFLAGS += $(call cc-option,-Werror=strict-prototypes)</span>
+
+<span class="c-cmt"># Prohibit date/time macros, which would make the build non-deterministic</span>
+<span class="c-flag">KBUILD_CFLAGS += $(call cc-option,-Werror=date-time)</span>
+
+<span class="c-cmt"># warn about C99 declaration after statement (for C89 compat mode)</span>
+<span class="c-flag">KBUILD_CFLAGS += $(call cc-option,-Wdeclaration-after-statement,)</span></pre>
+  </div>
+
+  <div class="chapter-nav">
+    <a class="chap-btn" href="#s4">← 格式字符串</a>
+    <a class="chap-btn" href="#s6">未定义行为 →</a>
+  </div>
+</section>
+
+<!-- ══════════════════════════════════════════════════════════════ -->
+<section id="s6">
+  <div class="section-header">
+    <div class="section-icon s6">💥</div>
+    <div class="section-title-block">
+      <div class="section-num">§ 6</div>
+      <h2>未定义行为检测</h2>
+      <div class="section-sub">整数溢出、移位越界、严格别名、除零</div>
+    </div>
+  </div>
+
+  <p>
+    C99 中存在大量未定义行为（Undefined Behavior）。GCC 的某些优化假设程序不会触发 UB，因此在编译期能检测一部分可静态确定的 UB 情况。更全面的运行期 UB 检测需要 <code>-fsanitize=undefined</code>（UBSan）。
+  </p>
+
+  <div class="warn-grid">
+    <div class="warn-card">
+      <div class="warn-flag"><code>-Wdiv-by-zero</code> <span class="badge badge-wall">默认启用</span></div>
+      <div class="warn-desc">编译期可确定的整数除以零，如 <code>int x = 5 / 0;</code>。运行期除零需 <code>-fanalyzer</code>。</div>
+    </div>
+    <div class="warn-card">
+      <div class="warn-flag"><code>-Wshift-count-negative</code> <span class="badge badge-wall">-Wall</span></div>
+      <div class="warn-desc">移位数量为负数，是未定义行为。</div>
+    </div>
+    <div class="warn-card">
+      <div class="warn-flag"><code>-Wshift-count-overflow</code> <span class="badge badge-wall">-Wall</span></div>
+      <div class="warn-desc">移位数量大于或等于类型的位宽，未定义行为，如 <code>1 &lt;&lt; 32</code>（32位 int）。</div>
+    </div>
+    <div class="warn-card">
+      <div class="warn-flag"><code>-Wshift-negative-value</code> <span class="badge badge-extra">-Wextra（C99+）</span></div>
+      <div class="warn-desc">左移负数（有符号整数），在 C99 中是未定义行为。</div>
+    </div>
+    <div class="warn-card">
+      <div class="warn-flag"><code>-Wstrict-aliasing</code> <span class="badge badge-wall">-Wall</span></div>
+      <div class="warn-desc">违反严格别名规则（Strict Aliasing），如通过 <code>int*</code> 访问 <code>float</code> 对象（类型双关）。</div>
+    </div>
+    <div class="warn-card">
+      <div class="warn-flag"><code>-Wtautological-compare</code> <span class="badge badge-wall">-Wall</span></div>
+      <div class="warn-desc">比较结果始终为真或假的表达式，如无符号整数与 0 的 <code>&lt;=</code> 比较。</div>
+    </div>
+    <div class="warn-card">
+      <div class="warn-flag"><code>-Wtype-limits</code> <span class="badge badge-extra">-Wextra</span></div>
+      <div class="warn-desc">比较的结果因类型范围而始终为真/假，如 <code>unsigned u &gt;= 0</code> 恒为真。</div>
+    </div>
+    <div class="warn-card">
+      <div class="warn-flag"><code>-Woverflow</code> <span class="badge badge-wall">默认启用</span></div>
+      <div class="warn-desc">编译期常量表达式整数溢出，如初始化超出类型范围的常量。</div>
+    </div>
+    <div class="warn-card">
+      <div class="warn-flag"><code>-Wfloat-equal</code> <span class="badge badge-manual">手动启用</span></div>
+      <div class="warn-desc">用 <code>==</code> 或 <code>!=</code> 比较浮点数，由于浮点精度问题通常没有意义。</div>
+    </div>
+    <div class="warn-card">
+      <div class="warn-flag"><code>-Waddress</code> <span class="badge badge-wall">-Wall</span></div>
+      <div class="warn-desc">对指针地址的可疑操作，如将函数地址或字符串字面量地址与 <code>NULL</code> 比较（总为真/非NULL）。</div>
+    </div>
+    <div class="warn-card">
+      <div class="warn-flag"><code>-Winfinite-recursion</code> <span class="badge badge-wall">-Wall</span></div>
+      <div class="warn-desc">编译器检测到函数无条件地直接递归调用自身，必然死循环。</div>
+    </div>
+    <div class="warn-card">
+      <div class="warn-flag"><code>-Wshadow</code> <span class="badge badge-manual">W=2 内核</span></div>
+      <div class="warn-desc">局部变量遮蔽（shadow）外部作用域中的同名变量，通常是意外行为。Linux 内核 W=2 级别启用。</div>
+    </div>
+  </div>
+
+  <div class="code-block">
+    <div class="code-header">
+      <span class="code-lang">C (C99)</span>
+      <span class="code-label">未定义行为静态检测示例</span>
+    </div>
+    <pre><span class="c-type">void</span> <span class="c-fn">ub_examples</span>(<span class="c-type">void</span>) {
+    <span class="c-cmt">/* -Wdiv-by-zero: 编译期可确定的除零 */</span>
+    <span class="c-type">int</span> x = <span class="c-num">5</span> / <span class="c-num">0</span>;  <span class="c-err">/* warning: division by zero */</span>
+
+    <span class="c-cmt">/* -Wshift-count-overflow: int 通常 32 位，移 32 位是 UB */</span>
+    <span class="c-type">int</span> s = <span class="c-num">1</span> &lt;&lt; <span class="c-num">32</span>; <span class="c-err">/* warning: left shift count >= width of type */</span>
+
+    <span class="c-cmt">/* -Wtautological-compare: unsigned 永远 >= 0 */</span>
+    <span class="c-type">unsigned</span> u = <span class="c-num">10</span>;
+    <span class="c-kw">if</span> (u >= <span class="c-num">0</span>) { }  <span class="c-err">/* warning: comparison is always true */</span>
+
+    <span class="c-cmt">/* -Wshift-negative-value (C99 下): 左移负数是 UB */</span>
+    <span class="c-type">int</span> n = <span class="c-num">-1</span>;
+    <span class="c-type">int</span> r = n &lt;&lt; <span class="c-num">1</span>;   <span class="c-err">/* warning: left shift of negative value */</span>
+}</pre>
+  </div>
+
+  <div class="chapter-nav">
+    <a class="chap-btn" href="#s5">← 函数声明</a>
+    <a class="chap-btn" href="#s7">标准符合性 →</a>
+  </div>
+</section>
+
+<!-- ══════════════════════════════════════════════════════════════ -->
+<section id="s7">
+  <div class="section-header">
+    <div class="section-icon s7">📜</div>
+    <div class="section-title-block">
+      <div class="section-num">§ 7</div>
+      <h2>C99 标准符合性检查</h2>
+      <div class="section-sub">-std=c99、-pedantic、GCC 扩展限制</div>
+    </div>
+  </div>
+
+  <p>
+    使用 <code>-std=c99 -pedantic</code>（或更严格的 <code>-pedantic-errors</code>）可让 GCC 拒绝所有 C99 标准不允许的 GNU 扩展和其他非标准语法。以下是与 C99 最相关的符合性检查：
+  </p>
+
+  <div class="table-wrap">
+    <table>
+      <thead>
+        <tr><th>检查项</th><th>相关选项</th><th>说明</th><th>C99 下行为</th></tr>
+      </thead>
+      <tbody>
+        <tr>
+          <td>声明在语句之后</td>
+          <td><code>-Wdeclaration-after-statement</code></td>
+          <td>C90 禁止，C99 允许。内核针对 C89 兼容性会警告此用法。</td>
+          <td><span class="tag tag-on">C99 合法</span></td>
+        </tr>
+        <tr>
+          <td>可变长数组 VLA</td>
+          <td><code>-Wvla</code></td>
+          <td>C99 引入，C11 变为可选。内核明确禁用 VLA（<code>-Wvla</code> 作为警告）。</td>
+          <td><span class="tag tag-warn">C99 可选</span></td>
+        </tr>
+        <tr>
+          <td>long long 类型</td>
+          <td><code>-Wlong-long</code></td>
+          <td>C90 不支持，C99 正式引入。与 <code>-Wpedantic</code> + C90 标准同用时发出警告。</td>
+          <td><span class="tag tag-on">C99 合法</span></td>
+        </tr>
+        <tr>
+          <td>// 行注释</td>
+          <td><code>-Wcomment</code></td>
+          <td>C99 正式支持 // 注释。<code>/* ... */</code> 内出现 <code>//</code> 发出警告。</td>
+          <td><span class="tag tag-on">C99 合法</span></td>
+        </tr>
+        <tr>
+          <td>可变参数宏 __VA_ARGS__</td>
+          <td><code>-Wvariadic-macros</code></td>
+          <td>C99 引入可变参数宏，在 C90 模式下使用发出警告。</td>
+          <td><span class="tag tag-on">C99 合法</span></td>
+        </tr>
+        <tr>
+          <td>隐式函数声明</td>
+          <td><code>-Wimplicit-function-declaration</code></td>
+          <td>C99 明确禁止，<code>-pedantic-errors</code> 下升级为编译错误。</td>
+          <td><span class="tag tag-err">C99 禁止</span></td>
+        </tr>
+        <tr>
+          <td>隐式 int 声明</td>
+          <td><code>-Wimplicit-int</code></td>
+          <td>C99 明确禁止，<code>-pedantic-errors</code> 下升级为编译错误。</td>
+          <td><span class="tag tag-err">C99 禁止</span></td>
+        </tr>
+        <tr>
+          <td>超长字符串字面量</td>
+          <td><code>-Woverlength-strings</code></td>
+          <td>C99 最小最大长度为 4095 字节。<code>-Wpedantic</code> 下启用。</td>
+          <td><span class="tag tag-warn">实现定义</span></td>
+        </tr>
+        <tr>
+          <td>GCC 扩展语法</td>
+          <td><code>-Wpedantic</code></td>
+          <td>捕获所有不符合 ISO C99 的 GNU 扩展，如复合字面量初始化的非标准写法。</td>
+          <td><span class="tag tag-err">禁止</span></td>
+        </tr>
+        <tr>
+          <td>混合 signed/pointer</td>
+          <td><code>-Wpointer-arith</code></td>
+          <td>对 void 指针或函数指针进行算术运算（C99 不允许，GNU 扩展）。W=3 级别启用。</td>
+          <td><span class="tag tag-err">UB</span></td>
+        </tr>
+      </tbody>
+    </table>
+  </div>
+
+  <div class="info-ok info-box">
+    <span class="icon">✅</span>
+    <div class="body">
+      <strong>推荐组合：</strong>对追求 C99 严格合规的项目，使用
+      <code>-std=c99 -pedantic-errors -Wall -Wextra</code>。
+      对内核/嵌入式等不需要严格 ISO 合规但重视安全的项目，使用
+      <code>-std=gnu99 -Wall -Wextra -Werror=implicit-int -Werror=strict-prototypes</code>。
+    </div>
+  </div>
+
+  <div class="chapter-nav">
+    <a class="chap-btn" href="#s6">← 未定义行为</a>
+    <a class="chap-btn" href="#s8">静态分析器 →</a>
+  </div>
+</section>
+
+<!-- ══════════════════════════════════════════════════════════════ -->
+<section id="s8">
+  <div class="section-header">
+    <div class="section-icon s8">🔬</div>
+    <div class="section-title-block">
+      <div class="section-num">§ 8</div>
+      <h2>-fanalyzer 过程间静态分析</h2>
+      <div class="section-sub">路径敏感 · 跨函数 · 资源泄漏 · taint 分析</div>
+    </div>
+  </div>
+
+  <p>
+    GCC 10+ 引入的 <code>-fanalyzer</code> 是一个重量级的<strong>过程间（Interprocedural）</strong>静态分析引擎。官方文档来源：
+    <a href="https://gcc.gnu.org/onlinedocs/gcc/Static-Analyzer-Options.html" target="_blank" style="color:var(--accent)">GCC Static Analyzer Options</a>。
+    它以<strong>覆盖引导的符号执行</strong>方式遍历程序，探索跨函数的执行路径，检测普通警告无法发现的问题。
+  </p>
+
+  <div class="info-warn info-box">
+    <span class="icon">⚡</span>
+    <div class="body">
+      官方说明：<em>"It is neither sound nor complete: it can have false positives and false negatives. It is a bug-finding tool, rather than a tool for proving program correctness."</em>
+      （既非可靠（sound）也非完备（complete），存在假阳性和假阴性，是 Bug 发现工具而非正确性证明工具。）
+      ——来自 <a href="https://gcc.gnu.org/onlinedocs/gcc/Static-Analyzer-Options.html" target="_blank" style="color:var(--accent)">GCC 官方文档</a>
+    </div>
+  </div>
+
+  <!-- SVG: fanalyzer 能力图 -->
+  <div class="diagram-wrap">
+    <svg viewBox="0 0 720 300" xmlns="http://www.w3.org/2000/svg" width="720" height="300">
+      <rect width="720" height="300" fill="#0f1117" rx="10"/>
+      <text x="360" y="22" text-anchor="middle" fill="#94a3b8" font-size="11" font-family="sans-serif" letter-spacing="1">-fanalyzer 检测能力分类</text>
+
+      <!-- 内存管理 -->
+      <rect x="20" y="36" width="160" height="240" rx="8" fill="#161b27" stroke="#4f8ef7" stroke-opacity="0.5"/>
+      <text x="100" y="57" text-anchor="middle" fill="#82aaff" font-size="12" font-weight="bold" font-family="sans-serif">内存管理</text>
+      <text x="100" y="76" text-anchor="middle" fill="#64748b" font-size="10" font-family="monospace">malloc-leak</text>
+      <text x="100" y="92" text-anchor="middle" fill="#64748b" font-size="10" font-family="monospace">double-free</text>
+      <text x="100" y="108" text-anchor="middle" fill="#64748b" font-size="10" font-family="monospace">use-after-free</text>
+      <text x="100" y="124" text-anchor="middle" fill="#64748b" font-size="10" font-family="monospace">free-of-non-heap</text>
+      <text x="100" y="140" text-anchor="middle" fill="#64748b" font-size="10" font-family="monospace">mismatching-dealloc</text>
+      <text x="100" y="156" text-anchor="middle" fill="#64748b" font-size="10" font-family="monospace">out-of-bounds</text>
+      <text x="100" y="172" text-anchor="middle" fill="#64748b" font-size="10" font-family="monospace">overlapping-buffers</text>
+      <text x="100" y="188" text-anchor="middle" fill="#64748b" font-size="10" font-family="monospace">allocation-size</text>
+      <text x="100" y="204" text-anchor="middle" fill="#64748b" font-size="10" font-family="monospace">stale-stack-frame</text>
+
+      <!-- 文件/描述符 -->
+      <rect x="195" y="36" width="160" height="240" rx="8" fill="#161b27" stroke="#34d399" stroke-opacity="0.5"/>
+      <text x="275" y="57" text-anchor="middle" fill="#86efac" font-size="12" font-weight="bold" font-family="sans-serif">文件与FD</text>
+      <text x="275" y="76" text-anchor="middle" fill="#64748b" font-size="10" font-family="monospace">file-leak</text>
+      <text x="275" y="92" text-anchor="middle" fill="#64748b" font-size="10" font-family="monospace">double-fclose</text>
+      <text x="275" y="108" text-anchor="middle" fill="#64748b" font-size="10" font-family="monospace">fd-leak</text>
+      <text x="275" y="124" text-anchor="middle" fill="#64748b" font-size="10" font-family="monospace">fd-double-close</text>
+      <text x="275" y="140" text-anchor="middle" fill="#64748b" font-size="10" font-family="monospace">fd-use-after-close</text>
+      <text x="275" y="156" text-anchor="middle" fill="#64748b" font-size="10" font-family="monospace">fd-use-without-check</text>
+      <text x="275" y="172" text-anchor="middle" fill="#64748b" font-size="10" font-family="monospace">fd-phase-mismatch</text>
+      <text x="275" y="188" text-anchor="middle" fill="#64748b" font-size="10" font-family="monospace">fd-type-mismatch</text>
+      <text x="275" y="204" text-anchor="middle" fill="#64748b" font-size="10" font-family="monospace">fd-access-mode-mismatch</text>
+
+      <!-- Null/指针 -->
+      <rect x="370" y="36" width="160" height="240" rx="8" fill="#161b27" stroke="#fbbf24" stroke-opacity="0.5"/>
+      <text x="450" y="57" text-anchor="middle" fill="#fde68a" font-size="12" font-weight="bold" font-family="sans-serif">空指针/污染</text>
+      <text x="450" y="76" text-anchor="middle" fill="#64748b" font-size="10" font-family="monospace">null-dereference</text>
+      <text x="450" y="92" text-anchor="middle" fill="#64748b" font-size="10" font-family="monospace">null-argument</text>
+      <text x="450" y="108" text-anchor="middle" fill="#64748b" font-size="10" font-family="monospace">possible-null-dereference</text>
+      <text x="450" y="124" text-anchor="middle" fill="#64748b" font-size="10" font-family="monospace">possible-null-argument</text>
+      <text x="450" y="140" text-anchor="middle" fill="#64748b" font-size="10" font-family="monospace">jump-through-null</text>
+      <text x="450" y="156" text-anchor="middle" fill="#64748b" font-size="10" font-family="monospace">tainted-array-index</text>
+      <text x="450" y="172" text-anchor="middle" fill="#64748b" font-size="10" font-family="monospace">tainted-divisor</text>
+      <text x="450" y="188" text-anchor="middle" fill="#64748b" font-size="10" font-family="monospace">tainted-allocation-size</text>
+      <text x="450" y="204" text-anchor="middle" fill="#64748b" font-size="10" font-family="monospace">tainted-offset</text>
+
+      <!-- 其他 -->
+      <rect x="545" y="36" width="155" height="240" rx="8" fill="#161b27" stroke="#f87171" stroke-opacity="0.5"/>
+      <text x="622" y="57" text-anchor="middle" fill="#fca5a5" font-size="12" font-weight="bold" font-family="sans-serif">其他</text>
+      <text x="622" y="76" text-anchor="middle" fill="#64748b" font-size="10" font-family="monospace">div-by-zero</text>
+      <text x="622" y="92" text-anchor="middle" fill="#64748b" font-size="10" font-family="monospace">infinite-loop</text>
+      <text x="622" y="108" text-anchor="middle" fill="#64748b" font-size="10" font-family="monospace">infinite-recursion</text>
+      <text x="622" y="124" text-anchor="middle" fill="#64748b" font-size="10" font-family="monospace">unsafe-signal-handler</text>
+      <text x="622" y="140" text-anchor="middle" fill="#64748b" font-size="10" font-family="monospace">write-to-const</text>
+      <text x="622" y="156" text-anchor="middle" fill="#64748b" font-size="10" font-family="monospace">write-to-string-literal</text>
+      <text x="622" y="172" text-anchor="middle" fill="#64748b" font-size="10" font-family="monospace">use-of-uninit-value</text>
+      <text x="622" y="188" text-anchor="middle" fill="#64748b" font-size="10" font-family="monospace">exposure-through-file</text>
+      <text x="622" y="204" text-anchor="middle" fill="#64748b" font-size="10" font-family="monospace">putenv-of-auto-var</text>
+
+      <!-- CWE label -->
+      <text x="360" y="270" text-anchor="middle" fill="#64748b" font-size="10" font-family="sans-serif">每项检测均对应 MITRE CWE 编号，见 GCC 官方文档</text>
+    </svg>
+  </div>
+
+  <h3>关键检测能力说明</h3>
+
+  <div class="warn-grid">
+    <div class="warn-card">
+      <div class="warn-flag"><code>-Wanalyzer-null-dereference</code> <span class="badge badge-analyzer">-fanalyzer</span></div>
+      <div class="warn-desc">跨函数路径上的空指针解引用。分析器追踪指针可能为 NULL 的路径并报告解引用点。</div>
+    </div>
+    <div class="warn-card">
+      <div class="warn-flag"><code>-Wanalyzer-malloc-leak</code> <span class="badge badge-analyzer">-fanalyzer</span></div>
+      <div class="warn-desc">通过 <code>malloc</code> 或标注了 <code>malloc</code> 属性的函数分配的内存，在函数退出时未被释放。对应 CWE-401。</div>
+    </div>
+    <div class="warn-card">
+      <div class="warn-flag"><code>-Wanalyzer-double-free</code> <span class="badge badge-analyzer">-fanalyzer</span></div>
+      <div class="warn-desc">指针在一条执行路径上被 <code>free</code> 两次。对应 CWE-415，是常见的安全漏洞。</div>
+    </div>
+    <div class="warn-card">
+      <div class="warn-flag"><code>-Wanalyzer-use-after-free</code> <span class="badge badge-analyzer">-fanalyzer</span></div>
+      <div class="warn-desc">指针在调用释放函数后被继续使用。分析跨函数调用链。对应 CWE-416。</div>
+    </div>
+    <div class="warn-card">
+      <div class="warn-flag"><code>-Wanalyzer-tainted-array-index</code> <span class="badge badge-analyzer">-fanalyzer</span></div>
+      <div class="warn-desc">来自外部输入（污点数据）的值未经验证直接作为数组下标，攻击者可注入越界访问。对应 CWE-129。</div>
+    </div>
+    <div class="warn-card">
+      <div class="warn-flag"><code>-Wanalyzer-unsafe-call-within-signal-handler</code> <span class="badge badge-analyzer">-fanalyzer</span></div>
+      <div class="warn-desc">在信号处理函数中调用非异步信号安全函数（如 <code>fprintf</code>），可导致死锁或数据损坏。对应 CWE-479。</div>
+    </div>
+    <div class="warn-card">
+      <div class="warn-flag"><code>-Wanalyzer-out-of-bounds</code> <span class="badge badge-analyzer">-fanalyzer</span></div>
+      <div class="warn-desc">确定性的缓冲区越界读/写。分析器能在诊断中可视化内存区域关系（GCC 14+ 支持文本艺术图）。对应 CWE-119。</div>
+    </div>
+    <div class="warn-card">
+      <div class="warn-flag"><code>-Wanalyzer-infinite-loop</code> <span class="badge badge-analyzer">-fanalyzer</span></div>
+      <div class="warn-desc">路径分析显示程序陷入循环且无法退出，循环体无可见外部效果。对应 CWE-835。</div>
+    </div>
+  </div>
+
+  <div class="code-block">
+    <div class="code-header">
+      <span class="code-lang">C (C99)</span>
+      <span class="code-label">-fanalyzer 跨函数路径分析示例</span>
+    </div>
+    <pre><span class="c-kw">#include</span> <span class="c-str">&lt;stdlib.h&gt;</span>
+<span class="c-kw">#include</span> <span class="c-str">&lt;stdio.h&gt;</span>
+
+<span class="c-type">void</span> <span class="c-fn">process</span>(<span class="c-type">int</span> *buf) {
+    <span class="c-cmt">/* -Wanalyzer-null-dereference: buf 可能为 NULL */</span>
+    buf[<span class="c-num">0</span>] = <span class="c-num">42</span>;  <span class="c-err">/* 分析器追踪调用链，发现此处可能解引用 NULL */</span>
+}
+
+<span class="c-type">int</span> <span class="c-fn">main</span>(<span class="c-type">void</span>) {
+    <span class="c-type">int</span> *p = (<span class="c-type">int</span>*)<span class="c-fn">malloc</span>(<span class="c-num">4</span>);
+    <span class="c-kw">if</span> (p == NULL) {
+        <span class="c-fn">fprintf</span>(<span class="c-str">stderr</span>, <span class="c-str">"alloc failed\n"</span>);
+        <span class="c-cmt">/* 没有 return! 继续调用 process(NULL) */</span>
+    }
+    <span class="c-fn">process</span>(p);  <span class="c-err">/* warning: dereference of NULL 'p' (Wanalyzer-null-dereference) */</span>
+    <span class="c-fn">free</span>(p);
+    <span class="c-fn">free</span>(p);     <span class="c-err">/* warning: double-free of 'p' (Wanalyzer-double-free) */</span>
+    <span class="c-kw">return</span> <span class="c-num">0</span>;
+}</pre>
+  </div>
+
+  <div class="chapter-nav">
+    <a class="chap-btn" href="#s7">← 标准符合性</a>
+    <a class="chap-btn" href="#s9">Linux 内核实践 →</a>
+  </div>
+</section>
+
+<!-- ══════════════════════════════════════════════════════════════ -->
+<section id="s9">
+  <div class="section-header">
+    <div class="section-icon s9">🐧</div>
+    <div class="section-title-block">
+      <div class="section-num">§ 9</div>
+      <h2>Linux 内核工程实践</h2>
+      <div class="section-sub">KBUILD_CFLAGS · W=1/2/3 · Makefile.extrawarn</div>
+    </div>
+  </div>
+
+  <p>
+    Linux 内核是使用 GCC 静态检查能力的最典型开源工程之一。其构建系统通过
+    <a href="https://github.com/WukLab/LegoOS/blob/master/scripts/Makefile.extrawarn" target="_blank" style="color:var(--accent)">scripts/Makefile.extrawarn</a>
+    实现了三级递进的警告体系（<code>make W=1</code>、<code>make W=2</code>、<code>make W=3</code>），
+    以及在主 <a href="https://github.com/torvalds/linux/blob/master/Makefile" target="_blank" style="color:var(--accent)">Makefile</a> 中对关键错误的硬性强制。
+  </p>
+
+  <!-- SVG: 内核 W 级别分层图 -->
+  <div class="diagram-wrap">
+    <svg viewBox="0 0 680 220" xmlns="http://www.w3.org/2000/svg" width="680" height="220">
+      <rect width="680" height="220" fill="#0f1117" rx="10"/>
+      <text x="340" y="22" text-anchor="middle" fill="#94a3b8" font-size="11" font-family="sans-serif" letter-spacing="1">Linux 内核 make W=N 警告层级体系</text>
+
+      <!-- W=1 (widest) -->
+      <rect x="40" y="38" width="600" height="52" rx="8" fill="#4f8ef7" fill-opacity="0.08" stroke="#4f8ef7" stroke-opacity="0.4"/>
+      <text x="60" y="58" fill="#82aaff" font-size="12" font-weight="bold" font-family="sans-serif">W=1 — 常规构建外、相关性高的警告（默认推荐级别）</text>
+      <text x="60" y="78" fill="#64748b" font-size="11" font-family="monospace">-Wextra -Wunused -Wmissing-declarations -Wmissing-prototypes -Wmissing-format-attribute -Wold-style-definition</text>
+
+      <!-- W=2 -->
+      <rect x="60" y="100" width="560" height="52" rx="8" fill="#7c5af7" fill-opacity="0.08" stroke="#7c5af7" stroke-opacity="0.4"/>
+      <text x="80" y="120" fill="#c4b5fd" font-size="12" font-weight="bold" font-family="sans-serif">W=2 — 频繁出现但仍相关的警告</text>
+      <text x="80" y="140" fill="#64748b" font-size="11" font-family="monospace">-Waggregate-return -Wcast-align -Wdisabled-optimization -Wnested-externs -Wshadow -Wlogical-op</text>
+
+      <!-- W=3 -->
+      <rect x="80" y="162" width="520" height="46" rx="8" fill="#f87171" fill-opacity="0.08" stroke="#f87171" stroke-opacity="0.4"/>
+      <text x="100" y="181" fill="#fca5a5" font-size="12" font-weight="bold" font-family="sans-serif">W=3 — 较隐晦、可能产生噪音的警告</text>
+      <text x="100" y="199" fill="#64748b" font-size="11" font-family="monospace">-Wbad-function-cast -Wcast-qual -Wconversion -Wpacked -Wpadded -Wpointer-arith -Wredundant-decls -Wvla</text>
+    </svg>
+  </div>
+
+  <h3>内核 Makefile 硬性强制（-Werror= 化）</h3>
+  <div class="table-wrap">
+    <table>
+      <thead>
+        <tr><th>强制选项</th><th>目的</th><th>来源</th></tr>
+      </thead>
+      <tbody>
+        <tr>
+          <td><code>-Werror=implicit-int</code></td>
+          <td>禁止隐式 int 声明（如 <code>EXPORT_GPL(foo)</code> 缺少头文件）</td>
+          <td><a href="https://github.com/Petalinux/Kernel/blob/master/Makefile" target="_blank" style="color:var(--accent)">Petalinux Makefile</a></td>
+        </tr>
+        <tr>
+          <td><code>-Werror=strict-prototypes</code></td>
+          <td>要求所有函数原型声明参数类型，杜绝 <code>int foo()</code> 写法</td>
+          <td><a href="https://github.com/Petalinux/Kernel/blob/master/Makefile" target="_blank" style="color:var(--accent)">Petalinux Makefile</a></td>
+        </tr>
+        <tr>
+          <td><code>-Werror=date-time</code></td>
+          <td>禁止使用 <code>__DATE__</code>/<code>__TIME__</code>，保证构建可重现性</td>
+          <td><a href="https://github.com/Petalinux/Kernel/blob/master/Makefile" target="_blank" style="color:var(--accent)">Petalinux Makefile</a></td>
+        </tr>
+        <tr>
+          <td><code>-Wframe-larger-than=N</code></td>
+          <td>检测栈帧过大（CONFIG_FRAME_WARN，通常 1024 或 2048 字节），防止栈溢出</td>
+          <td><a href="https://github.com/torvalds/linux/blob/master/Makefile" target="_blank" style="color:var(--accent)">Linux Makefile</a></td>
+        </tr>
+        <tr>
+          <td><code>-Wdeclaration-after-statement</code></td>
+          <td>针对 C89 兼容性代码，警告 C99 风格的声明位于语句后</td>
+          <td><a href="https://github.com/Petalinux/Kernel/blob/master/Makefile" target="_blank" style="color:var(--accent)">Petalinux Makefile</a></td>
+        </tr>
+        <tr>
+          <td><code>-Wno-main</code>（GCC）</td>
+          <td>内核中存在名为 <code>main</code> 的局部变量，GCC 会无理警告，内核明确关闭</td>
+          <td><a href="https://github.com/torvalds/linux/blob/master/Makefile" target="_blank" style="color:var(--accent)">Linux Makefile</a></td>
+        </tr>
+        <tr>
+          <td><code>CONFIG_CC_IMPLICIT_FALLTHROUGH</code></td>
+          <td>内核通过 Kconfig 控制 <code>-Wimplicit-fallthrough</code>，要求所有 switch 分支明确标注</td>
+          <td><a href="https://github.com/torvalds/linux/blob/master/Makefile" target="_blank" style="color:var(--accent)">Linux Makefile</a></td>
+        </tr>
+      </tbody>
+    </table>
+  </div>
+
+  <div class="code-block">
+    <div class="code-header">
+      <span class="code-lang">Makefile</span>
+      <span class="code-label">scripts/Makefile.extrawarn（来自 LegoOS，基于 Linux 内核）</span>
+    </div>
+    <pre><span class="c-cmt"># W=1 - warnings that may be relevant and does not occur too often</span>
+<span class="c-flag">warning-1</span> := -Wextra -Wunused -Wno-unused-parameter
+<span class="c-flag">warning-1</span> += -Wmissing-declarations
+<span class="c-flag">warning-1</span> += -Wmissing-format-attribute
+<span class="c-flag">warning-1</span> += $(call cc-option, -Wmissing-prototypes)
+<span class="c-flag">warning-1</span> += -Wold-style-definition
+<span class="c-flag">warning-1</span> += $(call cc-option, -Wmissing-include-dirs)
+<span class="c-flag">warning-1</span> += $(call cc-option, -Wunused-but-set-variable)
+<span class="c-flag">warning-1</span> += $(call cc-option, -Wunused-const-variable)
+
+<span class="c-cmt"># W=2 - warnings that occur quite often but may still be relevant</span>
+<span class="c-flag">warning-2</span> := -Waggregate-return
+<span class="c-flag">warning-2</span> += -Wcast-align
+<span class="c-flag">warning-2</span> += -Wdisabled-optimization
+<span class="c-flag">warning-2</span> += -Wnested-externs
+<span class="c-flag">warning-2</span> += -Wshadow
+<span class="c-flag">warning-2</span> += $(call cc-option, -Wlogical-op)
+<span class="c-flag">warning-2</span> += $(call cc-option, -Wsign-compare)
+
+<span class="c-cmt"># W=3 - the more obscure warnings, can most likely be ignored</span>
+<span class="c-flag">warning-3</span> := -Wbad-function-cast
+<span class="c-flag">warning-3</span> += -Wcast-qual
+<span class="c-flag">warning-3</span> += -Wconversion
+<span class="c-flag">warning-3</span> += -Wpacked
+<span class="c-flag">warning-3</span> += -Wpadded
+<span class="c-flag">warning-3</span> += -Wpointer-arith
+<span class="c-flag">warning-3</span> += -Wredundant-decls
+<span class="c-flag">warning-3</span> += -Wswitch-default
+<span class="c-flag">warning-3</span> += $(call cc-option, -Wvla)</pre>
+  </div>
+
+  <div class="chapter-nav">
+    <a class="chap-btn" href="#s8">← 静态分析器</a>
+    <a class="chap-btn" href="#s10">推荐配置 →</a>
+  </div>
+</section>
+
+<!-- ══════════════════════════════════════════════════════════════ -->
+<section id="s10">
+  <div class="section-header">
+    <div class="section-icon s10">📊</div>
+    <div class="section-title-block">
+      <div class="section-num">§ 10</div>
+      <h2>推荐配置与速查表</h2>
+      <div class="section-sub">按场景分级的最佳实践配置</div>
+    </div>
+  </div>
+
+  <p>
+    根据以上各章节内容，下表汇总不同场景下推荐的 GCC 静态检查配置组合，均基于官方文档和 Linux 内核实践。
+  </p>
+
+  <!-- SVG: 覆盖范围总览 -->
+  <div class="diagram-wrap">
+    <svg viewBox="0 0 700 280" xmlns="http://www.w3.org/2000/svg" width="700" height="280">
+      <rect width="700" height="280" fill="#0f1117" rx="10"/>
+      <text x="350" y="22" text-anchor="middle" fill="#94a3b8" font-size="11" font-family="sans-serif" letter-spacing="1">GCC C99 静态检查能力总览（按检测维度）</text>
+
+      <!-- Axes -->
+      <line x1="80" y1="240" x2="660" y2="240" stroke="#2a3350" stroke-width="1.5"/>
+      <line x1="80" y1="40" x2="80" y2="240" stroke="#2a3350" stroke-width="1.5"/>
+      <text x="370" y="265" text-anchor="middle" fill="#64748b" font-size="11" font-family="sans-serif">检测维度</text>
+      <text x="30" y="140" text-anchor="middle" fill="#64748b" font-size="11" font-family="sans-serif" transform="rotate(-90 30 140)">检测深度</text>
+
+      <!-- Bars -->
+      <!-- 类型安全 -->
+      <rect x="100" y="80" width="64" height="160" rx="4" fill="#4f8ef7" fill-opacity="0.7"/>
+      <text x="132" y="76" text-anchor="middle" fill="#82aaff" font-size="10" font-family="sans-serif">类型安全</text>
+      <text x="132" y="258" text-anchor="middle" fill="#64748b" font-size="10" font-family="sans-serif">12项</text>
+
+      <!-- 控制流 -->
+      <rect x="185" y="100" width="64" height="140" rx="4" fill="#7c5af7" fill-opacity="0.7"/>
+      <text x="217" y="96" text-anchor="middle" fill="#c4b5fd" font-size="10" font-family="sans-serif">控制流</text>
+      <text x="217" y="258" text-anchor="middle" fill="#64748b" font-size="10" font-family="sans-serif">12项</text>
+
+      <!-- 内存安全 -->
+      <rect x="270" y="70" width="64" height="170" rx="4" fill="#34d399" fill-opacity="0.7"/>
+      <text x="302" y="66" text-anchor="middle" fill="#86efac" font-size="10" font-family="sans-serif">内存安全</text>
+      <text x="302" y="258" text-anchor="middle" fill="#64748b" font-size="10" font-family="sans-serif">12项</text>
+
+      <!-- 格式字符串 -->
+      <rect x="355" y="110" width="64" height="130" rx="4" fill="#fbbf24" fill-opacity="0.7"/>
+      <text x="387" y="106" text-anchor="middle" fill="#fde68a" font-size="10" font-family="sans-serif">格式化</text>
+      <text x="387" y="258" text-anchor="middle" fill="#64748b" font-size="10" font-family="sans-serif">10项</text>
+
+      <!-- 函数声明 -->
+      <rect x="440" y="120" width="64" height="120" rx="4" fill="#f87171" fill-opacity="0.7"/>
+      <text x="472" y="116" text-anchor="middle" fill="#fca5a5" font-size="10" font-family="sans-serif">函数声明</text>
+      <text x="472" y="258" text-anchor="middle" fill="#64748b" font-size="10" font-family="sans-serif">12项</text>
+
+      <!-- UB -->
+      <rect x="525" y="90" width="64" height="150" rx="4" fill="#c084fc" fill-opacity="0.7"/>
+      <text x="557" y="86" text-anchor="middle" fill="#e9d5ff" font-size="10" font-family="sans-serif">未定义行为</text>
+      <text x="557" y="258" text-anchor="middle" fill="#64748b" font-size="10" font-family="sans-serif">12项</text>
+
+      <!-- fanalyzer label -->
+      <rect x="95" y="46" width="498" height="6" rx="3" fill="#fbbf24" fill-opacity="0.3" stroke="#fbbf24" stroke-opacity="0.6" stroke-width="1" stroke-dasharray="4,2"/>
+      <text x="650" y="53" text-anchor="end" fill="#fde68a" font-size="10" font-family="sans-serif">-fanalyzer 覆盖</text>
+    </svg>
+  </div>
+
+  <h3>按使用场景的推荐配置</h3>
+
+  <div class="table-wrap">
+    <table>
+      <thead>
+        <tr><th>场景</th><th>推荐 CFLAGS</th><th>说明</th></tr>
+      </thead>
+      <tbody>
+        <tr>
+          <td>📚 学习 / 教学</td>
+          <td><code>-std=c99 -Wall -Wextra -pedantic -Werror</code></td>
+          <td>最严格，强制标准符合，所有警告视为错误</td>
+        </tr>
+        <tr>
+          <td>🏗️ 应用开发（基础）</td>
+          <td><code>-std=c99 -Wall -Wextra -Wformat=2 -Wshadow</code></td>
+          <td>覆盖最常见的错误类型，不过度限制</td>
+        </tr>
+        <tr>
+          <td>🔐 安全敏感应用</td>
+          <td><code>-std=c99 -Wall -Wextra -Wformat=2 -Wformat-security -Wconversion -Wnull-dereference -fanalyzer</code></td>
+          <td>额外加入格式字符串安全、转换警告和过程间分析</td>
+        </tr>
+        <tr>
+          <td>🐧 内核 / 嵌入式</td>
+          <td><code>-std=gnu99 -Wall -Werror=implicit-int -Werror=strict-prototypes -Werror=date-time -Wframe-larger-than=1024</code></td>
+          <td>参照 Linux 内核实践，关键规则强制为错误</td>
+        </tr>
+        <tr>
+          <td>🔍 深度审计（W=1）</td>
+          <td>内核基础 + <code>-Wextra -Wunused -Wmissing-declarations -Wmissing-prototypes -Wold-style-definition</code></td>
+          <td>对应 Linux 内核 <code>make W=1</code></td>
+        </tr>
+        <tr>
+          <td>🔍 深度审计（W=2）</td>
+          <td>W=1 + <code>-Waggregate-return -Wcast-align -Wshadow -Wlogical-op -Wnested-externs</code></td>
+          <td>对应 Linux 内核 <code>make W=2</code></td>
+        </tr>
+      </tbody>
+    </table>
+  </div>
+
+  <h3>所有检查项速查总表</h3>
+  <div class="table-wrap">
+    <table>
+      <thead>
+        <tr><th>选项</th><th>分组</th><th>默认激活于</th><th>检测内容摘要</th></tr>
+      </thead>
+      <tbody>
+        <tr><td><code>-Wformat=1/2</code></td><td>格式化</td><td><span class="tag tag-on">-Wall</span></td><td>printf/scanf 格式与参数类型匹配</td></tr>
+        <tr><td><code>-Wformat-security</code></td><td>格式化</td><td><span class="tag tag-off">手动</span></td><td>非字面量格式字符串无参数的安全风险</td></tr>
+        <tr><td><code>-Wformat-overflow</code></td><td>格式化</td><td><span class="tag tag-on">-Wall</span></td><td>sprintf 等缓冲区溢出</td></tr>
+        <tr><td><code>-Wimplicit-function-declaration</code></td><td>函数</td><td><span class="tag tag-on">-Wall</span></td><td>调用未声明函数</td></tr>
+        <tr><td><code>-Wimplicit-int</code></td><td>函数</td><td><span class="tag tag-on">-Wall</span></td><td>隐式 int 声明</td></tr>
+        <tr><td><code>-Wstrict-prototypes</code></td><td>函数</td><td><span class="tag tag-off">手动</span></td><td>函数原型缺少参数类型</td></tr>
+        <tr><td><code>-Wmissing-prototypes</code></td><td>函数</td><td><span class="tag tag-off">W=1</span></td><td>全局函数无前置原型声明</td></tr>
+        <tr><td><code>-Wreturn-type</code></td><td>控制流</td><td><span class="tag tag-on">-Wall</span></td><td>非 void 函数缺少 return</td></tr>
+        <tr><td><code>-Wswitch</code></td><td>控制流</td><td><span class="tag tag-on">-Wall</span></td><td>switch 枚举 case 缺失</td></tr>
+        <tr><td><code>-Wimplicit-fallthrough</code></td><td>控制流</td><td><span class="tag tag-on">-Wextra</span></td><td>switch 未显式 fallthrough</td></tr>
+        <tr><td><code>-Wuninitialized</code></td><td>控制流</td><td><span class="tag tag-on">-Wall</span></td><td>变量使用前未初始化</td></tr>
+        <tr><td><code>-Wmaybe-uninitialized</code></td><td>控制流</td><td><span class="tag tag-on">-Wall</span></td><td>变量在某路径上未初始化</td></tr>
+        <tr><td><code>-Wsequence-point</code></td><td>控制流</td><td><span class="tag tag-on">-Wall</span></td><td>序列点规则违规</td></tr>
+        <tr><td><code>-Wmisleading-indentation</code></td><td>控制流</td><td><span class="tag tag-on">-Wall</span></td><td>缩进与语义不符</td></tr>
+        <tr><td><code>-Wsign-compare</code></td><td>类型</td><td><span class="tag tag-on">-Wextra</span></td><td>有/无符号比较</td></tr>
+        <tr><td><code>-Wconversion</code></td><td>类型</td><td><span class="tag tag-off">W=3</span></td><td>隐式类型截断</td></tr>
+        <tr><td><code>-Wpointer-sign</code></td><td>类型</td><td><span class="tag tag-on">-Wall</span></td><td>指针符号性不匹配</td></tr>
+        <tr><td><code>-Warray-bounds</code></td><td>内存</td><td><span class="tag tag-on">-Wall(-O2)</span></td><td>静态数组越界</td></tr>
+        <tr><td><code>-Wrestrict</code></td><td>内存</td><td><span class="tag tag-on">-Wall</span></td><td>restrict 参数别名违规</td></tr>
+        <tr><td><code>-Wuse-after-free</code></td><td>内存</td><td><span class="tag tag-on">-Wall</span></td><td>free 后使用指针</td></tr>
+        <tr><td><code>-Wdiv-by-zero</code></td><td>UB</td><td><span class="tag tag-on">默认</span></td><td>编译期常量除零</td></tr>
+        <tr><td><code>-Wshift-count-overflow</code></td><td>UB</td><td><span class="tag tag-on">-Wall</span></td><td>移位超过类型宽度</td></tr>
+        <tr><td><code>-Wstrict-aliasing</code></td><td>UB</td><td><span class="tag tag-on">-Wall</span></td><td>严格别名规则违规</td></tr>
+        <tr><td><code>-Wshadow</code></td><td>UB/可读</td><td><span class="tag tag-off">W=2</span></td><td>局部变量遮蔽外部同名</td></tr>
+        <tr><td><code>-fanalyzer</code></td><td>分析器</td><td><span class="tag tag-off">手动</span></td><td>过程间路径敏感分析（44+ 检查）</td></tr>
+        <tr><td><code>-Wpedantic</code></td><td>标准</td><td><span class="tag tag-off">手动</span></td><td>所有 ISO C 标准偏差</td></tr>
+        <tr><td><code>-Wvla</code></td><td>标准</td><td><span class="tag tag-off">W=3</span></td><td>VLA 使用警告</td></tr>
+        <tr><td><code>-Wframe-larger-than</code></td><td>安全</td><td><span class="tag tag-off">内核配置</span></td><td>栈帧大小超限</td></tr>
+      </tbody>
+    </table>
+  </div>
+
+  <div class="info-note info-box">
+    <span class="icon">🔗</span>
+    <div class="body">
+      <strong>原文参考链接：</strong><br>
+      • GCC Warning Options: <a href="https://gcc.gnu.org/onlinedocs/gcc/Warning-Options.html" target="_blank" style="color:var(--accent)">https://gcc.gnu.org/onlinedocs/gcc/Warning-Options.html</a><br>
+      • GCC Static Analyzer: <a href="https://gcc.gnu.org/onlinedocs/gcc/Static-Analyzer-Options.html" target="_blank" style="color:var(--accent)">https://gcc.gnu.org/onlinedocs/gcc/Static-Analyzer-Options.html</a><br>
+      • Linux Kernel Makefile: <a href="https://github.com/torvalds/linux/blob/master/Makefile" target="_blank" style="color:var(--accent)">https://github.com/torvalds/linux/blob/master/Makefile</a><br>
+      • Makefile.extrawarn (LegoOS/Linux): <a href="https://github.com/WukLab/LegoOS/blob/master/scripts/Makefile.extrawarn" target="_blank" style="color:var(--accent)">https://github.com/WukLab/LegoOS/blob/master/scripts/Makefile.extrawarn</a><br>
+      • GCC man page: <a href="https://man7.org/linux/man-pages/man1/gcc.1.html" target="_blank" style="color:var(--accent)">https://man7.org/linux/man-pages/man1/gcc.1.html</a>
+    </div>
+  </div>
+
+  <div class="chapter-nav">
+    <a class="chap-btn" href="#s9">← Linux 内核实践</a>
+    <a class="chap-btn" href="#intro">↑ 返回顶部</a>
+  </div>
+</section>
+
+</div>
+</main>
+
+<script>
+// ── Sidebar toggle ──
+function toggleSidebar() {
+  const sb = document.getElementById('sidebar');
+  const ov = document.getElementById('overlay');
+  const hb = document.getElementById('hamburger');
+  sb.classList.toggle('open');
+  ov.classList.toggle('show');
+  hb.classList.toggle('open');
+}
+function closeSidebar() {
+  document.getElementById('sidebar').classList.remove('open');
+  document.getElementById('overlay').classList.remove('show');
+  document.getElementById('hamburger').classList.remove('open');
+}
+function closeOnMobile() {
+  if (window.innerWidth <= 900) closeSidebar();
+}
+
+// ── Progress bar ──
+window.addEventListener('scroll', () => {
+  const el = document.documentElement;
+  const pct = (el.scrollTop / (el.scrollHeight - el.clientHeight)) * 100;
+  document.getElementById('progress-bar').style.width = pct + '%';
+});
+
+// ── Active nav tracking ──
+const sections = document.querySelectorAll('section[id]');
+const navItems = document.querySelectorAll('.nav-item');
+
+const observer = new IntersectionObserver((entries) => {
+  entries.forEach(entry => {
+    if (entry.isIntersecting) {
+      navItems.forEach(n => n.classList.remove('active'));
+      const active = document.querySelector(`.nav-item[href="#${entry.target.id}"]`);
+      if (active) {
+        active.classList.add('active');
+        active.scrollIntoView({ block: 'nearest', behavior: 'smooth' });
+      }
+    }
+  });
+}, { rootMargin: `-${56+3}px 0px -60% 0px`, threshold: 0 });
+
+sections.forEach(s => observer.observe(s));
+
+// ── Keyboard navigation ──
+const sectionIds = ['intro','s1','s2','s3','s4','s5','s6','s7','s8','s9','s10'];
+let currentIdx = 0;
+
+function getCurrentSection() {
+  for (let i = sectionIds.length - 1; i >= 0; i--) {
+    const el = document.getElementById(sectionIds[i]);
+    if (el && el.getBoundingClientRect().top <= 80) return i;
+  }
+  return 0;
+}
+
+document.addEventListener('keydown', (e) => {
+  if (e.target.tagName === 'INPUT' || e.target.tagName === 'TEXTAREA') return;
+  if (e.key === 'ArrowRight') {
+    currentIdx = Math.min(getCurrentSection() + 1, sectionIds.length - 1);
+    document.getElementById(sectionIds[currentIdx]).scrollIntoView({ behavior: 'smooth' });
+  } else if (e.key === 'ArrowLeft') {
+    currentIdx = Math.max(getCurrentSection() - 1, 0);
+    document.getElementById(sectionIds[currentIdx]).scrollIntoView({ behavior: 'smooth' });
+  }
+});
+
+// ── Smooth scroll for nav links ──
+document.querySelectorAll('a[href^="#"]').forEach(a => {
+  a.addEventListener('click', (e) => {
+    const id = a.getAttribute('href').slice(1);
+    const target = document.getElementById(id);
+    if (target) {
+      e.preventDefault();
+      target.scrollIntoView({ behavior: 'smooth' });
+    }
+  });
+});
+</script>
+</body>
+</html>
