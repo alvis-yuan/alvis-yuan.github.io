@@ -1,6 +1,6 @@
 ---
 name: c-programming-spec
-description: Applies a self-contained C99 programming standard — file organization, naming, types, error handling, mandatory LogError on every abnormal return path, pointer parameter qualifiers (const/restrict per semantics), RAII resource cleanup (reference/raii.h), GCC atomics (reference/atomic.h), compile-time checks (reference/compile_checks.h), memory safety, and documentation. Use when writing or reviewing C code, managing resources with multiple exit paths, autofd/autofree/WITH_LOCK, or C programming standards.
+description: Applies a self-contained C99 programming standard — file organization, naming, types, error handling, mandatory LogError on every abnormal return path, Chinese comments and English log messages, pointer parameter qualifiers (const/restrict per semantics), RAII resource cleanup (reference/raii.h), GCC atomics (reference/atomic.h), compile-time checks (reference/compile_checks.h), memory safety, and documentation. Use when writing or reviewing C code, managing resources with multiple exit paths, autofd/autofree/WITH_LOCK, or C programming standards.
 ---
 
 # C 语言编程规范 (C99)
@@ -41,7 +41,7 @@ description: Applies a self-contained C99 programming standard — file organiza
 
 ---
 
-## 强制执行（两项）
+## 强制执行（三项）
 
 ### 指针形参 `const` / `restrict`
 
@@ -56,9 +56,22 @@ description: Applies a self-contained C99 programming standard — file organiza
 
 ### 异常返回点日志
 
-函数内每个失败/异常的 `return` 或 `goto` 退出路径，返回前必须 `LogError`（或项目 `LOG_ERROR`）；`REQUIRE` 已内置。禁 `printf` 替代。系统调用失败立即保存 `errno` 到局部变量再日志。
+函数内每个失败/异常的 `return` 或 `goto` 退出路径，返回前必须 `LogError`（或项目 `LOG_ERROR`）；`REQUIRE` 已内置。禁 `printf` 替代。系统调用失败立即保存 `errno` 到局部变量再日志。**日志字符串使用英文**（见下节）。
 
 详例见 [ch10 §10.4](reference/ch10.md#104-异常返回点日志)。
+
+### 注释与日志语言
+
+| 输出类型 | 语言 | 范围 |
+| --- | --- | --- |
+| **注释** | **中文** | 源码内 `//`、`/* */`；Doxygen `@brief`/`@param`/`@return` 等面向维护者的说明 |
+| **运行期日志** | **英文** | `LogError`、`LogInfo`、`LOG_*` 等写入 stderr/日志系统的 format 字符串 |
+
+- 注释写**为什么**、设计约束与非显而易见的取舍；代码本身说明怎么做。
+- 日志用英文便于 `grep`、与 `errno`/`strerror`/工具链输出一致，也便于跨环境排障。
+- **禁止**在 `LogError`/`LogInfo` 等日志宏中使用中文提示；**禁止**用英文写大段源码行内注释替代中文说明。
+
+详例见 [ch20 §20.4](reference/ch20.md#204-注释与日志语言)。
 
 ---
 
@@ -97,7 +110,7 @@ description: Applies a self-contained C99 programming standard — file organiza
 - **有符号溢出 = UB**；分配前检查乘法溢出；移位量 `< 位宽`
 - 复杂逻辑 → `static inline`；禁函数宏（副作用、无类型检查）
 - 单整型共享计数/标志 → [atomic.h](reference/atomic.h)；多字段/链表/阻塞 → mutex（见 **c-multi-threading**）
-- 注释写**为什么**；公共 API 文档化线程安全与所有权
+- 注释（中文）写**为什么**；公共 API 文档化线程安全与所有权；日志（英文）见上文「注释与日志语言」
 
 ---
 
@@ -120,6 +133,7 @@ description: Applies a self-contained C99 programming standard — file organiza
 | `for (i=n-1; i>=0; i--)` 中 `i` 为 `size_t` | 无符号永不 `<0` → 死循环 |
 | VLA 大数组 | 栈溢出 |
 | 信号处理中 `printf`/`malloc`/加锁 | 死锁/UB |
+| `LogError`/`LogInfo` 等日志字符串使用中文 | 不利于 grep 与跨环境排障；与 errno 输出语言不一致 |
 
 更多见 [reference/quick-ref.md](reference/quick-ref.md)。
 
@@ -204,14 +218,14 @@ description: Applies a self-contained C99 programming standard — file organiza
 - [ ] 模块前缀 + snake_case；`.h` 无定义
 - [ ] 类型选型正确（定宽/size_t/bool）；结构体对齐
 - [ ] 指针形参 `const`/`restrict` 正确；声明=定义
-- [ ] 每个异常返回点有 `LogError` 与足够上下文
+- [ ] 每个异常返回点有 `LogError`（**英文**）与足够上下文
 - [ ] 公共 API 参数校验 + 明确返回值语义
 - [ ] 无 strcpy/sprintf；整数/指针/字符串无 UB
 - [ ] 宏安全或 static inline；malloc/free 配对
 - [ ] 多 exit 路径用 raii.h 或 goto 链
 - [ ] 共享整型用 atomic；复杂状态用锁
 - [ ] 公共 API 有 nonnull/format/must_check；布局用 static_assert
-- [ ] 注释说明为什么；公共接口有 Doxygen
+- [ ] 注释/Doxygen 使用**中文**说明为什么；公共接口有 Doxygen
 
 ---
 

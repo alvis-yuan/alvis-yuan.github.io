@@ -1,6 +1,6 @@
 ---
 name: c-programming-spec
-description: Applies a self-contained C99 programming standard — file organization, naming, types, error handling, mandatory LogError on every abnormal return path, pointer parameter qualifiers (const/restrict per semantics), RAII resource cleanup (reference/raii.h), GCC atomics (reference/atomic.h), compile-time checks (reference/compile_checks.h), memory safety, and documentation. Use when writing or reviewing C code, managing resources with multiple exit paths, autofd/autofree/WITH_LOCK, or C programming standards.
+description: Applies a self-contained C99 programming standard — file organization, naming, types, error handling, mandatory LogError on every abnormal return path, Chinese comments and English log messages, pointer parameter qualifiers (const/restrict per semantics), RAII resource cleanup (reference/raii.h), GCC atomics (reference/atomic.h), compile-time checks (reference/compile_checks.h), memory safety, and documentation. Use when writing or reviewing C code, managing resources with multiple exit paths, autofd/autofree/WITH_LOCK, or C programming standards.
 ---
 
 # C 语言编程规范 (C99)
@@ -14,7 +14,8 @@ description: Applies a self-contained C99 programming standard — file organiza
 3. 源文档仅有单一示例时，以该示例为准；同一代码块内含 ✅/❌ 标记时，分别作为正反面示例。
 4. 规范冲突时优先级：**必须** > **建议** > **可选**。
 5. **指针形参限定符（强制执行）**：编写或审查任何带指针形参的函数时，必须按 [第 8.5 章](reference/ch8.md#85-指针形参修饰符) 核对 `const`/`restrict`——只读输入加 `const`，独占无别名缓冲区加 `restrict`，输出缓冲区不得误加 `const`，且头文件与 `.c` 定义保持一致。
-6. **异常返回点日志（强制执行）**：函数内每个失败/异常的 `return` 或 `goto` 退出路径，必须在返回前调用 `LogError`（或项目统一的 `LOG_ERROR`）；`REQUIRE` 宏已内置日志。详见 [第 10.4 章](reference/ch10.md#104-异常返回点日志)。
+6. **异常返回点日志（强制执行）**：函数内每个失败/异常的 `return` 或 `goto` 退出路径，必须在返回前调用 `LogError`（或项目统一的 `LOG_ERROR`）；`REQUIRE` 宏已内置日志；**日志 format 字符串使用英文**。详见 [第 10.4 章](reference/ch10.md#104-异常返回点日志)。
+7. **注释与日志语言（强制执行）**：源码注释与 Doxygen 使用**中文**；`LogError`/`LogInfo`/`LOG_*` 等运行期日志使用**英文**。详见 [第 20.4 章](reference/ch20.md#204-注释与日志语言)。
 
 ## 规范级别
 
@@ -64,14 +65,14 @@ description: Applies a self-contained C99 programming standard — file organiza
 - [ ] 数据类型选用 stdint/size_t，并参考第 5 章决策树与速查表（5.3–5.18）
 - [ ] 变量声明即初始化，结构体成员按对齐降序（第 4、6 章）
 - [ ] 指针形参按语义加 `const`/`restrict`；声明与定义限定符一致（第 4、8 章 8.5 节）
-- [ ] 每个异常返回点（错误码/NULL/失败 goto）在返回前有 `LogError` 及足够上下文（第 10 章 10.4 节）
+- [ ] 每个异常返回点（错误码/NULL/失败 goto）在返回前有 `LogError`（**英文**）及足够上下文（第 10 章 10.4 节）
 - [ ] 公共 API 有参数校验与明确返回值语义（第 8、9、10 章）
 - [ ] 宏安全或改用 static inline；内存分配/释放配对（第 11、14 章）
 - [ ] 指针、整数、字符串操作无 UB（第 15、16、17 章）
 - [ ] 多线程共享整型计数/标志优先 atomic（第 22 章），复杂状态用锁（第 18 章）
 - [ ] 公共 API 声明 nonnull/format/must_check；布局不变量用 static_assert 或 BUILD_BUG_ON（第 23 章）
 - [ ] 多 exit 路径的资源释放用 raii.h 或 goto 清理；单 return 可用原生 close/free（第 24 章）
-- [ ] 注释说明「为什么」，公共接口有 Doxygen（第 20 章）
+- [ ] 注释/Doxygen 使用**中文**说明「为什么」；`LogError`/`LogInfo` 等日志使用**英文**（第 20 章 20.4 节）；公共接口有 Doxygen
 
 ## 权威参考
 
