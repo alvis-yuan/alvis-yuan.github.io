@@ -10,6 +10,7 @@
      - 唯一匹配 → 修正为正确相对路径
      - 无法解析 → 删除引用（<a> 保留文字；link/script/img 移除标签）
   4. 跳过构建产物、模板噪声链接（如 minified JS 中的 +n+）
+  5. 生成 assets/search-index.json，并在根 index.html 内嵌搜索索引（避免 fetch 在 file:// 下失败）
 
 用法:
   python3 tools/update_indices.py
@@ -22,6 +23,7 @@ from __future__ import annotations
 
 import argparse
 import fnmatch
+import json
 import os
 import re
 from pathlib import Path
@@ -608,6 +610,104 @@ def link_label(d: Path, href: str, kind: str) -> str:
     return href
 
 
+def module_label_for(rel_path: str) -> str:
+    parts = rel_path.split('/')
+    module = parts[0] if len(parts) > 1 else ''
+    if not module:
+        return '站点'
+    for title, _desc, patterns in MODULE_GROUPS.get('', []):
+        for pat in patterns:
+            if pat.rstrip('/') == module:
+                return title
+    return module
+
+
+def build_search_index(all_html: list[Path]) -> list[dict]:
+    entries = []
+    seen: set[str] = set()
+    for p in all_html:
+        if should_skip_path(p):
+            continue
+        rel = p.relative_to(ROOT).as_posix()
+        parts = rel.split('/')
+        module = parts[0] if len(parts) > 1 else ''
+        dir_rel = '/'.join(parts[:-1]) if len(parts) > 1 else ''
+        module_title = module_label_for(rel)
+        title = extract_page_title(p)
+        if not title:
+            if p.name.lower().startswith('index.'):
+                title = f'{module_title or module} 索引' if module else '站点索引'
+            else:
+                title = p.name
+        intro = DIR_INTROS.get(dir_rel, DIR_INTROS.get(module, ''))
+        stem_text = p.stem.replace('_', ' ').replace('-', ' ')
+        haystack = ' '.join(filter(None, [title, rel, module, module_title, intro, stem_text]))
+        if rel in seen:
+            continue
+        seen.add(rel)
+        entries.append({
+            'title': title,
+            'href': rel,
+            'module': module,
+            'moduleTitle': module_title,
+            'haystack': haystack,
+        })
+    entries.sort(key=lambda e: (e['module'], e['title'].lower()))
+    return entries
+
+
+def write_search_index(
+    all_html: list[Path] | None = None,
+    entries: list[dict] | None = None,
+    dry_run: bool = False,
+) -> int:
+    if entries is None:
+        entries = build_search_index(all_html or [])
+    path = ROOT / 'assets' / 'search-index.json'
+    if not dry_run:
+        path.write_text(
+            json.dumps(entries, ensure_ascii=False, indent=2) + '\n',
+            encoding='utf-8',
+        )
+    return len(entries)
+
+
+def render_root_search_data(entries: list[dict]) -> str:
+    payload = json.dumps(entries, ensure_ascii=False, separators=(',', ':'))
+    payload = payload.replace('</', r'<\/')
+    return f'<script id="site-search-data" type="application/json">{payload}</script>'
+
+
+def render_root_head(title_name: str) -> list[str]:
+    return [
+        '<!doctype html>',
+        '<html lang="zh-CN">',
+        '<head>',
+        '<meta charset="utf-8">',
+        '<meta name="viewport" content="width=device-width, initial-scale=1">',
+        f'<title>Index of {title_name}</title>',
+        '<link rel="stylesheet" href="assets/index-search.css">',
+        '</head>',
+    ]
+
+
+def render_root_search_ui(search_entries: list[dict] | None = None) -> list[str]:
+    lines = [
+        '<div class="site-search" role="search">',
+        '<label class="site-search-label" for="site-search-input">全站搜索</label>',
+        '<input id="site-search-input" class="site-search-input" type="search" '
+        'placeholder="模糊搜索：标题、路径、模块名…" autocomplete="off" spellcheck="false" '
+        'aria-controls="site-search-results" aria-expanded="false">',
+        '<p class="site-search-meta" id="site-search-meta" aria-live="polite"></p>',
+        '<ul id="site-search-results" class="site-search-results" role="listbox" hidden></ul>',
+        '</div>',
+    ]
+    if search_entries is not None:
+        lines.append(render_root_search_data(search_entries))
+    lines.append('<script src="assets/index-search.js" defer></script>')
+    return lines
+
+
 def render_functional_index(d: Path, items):
     rel = dir_rel_path(d)
     groups_spec = MODULE_GROUPS.get(rel)
@@ -628,7 +728,11 @@ def render_functional_index(d: Path, items):
     return lines
 
 
-def write_index_for_dir(d: Path, dry_run: bool = False) -> bool:
+def write_index_for_dir(
+    d: Path,
+    dry_run: bool = False,
+    search_entries: list[dict] | None = None,
+) -> bool:
     items = []
     skip_names = EXCLUDE_DIR_NAMES
     for p in sorted(d.iterdir(), key=lambda x: (x.is_file(), x.name.lower())):
@@ -650,17 +754,26 @@ def write_index_for_dir(d: Path, dry_run: bool = False) -> bool:
             items.append((p.name, p.name, 'file'))
 
     desc = extract_description(d)
-    lines = [
-        '<!doctype html>',
-        '<html>',
-        '<head><meta charset="utf-8"><title>Index of %s</title></head>' % (d.name or '/'),
-        '<body>',
-        '<h1>Index of %s</h1>' % (d.name or '/'),
+    title_name = d.name or '/'
+    if d == ROOT:
+        lines = render_root_head(title_name)
+        lines.append('<body>')
+        lines.append(f'<h1>Index of {title_name}</h1>')
+        lines.extend(render_root_search_ui(search_entries))
+    else:
+        lines = [
+            '<!doctype html>',
+            '<html>',
+            f'<head><meta charset="utf-8"><title>Index of {title_name}</title></head>',
+            '<body>',
+            f'<h1>Index of {title_name}</h1>',
+        ]
+    lines.extend([
         '<section>',
         '<h2>模块说明</h2>',
         f'<p>{desc}</p>' if desc else '<p>（此处为模块说明占位，建议编辑以说明本目录功能/用途）</p>',
         '</section>',
-    ]
+    ])
     if items:
         lines.extend(render_functional_index(d, items))
     if items:
@@ -796,6 +909,7 @@ def main():
 
     all_html = find_all_html_files()
     name_index = build_name_index(all_html)
+    search_entries = build_search_index(all_html)
 
     dirs = collect_index_dirs(all_html)
     index_count = 0
@@ -804,8 +918,11 @@ def main():
     for d in ordered:
         if should_skip_path(d) and d != ROOT:
             continue
-        if write_index_for_dir(d, dry_run=args.dry_run):
+        root_search = search_entries if d == ROOT else None
+        if write_index_for_dir(d, dry_run=args.dry_run, search_entries=root_search):
             index_count += 1
+
+    search_count = write_search_index(entries=search_entries, dry_run=args.dry_run)
 
     fixed = removed = 0
     if not args.indices_only:
@@ -816,6 +933,7 @@ def main():
     print('Summary:')
     print('  HTML files scanned:', len(all_html))
     print('  index.html dirs processed:', index_count)
+    print('  search index entries:', search_count)
     if args.dry_run:
         print('  (dry-run: no files written)')
     if not args.indices_only:
