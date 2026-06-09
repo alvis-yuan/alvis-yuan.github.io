@@ -1,0 +1,2322 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>POSIX 多线程设计：背景、痛点与指导思想</title>
+<style>
+  :root {
+    --bg: #0f1117;
+    --surface: #1a1d27;
+    --surface2: #232637;
+    --border: #2e3150;
+    --accent: #6c8fff;
+    --accent2: #a78bfa;
+    --accent3: #34d399;
+    --accent4: #fb923c;
+    --accent5: #f472b6;
+    --text: #e2e8f0;
+    --text-muted: #8892a4;
+    --text-dim: #64748b;
+    --nav-w: 270px;
+    --header-h: 56px;
+  }
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  html { scroll-behavior: smooth; }
+  body {
+    font-family: 'PingFang SC', 'Microsoft YaHei', 'Noto Sans SC', system-ui, sans-serif;
+    background: var(--bg);
+    color: var(--text);
+    line-height: 1.8;
+    overflow-x: hidden;
+  }
+
+  /* ===== PROGRESS BAR ===== */
+  #progress-bar {
+    position: fixed; top: 0; left: 0; height: 3px; width: 0%;
+    background: linear-gradient(90deg, var(--accent), var(--accent2));
+    z-index: 9999;
+    transition: width 0.1s linear;
+  }
+
+  /* ===== HEADER ===== */
+  #header {
+    position: fixed; top: 3px; left: 0; right: 0; height: var(--header-h);
+    background: rgba(15,17,23,0.92);
+    backdrop-filter: blur(12px);
+    border-bottom: 1px solid var(--border);
+    display: flex; align-items: center;
+    padding: 0 1.5rem;
+    z-index: 500;
+    gap: 1rem;
+  }
+  #hamburger {
+    display: none;
+    flex-direction: column; justify-content: center; gap: 5px;
+    width: 36px; height: 36px; cursor: pointer;
+    background: none; border: none; padding: 4px;
+  }
+  #hamburger span {
+    display: block; width: 22px; height: 2px;
+    background: var(--text); border-radius: 2px;
+    transition: all 0.3s;
+  }
+  #hamburger.open span:nth-child(1) { transform: translateY(7px) rotate(45deg); }
+  #hamburger.open span:nth-child(2) { opacity: 0; }
+  #hamburger.open span:nth-child(3) { transform: translateY(-7px) rotate(-45deg); }
+  .header-title {
+    font-size: 0.95rem; font-weight: 600;
+    color: var(--accent);
+    white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+  }
+  .header-badge {
+    margin-left: auto;
+    font-size: 0.72rem; padding: 2px 8px;
+    border: 1px solid var(--accent);
+    border-radius: 20px; color: var(--accent);
+    white-space: nowrap;
+  }
+  .kbd-hint {
+    font-size: 0.7rem; color: var(--text-dim);
+    display: flex; gap: 4px; align-items: center;
+    margin-left: auto;
+  }
+  .kbd {
+    background: var(--surface2); border: 1px solid var(--border);
+    border-radius: 4px; padding: 1px 5px;
+    font-family: monospace;
+  }
+
+  /* ===== SIDEBAR ===== */
+  #sidebar {
+    position: fixed; top: calc(var(--header-h) + 3px);
+    left: 0; width: var(--nav-w); bottom: 0;
+    background: var(--surface);
+    border-right: 1px solid var(--border);
+    overflow-y: auto; z-index: 400;
+    transition: transform 0.3s ease;
+    scrollbar-width: thin;
+    scrollbar-color: var(--border) transparent;
+  }
+  #sidebar::-webkit-scrollbar { width: 4px; }
+  #sidebar::-webkit-scrollbar-thumb { background: var(--border); border-radius: 4px; }
+  .nav-group { padding: 1rem 0 0.5rem; }
+  .nav-group-title {
+    font-size: 0.68rem; font-weight: 700; letter-spacing: 0.08em;
+    color: var(--text-dim); text-transform: uppercase;
+    padding: 0 1.2rem 0.4rem;
+  }
+  .nav-item {
+    display: block; padding: 0.45rem 1.2rem 0.45rem 1.5rem;
+    font-size: 0.82rem; color: var(--text-muted);
+    cursor: pointer; border-left: 3px solid transparent;
+    transition: all 0.2s; text-decoration: none;
+    white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+  }
+  .nav-item:hover { color: var(--text); background: rgba(108,143,255,0.06); }
+  .nav-item.active {
+    color: var(--accent); border-left-color: var(--accent);
+    background: rgba(108,143,255,0.1); font-weight: 500;
+  }
+  .nav-divider { height: 1px; background: var(--border); margin: 0.5rem 1.2rem; }
+
+  /* ===== OVERLAY ===== */
+  #overlay {
+    display: none; position: fixed; inset: 0;
+    background: rgba(0,0,0,0.6); z-index: 300;
+  }
+
+  /* ===== MAIN ===== */
+  #main {
+    margin-left: var(--nav-w);
+    padding-top: calc(var(--header-h) + 3px);
+    min-height: 100vh;
+  }
+  .content-wrap {
+    max-width: 860px;
+    margin: 0 auto;
+    padding: 2.5rem 2rem 6rem;
+  }
+
+  /* ===== SECTIONS ===== */
+  .section {
+    margin-bottom: 5rem;
+    scroll-margin-top: calc(var(--header-h) + 24px);
+  }
+  .section-label {
+    font-size: 0.7rem; font-weight: 700; letter-spacing: 0.12em;
+    text-transform: uppercase; color: var(--accent);
+    margin-bottom: 0.5rem;
+  }
+  h1.page-title {
+    font-size: clamp(1.6rem, 4vw, 2.2rem);
+    font-weight: 800; line-height: 1.3;
+    background: linear-gradient(135deg, var(--accent), var(--accent2));
+    -webkit-background-clip: text; -webkit-text-fill-color: transparent;
+    background-clip: text; margin-bottom: 1rem;
+  }
+  h2.section-title {
+    font-size: clamp(1.2rem, 3vw, 1.55rem);
+    font-weight: 700; color: var(--text);
+    margin-bottom: 1rem; padding-bottom: 0.5rem;
+    border-bottom: 1px solid var(--border);
+  }
+  h3.subsection-title {
+    font-size: 1.05rem; font-weight: 600;
+    color: var(--accent2); margin: 1.8rem 0 0.7rem;
+  }
+  p { color: var(--text); margin-bottom: 0.9rem; }
+  p.lead { font-size: 1.05rem; color: var(--text-muted); }
+  strong { color: var(--text); font-weight: 600; }
+  code {
+    font-family: 'JetBrains Mono', 'Fira Code', 'Courier New', monospace;
+    font-size: 0.82em;
+    background: var(--surface2); color: var(--accent3);
+    padding: 0.1em 0.4em; border-radius: 4px;
+  }
+
+  /* ===== QUOTE ===== */
+  .quote-block {
+    border-left: 3px solid var(--accent);
+    background: var(--surface2);
+    padding: 1rem 1.2rem; border-radius: 0 8px 8px 0;
+    margin: 1.2rem 0; font-style: italic;
+    color: var(--text-muted); font-size: 0.92rem;
+  }
+  .quote-block .cite {
+    display: block; margin-top: 0.5rem;
+    font-size: 0.75rem; font-style: normal;
+    color: var(--text-dim);
+  }
+
+  /* ===== CARDS ===== */
+  .card-grid {
+    display: grid; grid-template-columns: repeat(auto-fill, minmax(220px, 1fr));
+    gap: 1rem; margin: 1.2rem 0;
+  }
+  .card {
+    background: var(--surface2);
+    border: 1px solid var(--border);
+    border-radius: 10px; padding: 1rem 1.1rem;
+    transition: border-color 0.2s, transform 0.2s;
+  }
+  .card:hover { border-color: var(--accent); transform: translateY(-2px); }
+  .card-icon { font-size: 1.5rem; margin-bottom: 0.5rem; }
+  .card-title { font-size: 0.88rem; font-weight: 600; color: var(--text); margin-bottom: 0.3rem; }
+  .card-desc { font-size: 0.78rem; color: var(--text-muted); line-height: 1.5; }
+
+  /* ===== TABLE ===== */
+  .table-wrap { overflow-x: auto; margin: 1.2rem 0; border-radius: 10px; border: 1px solid var(--border); }
+  table { width: 100%; border-collapse: collapse; font-size: 0.85rem; }
+  thead th {
+    background: var(--surface2); padding: 0.6rem 1rem;
+    text-align: left; font-weight: 600;
+    color: var(--accent); border-bottom: 1px solid var(--border);
+    white-space: nowrap;
+  }
+  tbody tr:hover { background: rgba(108,143,255,0.04); }
+  tbody td { padding: 0.55rem 1rem; border-bottom: 1px solid var(--border); color: var(--text-muted); vertical-align: top; }
+  tbody tr:last-child td { border-bottom: none; }
+  tbody td strong { color: var(--text); }
+
+  /* ===== TAGS ===== */
+  .tag {
+    display: inline-block; font-size: 0.7rem;
+    padding: 2px 8px; border-radius: 20px;
+    margin: 2px; border: 1px solid;
+  }
+  .tag-blue { border-color: var(--accent); color: var(--accent); background: rgba(108,143,255,0.08); }
+  .tag-purple { border-color: var(--accent2); color: var(--accent2); background: rgba(167,139,250,0.08); }
+  .tag-green { border-color: var(--accent3); color: var(--accent3); background: rgba(52,211,153,0.08); }
+  .tag-orange { border-color: var(--accent4); color: var(--accent4); background: rgba(251,146,60,0.08); }
+  .tag-pink { border-color: var(--accent5); color: var(--accent5); background: rgba(244,114,182,0.08); }
+
+  /* ===== TIMELINE ===== */
+  .timeline { position: relative; margin: 1.5rem 0; padding-left: 1.5rem; }
+  .timeline::before {
+    content: ''; position: absolute; left: 0.4rem; top: 0; bottom: 0;
+    width: 2px; background: linear-gradient(var(--accent), var(--accent2));
+  }
+  .timeline-item { position: relative; margin-bottom: 1.5rem; }
+  .timeline-dot {
+    position: absolute; left: -1.5rem;
+    width: 14px; height: 14px; border-radius: 50%;
+    background: var(--accent); border: 2px solid var(--bg);
+    top: 0.3rem;
+  }
+  .timeline-year { font-size: 0.72rem; font-weight: 700; color: var(--accent); margin-bottom: 0.2rem; }
+  .timeline-content { font-size: 0.87rem; color: var(--text-muted); }
+  .timeline-content strong { color: var(--text); }
+
+  /* ===== SOURCE LINK ===== */
+  .source-box {
+    background: var(--surface2); border: 1px solid var(--border);
+    border-radius: 8px; padding: 0.7rem 1rem; margin: 1rem 0;
+    font-size: 0.78rem; color: var(--text-dim);
+    display: flex; align-items: center; gap: 0.5rem; flex-wrap: wrap;
+  }
+  .source-box a {
+    color: var(--accent); text-decoration: none; word-break: break-all;
+  }
+  .source-box a:hover { text-decoration: underline; }
+
+  /* ===== INFO BOX ===== */
+  .info-box {
+    border: 1px solid; border-radius: 8px;
+    padding: 0.9rem 1.1rem; margin: 1rem 0; font-size: 0.87rem;
+  }
+  .info-box.blue { border-color: var(--accent); background: rgba(108,143,255,0.06); }
+  .info-box.green { border-color: var(--accent3); background: rgba(52,211,153,0.06); }
+  .info-box.orange { border-color: var(--accent4); background: rgba(251,146,60,0.06); }
+  .info-box.purple { border-color: var(--accent2); background: rgba(167,139,250,0.06); }
+  .info-box .box-title {
+    font-weight: 700; font-size: 0.8rem; margin-bottom: 0.4rem;
+    letter-spacing: 0.05em; text-transform: uppercase;
+  }
+  .info-box.blue .box-title { color: var(--accent); }
+  .info-box.green .box-title { color: var(--accent3); }
+  .info-box.orange .box-title { color: var(--accent4); }
+  .info-box.purple .box-title { color: var(--accent2); }
+
+  /* ===== LIST ===== */
+  ul.styled, ol.styled {
+    padding-left: 1.3rem; margin: 0.7rem 0;
+    color: var(--text-muted); font-size: 0.9rem;
+  }
+  ul.styled li, ol.styled li { margin-bottom: 0.4rem; }
+  ul.styled li::marker { color: var(--accent); }
+
+  /* ===== SVG DIAGRAMS ===== */
+  .svg-wrap {
+    background: var(--surface2); border: 1px solid var(--border);
+    border-radius: 12px; padding: 1.2rem; margin: 1.5rem 0;
+    overflow-x: auto;
+  }
+  .svg-wrap svg { display: block; max-width: 100%; height: auto; }
+  .svg-caption {
+    text-align: center; font-size: 0.75rem; color: var(--text-dim);
+    margin-top: 0.6rem;
+  }
+
+  /* ===== PAGE NAV ===== */
+  .page-nav {
+    display: flex; justify-content: space-between; gap: 1rem;
+    margin-top: 3rem; flex-wrap: wrap;
+  }
+  .page-nav-btn {
+    flex: 1; min-width: 160px;
+    background: var(--surface2); border: 1px solid var(--border);
+    border-radius: 10px; padding: 0.9rem 1.2rem;
+    cursor: pointer; text-decoration: none; color: var(--text-muted);
+    font-size: 0.82rem; transition: all 0.2s;
+    display: flex; flex-direction: column; gap: 0.2rem;
+  }
+  .page-nav-btn:hover { border-color: var(--accent); color: var(--text); }
+  .page-nav-btn.prev { text-align: left; }
+  .page-nav-btn.next { text-align: right; }
+  .page-nav-btn .label { font-size: 0.68rem; color: var(--text-dim); text-transform: uppercase; letter-spacing: 0.06em; }
+  .page-nav-btn .title { font-weight: 600; color: var(--text); }
+
+  /* ===== RESPONSIVE ===== */
+  @media (max-width: 768px) {
+    :root { --nav-w: 260px; }
+    #hamburger { display: flex; }
+    .kbd-hint { display: none; }
+    #sidebar {
+      transform: translateX(-100%);
+      z-index: 450;
+    }
+    #sidebar.open { transform: translateX(0); }
+    #overlay.open { display: block; }
+    #main { margin-left: 0; }
+    .content-wrap { padding: 1.5rem 1rem 5rem; }
+    .card-grid { grid-template-columns: 1fr 1fr; }
+  }
+  @media (max-width: 480px) {
+    .card-grid { grid-template-columns: 1fr; }
+    .page-nav { flex-direction: column; }
+  }
+</style>
+</head>
+<body>
+
+<div id="progress-bar"></div>
+
+<!-- Header -->
+<header id="header">
+  <button id="hamburger" aria-label="菜单">
+    <span></span><span></span><span></span>
+  </button>
+  <div class="header-title">POSIX 多线程设计原理</div>
+  <div class="kbd-hint">
+    <span class="kbd">←</span><span class="kbd">→</span> 切换章节
+  </div>
+  <div class="header-badge">IEEE Std 1003.1c-1995</div>
+</header>
+
+<!-- Sidebar -->
+<nav id="sidebar">
+  <div class="nav-group">
+    <div class="nav-group-title">导论</div>
+    <a class="nav-item active" href="#intro" data-section="intro">概述与阅读指南</a>
+  </div>
+  <div class="nav-divider"></div>
+  <div class="nav-group">
+    <div class="nav-group-title">历史背景</div>
+    <a class="nav-item" href="#history" data-section="history">历史演进与标准化动因</a>
+    <a class="nav-item" href="#before-posix" data-section="before-posix">标准化之前的混乱</a>
+  </div>
+  <div class="nav-divider"></div>
+  <div class="nav-group">
+    <div class="nav-group-title">第一性原理：痛点</div>
+    <a class="nav-item" href="#pain1" data-section="pain1">痛点一：串行程序的局限</a>
+    <a class="nav-item" href="#pain2" data-section="pain2">痛点二：进程开销过重</a>
+    <a class="nav-item" href="#pain3" data-section="pain3">痛点三：共享状态与竞态</a>
+    <a class="nav-item" href="#pain4" data-section="pain4">痛点四：移植性碎片化</a>
+  </div>
+  <div class="nav-divider"></div>
+  <div class="nav-group">
+    <div class="nav-group-title">核心概念</div>
+    <a class="nav-item" href="#concurrency" data-section="concurrency">并发 vs 并行</a>
+    <a class="nav-item" href="#async" data-section="async">异步执行模型</a>
+    <a class="nav-item" href="#sync-primitives" data-section="sync-primitives">同步原语体系</a>
+    <a class="nav-item" href="#thread-model" data-section="thread-model">线程对等模型</a>
+  </div>
+  <div class="nav-divider"></div>
+  <div class="nav-group">
+    <div class="nav-group-title">指导思想</div>
+    <a class="nav-item" href="#philosophy" data-section="philosophy">设计哲学总结</a>
+    <a class="nav-item" href="#tradeoffs" data-section="tradeoffs">权衡与取舍</a>
+    <a class="nav-item" href="#patterns" data-section="patterns">经典编程模型</a>
+  </div>
+  <div class="nav-divider"></div>
+  <div class="nav-group">
+    <div class="nav-group-title">参考</div>
+    <a class="nav-item" href="#refs" data-section="refs">权威来源与参考文献</a>
+  </div>
+</nav>
+
+<!-- Overlay -->
+<div id="overlay"></div>
+
+<!-- Main -->
+<main id="main">
+<div class="content-wrap">
+
+<!-- ==================== SECTION: INTRO ==================== -->
+<section class="section" id="intro">
+  <div class="section-label">导论</div>
+  <h1 class="page-title">POSIX 多线程设计<br>背景、痛点与指导思想</h1>
+  <p class="lead">
+    本文从<strong>第一性原理</strong>出发，系统梳理 POSIX 多线程标准（IEEE Std 1003.1c-1995，即 pthreads）诞生的历史背景、所要解决的根本痛点，以及由此引出的并发、异步、同步等核心概念背后的设计哲学。所有内容均来自 IEEE/The Open Group 官方规范、Linux man-pages 及权威教材。
+  </p>
+
+  <div class="source-box">
+    <span>📚 主要来源：</span>
+    <a href="https://www.man7.org/linux/man-pages/man7/pthreads.7.html" target="_blank">pthreads(7) Linux man-pages</a> ·
+    <a href="https://pubs.opengroup.org/onlinepubs/9799919799/" target="_blank">IEEE Std 1003.1-2024 (The Open Group)</a> ·
+    <a href="https://pubs.opengroup.org/onlinepubs/9799919799/xrat/V4_xsh_chap01.html" target="_blank">POSIX Rationale (官方设计理由文档)</a>
+  </div>
+
+  <div class="card-grid">
+    <div class="card">
+      <div class="card-icon">📜</div>
+      <div class="card-title">IEEE Std 1003.1c-1995</div>
+      <div class="card-desc">POSIX 线程扩展的正式名称，于 1995 年由 IEEE 批准，定义了可移植线程编程接口。</div>
+    </div>
+    <div class="card">
+      <div class="card-icon">🔗</div>
+      <div class="card-title">pthread.h / libpthread</div>
+      <div class="card-desc">标准以 C 语言类型和函数集的形式呈现，编译时链接 <code>-lpthread</code>（或 <code>-pthread</code>）。</div>
+    </div>
+    <div class="card">
+      <div class="card-icon">🌐</div>
+      <div class="card-title">跨平台可移植</div>
+      <div class="card-desc">Solaris、OSF/1、AIX、Linux（NPTL）等主流 UNIX 系统均实现了此标准。</div>
+    </div>
+    <div class="card">
+      <div class="card-icon">⚖️</div>
+      <div class="card-title">1:1 内核模型</div>
+      <div class="card-desc">Linux NPTL 实现采用 1:1 映射，每个线程对应一个内核调度实体（<code>clone(2)</code>）。</div>
+    </div>
+  </div>
+
+  <div class="page-nav">
+    <span></span>
+    <a class="page-nav-btn next" href="#history">
+      <span class="label">下一章</span>
+      <span class="title">历史演进与标准化动因 →</span>
+    </a>
+  </div>
+</section>
+
+<!-- ==================== SECTION: HISTORY ==================== -->
+<section class="section" id="history">
+  <div class="section-label">历史背景</div>
+  <h2 class="section-title">历史演进与标准化动因</h2>
+
+  <p>
+    计算机硬件从单核串行进化到支持同时运行多任务的体系结构，软件编程模型也随之经历了深刻变革。POSIX 线程标准正是在这一背景下，作为对<strong>碎片化并发编程生态</strong>的回应而诞生的。
+  </p>
+
+  <div class="quote-block">
+    "In the early days of multithreaded programming, different Unix vendors implemented their own proprietary threading libraries. This made writing portable multithreaded applications a nightmare. To solve this, the Institute of Electrical and Electronics Engineers (IEEE) developed a standard interface for thread management as part of the Portable Operating System Interface (POSIX) standard, specifically IEEE Std 1003.1c-1995."
+    <span class="cite">— circuitlabs.net, POSIX Threads (Pthreads): Creation and Termination</span>
+  </div>
+
+  <h3 class="subsection-title">历史时间线</h3>
+  <div class="timeline">
+    <div class="timeline-item">
+      <div class="timeline-dot"></div>
+      <div class="timeline-year">1960s</div>
+      <div class="timeline-content"><strong>Dijkstra 提出信号量（Semaphore）概念</strong>——为并发控制奠定理论基础，引入 P（sem_wait）/ V（sem_post）原子操作。</div>
+    </div>
+    <div class="timeline-item">
+      <div class="timeline-dot"></div>
+      <div class="timeline-year">1980s 中后期</div>
+      <div class="timeline-content"><strong>多线程研究爆发期</strong>——Brown University（Tom Doeppner）、CMU（Mach OS）等机构开展线程设计研究；各硬件厂商推出私有线程库。</div>
+    </div>
+    <div class="timeline-item">
+      <div class="timeline-dot"></div>
+      <div class="timeline-year">1990s 初</div>
+      <div class="timeline-content"><strong>线程进入主流 UNIX</strong>——USL System V Release 4、Sun Solaris、OSF/1 等相继提供各自线程实现，API 互不兼容。</div>
+    </div>
+    <div class="timeline-item">
+      <div class="timeline-dot"></div>
+      <div class="timeline-year">1990</div>
+      <div class="timeline-content"><strong>IEEE 开始制定统一标准</strong>——IEEE Std 1003.1 正式确立，互斥量（Mutex）概念在此过程中被引入并规范化。</div>
+    </div>
+    <div class="timeline-item">
+      <div class="timeline-dot"></div>
+      <div class="timeline-year">1995</div>
+      <div class="timeline-content"><strong>IEEE Std 1003.1c-1995 正式批准</strong>——POSIX Threads 标准诞生，结束了 UNIX 多线程编程的碎片化时代。编译：<code>gcc -o prog prog.c -lpthread</code></div>
+    </div>
+    <div class="timeline-item">
+      <div class="timeline-dot"></div>
+      <div class="timeline-year">2003</div>
+      <div class="timeline-content"><strong>Linux NPTL（Native POSIX Threads Library）</strong>——由 Ulrich Drepper 等开发，随 glibc 2.3.2 发布，需要 Linux 2.6 内核支持，相比 LinuxThreads 大幅提升性能与标准符合度。</div>
+    </div>
+    <div class="timeline-item">
+      <div class="timeline-dot"></div>
+      <div class="timeline-year">2024</div>
+      <div class="timeline-content"><strong>IEEE Std 1003.1-2024（Issue 8）</strong>——加入 C11 原子操作、<code>pthread_cond_clockwait</code> 等新接口，持续演进至今。</div>
+    </div>
+  </div>
+
+  <div class="page-nav">
+    <a class="page-nav-btn prev" href="#intro">
+      <span class="label">← 上一章</span>
+      <span class="title">概述与阅读指南</span>
+    </a>
+    <a class="page-nav-btn next" href="#before-posix">
+      <span class="label">下一章</span>
+      <span class="title">标准化之前的混乱 →</span>
+    </a>
+  </div>
+</section>
+
+<!-- ==================== SECTION: BEFORE POSIX ==================== -->
+<section class="section" id="before-posix">
+  <div class="section-label">历史背景</div>
+  <h2 class="section-title">标准化之前的混乱</h2>
+
+  <p>在 POSIX 线程标准出现之前，并发编程的生态极度碎片化。每家硬件厂商都实现了自己的线程库，程序员在不同平台之间迁移代码时面临巨大挑战。</p>
+
+  <!-- SVG: Before vs After POSIX -->
+  <div class="svg-wrap">
+    <svg viewBox="0 0 740 320" xmlns="http://www.w3.org/2000/svg" font-family="'PingFang SC','Microsoft YaHei',system-ui,sans-serif">
+      <!-- Left: Before -->
+      <rect x="10" y="10" width="340" height="300" rx="12" fill="#1a1d27" stroke="#2e3150" stroke-width="1.5"/>
+      <text x="180" y="40" text-anchor="middle" fill="#fb923c" font-size="13" font-weight="700">POSIX 标准化之前</text>
+      <!-- Vendor boxes -->
+      <rect x="30" y="60" width="140" height="54" rx="8" fill="#232637" stroke="#3b4270"/>
+      <text x="100" y="82" text-anchor="middle" fill="#f472b6" font-size="11" font-weight="600">Sun Solaris</text>
+      <text x="100" y="100" text-anchor="middle" fill="#64748b" font-size="9.5">lwp_create() / thr_create()</text>
+
+      <rect x="180" y="60" width="140" height="54" rx="8" fill="#232637" stroke="#3b4270"/>
+      <text x="250" y="82" text-anchor="middle" fill="#f472b6" font-size="11" font-weight="600">OSF/1 (DEC)</text>
+      <text x="250" y="100" text-anchor="middle" fill="#64748b" font-size="9.5">cma_thread_create()</text>
+
+      <rect x="30" y="130" width="140" height="54" rx="8" fill="#232637" stroke="#3b4270"/>
+      <text x="100" y="152" text-anchor="middle" fill="#f472b6" font-size="11" font-weight="600">IBM AIX</text>
+      <text x="100" y="170" text-anchor="middle" fill="#64748b" font-size="9.5">pthread_create() (私有)</text>
+
+      <rect x="180" y="130" width="140" height="54" rx="8" fill="#232637" stroke="#3b4270"/>
+      <text x="250" y="152" text-anchor="middle" fill="#f472b6" font-size="11" font-weight="600">SGI IRIX</text>
+      <text x="250" y="170" text-anchor="middle" fill="#64748b" font-size="9.5">sproc() / usema_init()</text>
+
+      <rect x="105" y="200" width="140" height="54" rx="8" fill="#232637" stroke="#3b4270"/>
+      <text x="175" y="222" text-anchor="middle" fill="#f472b6" font-size="11" font-weight="600">HP-UX / Mach</text>
+      <text x="175" y="240" text-anchor="middle" fill="#64748b" font-size="9.5">各自私有接口...</text>
+
+      <!-- Chaos lines -->
+      <line x1="100" y1="114" x2="250" y2="130" stroke="#fb923c" stroke-width="1" stroke-dasharray="4,3" opacity="0.5"/>
+      <line x1="250" y1="114" x2="175" y2="200" stroke="#fb923c" stroke-width="1" stroke-dasharray="4,3" opacity="0.5"/>
+      <line x1="100" y1="184" x2="175" y2="200" stroke="#fb923c" stroke-width="1" stroke-dasharray="4,3" opacity="0.5"/>
+
+      <text x="180" y="278" text-anchor="middle" fill="#fb923c" font-size="10" font-style="italic">⚠ 接口不兼容，代码无法移植</text>
+
+      <!-- Right: After -->
+      <rect x="390" y="10" width="340" height="300" rx="12" fill="#1a1d27" stroke="#2e3150" stroke-width="1.5"/>
+      <text x="560" y="40" text-anchor="middle" fill="#34d399" font-size="13" font-weight="700">POSIX 标准化之后</text>
+
+      <!-- POSIX Standard -->
+      <rect x="430" y="58" width="260" height="50" rx="8" fill="rgba(108,143,255,0.12)" stroke="#6c8fff" stroke-width="1.5"/>
+      <text x="560" y="79" text-anchor="middle" fill="#6c8fff" font-size="12" font-weight="700">IEEE Std 1003.1c-1995</text>
+      <text x="560" y="97" text-anchor="middle" fill="#8892a4" font-size="9.5">统一 API：pthread_create / mutex / cond</text>
+
+      <!-- Arrows down -->
+      <line x1="480" y1="108" x2="450" y2="148" stroke="#34d399" stroke-width="1.5" marker-end="url(#arr)"/>
+      <line x1="530" y1="108" x2="540" y2="148" stroke="#34d399" stroke-width="1.5" marker-end="url(#arr)"/>
+      <line x1="580" y1="108" x2="605" y2="148" stroke="#34d399" stroke-width="1.5" marker-end="url(#arr)"/>
+      <line x1="630" y1="108" x2="660" y2="148" stroke="#34d399" stroke-width="1.5" marker-end="url(#arr)"/>
+
+      <!-- Platform boxes -->
+      <rect x="410" y="148" width="75" height="44" rx="6" fill="#232637" stroke="#3b4270"/>
+      <text x="447" y="168" text-anchor="middle" fill="#a78bfa" font-size="9" font-weight="600">Linux</text>
+      <text x="447" y="182" text-anchor="middle" fill="#64748b" font-size="8">NPTL</text>
+
+      <rect x="500" y="148" width="75" height="44" rx="6" fill="#232637" stroke="#3b4270"/>
+      <text x="537" y="168" text-anchor="middle" fill="#a78bfa" font-size="9" font-weight="600">macOS</text>
+      <text x="537" y="182" text-anchor="middle" fill="#64748b" font-size="8">libpthread</text>
+
+      <rect x="590" y="148" width="75" height="44" rx="6" fill="#232637" stroke="#3b4270"/>
+      <text x="627" y="168" text-anchor="middle" fill="#a78bfa" font-size="9" font-weight="600">Solaris</text>
+      <text x="627" y="182" text-anchor="middle" fill="#64748b" font-size="8">Native</text>
+
+      <rect x="680" y="148" width="40" height="44" rx="6" fill="#232637" stroke="#3b4270"/>
+      <text x="700" y="174" text-anchor="middle" fill="#64748b" font-size="8">...</text>
+
+      <!-- Arrow def -->
+      <defs>
+        <marker id="arr" markerWidth="6" markerHeight="6" refX="3" refY="3" orient="auto">
+          <path d="M0,0 L6,3 L0,6 Z" fill="#34d399"/>
+        </marker>
+      </defs>
+
+      <!-- Portable app -->
+      <rect x="450" y="222" width="200" height="44" rx="8" fill="rgba(52,211,153,0.1)" stroke="#34d399" stroke-width="1"/>
+      <text x="550" y="243" text-anchor="middle" fill="#34d399" font-size="11" font-weight="600">可移植多线程应用</text>
+      <text x="550" y="258" text-anchor="middle" fill="#8892a4" font-size="9">一套代码，全平台运行</text>
+
+      <!-- Lines up from platforms -->
+      <line x1="447" y1="192" x2="500" y2="222" stroke="#34d399" stroke-width="1" opacity="0.5"/>
+      <line x1="537" y1="192" x2="530" y2="222" stroke="#34d399" stroke-width="1" opacity="0.5"/>
+      <line x1="627" y1="192" x2="600" y2="222" stroke="#34d399" stroke-width="1" opacity="0.5"/>
+    </svg>
+    <div class="svg-caption">图1：POSIX 标准化前后的生态对比 — 统一 API 消除了碎片化</div>
+  </div>
+
+  <div class="table-wrap">
+    <table>
+      <thead>
+        <tr>
+          <th>平台</th>
+          <th>标准化前的私有接口</th>
+          <th>问题</th>
+        </tr>
+      </thead>
+      <tbody>
+        <tr>
+          <td><strong>Sun Solaris</strong></td>
+          <td><code>thr_create()</code>, <code>lwp_create()</code></td>
+          <td>仅限 SunOS，无法在其他平台编译</td>
+        </tr>
+        <tr>
+          <td><strong>OSF/1 (DEC)</strong></td>
+          <td><code>cma_thread_create()</code></td>
+          <td>基于 DCE CMA 线程，语义不同</td>
+        </tr>
+        <tr>
+          <td><strong>SGI IRIX</strong></td>
+          <td><code>sproc()</code>, <code>usema_init()</code></td>
+          <td>轻量级进程模型，与线程概念不同</td>
+        </tr>
+        <tr>
+          <td><strong>Mach / CMU</strong></td>
+          <td>Mach threads, C-threads</td>
+          <td>仅学术/研究用途，接口不稳定</td>
+        </tr>
+      </tbody>
+    </table>
+  </div>
+
+  <div class="page-nav">
+    <a class="page-nav-btn prev" href="#history">
+      <span class="label">← 上一章</span>
+      <span class="title">历史演进与标准化动因</span>
+    </a>
+    <a class="page-nav-btn next" href="#pain1">
+      <span class="label">下一章</span>
+      <span class="title">痛点一：串行程序的局限 →</span>
+    </a>
+  </div>
+</section>
+
+<!-- ==================== SECTION: PAIN1 ==================== -->
+<section class="section" id="pain1">
+  <div class="section-label">第一性原理·痛点</div>
+  <h2 class="section-title">痛点一：串行程序的局限</h2>
+
+  <div class="quote-block">
+    "Not too many years ago, single instructions were how we delivered work to computers… When we package our work according to the traditional, serial notion of a program, we're asking the computer to execute it close to the humble performance of a computer of yesterday. If all our work is serialized, we can't take advantage of the computer's ability to do many things at once."
+    <span class="cite">— Bradford Nichols, Dick Buttlar & Jacqueline Farrell, <em>Pthreads Programming</em>, O'Reilly 1996</span>
+  </div>
+
+  <p>
+    传统的串行程序模型是<strong>冯·诺依曼顺序执行模型</strong>的直接体现：一条指令接一条指令地执行。这在单核、简单任务的场景下工作良好，但随着应用复杂度和硬件能力的提升，其局限性日益凸显：
+  </p>
+
+  <!-- SVG: Serial vs Threaded -->
+  <div class="svg-wrap">
+    <svg viewBox="0 0 720 260" xmlns="http://www.w3.org/2000/svg" font-family="'PingFang SC','Microsoft YaHei',system-ui,sans-serif">
+      <!-- Serial model -->
+      <text x="180" y="28" text-anchor="middle" fill="#fb923c" font-size="12" font-weight="700">串行执行模型</text>
+
+      <!-- Task boxes serial -->
+      <rect x="20" y="44" width="80" height="36" rx="6" fill="#fb923c" opacity="0.8"/>
+      <text x="60" y="67" text-anchor="middle" fill="#fff" font-size="10" font-weight="600">任务 A</text>
+
+      <rect x="108" y="44" width="80" height="36" rx="6" fill="#f472b6" opacity="0.8"/>
+      <text x="148" y="67" text-anchor="middle" fill="#fff" font-size="10" font-weight="600">任务 B</text>
+
+      <rect x="196" y="44" width="80" height="36" rx="6" fill="#6c8fff" opacity="0.8"/>
+      <text x="236" y="67" text-anchor="middle" fill="#fff" font-size="10" font-weight="600">任务 C</text>
+
+      <rect x="284" y="44" width="80" height="36" rx="6" fill="#34d399" opacity="0.8"/>
+      <text x="324" y="67" text-anchor="middle" fill="#fff" font-size="10" font-weight="600">任务 D</text>
+
+      <!-- Arrows serial -->
+      <line x1="100" y1="62" x2="107" y2="62" stroke="#8892a4" stroke-width="1.5" marker-end="url(#a2)"/>
+      <line x1="188" y1="62" x2="195" y2="62" stroke="#8892a4" stroke-width="1.5" marker-end="url(#a2)"/>
+      <line x1="276" y1="62" x2="283" y2="62" stroke="#8892a4" stroke-width="1.5" marker-end="url(#a2)"/>
+
+      <!-- Total time bar -->
+      <rect x="20" y="96" width="344" height="8" rx="4" fill="rgba(251,146,60,0.3)" stroke="#fb923c" stroke-width="1"/>
+      <text x="192" y="118" text-anchor="middle" fill="#fb923c" font-size="9">总时间 = A + B + C + D（顺序叠加）</text>
+
+      <!-- IO waste -->
+      <rect x="108" y="134" width="80" height="36" rx="6" fill="#232637" stroke="#f472b6" stroke-dasharray="4,3"/>
+      <text x="148" y="157" text-anchor="middle" fill="#f472b6" font-size="9">I/O 等待</text>
+      <text x="148" y="168" text-anchor="middle" fill="#64748b" font-size="8">CPU 空闲!</text>
+
+      <text x="20" y="195" fill="#64748b" font-size="9">时间轴 →</text>
+      <line x1="20" y1="200" x2="370" y2="200" stroke="#2e3150" stroke-width="1.5"/>
+      <text x="20" y="218" fill="#64748b" font-size="9">CPU</text>
+      <rect x="50" y="207" width="40" height="16" rx="3" fill="#fb923c" opacity="0.7"/>
+      <rect x="94" y="207" width="40" height="16" rx="3" fill="#2e3150" stroke="#f472b6" stroke-dasharray="3,2"/>
+      <rect x="138" y="207" width="40" height="16" rx="3" fill="#6c8fff" opacity="0.7"/>
+      <rect x="182" y="207" width="40" height="16" rx="3" fill="#34d399" opacity="0.7"/>
+
+      <!-- Separator -->
+      <line x1="390" y1="20" x2="390" y2="250" stroke="#2e3150" stroke-width="1.5" stroke-dasharray="5,4"/>
+
+      <!-- Threaded model -->
+      <text x="555" y="28" text-anchor="middle" fill="#34d399" font-size="12" font-weight="700">多线程并发模型</text>
+
+      <!-- Thread lanes -->
+      <text x="410" y="60" fill="#8892a4" font-size="9">线程1</text>
+      <rect x="450" y="48" width="80" height="22" rx="4" fill="#fb923c" opacity="0.8"/>
+      <text x="490" y="63" text-anchor="middle" fill="#fff" font-size="9" font-weight="600">任务 A</text>
+
+      <text x="410" y="90" fill="#8892a4" font-size="9">线程2</text>
+      <rect x="450" y="78" width="80" height="22" rx="4" fill="#f472b6" opacity="0.8"/>
+      <text x="490" y="93" text-anchor="middle" fill="#fff" font-size="9" font-weight="600">任务 B</text>
+
+      <text x="410" y="120" fill="#8892a4" font-size="9">线程3</text>
+      <rect x="450" y="108" width="80" height="22" rx="4" fill="#6c8fff" opacity="0.8"/>
+      <text x="490" y="123" text-anchor="middle" fill="#fff" font-size="9" font-weight="600">任务 C</text>
+
+      <text x="410" y="150" fill="#8892a4" font-size="9">线程4</text>
+      <rect x="450" y="138" width="80" height="22" rx="4" fill="#34d399" opacity="0.8"/>
+      <text x="490" y="153" text-anchor="middle" fill="#fff" font-size="9" font-weight="600">任务 D</text>
+
+      <!-- Bracket for time -->
+      <line x1="540" y1="48" x2="545" y2="48" stroke="#34d399" stroke-width="1.5"/>
+      <line x1="540" y1="160" x2="545" y2="160" stroke="#34d399" stroke-width="1.5"/>
+      <line x1="542" y1="48" x2="542" y2="160" stroke="#34d399" stroke-width="1.5"/>
+      <text x="548" y="110" fill="#34d399" font-size="9">≈ max(A,B,C,D)</text>
+      <text x="548" y="122" fill="#34d399" font-size="9">⬇ 时间大幅缩短</text>
+
+      <!-- Shared memory highlight -->
+      <rect x="410" y="178" width="290" height="44" rx="8" fill="rgba(108,143,255,0.08)" stroke="#6c8fff" stroke-width="1"/>
+      <text x="555" y="198" text-anchor="middle" fill="#6c8fff" font-size="10" font-weight="600">共享地址空间（全局数据·堆）</text>
+      <text x="555" y="213" text-anchor="middle" fill="#64748b" font-size="9">所有线程共享，无需 IPC 开销；但引入竞态风险</text>
+
+      <defs>
+        <marker id="a2" markerWidth="5" markerHeight="5" refX="2.5" refY="2.5" orient="auto">
+          <path d="M0,0 L5,2.5 L0,5 Z" fill="#8892a4"/>
+        </marker>
+      </defs>
+    </svg>
+    <div class="svg-caption">图2：串行执行 vs 多线程并发 — 并发通过重叠执行时间提升吞吐量</div>
+  </div>
+
+  <h3 class="subsection-title">串行模型的三大根本缺陷</h3>
+  <div class="card-grid">
+    <div class="card">
+      <div class="card-icon">🐌</div>
+      <div class="card-title">I/O 等待浪费 CPU</div>
+      <div class="card-desc">程序在等待磁盘、网络时，CPU 完全空闲。多线程让其他线程在此期间使用 CPU。</div>
+    </div>
+    <div class="card">
+      <div class="card-icon">🖥️</div>
+      <div class="card-title">无法利用多核</div>
+      <div class="card-desc">单线程程序永远只能使用一个 CPU 核心，多核硬件资源形同虚设。</div>
+    </div>
+    <div class="card">
+      <div class="card-icon">📱</div>
+      <div class="card-title">UI 响应阻塞</div>
+      <div class="card-desc">GUI 程序若在主线程执行耗时操作，界面将完全卡死，无法响应用户输入。</div>
+    </div>
+    <div class="card">
+      <div class="card-icon">🌐</div>
+      <div class="card-title">服务器并发瓶颈</div>
+      <div class="card-desc">网络服务器必须同时处理多个客户端请求，串行模型导致请求队列堆积，响应时间剧增。</div>
+    </div>
+  </div>
+
+  <div class="page-nav">
+    <a class="page-nav-btn prev" href="#before-posix">
+      <span class="label">← 上一章</span>
+      <span class="title">标准化之前的混乱</span>
+    </a>
+    <a class="page-nav-btn next" href="#pain2">
+      <span class="label">下一章</span>
+      <span class="title">痛点二：进程开销过重 →</span>
+    </a>
+  </div>
+</section>
+
+<!-- ==================== SECTION: PAIN2 ==================== -->
+<section class="section" id="pain2">
+  <div class="section-label">第一性原理·痛点</div>
+  <h2 class="section-title">痛点二：进程开销过重</h2>
+
+  <p>
+    在线程出现之前，UNIX 实现并发的主要手段是<strong>多进程（fork）</strong>。但多进程模型存在根本性的资源消耗问题。
+  </p>
+
+  <div class="quote-block">
+    "Compared to the standard fork(), threads carry a lot less overhead. Remember that fork() produces a second copy of the calling process. The parent and the child are completely independent, each with its own address space, with its own copies of its variables, which are completely independent of the same variables in the other process. Threads share a common address space, thereby avoiding a lot of the inefficiencies of multiple processes."
+    <span class="cite">— Multi-Threaded Programming With POSIX Threads, Villanova University CSC</span>
+  </div>
+
+  <!-- SVG: Process vs Thread overhead -->
+  <div class="svg-wrap">
+    <svg viewBox="0 0 720 300" xmlns="http://www.w3.org/2000/svg" font-family="'PingFang SC','Microsoft YaHei',system-ui,sans-serif">
+      <!-- Process model -->
+      <text x="175" y="25" text-anchor="middle" fill="#fb923c" font-size="12" font-weight="700">多进程（fork）模型</text>
+
+      <!-- Process A -->
+      <rect x="20" y="40" width="310" height="120" rx="10" fill="#1a1d27" stroke="#fb923c" stroke-width="1.5"/>
+      <text x="60" y="58" fill="#fb923c" font-size="10" font-weight="600">进程 A</text>
+      <rect x="30" y="65" width="85" height="22" rx="4" fill="#232637" stroke="#3b4270"/>
+      <text x="72" y="80" text-anchor="middle" fill="#8892a4" font-size="8.5">代码段（复制）</text>
+      <rect x="125" y="65" width="85" height="22" rx="4" fill="#232637" stroke="#3b4270"/>
+      <text x="167" y="80" text-anchor="middle" fill="#8892a4" font-size="8.5">数据段（复制）</text>
+      <rect x="220" y="65" width="90" height="22" rx="4" fill="#232637" stroke="#3b4270"/>
+      <text x="265" y="80" text-anchor="middle" fill="#8892a4" font-size="8.5">堆（完全复制）</text>
+      <rect x="30" y="96" width="85" height="22" rx="4" fill="#232637" stroke="#3b4270"/>
+      <text x="72" y="111" text-anchor="middle" fill="#8892a4" font-size="8.5">文件描述符</text>
+      <rect x="125" y="96" width="85" height="22" rx="4" fill="#232637" stroke="#3b4270"/>
+      <text x="167" y="111" text-anchor="middle" fill="#8892a4" font-size="8.5">信号处理（复制）</text>
+      <rect x="220" y="96" width="90" height="22" rx="4" fill="#232637" stroke="#3b4270"/>
+      <text x="265" y="111" text-anchor="middle" fill="#8892a4" font-size="8.5">环境/页表</text>
+      <rect x="30" y="127" width="280" height="22" rx="4" fill="rgba(251,146,60,0.12)" stroke="#fb923c" stroke-dasharray="3,2"/>
+      <text x="170" y="142" text-anchor="middle" fill="#fb923c" font-size="8.5">独立地址空间 — 进程间通信需 IPC（管道/共享内存/消息队列）</text>
+
+      <!-- Fork arrow -->
+      <line x1="175" y1="160" x2="120" y2="192" stroke="#8892a4" stroke-width="1.5" marker-end="url(#arr3)"/>
+      <line x1="175" y1="160" x2="230" y2="192" stroke="#8892a4" stroke-width="1.5" marker-end="url(#arr3)"/>
+      <text x="175" y="175" text-anchor="middle" fill="#fb923c" font-size="9">fork()</text>
+
+      <rect x="80" y="192" width="80" height="30" rx="6" fill="#232637" stroke="#fb923c" stroke-width="1"/>
+      <text x="120" y="212" text-anchor="middle" fill="#fb923c" font-size="9">子进程 B</text>
+
+      <rect x="190" y="192" width="80" height="30" rx="6" fill="#232637" stroke="#fb923c" stroke-width="1"/>
+      <text x="230" y="212" text-anchor="middle" fill="#fb923c" font-size="9">子进程 C</text>
+
+      <text x="175" y="250" text-anchor="middle" fill="#64748b" font-size="8.5">⚠ 创建速度慢，内存翻倍，IPC 复杂</text>
+
+      <!-- Divider -->
+      <line x1="350" y1="15" x2="350" y2="290" stroke="#2e3150" stroke-width="1.5" stroke-dasharray="5,4"/>
+
+      <!-- Thread model -->
+      <text x="535" y="25" text-anchor="middle" fill="#34d399" font-size="12" font-weight="700">多线程（pthread）模型</text>
+
+      <!-- Single process -->
+      <rect x="370" y="40" width="335" height="180" rx="10" fill="#1a1d27" stroke="#34d399" stroke-width="1.5"/>
+      <text x="410" y="58" fill="#34d399" font-size="10" font-weight="600">单进程（共享地址空间）</text>
+
+      <!-- Shared resources -->
+      <rect x="380" y="65" width="310" height="44" rx="6" fill="rgba(52,211,153,0.08)" stroke="#34d399" stroke-width="1"/>
+      <text x="535" y="81" text-anchor="middle" fill="#34d399" font-size="9" font-weight="600">共享区域（代码段 · 全局数据 · 堆 · 文件描述符）</text>
+      <text x="535" y="97" text-anchor="middle" fill="#64748b" font-size="8.5">所有线程共享，无需复制，直接访问</text>
+
+      <!-- Thread private stacks -->
+      <text x="535" y="124" text-anchor="middle" fill="#8892a4" font-size="9">每线程私有：</text>
+
+      <rect x="385" y="130" width="80" height="40" rx="5" fill="#232637" stroke="#6c8fff"/>
+      <text x="425" y="147" text-anchor="middle" fill="#a78bfa" font-size="8.5">线程 1</text>
+      <text x="425" y="160" text-anchor="middle" fill="#64748b" font-size="7.5">栈 / TID / errno</text>
+
+      <rect x="475" y="130" width="80" height="40" rx="5" fill="#232637" stroke="#6c8fff"/>
+      <text x="515" y="147" text-anchor="middle" fill="#a78bfa" font-size="8.5">线程 2</text>
+      <text x="515" y="160" text-anchor="middle" fill="#64748b" font-size="7.5">栈 / TID / errno</text>
+
+      <rect x="565" y="130" width="80" height="40" rx="5" fill="#232637" stroke="#6c8fff"/>
+      <text x="605" y="147" text-anchor="middle" fill="#a78bfa" font-size="8.5">线程 3</text>
+      <text x="605" y="160" text-anchor="middle" fill="#64748b" font-size="7.5">栈 / TID / errno</text>
+
+      <rect x="655" y="130" width="45" height="40" rx="5" fill="#232637" stroke="#2e3150" stroke-dasharray="3,2"/>
+      <text x="677" y="153" text-anchor="middle" fill="#64748b" font-size="8">...</text>
+
+      <rect x="380" y="182" width="310" height="22" rx="4" fill="rgba(52,211,153,0.08)" stroke="#34d399" stroke-dasharray="3,2"/>
+      <text x="535" y="197" text-anchor="middle" fill="#34d399" font-size="8.5">✓ 线程间直接通过共享内存通信，零 IPC 开销</text>
+
+      <text x="535" y="240" text-anchor="middle" fill="#34d399" font-size="8.5">✓ 创建速度比 fork() 快 10～100 倍</text>
+      <text x="535" y="255" text-anchor="middle" fill="#34d399" font-size="8.5">✓ 上下文切换开销更低（地址空间相同）</text>
+
+      <defs>
+        <marker id="arr3" markerWidth="5" markerHeight="5" refX="2.5" refY="2.5" orient="auto">
+          <path d="M0,0 L5,2.5 L0,5 Z" fill="#8892a4"/>
+        </marker>
+      </defs>
+    </svg>
+    <div class="svg-caption">图3：多进程 vs 多线程资源模型 — 线程通过共享地址空间大幅降低开销</div>
+  </div>
+
+  <h3 class="subsection-title">线程 vs 进程：量化对比</h3>
+  <div class="table-wrap">
+    <table>
+      <thead>
+        <tr>
+          <th>指标</th>
+          <th>多进程（fork）</th>
+          <th>多线程（pthread）</th>
+        </tr>
+      </thead>
+      <tbody>
+        <tr>
+          <td><strong>创建速度</strong></td>
+          <td>慢（需要复制整个地址空间，Copy-on-Write 仍有开销）</td>
+          <td><strong>快 10～100 倍</strong>（仅分配独立栈和少量元数据）</td>
+        </tr>
+        <tr>
+          <td><strong>内存消耗</strong></td>
+          <td>每个进程独立地址空间，内存翻倍</td>
+          <td>共享地址空间，仅栈为私有</td>
+        </tr>
+        <tr>
+          <td><strong>上下文切换</strong></td>
+          <td>慢（需切换页表、TLB 刷新）</td>
+          <td>快（地址空间不变，无 TLB 刷新）</td>
+        </tr>
+        <tr>
+          <td><strong>通信方式</strong></td>
+          <td>IPC：管道、共享内存、消息队列（复杂）</td>
+          <td>直接访问共享变量（简单，但需同步）</td>
+        </tr>
+        <tr>
+          <td><strong>崩溃隔离</strong></td>
+          <td>强（子进程崩溃不影响父进程）</td>
+          <td>弱（一个线程崩溃可能终止整个进程）</td>
+        </tr>
+        <tr>
+          <td><strong>编程复杂度</strong></td>
+          <td>低（隔离性强，无共享状态问题）</td>
+          <td>高（需处理竞态、同步、死锁等）</td>
+        </tr>
+      </tbody>
+    </table>
+  </div>
+
+  <div class="info-box blue">
+    <div class="box-title">📌 POSIX 标准的设计取舍</div>
+    POSIX.1 明确规定了哪些资源是进程级别共享（文件描述符、信号处置、进程 ID 等），哪些是线程私有（<code>pthread_t</code> TID、信号掩码、<code>errno</code>、独立栈、实时调度优先级）。这种精确划分是标准的核心设计之一，来源于 <a href="https://www.man7.org/linux/man-pages/man7/pthreads.7.html" target="_blank" style="color:var(--accent)">pthreads(7) Linux man-pages</a>。
+  </div>
+
+  <div class="page-nav">
+    <a class="page-nav-btn prev" href="#pain1">
+      <span class="label">← 上一章</span>
+      <span class="title">痛点一：串行程序的局限</span>
+    </a>
+    <a class="page-nav-btn next" href="#pain3">
+      <span class="label">下一章</span>
+      <span class="title">痛点三：共享状态与竞态 →</span>
+    </a>
+  </div>
+</section>
+
+<!-- ==================== SECTION: PAIN3 ==================== -->
+<section class="section" id="pain3">
+  <div class="section-label">第一性原理·痛点</div>
+  <h2 class="section-title">痛点三：共享状态与竞态条件</h2>
+
+  <p>
+    线程共享地址空间带来的根本矛盾是：<strong>共享数据的便利性</strong>与<strong>并发访问的安全性</strong>之间的张力。这是整个 POSIX 线程同步原语体系得以建立的核心动因。
+  </p>
+
+  <div class="quote-block">
+    "Race conditions: While the code may appear on the screen in the order you wish the code to execute, threads are scheduled by the operating system and are executed at random. It cannot be assumed that threads are executed in the order they are created. They may also execute at different speeds. When threads are executing (racing to complete) they may give unexpected results (race condition). Mutexes and joins must be utilized to achieve a predictable execution order and outcome."
+    <span class="cite">— Linux Tutorial: POSIX Threads, Carnegie Mellon University</span>
+  </div>
+
+  <!-- SVG: Race Condition Visualization -->
+  <div class="svg-wrap">
+    <svg viewBox="0 0 720 320" xmlns="http://www.w3.org/2000/svg" font-family="'PingFang SC','Microsoft YaHei',system-ui,sans-serif">
+      <text x="360" y="22" text-anchor="middle" fill="#fb923c" font-size="12" font-weight="700">竞态条件（Race Condition）示例：counter++</text>
+      <text x="360" y="38" text-anchor="middle" fill="#64748b" font-size="9">本应 counter = 2，实际结果 counter = 1（数据丢失！）</text>
+
+      <!-- Thread 1 column -->
+      <text x="160" y="62" text-anchor="middle" fill="#6c8fff" font-size="11" font-weight="600">线程 1</text>
+      <text x="560" y="62" text-anchor="middle" fill="#f472b6" font-size="11" font-weight="600">线程 2</text>
+      <text x="360" y="62" text-anchor="middle" fill="#8892a4" font-size="10">内存 counter</text>
+
+      <!-- Memory box -->
+      <rect x="300" y="68" width="120" height="30" rx="6" fill="#232637" stroke="#2e3150"/>
+      <text x="360" y="87" text-anchor="middle" fill="#34d399" font-size="11" font-weight="700">counter = 0</text>
+
+      <!-- Step 1: Thread 1 reads -->
+      <rect x="50" y="115" width="200" height="28" rx="5" fill="rgba(108,143,255,0.12)" stroke="#6c8fff"/>
+      <text x="150" y="133" text-anchor="middle" fill="#6c8fff" font-size="9.5">① 读 counter → 寄存器 R1 = 0</text>
+      <line x1="250" y1="129" x2="300" y2="98" stroke="#6c8fff" stroke-width="1.2" stroke-dasharray="4,3" opacity="0.7"/>
+
+      <!-- Step 2: Thread 2 reads (concurrent!) -->
+      <rect x="470" y="115" width="200" height="28" rx="5" fill="rgba(244,114,182,0.12)" stroke="#f472b6"/>
+      <text x="570" y="133" text-anchor="middle" fill="#f472b6" font-size="9.5">② 读 counter → 寄存器 R2 = 0</text>
+      <line x1="470" y1="129" x2="420" y2="98" stroke="#f472b6" stroke-width="1.2" stroke-dasharray="4,3" opacity="0.7"/>
+
+      <!-- Danger zone -->
+      <rect x="40" y="108" width="640" height="50" rx="4" fill="rgba(251,146,60,0.05)" stroke="#fb923c" stroke-dasharray="3,3"/>
+      <text x="700" y="128" text-anchor="end" fill="#fb923c" font-size="8.5">⚠ 两线程</text>
+      <text x="700" y="140" text-anchor="end" fill="#fb923c" font-size="8.5">同时读到 0</text>
+
+      <!-- Step 3: Thread 1 increments -->
+      <rect x="50" y="162" width="200" height="28" rx="5" fill="rgba(108,143,255,0.12)" stroke="#6c8fff"/>
+      <text x="150" y="180" text-anchor="middle" fill="#6c8fff" font-size="9.5">③ R1 = R1 + 1 = 1（本地计算）</text>
+
+      <!-- Step 4: Thread 2 increments -->
+      <rect x="470" y="162" width="200" height="28" rx="5" fill="rgba(244,114,182,0.12)" stroke="#f472b6"/>
+      <text x="570" y="180" text-anchor="middle" fill="#f472b6" font-size="9.5">④ R2 = R2 + 1 = 1（本地计算）</text>
+
+      <!-- Step 5: Thread 1 writes -->
+      <rect x="50" y="208" width="200" height="28" rx="5" fill="rgba(108,143,255,0.12)" stroke="#6c8fff"/>
+      <text x="150" y="226" text-anchor="middle" fill="#6c8fff" font-size="9.5">⑤ counter ← R1 = 1（写回）</text>
+      <line x1="250" y1="222" x2="300" y2="248" stroke="#6c8fff" stroke-width="1.2" stroke-dasharray="4,3" opacity="0.7"/>
+
+      <!-- Step 6: Thread 2 writes (overwrites!) -->
+      <rect x="470" y="208" width="200" height="28" rx="5" fill="rgba(244,114,182,0.12)" stroke="#f472b6"/>
+      <text x="570" y="226" text-anchor="middle" fill="#f472b6" font-size="9.5">⑥ counter ← R2 = 1（覆盖写！）</text>
+      <line x1="470" y1="222" x2="420" y2="248" stroke="#f472b6" stroke-width="1.2" stroke-dasharray="4,3" opacity="0.7"/>
+
+      <!-- Final memory -->
+      <rect x="300" y="240" width="120" height="30" rx="6" fill="#232637" stroke="#fb923c" stroke-width="2"/>
+      <text x="360" y="259" text-anchor="middle" fill="#fb923c" font-size="11" font-weight="700">counter = 1 ❌</text>
+
+      <text x="360" y="295" text-anchor="middle" fill="#fb923c" font-size="9.5">期望值: 2  ·  实际值: 1  ·  丢失一次更新！</text>
+      <text x="360" y="308" text-anchor="middle" fill="#64748b" font-size="8.5">原因：counter++ 在 CPU 层面是 3 步操作（读-改-写），非原子</text>
+    </svg>
+    <div class="svg-caption">图4：竞态条件的本质 — 非原子的读-改-写操作在并发环境中导致数据不一致</div>
+  </div>
+
+  <h3 class="subsection-title">竞态条件的根本原因</h3>
+  <p>
+    <code>counter++</code> 看似一行代码，实际上在 CPU 层面分解为三条指令：<strong>LOAD（读）→ ADD（改）→ STORE（写）</strong>。当调度器在这三条指令之间插入线程切换，就会产生竞态。这不是编程错误，而是并发执行的内在属性。
+  </p>
+
+  <div class="info-box orange">
+    <div class="box-title">⚠ 线程安全函数（Thread-Safe）</div>
+    POSIX.1-2001/2008 要求标准中大多数函数必须是线程安全的。但<strong>例外存在</strong>：<code>strtok()</code>（应使用 <code>strtok_r()</code>）、<code>getenv()</code>、<code>localtime()</code> 等函数因内部使用静态存储而非线程安全，这是 POSIX 标准明确列出的已知问题。来源：<a href="https://www.man7.org/linux/man-pages/man7/pthreads.7.html" target="_blank" style="color:var(--accent)">pthreads(7)</a>
+  </div>
+
+  <div class="page-nav">
+    <a class="page-nav-btn prev" href="#pain2">
+      <span class="label">← 上一章</span>
+      <span class="title">痛点二：进程开销过重</span>
+    </a>
+    <a class="page-nav-btn next" href="#pain4">
+      <span class="label">下一章</span>
+      <span class="title">痛点四：移植性碎片化 →</span>
+    </a>
+  </div>
+</section>
+
+<!-- ==================== SECTION: PAIN4 ==================== -->
+<section class="section" id="pain4">
+  <div class="section-label">第一性原理·痛点</div>
+  <h2 class="section-title">痛点四：移植性碎片化</h2>
+
+  <p>
+    即使某些平台提供了线程能力，各平台私有 API 之间的不一致也使得编写可移植代码极为困难。POSIX 标准的核心使命就是：<strong>Write Once, Run Anywhere（一次编写，处处运行）</strong>。
+  </p>
+
+  <div class="quote-block">
+    "In order to take full advantage of the capabilities provided by threads, a standardized programming interface was required. For UNIX systems, this interface has been specified by the IEEE POSIX 1003.1c standard (1995). Implementations which adhere to this standard are referred to as POSIX threads, or Pthreads. Most hardware vendors now offer Pthreads in addition to their proprietary threads."
+    <span class="cite">— Multi-Threaded Programming With POSIX Threads, Villanova University CSC</span>
+  </div>
+
+  <h3 class="subsection-title">Linux 的两代 POSIX 线程实现</h3>
+  <p>即使是同一平台，Linux 也经历了两代实现的演变，这恰好说明了实现一个"完全符合规范"的标准之难度。</p>
+
+  <div class="table-wrap">
+    <table>
+      <thead>
+        <tr>
+          <th>实现</th>
+          <th>时代</th>
+          <th>机制</th>
+          <th>对比 POSIX 规范的偏差</th>
+        </tr>
+      </thead>
+      <tbody>
+        <tr>
+          <td><strong>LinuxThreads</strong></td>
+          <td>早期（glibc &lt; 2.4）</td>
+          <td>每个线程作为独立进程（<code>clone(2)</code>），有"管理线程"</td>
+          <td>
+            <span class="tag tag-orange">getpid() 各异</span>
+            <span class="tag tag-orange">不共享信号处理</span>
+            <span class="tag tag-orange">不共享用户组 ID</span>
+            <span class="tag tag-orange">不共享文件记录锁</span>
+          </td>
+        </tr>
+        <tr>
+          <td><strong>NPTL</strong><br><small>Native POSIX Threads Library</small></td>
+          <td>现代（glibc ≥ 2.3.2，Linux 2.6+）</td>
+          <td>1:1 映射，<code>clone(2)</code> + <code>futex(2)</code> 实现同步原语</td>
+          <td>
+            <span class="tag tag-green">符合度大幅提升</span>
+            <span class="tag tag-purple">残留：不共享 nice 值</span>
+          </td>
+        </tr>
+      </tbody>
+    </table>
+  </div>
+
+  <div class="source-box">
+    <span>📖 来源：</span>
+    <a href="https://www.man7.org/linux/man-pages/man7/pthreads.7.html" target="_blank">pthreads(7) Linux man-pages</a> —— "Linux implementations of POSIX threads" 一节
+  </div>
+
+  <div class="info-box green">
+    <div class="box-title">✅ NPTL 的技术实现</div>
+    NPTL 是目前所有主流 Linux 发行版使用的 pthreads 实现。其核心机制：
+    <ul class="styled" style="margin-top:0.4rem">
+      <li>使用 Linux <code>clone(2)</code> 系统调用创建共享地址空间的线程</li>
+      <li>互斥量、条件变量等同步原语底层使用 <code>futex(2)</code>（Fast Userspace Mutex），无竞争时完全在用户空间完成，性能极高</li>
+      <li>所有线程归属同一线程组，共享同一 PID</li>
+      <li>验证命令：<code>getconf GNU_LIBPTHREAD_VERSION</code></li>
+    </ul>
+  </div>
+
+  <div class="page-nav">
+    <a class="page-nav-btn prev" href="#pain3">
+      <span class="label">← 上一章</span>
+      <span class="title">痛点三：共享状态与竞态</span>
+    </a>
+    <a class="page-nav-btn next" href="#concurrency">
+      <span class="label">下一章</span>
+      <span class="title">并发 vs 并行 →</span>
+    </a>
+  </div>
+</section>
+
+<!-- ==================== SECTION: CONCURRENCY ==================== -->
+<section class="section" id="concurrency">
+  <div class="section-label">核心概念</div>
+  <h2 class="section-title">并发（Concurrency）vs 并行（Parallelism）</h2>
+
+  <p>
+    POSIX 线程设计的第一个重要概念区分：<strong>并发与并行</strong>。理解这两者的差异，是理解 pthreads 设计哲学的基础。
+  </p>
+
+  <div class="quote-block">
+    "POSIX threads, or pthreads, allow multiple tasks to run concurrently within the same program. They can share a single CPU as processes do, or take advantage of multiple CPUs when available. In either case, they provide a clean way to divide the tasks of a program while sharing data."
+    <span class="cite">— Bradford Nichols et al., <em>Pthreads Programming</em>, O'Reilly 1996</span>
+  </div>
+
+  <!-- SVG: Concurrency vs Parallelism -->
+  <div class="svg-wrap">
+    <svg viewBox="0 0 720 280" xmlns="http://www.w3.org/2000/svg" font-family="'PingFang SC','Microsoft YaHei',system-ui,sans-serif">
+      <!-- Concurrency (single core) -->
+      <text x="175" y="22" text-anchor="middle" fill="#6c8fff" font-size="12" font-weight="700">并发（单核·时间分片）</text>
+      <text x="175" y="37" text-anchor="middle" fill="#64748b" font-size="9">一次只有一个线程运行，交替执行</text>
+
+      <!-- CPU bar -->
+      <text x="30" y="60" fill="#8892a4" font-size="9">CPU0</text>
+      <rect x="70" y="48" width="60" height="20" rx="3" fill="#6c8fff" opacity="0.85"/>
+      <text x="100" y="62" text-anchor="middle" fill="#fff" font-size="8">T1</text>
+      <rect x="130" y="48" width="50" height="20" rx="3" fill="#f472b6" opacity="0.85"/>
+      <text x="155" y="62" text-anchor="middle" fill="#fff" font-size="8">T2</text>
+      <rect x="180" y="48" width="40" height="20" rx="3" fill="#6c8fff" opacity="0.85"/>
+      <text x="200" y="62" text-anchor="middle" fill="#fff" font-size="8">T1</text>
+      <rect x="220" y="48" width="45" height="20" rx="3" fill="#34d399" opacity="0.85"/>
+      <text x="242" y="62" text-anchor="middle" fill="#fff" font-size="8">T3</text>
+      <rect x="265" y="48" width="55" height="20" rx="3" fill="#f472b6" opacity="0.85"/>
+      <text x="292" y="62" text-anchor="middle" fill="#fff" font-size="8">T2</text>
+
+      <!-- Time axis -->
+      <line x1="70" y1="80" x2="330" y2="80" stroke="#2e3150" stroke-width="1.5"/>
+      <text x="70" y="92" fill="#64748b" font-size="8">t₀</text>
+      <text x="325" y="92" fill="#64748b" font-size="8">t→</text>
+
+      <!-- Context switch indicators -->
+      <line x1="130" y1="45" x2="130" y2="82" stroke="#fb923c" stroke-width="1" stroke-dasharray="3,2" opacity="0.7"/>
+      <line x1="180" y1="45" x2="180" y2="82" stroke="#fb923c" stroke-width="1" stroke-dasharray="3,2" opacity="0.7"/>
+      <line x1="220" y1="45" x2="220" y2="82" stroke="#fb923c" stroke-width="1" stroke-dasharray="3,2" opacity="0.7"/>
+      <line x1="265" y1="45" x2="265" y2="82" stroke="#fb923c" stroke-width="1" stroke-dasharray="3,2" opacity="0.7"/>
+      <text x="170" y="100" text-anchor="middle" fill="#fb923c" font-size="8">↑ 上下文切换</text>
+
+      <!-- Thread legend -->
+      <rect x="70" y="110" width="14" height="10" rx="2" fill="#6c8fff"/>
+      <text x="88" y="120" fill="#8892a4" font-size="8.5">线程1</text>
+      <rect x="120" y="110" width="14" height="10" rx="2" fill="#f472b6"/>
+      <text x="138" y="120" fill="#8892a4" font-size="8.5">线程2</text>
+      <rect x="170" y="110" width="14" height="10" rx="2" fill="#34d399"/>
+      <text x="188" y="120" fill="#8892a4" font-size="8.5">线程3</text>
+
+      <text x="175" y="145" text-anchor="middle" fill="#6c8fff" font-size="9.5">🔑 "同时处理多个任务"的逻辑结构</text>
+      <text x="175" y="160" text-anchor="middle" fill="#64748b" font-size="8.5">即使单核也能实现并发（通过调度器分时）</text>
+
+      <!-- Divider -->
+      <line x1="360" y1="15" x2="360" y2="260" stroke="#2e3150" stroke-width="1.5" stroke-dasharray="5,4"/>
+
+      <!-- Parallelism (multi-core) -->
+      <text x="540" y="22" text-anchor="middle" fill="#34d399" font-size="12" font-weight="700">并行（多核·同时执行）</text>
+      <text x="540" y="37" text-anchor="middle" fill="#64748b" font-size="9">多个线程在不同 CPU 核心上同时运行</text>
+
+      <!-- CPU0 -->
+      <text x="385" y="60" fill="#8892a4" font-size="9">CPU0</text>
+      <rect x="425" y="48" width="250" height="20" rx="3" fill="#6c8fff" opacity="0.85"/>
+      <text x="550" y="62" text-anchor="middle" fill="#fff" font-size="8.5" font-weight="600">线程 1 —— 连续执行</text>
+
+      <!-- CPU1 -->
+      <text x="385" y="87" fill="#8892a4" font-size="9">CPU1</text>
+      <rect x="425" y="76" width="250" height="20" rx="3" fill="#f472b6" opacity="0.85"/>
+      <text x="550" y="90" text-anchor="middle" fill="#fff" font-size="8.5" font-weight="600">线程 2 —— 连续执行</text>
+
+      <!-- CPU2 -->
+      <text x="385" y="114" fill="#8892a4" font-size="9">CPU2</text>
+      <rect x="425" y="102" width="250" height="20" rx="3" fill="#34d399" opacity="0.85"/>
+      <text x="550" y="116" text-anchor="middle" fill="#fff" font-size="8.5" font-weight="600">线程 3 —— 连续执行</text>
+
+      <!-- Time axis -->
+      <line x1="425" y1="135" x2="685" y2="135" stroke="#2e3150" stroke-width="1.5"/>
+      <text x="425" y="147" fill="#64748b" font-size="8">t₀</text>
+      <text x="680" y="147" fill="#64748b" font-size="8">t→</text>
+
+      <text x="540" y="170" text-anchor="middle" fill="#34d399" font-size="9.5">🔑 "同时执行"的物理实现</text>
+      <text x="540" y="185" text-anchor="middle" fill="#64748b" font-size="8.5">需要多核 CPU 硬件支持</text>
+
+      <!-- Relation arrow -->
+      <rect x="380" y="205" width="320" height="50" rx="8" fill="rgba(108,143,255,0.06)" stroke="#2e3150"/>
+      <text x="540" y="224" text-anchor="middle" fill="#8892a4" font-size="9">POSIX pthreads 同时支持两种模式：</text>
+      <text x="540" y="240" text-anchor="middle" fill="#6c8fff" font-size="9">单核 → 并发调度   |   多核 → 真正并行</text>
+      <text x="540" y="252" text-anchor="middle" fill="#64748b" font-size="8">程序员无需关心底层，API 统一</text>
+    </svg>
+    <div class="svg-caption">图5：并发 vs 并行的本质区别 — pthreads 的统一接口同时支持两种执行模式</div>
+  </div>
+
+  <h3 class="subsection-title">POSIX 设计哲学：关注点分离</h3>
+  <p>
+    POSIX 线程标准的关键设计决策之一是：<strong>将"逻辑并发结构"与"物理执行资源"解耦</strong>。程序员用统一的 <code>pthread_create()</code> 描述并发意图，由操作系统和硬件决定是时间分片还是真正并行执行。这体现了 POSIX 的核心哲学——<strong>可移植抽象层</strong>。
+  </p>
+
+  <div class="card-grid">
+    <div class="card">
+      <div class="card-icon">🎯</div>
+      <div class="card-title">并发：结构性工具</div>
+      <div class="card-desc">用于将程序逻辑分解为多个独立任务流，提高代码组织性和响应性。即使单核也有意义。</div>
+    </div>
+    <div class="card">
+      <div class="card-icon">⚡</div>
+      <div class="card-title">并行：性能工具</div>
+      <div class="card-desc">利用多核 CPU 同时计算，提升计算密集型任务的吞吐量。需要硬件多核支持。</div>
+    </div>
+    <div class="card">
+      <div class="card-icon">🔄</div>
+      <div class="card-title">调度器决定</div>
+      <div class="card-desc">pthreads 将调度决策完全委托给 OS 内核，程序员只需描述"什么可以并发执行"。</div>
+    </div>
+  </div>
+
+  <div class="page-nav">
+    <a class="page-nav-btn prev" href="#pain4">
+      <span class="label">← 上一章</span>
+      <span class="title">痛点四：移植性碎片化</span>
+    </a>
+    <a class="page-nav-btn next" href="#async">
+      <span class="label">下一章</span>
+      <span class="title">异步执行模型 →</span>
+    </a>
+  </div>
+</section>
+
+<!-- ==================== SECTION: ASYNC ==================== -->
+<section class="section" id="async">
+  <div class="section-label">核心概念</div>
+  <h2 class="section-title">异步执行模型</h2>
+
+  <p>
+    POSIX 线程的执行本质上是<strong>异步的（Asynchronous）</strong>：线程创建后何时开始执行、各线程的相对执行顺序，都是不确定的（Nondeterministic）。
+  </p>
+
+  <div class="quote-block">
+    "Creating threads with pthread_create() happens asynchronously. That is, pthread_create() requests the allocation of resources for a new thread and returns 0 if the request is successful. The new thread may or may not begin running by the time pthread_create() returns. In fact, the new thread may have already run to completion by the time pthread_create() returns! The timing for running both the new and existing threads are determined by the system (the pthread library and the kernel). From the programmer's perspective, this choice is nondeterministic."
+    <span class="cite">— Computer Systems Fundamentals, James Madison University (w3.cs.jmu.edu)</span>
+  </div>
+
+  <!-- SVG: Async execution model -->
+  <div class="svg-wrap">
+    <svg viewBox="0 0 720 290" xmlns="http://www.w3.org/2000/svg" font-family="'PingFang SC','Microsoft YaHei',system-ui,sans-serif">
+      <text x="360" y="22" text-anchor="middle" fill="#a78bfa" font-size="12" font-weight="700">pthread_create() 之后的三种可能情形</text>
+
+      <!-- Scenario 1 -->
+      <rect x="20" y="38" width="210" height="120" rx="8" fill="#1a1d27" stroke="#2e3150"/>
+      <text x="125" y="56" text-anchor="middle" fill="#6c8fff" font-size="9.5" font-weight="600">情形 A：新线程先运行</text>
+
+      <text x="30" y="75" fill="#8892a4" font-size="8.5">主线程</text>
+      <rect x="75" y="65" width="50" height="16" rx="3" fill="#6c8fff" opacity="0.7"/>
+      <text x="100" y="77" text-anchor="middle" fill="#fff" font-size="7.5">create</text>
+      <rect x="145" y="65" width="70" height="16" rx="3" fill="#2e3150" stroke="#3b4270" stroke-dasharray="2,2"/>
+      <text x="180" y="77" text-anchor="middle" fill="#64748b" font-size="7">等待调度...</text>
+
+      <text x="30" y="102" fill="#8892a4" font-size="8.5">新线程</text>
+      <rect x="75" y="92" width="120" height="16" rx="3" fill="#34d399" opacity="0.8"/>
+      <text x="135" y="104" text-anchor="middle" fill="#fff" font-size="7.5">立即执行并完成</text>
+
+      <text x="125" y="130" text-anchor="middle" fill="#64748b" font-size="8">新线程已完成，主线程才继续</text>
+      <text x="125" y="145" text-anchor="middle" fill="#34d399" font-size="8">pthread_create() 返回前已结束</text>
+
+      <!-- Scenario 2 -->
+      <rect x="255" y="38" width="210" height="120" rx="8" fill="#1a1d27" stroke="#2e3150"/>
+      <text x="360" y="56" text-anchor="middle" fill="#f472b6" font-size="9.5" font-weight="600">情形 B：交替运行</text>
+
+      <text x="265" y="75" fill="#8892a4" font-size="8.5">主线程</text>
+      <rect x="310" y="65" width="40" height="16" rx="3" fill="#6c8fff" opacity="0.7"/>
+      <text x="330" y="77" text-anchor="middle" fill="#fff" font-size="7.5">create</text>
+      <rect x="360" y="65" width="30" height="16" rx="3" fill="#6c8fff" opacity="0.7"/>
+      <rect x="400" y="65" width="50" height="16" rx="3" fill="#6c8fff" opacity="0.7"/>
+
+      <text x="265" y="102" fill="#8892a4" font-size="8.5">新线程</text>
+      <rect x="355" y="92" width="40" height="16" rx="3" fill="#f472b6" opacity="0.8"/>
+      <rect x="405" y="92" width="40" height="16" rx="3" fill="#f472b6" opacity="0.8"/>
+
+      <text x="360" y="130" text-anchor="middle" fill="#64748b" font-size="8">两线程交替获得 CPU 时间</text>
+      <text x="360" y="145" text-anchor="middle" fill="#f472b6" font-size="8">最常见的情形（时间分片）</text>
+
+      <!-- Scenario 3 -->
+      <rect x="490" y="38" width="210" height="120" rx="8" fill="#1a1d27" stroke="#2e3150"/>
+      <text x="595" y="56" text-anchor="middle" fill="#fb923c" font-size="9.5" font-weight="600">情形 C：主线程先运行</text>
+
+      <text x="500" y="75" fill="#8892a4" font-size="8.5">主线程</text>
+      <rect x="545" y="65" width="40" height="16" rx="3" fill="#6c8fff" opacity="0.7"/>
+      <text x="565" y="77" text-anchor="middle" fill="#fff" font-size="7.5">create</text>
+      <rect x="595" y="65" width="90" height="16" rx="3" fill="#6c8fff" opacity="0.7"/>
+      <text x="640" y="77" text-anchor="middle" fill="#fff" font-size="7">继续执行...</text>
+
+      <text x="500" y="102" fill="#8892a4" font-size="8.5">新线程</text>
+      <rect x="595" y="92" width="80" height="16" rx="3" fill="#fb923c" opacity="0.8"/>
+      <text x="635" y="104" text-anchor="middle" fill="#fff" font-size="7.5">稍后才启动</text>
+
+      <text x="595" y="130" text-anchor="middle" fill="#64748b" font-size="8">主线程已执行一段时间</text>
+      <text x="595" y="145" text-anchor="middle" fill="#fb923c" font-size="8">新线程才被调度运行</text>
+
+      <!-- Bottom: pthread_join -->
+      <rect x="20" y="180" width="680" height="80" rx="10" fill="#232637" stroke="#2e3150"/>
+      <text x="360" y="200" text-anchor="middle" fill="#a78bfa" font-size="11" font-weight="700">pthread_join()：同步点 — 将异步变为确定</text>
+
+      <text x="80" y="225" fill="#8892a4" font-size="8.5">主线程</text>
+      <rect x="130" y="214" width="70" height="18" rx="4" fill="#6c8fff" opacity="0.7"/>
+      <text x="165" y="227" text-anchor="middle" fill="#fff" font-size="8">create(T)</text>
+      <rect x="210" y="214" width="80" height="18" rx="4" fill="#2e3150" stroke="#a78bfa" stroke-width="1.5"/>
+      <text x="250" y="227" text-anchor="middle" fill="#a78bfa" font-size="8">join(T) 阻塞</text>
+      <rect x="350" y="214" width="80" height="18" rx="4" fill="#6c8fff" opacity="0.7"/>
+      <text x="390" y="227" text-anchor="middle" fill="#fff" font-size="8">继续执行</text>
+
+      <text x="80" y="250" fill="#8892a4" font-size="8.5">线程 T</text>
+      <rect x="210" y="240" width="130" height="18" rx="4" fill="#34d399" opacity="0.8"/>
+      <text x="275" y="253" text-anchor="middle" fill="#fff" font-size="8">异步执行中...</text>
+
+      <line x1="340" y1="248" x2="348" y2="222" stroke="#a78bfa" stroke-width="1.5" marker-end="url(#arrp)"/>
+      <text x="400" y="252" fill="#64748b" font-size="8">T 完成 → 主线程解除阻塞</text>
+
+      <defs>
+        <marker id="arrp" markerWidth="5" markerHeight="5" refX="2.5" refY="2.5" orient="auto">
+          <path d="M0,0 L5,2.5 L0,5 Z" fill="#a78bfa"/>
+        </marker>
+      </defs>
+    </svg>
+    <div class="svg-caption">图6：异步执行的不确定性与 pthread_join() 同步点 — 三种可能的调度情形</div>
+  </div>
+
+  <h3 class="subsection-title">异步模型的两种线程状态</h3>
+  <div class="table-wrap">
+    <table>
+      <thead>
+        <tr>
+          <th>状态</th>
+          <th>创建方式</th>
+          <th>特点</th>
+          <th>使用场景</th>
+        </tr>
+      </thead>
+      <tbody>
+        <tr>
+          <td><strong>可连接（Joinable）</strong></td>
+          <td>默认（<code>PTHREAD_CREATE_JOINABLE</code>）</td>
+          <td>其他线程可调用 <code>pthread_join()</code> 等待其完成并获取返回值；线程结束后资源保留直到被 join</td>
+          <td>需要协调线程完成顺序、获取结果</td>
+        </tr>
+        <tr>
+          <td><strong>分离（Detached）</strong></td>
+          <td><code>pthread_attr_setdetachstate(PTHREAD_CREATE_DETACHED)</code> 或 <code>pthread_detach()</code></td>
+          <td>线程结束后资源立即自动回收；不能被 join</td>
+          <td>服务线程、后台任务（如日志、清理线程）</td>
+        </tr>
+      </tbody>
+    </table>
+  </div>
+
+  <div class="info-box purple">
+    <div class="box-title">🔑 POSIX 对等模型（Peer Model）</div>
+    POSIX 线程刻意<strong>不维护父子关系</strong>（不同于进程的 fork/wait 层级）。所有线程被视为对等体（peers）。任何线程都可以 <code>join</code> 任意其他线程。这种设计允许"清理线程"模式：一个专门的线程等待其他线程加入死亡列表，统一回收资源。
+    <br><small style="color:var(--text-dim);margin-top:0.3rem;display:block">来源：POSIX Threads Explained, Part 1 — Funtoo</small>
+  </div>
+
+  <div class="page-nav">
+    <a class="page-nav-btn prev" href="#concurrency">
+      <span class="label">← 上一章</span>
+      <span class="title">并发 vs 并行</span>
+    </a>
+    <a class="page-nav-btn next" href="#sync-primitives">
+      <span class="label">下一章</span>
+      <span class="title">同步原语体系 →</span>
+    </a>
+  </div>
+</section>
+
+<!-- ==================== SECTION: SYNC PRIMITIVES ==================== -->
+<section class="section" id="sync-primitives">
+  <div class="section-label">核心概念</div>
+  <h2 class="section-title">同步原语体系</h2>
+
+  <p>
+    为解决竞态条件（Race Condition）和线程协作问题，POSIX 提供了一套完整的同步原语。每种原语针对特定的痛点设计，有其不可替代的语义。
+  </p>
+
+  <!-- SVG: Sync primitives overview -->
+  <div class="svg-wrap">
+    <svg viewBox="0 0 720 200" xmlns="http://www.w3.org/2000/svg" font-family="'PingFang SC','Microsoft YaHei',system-ui,sans-serif">
+      <text x="360" y="22" text-anchor="middle" fill="#e2e8f0" font-size="12" font-weight="700">POSIX 同步原语层次结构</text>
+
+      <!-- Mutex -->
+      <rect x="20" y="40" width="155" height="130" rx="10" fill="#1a1d27" stroke="#6c8fff" stroke-width="1.5"/>
+      <text x="97" y="62" text-anchor="middle" fill="#6c8fff" font-size="10.5" font-weight="700">互斥量 Mutex</text>
+      <text x="97" y="77" text-anchor="middle" fill="#64748b" font-size="8">pthread_mutex_t</text>
+      <text x="30" y="97" fill="#8892a4" font-size="8">• 互斥访问临界区</text>
+      <text x="30" y="111" fill="#8892a4" font-size="8">• 所有权：谁锁谁解锁</text>
+      <text x="30" y="125" fill="#8892a4" font-size="8">• 支持优先级继承</text>
+      <text x="30" y="139" fill="#8892a4" font-size="8">• futex 实现（无竞争</text>
+      <text x="30" y="151" fill="#8892a4" font-size="8">  时纯用户空间）</text>
+
+      <!-- Condition Variable -->
+      <rect x="190" y="40" width="155" height="130" rx="10" fill="#1a1d27" stroke="#a78bfa" stroke-width="1.5"/>
+      <text x="267" y="62" text-anchor="middle" fill="#a78bfa" font-size="10.5" font-weight="700">条件变量 Cond</text>
+      <text x="267" y="77" text-anchor="middle" fill="#64748b" font-size="8">pthread_cond_t</text>
+      <text x="200" y="97" fill="#8892a4" font-size="8">• 等待特定条件成立</text>
+      <text x="200" y="111" fill="#8892a4" font-size="8">• 必须配合 mutex 使用</text>
+      <text x="200" y="125" fill="#8892a4" font-size="8">• 解决"忙等"问题</text>
+      <text x="200" y="139" fill="#8892a4" font-size="8">• signal / broadcast</text>
+      <text x="200" y="153" fill="#8892a4" font-size="8">  唤醒机制</text>
+
+      <!-- Reader-Writer Lock -->
+      <rect x="360" y="40" width="155" height="130" rx="10" fill="#1a1d27" stroke="#34d399" stroke-width="1.5"/>
+      <text x="437" y="62" text-anchor="middle" fill="#34d399" font-size="10.5" font-weight="700">读写锁 RWLock</text>
+      <text x="437" y="77" text-anchor="middle" fill="#64748b" font-size="8">pthread_rwlock_t</text>
+      <text x="370" y="97" fill="#8892a4" font-size="8">• 多读者并发读</text>
+      <text x="370" y="111" fill="#8892a4" font-size="8">• 写者独占访问</text>
+      <text x="370" y="125" fill="#8892a4" font-size="8">• 读多写少场景</text>
+      <text x="370" y="139" fill="#8892a4" font-size="8">• rdlock / wrlock</text>
+      <text x="370" y="153" fill="#8892a4" font-size="8">  两种加锁接口</text>
+
+      <!-- Semaphore -->
+      <rect x="530" y="40" width="170" height="130" rx="10" fill="#1a1d27" stroke="#fb923c" stroke-width="1.5"/>
+      <text x="615" y="62" text-anchor="middle" fill="#fb923c" font-size="10.5" font-weight="700">信号量 Semaphore</text>
+      <text x="615" y="77" text-anchor="middle" fill="#64748b" font-size="8">sem_t (POSIX Realtime)</text>
+      <text x="540" y="97" fill="#8892a4" font-size="8">• Dijkstra P/V 操作</text>
+      <text x="540" y="111" fill="#8892a4" font-size="8">• 计数型资源控制</text>
+      <text x="540" y="125" fill="#8892a4" font-size="8">• sem_wait / sem_post</text>
+      <text x="540" y="139" fill="#8892a4" font-size="8">• 跨进程可用（named）</text>
+      <text x="540" y="153" fill="#8892a4" font-size="8">• 实时特性组的一部分</text>
+    </svg>
+    <div class="svg-caption">图7：POSIX 四大同步原语及其核心特性</div>
+  </div>
+
+  <h3 class="subsection-title">互斥量（Mutex）— 临界区守护者</h3>
+  <p>
+    互斥量（Mutex，MUTual EXclusion 的缩写）是 pthreads 的核心同步工具。其<strong>关键设计特性</strong>是<strong>所有权（Ownership）</strong>：
+  </p>
+
+  <div class="quote-block">
+    "The mutex is similar to the principles of the binary semaphore with one significant difference: the principle of ownership. Ownership is the simple concept that when a task locks (acquires) a mutex only it can unlock (release) it. If a task tries to unlock a mutex it hasn't locked (thus doesn't own) then an error condition is encountered and, most importantly, the mutex is not unlocked."
+    <span class="cite">— Feabhas, "Mutex vs. Semaphores — Part 2: The Mutex" (blog.feabhas.com)</span>
+  </div>
+
+  <div class="info-box blue">
+    <div class="box-title">🔐 互斥量的使用模式</div>
+    <ul class="styled">
+      <li><code>pthread_mutex_lock(&amp;m)</code> — 加锁（若已锁则阻塞等待）</li>
+      <li><code>pthread_mutex_trylock(&amp;m)</code> — 尝试加锁（非阻塞，失败返回 EBUSY）</li>
+      <li><code>pthread_mutex_unlock(&amp;m)</code> — 解锁（仅拥有者可解）</li>
+      <li>死锁风险：持有多个锁时必须按固定顺序获取（锁层次协议）</li>
+    </ul>
+  </div>
+
+  <h3 class="subsection-title">条件变量（Condition Variable）— 解决忙等待</h3>
+
+  <!-- SVG: Producer-Consumer with cond var -->
+  <div class="svg-wrap">
+    <svg viewBox="0 0 720 260" xmlns="http://www.w3.org/2000/svg" font-family="'PingFang SC','Microsoft YaHei',system-ui,sans-serif">
+      <text x="360" y="22" text-anchor="middle" fill="#a78bfa" font-size="12" font-weight="700">生产者-消费者模型（条件变量）</text>
+
+      <!-- Producer -->
+      <rect x="20" y="40" width="200" height="195" rx="10" fill="#1a1d27" stroke="#34d399" stroke-width="1.5"/>
+      <text x="120" y="60" text-anchor="middle" fill="#34d399" font-size="10.5" font-weight="600">生产者线程</text>
+
+      <rect x="35" y="72" width="170" height="22" rx="4" fill="#232637"/>
+      <text x="120" y="87" text-anchor="middle" fill="#8892a4" font-size="8.5">pthread_mutex_lock(&amp;m)</text>
+
+      <rect x="35" y="100" width="170" height="22" rx="4" fill="#34d399" opacity="0.15" stroke="#34d399" stroke-width="0.5"/>
+      <text x="120" y="115" text-anchor="middle" fill="#34d399" font-size="8.5">生产数据，放入缓冲区</text>
+
+      <rect x="35" y="128" width="170" height="22" rx="4" fill="#232637"/>
+      <text x="120" y="143" text-anchor="middle" fill="#a78bfa" font-size="8.5">pthread_cond_signal(&amp;cv)</text>
+
+      <rect x="35" y="156" width="170" height="22" rx="4" fill="#232637"/>
+      <text x="120" y="171" text-anchor="middle" fill="#8892a4" font-size="8.5">pthread_mutex_unlock(&amp;m)</text>
+
+      <text x="120" y="208" text-anchor="middle" fill="#64748b" font-size="7.5">① 锁定互斥量</text>
+      <text x="120" y="220" text-anchor="middle" fill="#64748b" font-size="7.5">② 生产数据</text>
+      <text x="120" y="232" text-anchor="middle" fill="#64748b" font-size="7.5">③ 发信号唤醒消费者</text>
+
+      <!-- Buffer -->
+      <rect x="250" y="80" width="220" height="120" rx="10" fill="#232637" stroke="#2e3150"/>
+      <text x="360" y="105" text-anchor="middle" fill="#8892a4" font-size="10.5" font-weight="600">共享缓冲区</text>
+      <text x="360" y="125" text-anchor="middle" fill="#64748b" font-size="8.5">pthread_mutex_t mutex</text>
+      <text x="360" y="142" text-anchor="middle" fill="#64748b" font-size="8.5">pthread_cond_t  not_empty</text>
+      <text x="360" y="159" text-anchor="middle" fill="#64748b" font-size="8.5">data[]  count</text>
+
+      <!-- Arrows -->
+      <line x1="220" y1="130" x2="250" y2="130" stroke="#34d399" stroke-width="1.5" marker-end="url(#arrg)"/>
+      <line x1="470" y1="130" x2="500" y2="130" stroke="#6c8fff" stroke-width="1.5" marker-end="url(#arrb)"/>
+
+      <!-- Consumer -->
+      <rect x="500" y="40" width="205" height="195" rx="10" fill="#1a1d27" stroke="#6c8fff" stroke-width="1.5"/>
+      <text x="602" y="60" text-anchor="middle" fill="#6c8fff" font-size="10.5" font-weight="600">消费者线程</text>
+
+      <rect x="515" y="72" width="175" height="22" rx="4" fill="#232637"/>
+      <text x="602" y="87" text-anchor="middle" fill="#8892a4" font-size="8.5">pthread_mutex_lock(&amp;m)</text>
+
+      <rect x="515" y="100" width="175" height="36" rx="4" fill="#6c8fff" opacity="0.08" stroke="#6c8fff" stroke-width="0.5"/>
+      <text x="602" y="113" text-anchor="middle" fill="#6c8fff" font-size="8.5">while (count == 0)</text>
+      <text x="602" y="128" text-anchor="middle" fill="#a78bfa" font-size="7.5">  cond_wait(&amp;cv, &amp;m)</text>
+
+      <rect x="515" y="142" width="175" height="22" rx="4" fill="#6c8fff" opacity="0.15" stroke="#6c8fff" stroke-width="0.5"/>
+      <text x="602" y="157" text-anchor="middle" fill="#6c8fff" font-size="8.5">消费数据</text>
+
+      <rect x="515" y="170" width="175" height="22" rx="4" fill="#232637"/>
+      <text x="602" y="185" text-anchor="middle" fill="#8892a4" font-size="8.5">pthread_mutex_unlock(&amp;m)</text>
+
+      <text x="602" y="208" text-anchor="middle" fill="#64748b" font-size="7.5">① 锁定 ② 检查条件</text>
+      <text x="602" y="220" text-anchor="middle" fill="#64748b" font-size="7.5">③ 空则 wait（原子释放锁）</text>
+      <text x="602" y="232" text-anchor="middle" fill="#64748b" font-size="7.5">④ 被唤醒后消费</text>
+
+      <defs>
+        <marker id="arrg" markerWidth="5" markerHeight="5" refX="2.5" refY="2.5" orient="auto">
+          <path d="M0,0 L5,2.5 L0,5 Z" fill="#34d399"/>
+        </marker>
+        <marker id="arrb" markerWidth="5" markerHeight="5" refX="2.5" refY="2.5" orient="auto">
+          <path d="M0,0 L5,2.5 L0,5 Z" fill="#6c8fff"/>
+        </marker>
+      </defs>
+    </svg>
+    <div class="svg-caption">图8：条件变量实现生产者-消费者协作 — while 循环防止虚假唤醒（Spurious Wakeup）</div>
+  </div>
+
+  <div class="info-box orange">
+    <div class="box-title">⚠ 条件变量的关键陷阱：虚假唤醒（Spurious Wakeup）</div>
+    POSIX 标准允许 <code>pthread_cond_wait()</code> 在没有任何 <code>signal/broadcast</code> 的情况下返回（虚假唤醒）。因此条件检查<strong>必须使用 while 循环</strong>，而非 if 语句。这是 POSIX 规范有意为之的设计——允许实现在某些架构上进行性能优化。
+  </div>
+
+  <h3 class="subsection-title">信号量（Semaphore）— Dijkstra 的遗产</h3>
+  <div class="quote-block">
+    "Semaphores were first defined by the computer scientist Edsger Dijkstra in the mid-1960s. At a time when operating systems were beginning to manage multiple concurrent processes, Dijkstra recognized the urgent need for a robust mechanism to manage shared resources without the pitfalls of busy-waiting, where a process wastes CPU cycles continuously checking for a condition to become true. The two primary operations defined by Dijkstra were P (from the Dutch proberen, 'to test') and V (from verhogen, 'to increment'). In the modern POSIX standard, these operations are known as sem_wait() and sem_post(), respectively."
+    <span class="cite">— circuitlabs.net, Pthreads: Semaphores for Resource Counting & Synchronization</span>
+  </div>
+
+  <div class="info-box green">
+    <div class="box-title">✅ Mutex vs Semaphore 的本质区别</div>
+    <ul class="styled">
+      <li><strong>Mutex</strong>：有所有权约束（谁锁谁解），本质是二值锁，用于互斥访问临界区。<span class="tag tag-blue">pthreads 核心标准</span></li>
+      <li><strong>Semaphore</strong>：无所有权约束，是计数型资源令牌，可跨线程 post/wait。<span class="tag tag-orange">POSIX 实时特性组</span></li>
+      <li>可以用 Mutex + Cond 实现二值信号量，但反之则无法完全模拟带所有权的 Mutex</li>
+    </ul>
+  </div>
+
+  <div class="page-nav">
+    <a class="page-nav-btn prev" href="#async">
+      <span class="label">← 上一章</span>
+      <span class="title">异步执行模型</span>
+    </a>
+    <a class="page-nav-btn next" href="#thread-model">
+      <span class="label">下一章</span>
+      <span class="title">线程对等模型 →</span>
+    </a>
+  </div>
+</section>
+
+<!-- ==================== SECTION: THREAD MODEL ==================== -->
+<section class="section" id="thread-model">
+  <div class="section-label">核心概念</div>
+  <h2 class="section-title">线程对等模型与生命周期</h2>
+
+  <p>
+    POSIX 线程的一个重要设计决策是采用<strong>对等模型（Peer Model）</strong>，而非像进程一样的父子层级关系。所有线程被视为进程内的"平等成员"，共享同一组进程属性。
+  </p>
+
+  <!-- SVG: Thread lifecycle -->
+  <div class="svg-wrap">
+    <svg viewBox="0 0 720 260" xmlns="http://www.w3.org/2000/svg" font-family="'PingFang SC','Microsoft YaHei',system-ui,sans-serif">
+      <text x="360" y="22" text-anchor="middle" fill="#e2e8f0" font-size="12" font-weight="700">POSIX 线程生命周期状态机</text>
+
+      <!-- States -->
+      <!-- Created -->
+      <rect x="20" y="60" width="100" height="44" rx="8" fill="#232637" stroke="#6c8fff" stroke-width="1.5"/>
+      <text x="70" y="80" text-anchor="middle" fill="#6c8fff" font-size="9.5" font-weight="600">就绪</text>
+      <text x="70" y="95" text-anchor="middle" fill="#64748b" font-size="8">Runnable</text>
+
+      <!-- Running -->
+      <rect x="300" y="60" width="120" height="44" rx="8" fill="rgba(52,211,153,0.12)" stroke="#34d399" stroke-width="2"/>
+      <text x="360" y="80" text-anchor="middle" fill="#34d399" font-size="9.5" font-weight="700">运行中</text>
+      <text x="360" y="95" text-anchor="middle" fill="#64748b" font-size="8">Running</text>
+
+      <!-- Blocked -->
+      <rect x="300" y="165" width="120" height="44" rx="8" fill="#232637" stroke="#fb923c" stroke-width="1.5"/>
+      <text x="360" y="185" text-anchor="middle" fill="#fb923c" font-size="9.5" font-weight="600">阻塞</text>
+      <text x="360" y="200" text-anchor="middle" fill="#64748b" font-size="8">Blocked</text>
+
+      <!-- Terminated -->
+      <rect x="600" y="60" width="100" height="44" rx="8" fill="#232637" stroke="#f472b6" stroke-width="1.5"/>
+      <text x="650" y="80" text-anchor="middle" fill="#f472b6" font-size="9.5" font-weight="600">终止</text>
+      <text x="650" y="95" text-anchor="middle" fill="#64748b" font-size="8">Terminated</text>
+
+      <!-- Create arrow -->
+      <line x1="70" y1="104" x2="70" y2="55" stroke="#6c8fff" stroke-width="1.5" marker-end="url(#arrc)"/>
+      <text x="25" y="45" fill="#6c8fff" font-size="7.5">pthread_create()</text>
+
+      <!-- Ready -> Running -->
+      <line x1="120" y1="82" x2="298" y2="82" stroke="#34d399" stroke-width="1.5" marker-end="url(#arrg2)"/>
+      <text x="210" y="76" text-anchor="middle" fill="#34d399" font-size="7.5">调度器选中</text>
+
+      <!-- Running -> Ready (preempt) -->
+      <line x1="300" y1="92" x2="122" y2="92" stroke="#8892a4" stroke-width="1.2" stroke-dasharray="4,2" marker-end="url(#arrs)"/>
+      <text x="210" y="105" text-anchor="middle" fill="#64748b" font-size="7.5">时间片耗尽（抢占）</text>
+
+      <!-- Running -> Blocked -->
+      <line x1="360" y1="104" x2="360" y2="163" stroke="#fb923c" stroke-width="1.5" marker-end="url(#arro)"/>
+      <text x="370" y="138" fill="#fb923c" font-size="7.5">mutex_lock / cond_wait</text>
+      <text x="370" y="149" fill="#fb923c" font-size="7.5">sem_wait / I/O 等待</text>
+
+      <!-- Blocked -> Running -->
+      <line x1="300" y1="185" x2="140" y2="185" stroke="#8892a4" stroke-width="1.2"/>
+      <line x1="140" y1="185" x2="140" y2="82" stroke="#8892a4" stroke-width="1.2" marker-end="url(#arrs)"/>
+      <text x="95" y="175" fill="#64748b" font-size="7.5">条件满足</text>
+      <text x="95" y="186" fill="#64748b" font-size="7.5">锁可用</text>
+      <text x="95" y="197" fill="#64748b" font-size="7.5">I/O 完成</text>
+
+      <!-- Running -> Terminated -->
+      <line x1="420" y1="82" x2="598" y2="82" stroke="#f472b6" stroke-width="1.5" marker-end="url(#arrp2)"/>
+      <text x="510" y="75" text-anchor="middle" fill="#f472b6" font-size="7.5">return / pthread_exit()</text>
+
+      <!-- Terminated -> Joined -->
+      <rect x="600" y="165" width="100" height="44" rx="8" fill="rgba(108,143,255,0.08)" stroke="#6c8fff" stroke-width="1"/>
+      <text x="650" y="185" text-anchor="middle" fill="#6c8fff" font-size="9" font-weight="600">已回收</text>
+      <text x="650" y="198" text-anchor="middle" fill="#64748b" font-size="7.5">Joined/Detached</text>
+      <line x1="650" y1="104" x2="650" y2="163" stroke="#6c8fff" stroke-width="1.2" stroke-dasharray="4,2" marker-end="url(#arrc)"/>
+      <text x="660" y="140" fill="#64748b" font-size="7.5">pthread_join()</text>
+      <text x="660" y="151" fill="#64748b" font-size="7.5">或自动（detached）</text>
+
+      <!-- Thread-specific data note -->
+      <rect x="20" y="175" width="240" height="60" rx="8" fill="#1a1d27" stroke="#2e3150"/>
+      <text x="140" y="194" text-anchor="middle" fill="#8892a4" font-size="9" font-weight="600">每线程私有属性（POSIX规范）</text>
+      <text x="30" y="210" fill="#64748b" font-size="7.5">• pthread_t TID（进程内唯一）</text>
+      <text x="30" y="222" fill="#64748b" font-size="7.5">• 独立栈 · errno · 信号掩码</text>
+      <text x="30" y="234" fill="#64748b" font-size="7.5">• 调度策略/优先级 · CPU亲和力</text>
+
+      <defs>
+        <marker id="arrc" markerWidth="5" markerHeight="5" refX="2.5" refY="2.5" orient="auto">
+          <path d="M0,0 L5,2.5 L0,5 Z" fill="#6c8fff"/>
+        </marker>
+        <marker id="arrg2" markerWidth="5" markerHeight="5" refX="2.5" refY="2.5" orient="auto">
+          <path d="M0,0 L5,2.5 L0,5 Z" fill="#34d399"/>
+        </marker>
+        <marker id="arrs" markerWidth="5" markerHeight="5" refX="2.5" refY="2.5" orient="auto">
+          <path d="M0,0 L5,2.5 L0,5 Z" fill="#8892a4"/>
+        </marker>
+        <marker id="arro" markerWidth="5" markerHeight="5" refX="2.5" refY="2.5" orient="auto">
+          <path d="M0,0 L5,2.5 L0,5 Z" fill="#fb923c"/>
+        </marker>
+        <marker id="arrp2" markerWidth="5" markerHeight="5" refX="2.5" refY="2.5" orient="auto">
+          <path d="M0,0 L5,2.5 L0,5 Z" fill="#f472b6"/>
+        </marker>
+      </defs>
+    </svg>
+    <div class="svg-caption">图9：POSIX 线程完整生命周期状态机 — 从创建到回收</div>
+  </div>
+
+  <h3 class="subsection-title">POSIX 规定的共享与私有属性</h3>
+  <p>来源：<a href="https://www.man7.org/linux/man-pages/man7/pthreads.7.html" target="_blank" style="color:var(--accent)">pthreads(7) Linux man-pages</a> — POSIX.1 规范权威定义</p>
+  <div class="table-wrap">
+    <table>
+      <thead>
+        <tr>
+          <th>属性类别</th>
+          <th>进程级共享（所有线程共享）</th>
+          <th>线程私有（每线程独立）</th>
+        </tr>
+      </thead>
+      <tbody>
+        <tr>
+          <td><strong>标识</strong></td>
+          <td>进程 ID (PID)、父进程 ID (PPID)、进程组 ID</td>
+          <td>线程 ID (<code>pthread_t</code>)</td>
+        </tr>
+        <tr>
+          <td><strong>文件/IO</strong></td>
+          <td>打开的文件描述符、文件记录锁、umask、当前工作目录</td>
+          <td>——</td>
+        </tr>
+        <tr>
+          <td><strong>信号</strong></td>
+          <td>信号处置（SIG_DFL/SIG_IGN/处理函数）</td>
+          <td>信号掩码 (<code>pthread_sigmask</code>)、备用信号栈</td>
+        </tr>
+        <tr>
+          <td><strong>调度</strong></td>
+          <td>nice 值（理论上）、资源限制</td>
+          <td>实时调度策略与优先级、CPU 亲和力</td>
+        </tr>
+        <tr>
+          <td><strong>内存/执行</strong></td>
+          <td>代码段、全局数据段、堆</td>
+          <td>独立栈（自动变量）、<code>errno</code></td>
+        </tr>
+        <tr>
+          <td><strong>其他</strong></td>
+          <td>控制终端、用户/组 ID、POSIX 定时器、间隔定时器</td>
+          <td>能力（capabilities，Linux 扩展）</td>
+        </tr>
+      </tbody>
+    </table>
+  </div>
+
+  <div class="page-nav">
+    <a class="page-nav-btn prev" href="#sync-primitives">
+      <span class="label">← 上一章</span>
+      <span class="title">同步原语体系</span>
+    </a>
+    <a class="page-nav-btn next" href="#philosophy">
+      <span class="label">下一章</span>
+      <span class="title">设计哲学总结 →</span>
+    </a>
+  </div>
+</section>
+
+<!-- ==================== SECTION: PHILOSOPHY ==================== -->
+<section class="section" id="philosophy">
+  <div class="section-label">指导思想</div>
+  <h2 class="section-title">POSIX 多线程设计哲学总结</h2>
+
+  <p>
+    从以上各个维度的分析可以提炼出 POSIX 多线程设计的几大核心指导思想：
+  </p>
+
+  <!-- SVG: Philosophy overview -->
+  <div class="svg-wrap">
+    <svg viewBox="0 0 720 340" xmlns="http://www.w3.org/2000/svg" font-family="'PingFang SC','Microsoft YaHei',system-ui,sans-serif">
+      <!-- Center -->
+      <ellipse cx="360" cy="170" rx="72" ry="50" fill="rgba(108,143,255,0.15)" stroke="#6c8fff" stroke-width="2"/>
+      <text x="360" y="163" text-anchor="middle" fill="#6c8fff" font-size="10.5" font-weight="700">POSIX</text>
+      <text x="360" y="178" text-anchor="middle" fill="#6c8fff" font-size="10.5" font-weight="700">设计哲学</text>
+
+      <!-- Principle 1: Portability -->
+      <rect x="30" y="30" width="170" height="80" rx="10" fill="#1a1d27" stroke="#34d399" stroke-width="1.5"/>
+      <text x="115" y="55" text-anchor="middle" fill="#34d399" font-size="10" font-weight="700">① 可移植性优先</text>
+      <text x="40" y="73" fill="#8892a4" font-size="8.5">标准化 API 屏蔽底层差异</text>
+      <text x="40" y="87" fill="#8892a4" font-size="8.5">Write Once, Run Anywhere</text>
+      <text x="40" y="101" fill="#64748b" font-size="8">IEEE 制定，消除碎片化</text>
+      <line x1="200" y1="70" x2="292" y2="148" stroke="#34d399" stroke-width="1" stroke-dasharray="4,3" opacity="0.7"/>
+
+      <!-- Principle 2: Minimal API -->
+      <rect x="520" y="30" width="170" height="80" rx="10" fill="#1a1d27" stroke="#a78bfa" stroke-width="1.5"/>
+      <text x="605" y="55" text-anchor="middle" fill="#a78bfa" font-size="10" font-weight="700">② 最小化原语集</text>
+      <text x="530" y="73" fill="#8892a4" font-size="8.5">提供 Mutex + Cond 两种</text>
+      <text x="530" y="87" fill="#8892a4" font-size="8.5">原语足以构造更复杂同步</text>
+      <text x="530" y="101" fill="#64748b" font-size="8">正交设计，组合能力强</text>
+      <line x1="520" y1="70" x2="428" y2="148" stroke="#a78bfa" stroke-width="1" stroke-dasharray="4,3" opacity="0.7"/>
+
+      <!-- Principle 3: Shared memory model -->
+      <rect x="30" y="230" width="170" height="80" rx="10" fill="#1a1d27" stroke="#fb923c" stroke-width="1.5"/>
+      <text x="115" y="255" text-anchor="middle" fill="#fb923c" font-size="10" font-weight="700">③ 共享内存模型</text>
+      <text x="40" y="273" fill="#8892a4" font-size="8.5">线程共享地址空间降低</text>
+      <text x="40" y="287" fill="#8892a4" font-size="8.5">通信开销，提升性能</text>
+      <text x="40" y="301" fill="#64748b" font-size="8">代价：需要显式同步</text>
+      <line x1="200" y1="270" x2="292" y2="192" stroke="#fb923c" stroke-width="1" stroke-dasharray="4,3" opacity="0.7"/>
+
+      <!-- Principle 4: Explicit sync -->
+      <rect x="520" y="230" width="170" height="80" rx="10" fill="#1a1d27" stroke="#f472b6" stroke-width="1.5"/>
+      <text x="605" y="255" text-anchor="middle" fill="#f472b6" font-size="10" font-weight="700">④ 显式同步</text>
+      <text x="530" y="273" fill="#8892a4" font-size="8.5">程序员负责同步正确性</text>
+      <text x="530" y="287" fill="#8892a4" font-size="8.5">不做自动隐式保护</text>
+      <text x="530" y="301" fill="#64748b" font-size="8">低层次，高灵活性</text>
+      <line x1="520" y1="270" x2="428" y2="192" stroke="#f472b6" stroke-width="1" stroke-dasharray="4,3" opacity="0.7"/>
+
+      <!-- Principle 5: Peer model -->
+      <rect x="275" y="30" width="170" height="80" rx="10" fill="#1a1d27" stroke="#6c8fff" stroke-width="1.5"/>
+      <text x="360" y="55" text-anchor="middle" fill="#6c8fff" font-size="10" font-weight="700">⑤ 对等线程模型</text>
+      <text x="285" y="73" fill="#8892a4" font-size="8.5">无父子层级，任意线程</text>
+      <text x="285" y="87" fill="#8892a4" font-size="8.5">可 join 任意线程</text>
+      <text x="285" y="101" fill="#64748b" font-size="8">灵活的协作结构</text>
+      <line x1="360" y1="110" x2="360" y2="120" stroke="#6c8fff" stroke-width="1" stroke-dasharray="4,3" opacity="0.7"/>
+
+      <!-- Principle 6: OS scheduling delegation -->
+      <rect x="275" y="260" width="170" height="60" rx="10" fill="#1a1d27" stroke="#34d399" stroke-width="1.5"/>
+      <text x="360" y="283" text-anchor="middle" fill="#34d399" font-size="10" font-weight="700">⑥ 调度委托内核</text>
+      <text x="285" y="300" fill="#8892a4" font-size="8.5">逻辑并发与物理调度解耦</text>
+      <text x="285" y="314" fill="#64748b" font-size="8">单核并发 + 多核并行</text>
+      <line x1="360" y1="260" x2="360" y2="220" stroke="#34d399" stroke-width="1" stroke-dasharray="4,3" opacity="0.7"/>
+    </svg>
+    <div class="svg-caption">图10：POSIX 多线程设计六大核心哲学原则</div>
+  </div>
+
+  <h3 class="subsection-title">哲学原则详述</h3>
+
+  <div class="card-grid">
+    <div class="card">
+      <div class="card-icon">🌍</div>
+      <div class="card-title">① 可移植性优先（Portability First）</div>
+      <div class="card-desc">标准的根本使命。IEEE 的介入将碎片化的私有线程 API 统一成一套规范，使代码在 Linux、macOS、Solaris、AIX 等系统间无缝移植。</div>
+    </div>
+    <div class="card">
+      <div class="card-icon">🧩</div>
+      <div class="card-title">② 最小正交原语（Minimal Orthogonal Primitives）</div>
+      <div class="card-desc">Mutex + Condition Variable 构成最小完备集。二值信号量、读写锁、屏障等更高层抽象，均可在此基础上构建。正交设计避免了冗余。</div>
+    </div>
+    <div class="card">
+      <div class="card-icon">🧠</div>
+      <div class="card-title">③ 共享内存模型（Shared Memory）</div>
+      <div class="card-desc">线程共享地址空间，消除了进程间 IPC 的开销，使线程间通信"退化"为普通的函数调用和变量访问——代价是程序员必须显式管理同步。</div>
+    </div>
+    <div class="card">
+      <div class="card-icon">🔏</div>
+      <div class="card-title">④ 显式同步（Explicit Synchronization）</div>
+      <div class="card-desc">POSIX 不做任何自动同步保护。这是一种有意为之的低层次设计——给予程序员完全控制权，以最小的运行时开销换取最大的性能潜力。</div>
+    </div>
+    <div class="card">
+      <div class="card-icon">👥</div>
+      <div class="card-title">⑤ 对等模型（Peer Model）</div>
+      <div class="card-desc">所有线程是对等体，无父子层级。任意线程可 join 任意其他线程，支持"清理线程"等灵活架构模式，开放了更多设计空间。</div>
+    </div>
+    <div class="card">
+      <div class="card-icon">⚙️</div>
+      <div class="card-title">⑥ 关注点分离（Separation of Concerns）</div>
+      <div class="card-desc">并发逻辑（pthread_create）与物理执行（内核调度器）解耦。同一套代码在单核上表现为并发，在多核上自动获得并行加速，程序员无需改动。</div>
+    </div>
+  </div>
+
+  <div class="page-nav">
+    <a class="page-nav-btn prev" href="#thread-model">
+      <span class="label">← 上一章</span>
+      <span class="title">线程对等模型</span>
+    </a>
+    <a class="page-nav-btn next" href="#tradeoffs">
+      <span class="label">下一章</span>
+      <span class="title">权衡与取舍 →</span>
+    </a>
+  </div>
+</section>
+
+<!-- ==================== SECTION: TRADEOFFS ==================== -->
+<section class="section" id="tradeoffs">
+  <div class="section-label">指导思想</div>
+  <h2 class="section-title">权衡与取舍：POSIX 的有意设计决策</h2>
+
+  <p>POSIX 线程标准的某些设计选择在制定时存在争议。了解这些争议，有助于理解标准背后更深层的工程哲学。</p>
+
+  <h3 class="subsection-title">争议案例：pthread_mutex_lock() 超时问题</h3>
+  <div class="quote-block">
+    "Many feel that pthread_mutex_lock() falls into the same class as the other functions; that is, it is desirable to time out a mutex lock because a mutex may fail to be unlocked due to errant or corrupted code in a critical section… Those opposed to timing out mutexes feel that the very simplicity of the mutex is compromised by adding a timeout semantic, and that to do so is senseless."
+    <span class="cite">— IEEE Std 1003.1 Rationale (POSIX.1-2024), B. Rationale for System Interfaces, pubs.opengroup.org</span>
+  </div>
+  <p>
+    标准制定者在 <code>pthread_mutex_lock()</code> 是否应支持超时上长期存在分歧。最终 POSIX.1-2004 引入了 <code>pthread_mutex_timedlock()</code>，但这是在充分的技术分析（包括实现代价量化为"无锁竞争时性能损失至少 2.5 倍"）后才达成共识的。这体现了 POSIX 的严谨性。
+  </p>
+
+  <h3 class="subsection-title">主要权衡对照</h3>
+  <div class="table-wrap">
+    <table>
+      <thead>
+        <tr>
+          <th>设计决策</th>
+          <th>POSIX 选择</th>
+          <th>权衡理由</th>
+        </tr>
+      </thead>
+      <tbody>
+        <tr>
+          <td><strong>自动 vs 显式同步</strong></td>
+          <td>显式同步（程序员负责）</td>
+          <td>最小化运行时开销；给予最大灵活性；自动保护会引入不可预测延迟</td>
+        </tr>
+        <tr>
+          <td><strong>父子 vs 对等模型</strong></td>
+          <td>对等模型（无层级）</td>
+          <td>支持更灵活的线程协作架构（如清理线程模式）；简化 join 语义</td>
+        </tr>
+        <tr>
+          <td><strong>虚假唤醒是否允许</strong></td>
+          <td>允许虚假唤醒</td>
+          <td>允许某些硬件/OS 实现的性能优化；强制 while 循环检查条件更健壮</td>
+        </tr>
+        <tr>
+          <td><strong>用户态 vs 内核态线程</strong></td>
+          <td>1:1 映射（Linux NPTL）</td>
+          <td>简化语义（系统调用行为一致）；利用多核；N:M 模型实现复杂，标准未强制</td>
+        </tr>
+        <tr>
+          <td><strong>errno 共享 vs 私有</strong></td>
+          <td>每线程独立 <code>errno</code></td>
+          <td>避免竞态：多线程环境下 errno 必须线程私有，否则任何系统调用都不安全</td>
+        </tr>
+        <tr>
+          <td><strong>线程安全函数</strong></td>
+          <td>大多数函数必须线程安全，少数例外明确列出</td>
+          <td>向后兼容历史遗留 API；例外函数有对应的 _r 重入版本（如 strtok_r）</td>
+        </tr>
+      </tbody>
+    </table>
+  </div>
+
+  <!-- SVG: Deadlock prevention -->
+  <div class="svg-wrap">
+    <svg viewBox="0 0 720 220" xmlns="http://www.w3.org/2000/svg" font-family="'PingFang SC','Microsoft YaHei',system-ui,sans-serif">
+      <text x="360" y="22" text-anchor="middle" fill="#fb923c" font-size="12" font-weight="700">死锁（Deadlock）成因与 POSIX 的应对</text>
+
+      <!-- Deadlock scenario -->
+      <rect x="20" y="38" width="320" height="160" rx="10" fill="#1a1d27" stroke="#fb923c" stroke-width="1.5"/>
+      <text x="180" y="58" text-anchor="middle" fill="#fb923c" font-size="10.5" font-weight="600">死锁场景（ABBA 锁序）</text>
+
+      <rect x="40" y="70" width="80" height="40" rx="6" fill="#232637" stroke="#6c8fff"/>
+      <text x="80" y="88" text-anchor="middle" fill="#6c8fff" font-size="9" font-weight="600">线程 1</text>
+      <text x="80" y="102" text-anchor="middle" fill="#64748b" font-size="8">持有 Mutex A</text>
+
+      <rect x="230" y="70" width="80" height="40" rx="6" fill="#232637" stroke="#f472b6"/>
+      <text x="270" y="88" text-anchor="middle" fill="#f472b6" font-size="9" font-weight="600">线程 2</text>
+      <text x="270" y="102" text-anchor="middle" fill="#64748b" font-size="8">持有 Mutex B</text>
+
+      <rect x="100" y="145" width="75" height="30" rx="5" fill="rgba(108,143,255,0.1)" stroke="#6c8fff"/>
+      <text x="137" y="164" text-anchor="middle" fill="#6c8fff" font-size="8.5">Mutex A</text>
+
+      <rect x="175" y="145" width="75" height="30" rx="5" fill="rgba(244,114,182,0.1)" stroke="#f472b6"/>
+      <text x="212" y="164" text-anchor="middle" fill="#f472b6" font-size="8.5">Mutex B</text>
+
+      <!-- Arrows: wants -->
+      <line x1="120" y1="90" x2="250" y2="140" stroke="#6c8fff" stroke-width="1.2" stroke-dasharray="5,3" marker-end="url(#arrd1)"/>
+      <text x="185" y="108" text-anchor="middle" fill="#6c8fff" font-size="7.5">想要 B</text>
+      <line x1="230" y1="90" x2="200" y2="145" stroke="#f472b6" stroke-width="1.2" stroke-dasharray="5,3" marker-end="url(#arrd2)"/>
+      <text x="215" y="118" text-anchor="middle" fill="#f472b6" font-size="7.5">想要 A</text>
+
+      <text x="180" y="195" text-anchor="middle" fill="#fb923c" font-size="9">⚠ 循环等待 → 永久阻塞</text>
+
+      <!-- Solution -->
+      <rect x="365" y="38" width="335" height="160" rx="10" fill="#1a1d27" stroke="#34d399" stroke-width="1.5"/>
+      <text x="532" y="58" text-anchor="middle" fill="#34d399" font-size="10.5" font-weight="600">POSIX 推荐：锁层次协议</text>
+
+      <text x="380" y="80" fill="#8892a4" font-size="9" font-weight="600">规则：总是按固定顺序 A → B 加锁</text>
+
+      <rect x="375" y="90" width="315" height="28" rx="5" fill="#232637"/>
+      <text x="532" y="109" text-anchor="middle" fill="#6c8fff" font-size="8.5">线程 1：lock(A) → lock(B) → work → unlock(B) → unlock(A)</text>
+
+      <rect x="375" y="124" width="315" height="28" rx="5" fill="#232637"/>
+      <text x="532" y="143" text-anchor="middle" fill="#f472b6" font-size="8.5">线程 2：lock(A) → lock(B) → work → unlock(B) → unlock(A)</text>
+
+      <text x="532" y="175" text-anchor="middle" fill="#34d399" font-size="8.5">✓ 统一顺序消除循环等待 → 无死锁</text>
+      <text x="532" y="188" text-anchor="middle" fill="#64748b" font-size="8">POSIX 还提供 pthread_mutex_trylock() 检测失败并回退</text>
+
+      <defs>
+        <marker id="arrd1" markerWidth="5" markerHeight="5" refX="2.5" refY="2.5" orient="auto">
+          <path d="M0,0 L5,2.5 L0,5 Z" fill="#6c8fff"/>
+        </marker>
+        <marker id="arrd2" markerWidth="5" markerHeight="5" refX="2.5" refY="2.5" orient="auto">
+          <path d="M0,0 L5,2.5 L0,5 Z" fill="#f472b6"/>
+        </marker>
+      </defs>
+    </svg>
+    <div class="svg-caption">图11：死锁成因（循环等待）与锁层次协议解法</div>
+  </div>
+
+  <div class="page-nav">
+    <a class="page-nav-btn prev" href="#philosophy">
+      <span class="label">← 上一章</span>
+      <span class="title">设计哲学总结</span>
+    </a>
+    <a class="page-nav-btn next" href="#patterns">
+      <span class="label">下一章</span>
+      <span class="title">经典编程模型 →</span>
+    </a>
+  </div>
+</section>
+
+<!-- ==================== SECTION: PATTERNS ==================== -->
+<section class="section" id="patterns">
+  <div class="section-label">指导思想</div>
+  <h2 class="section-title">经典多线程编程模型</h2>
+
+  <p>
+    POSIX 提供的原语足够灵活，可以组合出多种成熟的多线程设计模式。以下三种模型来自 O'Reilly《Pthreads Programming》的权威总结。
+  </p>
+
+  <!-- SVG: Boss/Worker, Peer, Pipeline -->
+  <div class="svg-wrap">
+    <svg viewBox="0 0 720 320" xmlns="http://www.w3.org/2000/svg" font-family="'PingFang SC','Microsoft YaHei',system-ui,sans-serif">
+      <!-- Model 1: Boss/Worker -->
+      <rect x="10" y="10" width="218" height="300" rx="10" fill="#1a1d27" stroke="#6c8fff" stroke-width="1.5"/>
+      <text x="119" y="32" text-anchor="middle" fill="#6c8fff" font-size="10.5" font-weight="700">主从模型（Boss/Worker）</text>
+
+      <rect x="74" y="50" width="90" height="32" rx="6" fill="rgba(108,143,255,0.15)" stroke="#6c8fff"/>
+      <text x="119" y="70" text-anchor="middle" fill="#6c8fff" font-size="9.5" font-weight="600">Boss 线程</text>
+
+      <line x1="80" y1="82" x2="50" y2="120" stroke="#8892a4" stroke-width="1.2" marker-end="url(#arrw1)"/>
+      <line x1="100" y1="82" x2="100" y2="120" stroke="#8892a4" stroke-width="1.2" marker-end="url(#arrw1)"/>
+      <line x1="130" y1="82" x2="150" y2="120" stroke="#8892a4" stroke-width="1.2" marker-end="url(#arrw1)"/>
+      <line x1="155" y1="82" x2="185" y2="120" stroke="#8892a4" stroke-width="1.2" marker-end="url(#arrw1)"/>
+
+      <text x="119" y="112" text-anchor="middle" fill="#64748b" font-size="8">分配任务</text>
+
+      <rect x="20" y="122" width="50" height="28" rx="5" fill="#232637" stroke="#a78bfa"/>
+      <text x="45" y="140" text-anchor="middle" fill="#a78bfa" font-size="8.5">Worker1</text>
+      <rect x="80" y="122" width="50" height="28" rx="5" fill="#232637" stroke="#a78bfa"/>
+      <text x="105" y="140" text-anchor="middle" fill="#a78bfa" font-size="8.5">Worker2</text>
+      <rect x="140" y="122" width="50" height="28" rx="5" fill="#232637" stroke="#a78bfa"/>
+      <text x="165" y="140" text-anchor="middle" fill="#a78bfa" font-size="8.5">Worker3</text>
+
+      <text x="119" y="175" text-anchor="middle" fill="#64748b" font-size="8.5">适用场景：</text>
+      <text x="119" y="190" text-anchor="middle" fill="#8892a4" font-size="8">• 网络服务器</text>
+      <text x="119" y="204" text-anchor="middle" fill="#8892a4" font-size="8">• 请求分发处理</text>
+      <text x="119" y="218" text-anchor="middle" fill="#8892a4" font-size="8">• 线程池（Thread Pool）</text>
+      <text x="119" y="238" text-anchor="middle" fill="#64748b" font-size="8.5">Boss 负责：接收请求</text>
+      <text x="119" y="252" text-anchor="middle" fill="#64748b" font-size="8.5">Worker 负责：处理业务</text>
+      <text x="119" y="266" text-anchor="middle" fill="#64748b" font-size="8.5">用 Cond+Mutex 实现任务队列</text>
+
+      <!-- Model 2: Peer -->
+      <rect x="251" y="10" width="218" height="300" rx="10" fill="#1a1d27" stroke="#34d399" stroke-width="1.5"/>
+      <text x="360" y="32" text-anchor="middle" fill="#34d399" font-size="10.5" font-weight="700">对等模型（Peer）</text>
+
+      <rect x="300" y="50" width="60" height="28" rx="6" fill="rgba(52,211,153,0.12)" stroke="#34d399"/>
+      <text x="330" y="68" text-anchor="middle" fill="#34d399" font-size="9">线程 1</text>
+      <rect x="370" y="50" width="60" height="28" rx="6" fill="rgba(52,211,153,0.12)" stroke="#34d399"/>
+      <text x="400" y="68" text-anchor="middle" fill="#34d399" font-size="9">线程 2</text>
+      <rect x="300" y="110" width="60" height="28" rx="6" fill="rgba(52,211,153,0.12)" stroke="#34d399"/>
+      <text x="330" y="128" text-anchor="middle" fill="#34d399" font-size="9">线程 3</text>
+      <rect x="370" y="110" width="60" height="28" rx="6" fill="rgba(52,211,153,0.12)" stroke="#34d399"/>
+      <text x="400" y="128" text-anchor="middle" fill="#34d399" font-size="9">线程 4</text>
+
+      <!-- Peer connections -->
+      <line x1="360" y1="64" x2="370" y2="64" stroke="#34d399" stroke-width="1" opacity="0.5"/>
+      <line x1="330" y1="78" x2="330" y2="110" stroke="#34d399" stroke-width="1" opacity="0.5"/>
+      <line x1="400" y1="78" x2="400" y2="110" stroke="#34d399" stroke-width="1" opacity="0.5"/>
+      <line x1="360" y1="124" x2="370" y2="124" stroke="#34d399" stroke-width="1" opacity="0.5"/>
+      <line x1="360" y1="78" x2="360" y2="110" stroke="#34d399" stroke-width="1" stroke-dasharray="3,2" opacity="0.4"/>
+
+      <!-- Shared data -->
+      <rect x="290" y="155" width="140" height="28" rx="5" fill="#232637" stroke="#34d399" stroke-width="0.5"/>
+      <text x="360" y="173" text-anchor="middle" fill="#34d399" font-size="8.5">共享工作队列 / 数据集</text>
+
+      <text x="360" y="205" text-anchor="middle" fill="#64748b" font-size="8.5">适用场景：</text>
+      <text x="360" y="220" text-anchor="middle" fill="#8892a4" font-size="8">• 矩阵并行计算</text>
+      <text x="360" y="234" text-anchor="middle" fill="#8892a4" font-size="8">• 科学计算（数据分块）</text>
+      <text x="360" y="248" text-anchor="middle" fill="#8892a4" font-size="8">• MapReduce 简化版</text>
+      <text x="360" y="268" text-anchor="middle" fill="#64748b" font-size="8.5">所有线程地位相等</text>
+      <text x="360" y="282" text-anchor="middle" fill="#64748b" font-size="8.5">各自处理数据分块</text>
+
+      <!-- Model 3: Pipeline -->
+      <rect x="492" y="10" width="218" height="300" rx="10" fill="#1a1d27" stroke="#f472b6" stroke-width="1.5"/>
+      <text x="601" y="32" text-anchor="middle" fill="#f472b6" font-size="10.5" font-weight="700">流水线模型（Pipeline）</text>
+
+      <rect x="520" y="50" width="162" height="28" rx="6" fill="rgba(244,114,182,0.08)" stroke="#f472b6"/>
+      <text x="601" y="68" text-anchor="middle" fill="#f472b6" font-size="8.5">输入源（数据流入）</text>
+
+      <line x1="601" y1="78" x2="601" y2="97" stroke="#f472b6" stroke-width="1.5" marker-end="url(#arrpi)"/>
+
+      <rect x="520" y="98" width="162" height="28" rx="6" fill="#232637" stroke="#f472b6" stroke-width="0.5"/>
+      <text x="601" y="116" text-anchor="middle" fill="#8892a4" font-size="8.5">阶段 1：解析</text>
+
+      <line x1="601" y1="126" x2="601" y2="145" stroke="#f472b6" stroke-width="1.5" marker-end="url(#arrpi)"/>
+
+      <rect x="520" y="146" width="162" height="28" rx="6" fill="#232637" stroke="#f472b6" stroke-width="0.5"/>
+      <text x="601" y="164" text-anchor="middle" fill="#8892a4" font-size="8.5">阶段 2：处理 / 计算</text>
+
+      <line x1="601" y1="174" x2="601" y2="193" stroke="#f472b6" stroke-width="1.5" marker-end="url(#arrpi)"/>
+
+      <rect x="520" y="194" width="162" height="28" rx="6" fill="#232637" stroke="#f472b6" stroke-width="0.5"/>
+      <text x="601" y="212" text-anchor="middle" fill="#8892a4" font-size="8.5">阶段 3：格式化 / 输出</text>
+
+      <text x="601" y="245" text-anchor="middle" fill="#64748b" font-size="8.5">适用场景：</text>
+      <text x="601" y="260" text-anchor="middle" fill="#8892a4" font-size="8">• 编译器（词法→语法→代码生成）</text>
+      <text x="601" y="274" text-anchor="middle" fill="#8892a4" font-size="8">• 音视频处理</text>
+      <text x="601" y="288" text-anchor="middle" fill="#8892a4" font-size="8">• 数据流转换（ETL）</text>
+
+      <defs>
+        <marker id="arrw1" markerWidth="5" markerHeight="5" refX="2.5" refY="2.5" orient="auto">
+          <path d="M0,0 L5,2.5 L0,5 Z" fill="#8892a4"/>
+        </marker>
+        <marker id="arrpi" markerWidth="5" markerHeight="5" refX="2.5" refY="2.5" orient="auto">
+          <path d="M0,0 L5,2.5 L0,5 Z" fill="#f472b6"/>
+        </marker>
+      </defs>
+    </svg>
+    <div class="svg-caption">图12：三种经典 POSIX 多线程编程模型 — 来源：O'Reilly Pthreads Programming, Chapter 2</div>
+  </div>
+
+  <div class="source-box">
+    <span>📖 来源：</span>
+    <a href="https://vdoc.pub/documents/pthreads-programming-a-posix-standard-for-better-multiprocessing-4u6vq3n6bg60" target="_blank">Pthreads Programming, Bradford Nichols et al., O'Reilly 1996</a>
+    — Chapter 2: Designing Threaded Programs (Boss/Worker Model, Peer Model, Pipeline Model)
+  </div>
+
+  <div class="page-nav">
+    <a class="page-nav-btn prev" href="#tradeoffs">
+      <span class="label">← 上一章</span>
+      <span class="title">权衡与取舍</span>
+    </a>
+    <a class="page-nav-btn next" href="#refs">
+      <span class="label">下一章</span>
+      <span class="title">权威来源与参考文献 →</span>
+    </a>
+  </div>
+</section>
+
+<!-- ==================== SECTION: REFS ==================== -->
+<section class="section" id="refs">
+  <div class="section-label">参考</div>
+  <h2 class="section-title">权威来源与参考文献</h2>
+
+  <p>本文所有内容均来自以下权威来源，未引入任何推测性内容：</p>
+
+  <div class="card-grid" style="grid-template-columns: 1fr;">
+    <div class="card">
+      <div class="card-title">📘 IEEE Std 1003.1-2024（POSIX.1-2024）正式规范</div>
+      <div class="card-desc">
+        The Open Group Base Specifications Issue 8 — 官方正式规范文本<br>
+        <a href="https://pubs.opengroup.org/onlinepubs/9799919799/" target="_blank" style="color:var(--accent); font-size:0.8rem;">https://pubs.opengroup.org/onlinepubs/9799919799/</a>
+      </div>
+    </div>
+    <div class="card">
+      <div class="card-title">📘 POSIX Rationale — 设计理由文档（官方）</div>
+      <div class="card-desc">
+        B. Rationale for System Interfaces — 包含标准设计决策的官方解释<br>
+        <a href="https://pubs.opengroup.org/onlinepubs/9799919799/xrat/V4_xsh_chap01.html" target="_blank" style="color:var(--accent); font-size:0.8rem;">https://pubs.opengroup.org/onlinepubs/9799919799/xrat/V4_xsh_chap01.html</a>
+      </div>
+    </div>
+    <div class="card">
+      <div class="card-title">📖 pthreads(7) Linux Manual Pages</div>
+      <div class="card-desc">
+        Linux man-pages 6.18（2026-02-08）— 线程共享/私有属性、LinuxThreads vs NPTL 的权威描述<br>
+        <a href="https://www.man7.org/linux/man-pages/man7/pthreads.7.html" target="_blank" style="color:var(--accent); font-size:0.8rem;">https://www.man7.org/linux/man-pages/man7/pthreads.7.html</a>
+      </div>
+    </div>
+    <div class="card">
+      <div class="card-title">📕 Pthreads Programming（O'Reilly, 1996）</div>
+      <div class="card-desc">
+        Bradford Nichols, Dick Buttlar, Jacqueline Farrell — 涵盖并发模型、同步设计、编程模式的经典教材<br>
+        <a href="https://vdoc.pub/documents/pthreads-programming-a-posix-standard-for-better-multiprocessing-4u6vq3n6bg60" target="_blank" style="color:var(--accent); font-size:0.8rem;">vdoc.pub (书目信息)</a>
+      </div>
+    </div>
+    <div class="card">
+      <div class="card-title">📗 Multi-Threaded Programming With POSIX Threads — Villanova University</div>
+      <div class="card-desc">
+        进程 vs 线程开销对比、标准化背景的权威教学资料<br>
+        <a href="http://www.csc.villanova.edu/~mdamian/threads/posixthreads.html" target="_blank" style="color:var(--accent); font-size:0.8rem;">http://www.csc.villanova.edu/~mdamian/threads/posixthreads.html</a>
+      </div>
+    </div>
+    <div class="card">
+      <div class="card-title">📗 Computer Systems Fundamentals — James Madison University</div>
+      <div class="card-desc">
+        异步执行模型、joinable/detached 线程的权威教学描述<br>
+        <a href="https://w3.cs.jmu.edu/kirkpams/OpenCSF/Books/csf/html/POSIXThreads.html" target="_blank" style="color:var(--accent); font-size:0.8rem;">https://w3.cs.jmu.edu/kirkpams/OpenCSF/Books/csf/html/POSIXThreads.html</a>
+      </div>
+    </div>
+    <div class="card">
+      <div class="card-title">📗 Mutex vs Semaphores — Feabhas</div>
+      <div class="card-desc">
+        互斥量所有权原则、与信号量的本质区别的详细分析<br>
+        <a href="https://blog.feabhas.com/2009/09/mutex-vs-semaphores-%E2%80%93-part-2-the-mutex/" target="_blank" style="color:var(--accent); font-size:0.8rem;">blog.feabhas.com — Mutex vs Semaphores Part 2</a>
+      </div>
+    </div>
+    <div class="card">
+      <div class="card-title">📗 POSIX Threads Explained — Funtoo</div>
+      <div class="card-desc">
+        对等线程模型、无家谱关系设计的解释<br>
+        <a href="https://www.funtoo.org/POSIX_Threads_Explained,_Part_1" target="_blank" style="color:var(--accent); font-size:0.8rem;">https://www.funtoo.org/POSIX_Threads_Explained,_Part_1</a>
+      </div>
+    </div>
+    <div class="card">
+      <div class="card-title">📗 Pthreads: Semaphores — circuitlabs.net</div>
+      <div class="card-desc">
+        Dijkstra 信号量历史、POSIX sem_wait/sem_post 规范<br>
+        <a href="https://circuitlabs.net/pthreads-semaphores-for-resource-counting-synchronization/" target="_blank" style="color:var(--accent); font-size:0.8rem;">circuitlabs.net — Pthreads Semaphores</a>
+      </div>
+    </div>
+  </div>
+
+  <div class="info-box blue" style="margin-top:2rem">
+    <div class="box-title">📋 关键 API 速查</div>
+    <div style="display:grid; grid-template-columns: repeat(auto-fill, minmax(200px, 1fr)); gap:0.5rem; margin-top:0.5rem; font-size:0.8rem; color:var(--text-muted)">
+      <div><code>pthread_create()</code> — 创建线程</div>
+      <div><code>pthread_join()</code> — 等待线程结束</div>
+      <div><code>pthread_exit()</code> — 退出当前线程</div>
+      <div><code>pthread_self()</code> — 获取自身 TID</div>
+      <div><code>pthread_mutex_lock()</code> — 加互斥锁</div>
+      <div><code>pthread_mutex_unlock()</code> — 解互斥锁</div>
+      <div><code>pthread_cond_wait()</code> — 等待条件</div>
+      <div><code>pthread_cond_signal()</code> — 唤醒单线程</div>
+      <div><code>pthread_cond_broadcast()</code> — 唤醒所有</div>
+      <div><code>pthread_rwlock_rdlock()</code> — 读锁</div>
+      <div><code>pthread_rwlock_wrlock()</code> — 写锁</div>
+      <div><code>sem_wait() / sem_post()</code> — 信号量</div>
+      <div><code>pthread_cancel()</code> — 取消线程</div>
+      <div><code>pthread_detach()</code> — 分离线程</div>
+    </div>
+  </div>
+
+  <div class="page-nav">
+    <a class="page-nav-btn prev" href="#patterns">
+      <span class="label">← 上一章</span>
+      <span class="title">经典编程模型</span>
+    </a>
+    <span></span>
+  </div>
+</section>
+
+</div>
+</main>
+
+<script>
+  // ===== Navigation items & sections =====
+  const navItems = document.querySelectorAll('.nav-item[data-section]');
+  const sections = document.querySelectorAll('.section');
+  const sectionIds = Array.from(sections).map(s => s.id);
+  let currentSectionIndex = 0;
+
+  // ===== Progress bar =====
+  function updateProgress() {
+    const scrollTop = window.scrollY;
+    const docHeight = document.documentElement.scrollHeight - window.innerHeight;
+    const pct = docHeight > 0 ? (scrollTop / docHeight) * 100 : 0;
+    document.getElementById('progress-bar').style.width = pct + '%';
+  }
+
+  // ===== Active nav highlight (IntersectionObserver) =====
+  const observer = new IntersectionObserver((entries) => {
+    entries.forEach(entry => {
+      if (entry.isIntersecting) {
+        const id = entry.target.id;
+        currentSectionIndex = sectionIds.indexOf(id);
+        navItems.forEach(item => {
+          item.classList.toggle('active', item.dataset.section === id);
+        });
+        // Scroll nav item into view
+        const activeNav = document.querySelector(`.nav-item[data-section="${id}"]`);
+        if (activeNav) {
+          activeNav.scrollIntoView({ block: 'nearest', behavior: 'smooth' });
+        }
+      }
+    });
+  }, { rootMargin: '-40% 0px -55% 0px', threshold: 0 });
+
+  sections.forEach(s => observer.observe(s));
+
+  // ===== Scroll events =====
+  window.addEventListener('scroll', updateProgress, { passive: true });
+
+  // ===== Nav item click =====
+  navItems.forEach(item => {
+    item.addEventListener('click', (e) => {
+      e.preventDefault();
+      const target = document.getElementById(item.dataset.section);
+      if (target) {
+        target.scrollIntoView({ behavior: 'smooth' });
+      }
+      closeSidebar();
+    });
+  });
+
+  // ===== Page nav buttons =====
+  document.querySelectorAll('.page-nav-btn').forEach(btn => {
+    btn.addEventListener('click', (e) => {
+      e.preventDefault();
+      const href = btn.getAttribute('href');
+      if (href && href !== '#') {
+        const target = document.querySelector(href);
+        if (target) target.scrollIntoView({ behavior: 'smooth' });
+      }
+    });
+  });
+
+  // ===== Keyboard navigation =====
+  document.addEventListener('keydown', (e) => {
+    if (e.target.tagName === 'INPUT' || e.target.tagName === 'TEXTAREA') return;
+    if (e.key === 'ArrowRight' || e.key === 'ArrowDown') {
+      const next = Math.min(currentSectionIndex + 1, sectionIds.length - 1);
+      document.getElementById(sectionIds[next])?.scrollIntoView({ behavior: 'smooth' });
+    } else if (e.key === 'ArrowLeft' || e.key === 'ArrowUp') {
+      const prev = Math.max(currentSectionIndex - 1, 0);
+      document.getElementById(sectionIds[prev])?.scrollIntoView({ behavior: 'smooth' });
+    }
+  });
+
+  // ===== Mobile hamburger =====
+  const hamburger = document.getElementById('hamburger');
+  const sidebar = document.getElementById('sidebar');
+  const overlay = document.getElementById('overlay');
+
+  function openSidebar() {
+    sidebar.classList.add('open');
+    overlay.classList.add('open');
+    hamburger.classList.add('open');
+  }
+
+  function closeSidebar() {
+    sidebar.classList.remove('open');
+    overlay.classList.remove('open');
+    hamburger.classList.remove('open');
+  }
+
+  hamburger.addEventListener('click', () => {
+    if (sidebar.classList.contains('open')) {
+      closeSidebar();
+    } else {
+      openSidebar();
+    }
+  });
+
+  overlay.addEventListener('click', closeSidebar);
+
+  // ===== Init =====
+  updateProgress();
+</script>
+</body>
+</html>
