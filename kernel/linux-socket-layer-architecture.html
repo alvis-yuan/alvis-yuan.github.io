@@ -1,0 +1,1986 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Linux Socket 层协议分流机制深度解析</title>
+<style>
+  :root {
+    --bg: #0d1117;
+    --sidebar-bg: #161b22;
+    --card-bg: #1c2128;
+    --border: #30363d;
+    --accent: #58a6ff;
+    --accent2: #3fb950;
+    --accent3: #f78166;
+    --accent4: #d2a8ff;
+    --accent5: #ffa657;
+    --text: #e6edf3;
+    --text-muted: #8b949e;
+    --text-dim: #6e7681;
+    --code-bg: #161b22;
+    --highlight: #388bfd26;
+    --sidebar-width: 280px;
+    --progress-h: 3px;
+  }
+  * { margin:0; padding:0; box-sizing:border-box; }
+  html { scroll-behavior: smooth; }
+  body {
+    background: var(--bg);
+    color: var(--text);
+    font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', 'Noto Sans SC', sans-serif;
+    font-size: 15px;
+    line-height: 1.7;
+    overflow-x: hidden;
+  }
+
+  /* Progress bar */
+  #progress-bar {
+    position: fixed;
+    top: 0; left: 0;
+    height: var(--progress-h);
+    background: linear-gradient(90deg, var(--accent), var(--accent4));
+    z-index: 9999;
+    transition: width 0.1s;
+    width: 0%;
+  }
+
+  /* Sidebar */
+  #sidebar {
+    position: fixed;
+    top: var(--progress-h); left: 0;
+    width: var(--sidebar-width);
+    height: calc(100vh - var(--progress-h));
+    background: var(--sidebar-bg);
+    border-right: 1px solid var(--border);
+    overflow-y: auto;
+    overflow-x: hidden;
+    z-index: 100;
+    transition: transform 0.3s ease;
+    scrollbar-width: thin;
+    scrollbar-color: var(--border) transparent;
+  }
+  #sidebar::-webkit-scrollbar { width: 4px; }
+  #sidebar::-webkit-scrollbar-thumb { background: var(--border); border-radius: 2px; }
+
+  .sidebar-header {
+    padding: 20px 16px 12px;
+    border-bottom: 1px solid var(--border);
+    position: sticky; top: 0;
+    background: var(--sidebar-bg);
+    z-index: 1;
+  }
+  .sidebar-title {
+    font-size: 13px;
+    font-weight: 700;
+    color: var(--accent);
+    text-transform: uppercase;
+    letter-spacing: 0.08em;
+    margin-bottom: 4px;
+  }
+  .sidebar-subtitle {
+    font-size: 11px;
+    color: var(--text-muted);
+  }
+
+  .nav-group { margin: 8px 0; }
+  .nav-group-label {
+    padding: 8px 16px 4px;
+    font-size: 11px;
+    font-weight: 600;
+    color: var(--text-dim);
+    text-transform: uppercase;
+    letter-spacing: 0.1em;
+  }
+  .nav-item {
+    display: flex;
+    align-items: center;
+    padding: 7px 16px 7px 20px;
+    font-size: 13px;
+    color: var(--text-muted);
+    cursor: pointer;
+    border-left: 2px solid transparent;
+    transition: all 0.15s;
+    gap: 8px;
+    text-decoration: none;
+    line-height: 1.4;
+  }
+  .nav-item:hover { color: var(--text); background: rgba(88,166,255,0.06); }
+  .nav-item.active {
+    color: var(--accent);
+    border-left-color: var(--accent);
+    background: var(--highlight);
+  }
+  .nav-item .num {
+    font-size: 11px;
+    color: var(--text-dim);
+    min-width: 20px;
+    font-variant-numeric: tabular-nums;
+  }
+
+  /* Main content */
+  #main {
+    margin-left: var(--sidebar-width);
+    min-height: 100vh;
+    padding: 0;
+    transition: margin-left 0.3s ease;
+  }
+
+  /* Top bar (mobile) */
+  #topbar {
+    display: none;
+    position: sticky; top: var(--progress-h);
+    background: var(--sidebar-bg);
+    border-bottom: 1px solid var(--border);
+    padding: 12px 16px;
+    z-index: 50;
+    align-items: center;
+    gap: 12px;
+  }
+  #hamburger {
+    background: none; border: none; cursor: pointer;
+    display: flex; flex-direction: column; gap: 4px; padding: 4px;
+  }
+  #hamburger span {
+    display: block; width: 20px; height: 2px;
+    background: var(--text); border-radius: 1px;
+    transition: all 0.3s;
+  }
+  #hamburger.open span:nth-child(1) { transform: rotate(45deg) translate(4px, 4px); }
+  #hamburger.open span:nth-child(2) { opacity: 0; }
+  #hamburger.open span:nth-child(3) { transform: rotate(-45deg) translate(4px, -4px); }
+  #topbar-title { font-size: 14px; font-weight: 600; color: var(--text); flex: 1; }
+  .topbar-nav { display: flex; gap: 8px; }
+  .topbar-nav button {
+    background: var(--card-bg); border: 1px solid var(--border);
+    color: var(--text-muted); border-radius: 6px; padding: 5px 10px;
+    cursor: pointer; font-size: 13px; transition: all 0.15s;
+  }
+  .topbar-nav button:hover { border-color: var(--accent); color: var(--accent); }
+
+  /* Overlay */
+  #overlay {
+    display: none;
+    position: fixed; inset: 0;
+    background: rgba(0,0,0,0.5);
+    z-index: 99;
+  }
+
+  /* Sections */
+  .section {
+    max-width: 860px;
+    margin: 0 auto;
+    padding: 48px 32px;
+    border-bottom: 1px solid var(--border);
+  }
+  .section:last-child { border-bottom: none; }
+
+  .section-num {
+    display: inline-block;
+    font-size: 11px;
+    font-weight: 700;
+    color: var(--accent);
+    background: var(--highlight);
+    border: 1px solid var(--accent);
+    border-radius: 4px;
+    padding: 2px 8px;
+    margin-bottom: 12px;
+    text-transform: uppercase;
+    letter-spacing: 0.05em;
+  }
+  h1 {
+    font-size: 28px;
+    font-weight: 700;
+    color: var(--text);
+    margin-bottom: 8px;
+    line-height: 1.3;
+  }
+  h2 {
+    font-size: 22px;
+    font-weight: 700;
+    color: var(--text);
+    margin-bottom: 16px;
+    line-height: 1.3;
+    padding-bottom: 8px;
+    border-bottom: 1px solid var(--border);
+  }
+  h3 {
+    font-size: 16px;
+    font-weight: 600;
+    color: var(--accent4);
+    margin: 24px 0 10px;
+  }
+  p { margin-bottom: 14px; color: var(--text); }
+  p:last-child { margin-bottom: 0; }
+
+  a { color: var(--accent); text-decoration: none; }
+  a:hover { text-decoration: underline; }
+
+  /* Code */
+  pre {
+    background: var(--code-bg);
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    padding: 16px;
+    overflow-x: auto;
+    margin: 16px 0;
+    font-size: 13px;
+    line-height: 1.6;
+    scrollbar-width: thin;
+    scrollbar-color: var(--border) transparent;
+  }
+  pre::-webkit-scrollbar { height: 4px; }
+  pre::-webkit-scrollbar-thumb { background: var(--border); border-radius: 2px; }
+  code {
+    font-family: 'JetBrains Mono', 'Fira Code', 'Cascadia Code', Consolas, monospace;
+    font-size: 0.92em;
+  }
+  p code, li code {
+    background: var(--code-bg);
+    border: 1px solid var(--border);
+    border-radius: 4px;
+    padding: 1px 5px;
+    color: var(--accent3);
+  }
+
+  /* Syntax highlight */
+  .kw { color: #ff7b72; }
+  .ty { color: #ffa657; }
+  .fn { color: #d2a8ff; }
+  .cm { color: #8b949e; font-style: italic; }
+  .st { color: #a5d6ff; }
+  .nm { color: #79c0ff; }
+  .op { color: #ff7b72; }
+  .pp { color: #3fb950; }
+
+  /* Callout boxes */
+  .callout {
+    border-radius: 8px;
+    padding: 16px 20px;
+    margin: 20px 0;
+    border-left: 3px solid;
+  }
+  .callout-info {
+    background: rgba(88,166,255,0.08);
+    border-color: var(--accent);
+  }
+  .callout-warn {
+    background: rgba(255,166,87,0.08);
+    border-color: var(--accent5);
+  }
+  .callout-principle {
+    background: rgba(63,185,80,0.08);
+    border-color: var(--accent2);
+  }
+  .callout-title {
+    font-size: 12px;
+    font-weight: 700;
+    text-transform: uppercase;
+    letter-spacing: 0.08em;
+    margin-bottom: 8px;
+  }
+  .callout-info .callout-title { color: var(--accent); }
+  .callout-warn .callout-title { color: var(--accent5); }
+  .callout-principle .callout-title { color: var(--accent2); }
+
+  /* Tables */
+  table {
+    width: 100%;
+    border-collapse: collapse;
+    margin: 16px 0;
+    font-size: 13px;
+  }
+  th {
+    background: var(--code-bg);
+    border: 1px solid var(--border);
+    padding: 8px 12px;
+    text-align: left;
+    color: var(--text-muted);
+    font-weight: 600;
+    font-size: 12px;
+    text-transform: uppercase;
+    letter-spacing: 0.05em;
+  }
+  td {
+    border: 1px solid var(--border);
+    padding: 8px 12px;
+    color: var(--text);
+  }
+  tr:hover td { background: var(--highlight); }
+  td code { font-size: 12px; }
+
+  /* SVG diagrams */
+  .diagram-wrap {
+    background: var(--code-bg);
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    padding: 24px;
+    margin: 20px 0;
+    overflow-x: auto;
+    text-align: center;
+  }
+  .diagram-wrap svg {
+    max-width: 100%;
+    height: auto;
+  }
+  .diagram-caption {
+    text-align: center;
+    font-size: 12px;
+    color: var(--text-muted);
+    margin-top: 10px;
+    font-style: italic;
+  }
+
+  /* Lists */
+  ul, ol { padding-left: 22px; margin: 12px 0; }
+  li { margin: 5px 0; }
+
+  /* Tags */
+  .tag {
+    display: inline-block;
+    font-size: 11px;
+    padding: 2px 7px;
+    border-radius: 4px;
+    font-weight: 600;
+    margin: 2px;
+  }
+  .tag-blue { background: rgba(88,166,255,0.15); color: var(--accent); border: 1px solid rgba(88,166,255,0.3); }
+  .tag-green { background: rgba(63,185,80,0.15); color: var(--accent2); border: 1px solid rgba(63,185,80,0.3); }
+  .tag-orange { background: rgba(255,166,87,0.15); color: var(--accent5); border: 1px solid rgba(255,166,87,0.3); }
+  .tag-purple { background: rgba(210,168,255,0.15); color: var(--accent4); border: 1px solid rgba(210,168,255,0.3); }
+
+  /* Hero */
+  .hero-meta {
+    display: flex; gap: 12px; flex-wrap: wrap; margin-top: 16px;
+  }
+  .source-link {
+    display: inline-flex; align-items: center; gap: 6px;
+    font-size: 12px; color: var(--text-muted);
+    border: 1px solid var(--border); border-radius: 6px;
+    padding: 5px 10px; transition: all 0.15s;
+  }
+  .source-link:hover { border-color: var(--accent); color: var(--accent); text-decoration: none; }
+
+  /* Key nav hint */
+  .key-hint {
+    position: fixed;
+    bottom: 20px; right: 20px;
+    background: var(--card-bg);
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    padding: 8px 12px;
+    font-size: 11px;
+    color: var(--text-dim);
+    display: flex; gap: 6px; align-items: center;
+  }
+  kbd {
+    display: inline-block;
+    background: var(--sidebar-bg);
+    border: 1px solid var(--border);
+    border-radius: 3px;
+    padding: 1px 5px;
+    font-size: 11px;
+    font-family: inherit;
+    color: var(--text-muted);
+  }
+
+  @media (max-width: 768px) {
+    #sidebar { transform: translateX(-100%); }
+    #sidebar.open { transform: translateX(0); }
+    #main { margin-left: 0; }
+    #topbar { display: flex; }
+    .section { padding: 32px 16px; }
+    h1 { font-size: 22px; }
+    h2 { font-size: 18px; }
+    .key-hint { display: none; }
+    #overlay.active { display: block; }
+  }
+</style>
+</head>
+<body>
+
+<div id="progress-bar"></div>
+
+<!-- Sidebar -->
+<nav id="sidebar">
+  <div class="sidebar-header">
+    <div class="sidebar-title">Linux Socket 分流机制</div>
+    <div class="sidebar-subtitle">内核网络协议栈架构深度解析</div>
+  </div>
+  <div class="nav-group">
+    <div class="nav-group-label">概述</div>
+    <a class="nav-item active" href="#s0" onclick="navClick(event,'s0')">
+      <span class="num">00</span>引言与总览
+    </a>
+  </div>
+  <div class="nav-group">
+    <div class="nav-group-label">核心数据结构</div>
+    <a class="nav-item" href="#s1" onclick="navClick(event,'s1')">
+      <span class="num">01</span>socket 与 sock 双层结构
+    </a>
+    <a class="nav-item" href="#s2" onclick="navClick(event,'s2')">
+      <span class="num">02</span>net_proto_family：协议族注册
+    </a>
+    <a class="nav-item" href="#s3" onclick="navClick(event,'s3')">
+      <span class="num">03</span>proto_ops 与 proto：两级操作表
+    </a>
+  </div>
+  <div class="nav-group">
+    <div class="nav-group-label">发送路径分流</div>
+    <a class="nav-item" href="#s4" onclick="navClick(event,'s4')">
+      <span class="num">04</span>socket() 系统调用与第一级分流
+    </a>
+    <a class="nav-item" href="#s5" onclick="navClick(event,'s5')">
+      <span class="num">05</span>AF_INET 内部：inetsw 第二级分流
+    </a>
+    <a class="nav-item" href="#s6" onclick="navClick(event,'s6')">
+      <span class="num">06</span>Netlink 协议族独立分流
+    </a>
+  </div>
+  <div class="nav-group">
+    <div class="nav-group-label">接收路径分流</div>
+    <a class="nav-item" href="#s7" onclick="navClick(event,'s7')">
+      <span class="num">07</span>L2→L3：ptype_base EtherType 分流
+    </a>
+    <a class="nav-item" href="#s8" onclick="navClick(event,'s8')">
+      <span class="num">08</span>L3→L4：inet_protos 传输层分流
+    </a>
+    <a class="nav-item" href="#s9" onclick="navClick(event,'s9')">
+      <span class="num">09</span>UDP/TCP 完整接收路径
+    </a>
+  </div>
+  <div class="nav-group">
+    <div class="nav-group-label">可扩展性设计</div>
+    <a class="nav-item" href="#s10" onclick="navClick(event,'s10')">
+      <span class="num">10</span>注册机制与模块化扩展
+    </a>
+    <a class="nav-item" href="#s11" onclick="navClick(event,'s11')">
+      <span class="num">11</span>全景架构与第一性原理总结
+    </a>
+  </div>
+</nav>
+
+<div id="overlay"></div>
+
+<!-- Main -->
+<div id="main">
+  <!-- Mobile topbar -->
+  <div id="topbar">
+    <button id="hamburger" aria-label="菜单">
+      <span></span><span></span><span></span>
+    </button>
+    <div id="topbar-title">Linux Socket 分流机制</div>
+    <div class="topbar-nav">
+      <button id="btn-prev" title="上一章">◀</button>
+      <button id="btn-next" title="下一章">▶</button>
+    </div>
+  </div>
+
+  <!-- S0: 引言 -->
+  <section class="section" id="s0">
+    <div class="section-num">引言</div>
+    <h1>Linux Socket 层协议分流机制深度解析</h1>
+    <p>Linux 内核网络子系统通过精心设计的<strong>多级分流（demultiplexing）</strong>框架，实现了从统一的 <code>socket()</code> 系统调用入口，到 TCP、UDP、Netlink、Packet 等数十种传输协议的精准路由。本文档基于 Linux 内核 v5.x/v6.x 源码，系统梳理该分流框架的设计逻辑与实现细节。</p>
+
+    <div class="hero-meta">
+      <a class="source-link" href="https://github.com/torvalds/linux/blob/master/net/socket.c" target="_blank">📄 net/socket.c</a>
+      <a class="source-link" href="https://github.com/torvalds/linux/blob/master/net/ipv4/af_inet.c" target="_blank">📄 net/ipv4/af_inet.c</a>
+      <a class="source-link" href="https://thermalcircle.de/doku.php?id=blog:linux:sockets_in_the_linux_kernel_1_l4prot_demux_on_rx" target="_blank">🔗 L4 Demux 权威分析</a>
+      <a class="source-link" href="https://liuhangbin.netlify.app/post/linux-socket/" target="_blank">🔗 Linux Socket 完整笔记</a>
+    </div>
+
+    <h3>核心问题</h3>
+    <p>当用户调用 <code>socket(AF_INET, SOCK_STREAM, IPPROTO_TCP)</code> 或 <code>socket(AF_NETLINK, SOCK_RAW, NETLINK_ROUTE)</code> 时，内核如何知道该创建哪种 socket，并将后续的 send/recv 操作路由到正确的协议实现？</p>
+    <p>答案在于内核维护了一套<strong>三级索引表 + 函数指针跳转</strong>的分流体系：</p>
+    <ul>
+      <li><strong>第一级</strong>：<code>net_families[family]</code>  — 按地址族分流（AF_INET、AF_NETLINK、AF_PACKET…）</li>
+      <li><strong>第二级</strong>：<code>inetsw[sock->type]</code>  — 在 AF_INET 内按 socket 类型 + 协议号分流（TCP、UDP、RAW…）</li>
+      <li><strong>第三级（接收路径）</strong>：<code>inet_protos[protocol]</code>  — IP 层按传输层协议号分流（proto 6=TCP、17=UDP…）</li>
+    </ul>
+
+    <div class="diagram-wrap">
+      <!-- Overview architecture SVG -->
+      <svg viewBox="0 0 780 320" width="780" height="320" xmlns="http://www.w3.org/2000/svg">
+        <defs>
+          <marker id="arr" markerWidth="8" markerHeight="6" refX="8" refY="3" orient="auto">
+            <polygon points="0 0, 8 3, 0 6" fill="#58a6ff"/>
+          </marker>
+          <marker id="arr2" markerWidth="8" markerHeight="6" refX="8" refY="3" orient="auto">
+            <polygon points="0 0, 8 3, 0 6" fill="#3fb950"/>
+          </marker>
+        </defs>
+        <!-- Background layers -->
+        <rect x="0" y="0" width="780" height="320" fill="#161b22" rx="8"/>
+
+        <!-- User space -->
+        <rect x="20" y="18" width="740" height="54" fill="#1c2128" stroke="#388bfd" stroke-width="1" rx="6"/>
+        <text x="40" y="38" fill="#58a6ff" font-size="11" font-weight="700" font-family="monospace">USER SPACE</text>
+        <text x="200" y="54" fill="#e6edf3" font-size="13" font-family="monospace">socket(AF_INET, SOCK_STREAM, IPPROTO_TCP)</text>
+        <text x="550" y="54" fill="#8b949e" font-size="11" font-family="monospace">socket(AF_NETLINK, SOCK_RAW, NL_ROUTE)</text>
+
+        <!-- Arrow down -->
+        <line x1="390" y1="72" x2="390" y2="92" stroke="#58a6ff" stroke-width="1.5" marker-end="url(#arr)"/>
+        <text x="395" y="86" fill="#8b949e" font-size="10">syscall</text>
+
+        <!-- Kernel socket layer -->
+        <rect x="20" y="94" width="740" height="46" fill="#1c2128" stroke="#30363d" stroke-width="1" rx="6"/>
+        <text x="40" y="114" fill="#ffa657" font-size="11" font-weight="700" font-family="monospace">KERNEL: net/socket.c</text>
+        <text x="40" y="130" fill="#e6edf3" font-size="12" font-family="monospace">__sock_create() → net_families[family]→create()</text>
+        <rect x="560" y="102" width="185" height="26" fill="#388bfd22" stroke="#58a6ff" stroke-width="1" rx="4"/>
+        <text x="570" y="119" fill="#58a6ff" font-size="11" font-family="monospace">net_families[NPROTO]</text>
+
+        <!-- Arrows to protocol families -->
+        <line x1="220" y1="140" x2="120" y2="165" stroke="#58a6ff" stroke-width="1.5" marker-end="url(#arr)"/>
+        <line x1="390" y1="140" x2="390" y2="165" stroke="#58a6ff" stroke-width="1.5" marker-end="url(#arr)"/>
+        <line x1="560" y1="140" x2="560" y2="165" stroke="#58a6ff" stroke-width="1.5" marker-end="url(#arr)"/>
+        <line x1="690" y1="140" x2="690" y2="165" stroke="#58a6ff" stroke-width="1.5" marker-end="url(#arr)"/>
+
+        <!-- Protocol family boxes -->
+        <rect x="40" y="165" width="155" height="40" fill="#1c2128" stroke="#d2a8ff" stroke-width="1.5" rx="6"/>
+        <text x="118" y="183" fill="#d2a8ff" font-size="12" font-weight="700" text-anchor="middle" font-family="monospace">AF_UNIX</text>
+        <text x="118" y="197" fill="#8b949e" font-size="10" text-anchor="middle">PF=1, unix_create()</text>
+
+        <rect x="215" y="165" width="350" height="40" fill="#1c2128" stroke="#58a6ff" stroke-width="1.5" rx="6"/>
+        <text x="390" y="183" fill="#58a6ff" font-size="12" font-weight="700" text-anchor="middle" font-family="monospace">AF_INET (PF=2)</text>
+        <text x="390" y="197" fill="#8b949e" font-size="10" text-anchor="middle">inet_family_ops → inet_create() → inetsw[type] → TCP/UDP/RAW</text>
+
+        <rect x="585" y="165" width="110" height="40" fill="#1c2128" stroke="#3fb950" stroke-width="1.5" rx="6"/>
+        <text x="640" y="183" fill="#3fb950" font-size="12" font-weight="700" text-anchor="middle" font-family="monospace">AF_NETLINK</text>
+        <text x="640" y="197" fill="#8b949e" font-size="10" text-anchor="middle">PF=16</text>
+
+        <!-- AF_INET sub-protocols -->
+        <line x1="280" y1="205" x2="280" y2="232" stroke="#388bfd" stroke-width="1.2" marker-end="url(#arr)"/>
+        <line x1="390" y1="205" x2="390" y2="232" stroke="#388bfd" stroke-width="1.2" marker-end="url(#arr)"/>
+        <line x1="500" y1="205" x2="500" y2="232" stroke="#388bfd" stroke-width="1.2" marker-end="url(#arr)"/>
+
+        <rect x="215" y="232" width="105" height="36" fill="#0d1117" stroke="#ff7b72" stroke-width="1" rx="4"/>
+        <text x="268" y="250" fill="#ff7b72" font-size="11" font-weight="700" text-anchor="middle" font-family="monospace">TCP</text>
+        <text x="268" y="263" fill="#6e7681" font-size="10" text-anchor="middle">tcp_prot</text>
+
+        <rect x="335" y="232" width="105" height="36" fill="#0d1117" stroke="#ffa657" stroke-width="1" rx="4"/>
+        <text x="388" y="250" fill="#ffa657" font-size="11" font-weight="700" text-anchor="middle" font-family="monospace">UDP</text>
+        <text x="388" y="263" fill="#6e7681" font-size="10" text-anchor="middle">udp_prot</text>
+
+        <rect x="455" y="232" width="105" height="36" fill="#0d1117" stroke="#8b949e" stroke-width="1" rx="4"/>
+        <text x="508" y="250" fill="#8b949e" font-size="11" font-weight="700" text-anchor="middle" font-family="monospace">RAW</text>
+        <text x="508" y="263" fill="#6e7681" font-size="10" text-anchor="middle">raw_prot</text>
+
+        <!-- Netlink sub -->
+        <line x1="640" y1="205" x2="640" y2="232" stroke="#3fb950" stroke-width="1.2" marker-end="url(#arr2)"/>
+        <rect x="585" y="232" width="110" height="36" fill="#0d1117" stroke="#3fb950" stroke-width="1" rx="4"/>
+        <text x="640" y="250" fill="#3fb950" font-size="11" font-weight="700" text-anchor="middle" font-family="monospace">NL_ROUTE</text>
+        <text x="640" y="263" fill="#6e7681" font-size="10" text-anchor="middle">netlink_proto</text>
+
+        <!-- Layer labels -->
+        <text x="755" y="130" fill="#6e7681" font-size="10" text-anchor="end">第1级分流</text>
+        <text x="755" y="195" fill="#6e7681" font-size="10" text-anchor="end">第2级分流</text>
+        <text x="755" y="255" fill="#6e7681" font-size="10" text-anchor="end">协议实现</text>
+      </svg>
+      <div class="diagram-caption">图 0-1：Linux socket 两级分流总览（发送路径）</div>
+    </div>
+
+    <div class="callout callout-principle">
+      <div class="callout-title">🧩 第一性原理概述</div>
+      <p>网络协议栈的本质问题是<strong>多路复用</strong>：一个系统调用入口服务数十种协议。Linux 的解决方案是"<strong>注册 + 查表 + 函数指针跳转</strong>"——每种协议将自己的处理函数注册到对应的全局索引表中，内核在运行时用协议标识符作 key 查表，间接调用正确的实现。这与编译器实现虚函数分派（vtable）的逻辑完全相同，只是作用域是操作系统级别。</p>
+    </div>
+  </section>
+
+  <!-- S1 -->
+  <section class="section" id="s1">
+    <div class="section-num">第 01 章</div>
+    <h2>socket 与 sock 双层结构</h2>
+    <p>Linux 内核用两个不同层次的结构体表示一个 socket 端点，这是理解分流机制的基础：</p>
+
+    <div class="diagram-wrap">
+      <svg viewBox="0 0 720 260" width="720" height="260" xmlns="http://www.w3.org/2000/svg">
+        <rect x="0" y="0" width="720" height="260" fill="#161b22" rx="8"/>
+        <!-- struct socket -->
+        <rect x="30" y="20" width="300" height="220" fill="#1c2128" stroke="#58a6ff" stroke-width="1.5" rx="8"/>
+        <rect x="30" y="20" width="300" height="30" fill="#388bfd22" rx="8 8 0 0"/>
+        <text x="180" y="41" fill="#58a6ff" font-size="13" font-weight="700" text-anchor="middle" font-family="monospace">struct socket</text>
+        <text x="50" y="72" fill="#8b949e" font-size="11" font-family="monospace">socket_state  state;</text>
+        <text x="50" y="90" fill="#8b949e" font-size="11" font-family="monospace">short         type;  </text>
+        <text x="310" y="90" fill="#ffa657" font-size="10" text-anchor="end">SOCK_STREAM/DGRAM</text>
+        <text x="50" y="108" fill="#8b949e" font-size="11" font-family="monospace">unsigned long flags;</text>
+        <text x="50" y="126" fill="#e6edf3" font-size="11" font-family="monospace">struct file   *file;</text>
+        <text x="310" y="126" fill="#3fb950" font-size="10" text-anchor="end">↔ 用户态 fd</text>
+        <text x="50" y="144" fill="#e6edf3" font-size="11" font-family="monospace">struct sock   *sk;</text>
+        <text x="310" y="144" fill="#d2a8ff" font-size="10" text-anchor="end">→ 内部 sock</text>
+        <text x="50" y="162" fill="#ff7b72" font-size="11" font-family="monospace">const struct proto_ops *ops;</text>
+        <text x="310" y="162" fill="#ff7b72" font-size="10" text-anchor="end">←分流后赋值</text>
+        <!-- include/linux/net.h badge -->
+        <rect x="40" y="210" width="180" height="18" fill="#0d1117" rx="4"/>
+        <text x="130" y="223" fill="#6e7681" font-size="10" text-anchor="middle">include/linux/net.h</text>
+
+        <!-- Arrow -->
+        <line x1="330" y1="140" x2="390" y2="140" stroke="#d2a8ff" stroke-width="1.5" marker-end="url(#arr)"/>
+
+        <!-- struct sock -->
+        <rect x="390" y="20" width="300" height="220" fill="#1c2128" stroke="#d2a8ff" stroke-width="1.5" rx="8"/>
+        <rect x="390" y="20" width="300" height="30" fill="#d2a8ff22" rx="8 8 0 0"/>
+        <text x="540" y="41" fill="#d2a8ff" font-size="13" font-weight="700" text-anchor="middle" font-family="monospace">struct sock</text>
+        <text x="410" y="72" fill="#8b949e" font-size="11" font-family="monospace">struct sock_common __sk_common;</text>
+        <text x="410" y="90" fill="#e6edf3" font-size="11" font-family="monospace">struct proto  *sk_prot;</text>
+        <text x="680" y="90" fill="#ffa657" font-size="10" text-anchor="end">← 分流后赋值</text>
+        <text x="410" y="108" fill="#8b949e" font-size="11" font-family="monospace">sk_buff_head   sk_receive_queue;</text>
+        <text x="410" y="126" fill="#8b949e" font-size="11" font-family="monospace">sk_buff_head   sk_write_queue;</text>
+        <text x="410" y="144" fill="#8b949e" font-size="11" font-family="monospace">int            sk_family;</text>
+        <text x="410" y="162" fill="#8b949e" font-size="11" font-family="monospace">int            sk_protocol;</text>
+        <text x="410" y="180" fill="#8b949e" font-size="11" font-family="monospace">struct socket  *sk_socket;</text>
+        <rect x="400" y="210" width="180" height="18" fill="#0d1117" rx="4"/>
+        <text x="490" y="223" fill="#6e7681" font-size="10" text-anchor="middle">include/net/sock.h</text>
+
+        <!-- 双向箭头注释 -->
+        <text x="360" y="155" fill="#8b949e" font-size="10" text-anchor="middle">双向</text>
+        <text x="360" y="167" fill="#8b949e" font-size="10" text-anchor="middle">引用</text>
+      </svg>
+      <div class="diagram-caption">图 1-1：struct socket（BSS 层抽象）与 struct sock（协议内部表示）的关系</div>
+    </div>
+
+    <h3>两者的职责划分</h3>
+    <table>
+      <tr><th>结构体</th><th>抽象层次</th><th>关键字段</th><th>来源文件</th></tr>
+      <tr>
+        <td><code>struct socket</code></td>
+        <td>BSD socket 接口层，面向 VFS</td>
+        <td><code>ops</code>（proto_ops）、<code>sk</code>、<code>file</code></td>
+        <td><code>include/linux/net.h</code></td>
+      </tr>
+      <tr>
+        <td><code>struct sock</code></td>
+        <td>网络协议内部表示，协议无关</td>
+        <td><code>sk_prot</code>（proto）、接收/发送队列、定时器</td>
+        <td><code>include/net/sock.h</code></td>
+      </tr>
+    </table>
+
+    <p><code>struct socket</code> 通过 <code>ops</code> 字段挂接 <code>struct proto_ops</code>（协议族级别的操作表），<code>struct sock</code> 通过 <code>sk_prot</code> 挂接 <code>struct proto</code>（具体传输协议的操作表）。<strong>这两个指针在 socket 创建时由分流逻辑赋值</strong>，是整个框架的核心。</p>
+
+    <pre><code><span class="cm">/* include/linux/net.h — struct socket 核心字段 */</span>
+<span class="kw">struct</span> <span class="ty">socket</span> {
+    socket_state            state;      <span class="cm">/* SS_CONNECTED 等状态 */</span>
+    <span class="kw">short</span>                   type;       <span class="cm">/* SOCK_STREAM / SOCK_DGRAM / SOCK_RAW */</span>
+    <span class="kw">unsigned long</span>           flags;
+    <span class="kw">struct</span> <span class="ty">file</span>             *file;      <span class="cm">/* 对应用户态 fd 的文件对象 */</span>
+    <span class="kw">struct</span> <span class="ty">sock</span>             *sk;        <span class="cm">/* 内部协议无关 sock */</span>
+    <span class="kw">const struct</span> <span class="ty">proto_ops</span>  *ops;       <span class="cm">/* ← 分流后赋值的操作表 */</span>
+    <span class="kw">struct</span> <span class="ty">socket_wq</span>        wq;
+};</code></pre>
+
+    <div class="callout callout-principle">
+      <div class="callout-title">🧩 第一性原理</div>
+      <p>为什么要把 socket 拆成 <code>struct socket</code> 和 <code>struct sock</code> 两层？本质是<strong>接口与实现的分离</strong>。<code>struct socket</code> 是面向 VFS（虚拟文件系统）和用户态的稳定接口，而 <code>struct sock</code> 是各协议的内部状态。两者通过指针互联，让 VFS 操作（read/write/ioctl）可以统一处理，而不必知道底层是 TCP 还是 UDP。</p>
+    </div>
+  </section>
+
+  <!-- S2 -->
+  <section class="section" id="s2">
+    <div class="section-num">第 02 章</div>
+    <h2>net_proto_family：协议族注册与第一级分流</h2>
+    <p>内核在全局数组 <code>net_families[NPROTO]</code> 中维护所有已注册的协议族，这是第一级分流的核心。每个协议族通过调用 <code>sock_register()</code> 将自己注册进来。</p>
+
+    <pre><code><span class="cm">/* net/socket.c — 第一级分流表 */</span>
+<span class="kw">static const struct</span> <span class="ty">net_proto_family</span> __rcu *<span class="nm">net_families</span>[NPROTO] __read_mostly;
+
+<span class="cm">/* include/linux/net.h — 协议族描述子 */</span>
+<span class="kw">struct</span> <span class="ty">net_proto_family</span> {
+    <span class="kw">int</span>     family;              <span class="cm">/* PF_INET=2, PF_NETLINK=16, PF_PACKET=17 … */</span>
+    <span class="kw">int</span>     (*<span class="fn">create</span>)(struct net *net, struct socket *sock,
+                        <span class="kw">int</span> protocol, <span class="kw">int</span> kern);
+    <span class="kw">struct</span> <span class="ty">module</span> *owner;
+};</code></pre>
+
+    <p>各协议族在内核初始化阶段调用 <code>sock_register()</code> 完成注册：</p>
+    <pre><code><span class="cm">/* net/socket.c — sock_register 实现（来自 torvalds/linux） */</span>
+<span class="kw">int</span> <span class="fn">sock_register</span>(<span class="kw">const struct</span> <span class="ty">net_proto_family</span> *ops)
+{
+    <span class="kw">int</span> err;
+    <span class="kw">if</span> (ops->family >= NPROTO) <span class="kw">return</span> -ENOBUFS;
+    spin_lock(&net_family_lock);
+    <span class="kw">if</span> (rcu_dereference_protected(net_families[ops->family], ...))
+        err = -EEXIST;
+    <span class="kw">else</span> {
+        rcu_assign_pointer(<span class="nm">net_families</span>[ops->family], ops);
+        err = 0;
+    }
+    spin_unlock(&net_family_lock);
+    <span class="kw">return</span> err;
+}
+EXPORT_SYMBOL(<span class="fn">sock_register</span>);</code></pre>
+
+    <h3>主要协议族注册示例</h3>
+    <pre><code><span class="cm">/* net/ipv4/af_inet.c — AF_INET 注册 */</span>
+<span class="kw">static const struct</span> <span class="ty">net_proto_family</span> <span class="nm">inet_family_ops</span> = {
+    .family = PF_INET,
+    .create = <span class="fn">inet_create</span>,
+    .owner  = THIS_MODULE,
+};
+<span class="cm">/* 在 inet_init() 中调用: */</span>
+<span class="fn">sock_register</span>(&inet_family_ops);
+
+<span class="cm">/* net/ipv6/af_inet6.c — AF_INET6 注册 */</span>
+<span class="fn">sock_register</span>(&inet6_family_ops);
+
+<span class="cm">/* net/netlink/af_netlink.c — AF_NETLINK 注册 */</span>
+<span class="kw">static const struct</span> <span class="ty">net_proto_family</span> <span class="nm">netlink_family_ops</span> = {
+    .family = PF_NETLINK,
+    .create = <span class="fn">netlink_create</span>,
+    .owner  = THIS_MODULE,
+};
+<span class="fn">sock_register</span>(&netlink_family_ops);
+
+<span class="cm">/* net/packet/af_packet.c — AF_PACKET 注册 */</span>
+<span class="fn">sock_register</span>(&packet_family_ops);</code></pre>
+
+    <div class="diagram-wrap">
+      <svg viewBox="0 0 700 240" width="700" height="240" xmlns="http://www.w3.org/2000/svg">
+        <rect x="0" y="0" width="700" height="240" fill="#161b22" rx="8"/>
+        <!-- Array -->
+        <text x="30" y="30" fill="#ffa657" font-size="13" font-weight="700" font-family="monospace">net_families[NPROTO]  (全局 RCU 数组, NPROTO=46)</text>
+        <!-- Slots -->
+        <g font-family="monospace" font-size="11">
+          <!-- slot 0 -->
+          <rect x="30" y="44" width="90" height="34" fill="#1c2128" stroke="#30363d"/>
+          <text x="75" y="58" fill="#6e7681" text-anchor="middle">[0]</text>
+          <text x="75" y="72" fill="#6e7681" text-anchor="middle">NULL</text>
+          <!-- slot 1 -->
+          <rect x="120" y="44" width="90" height="34" fill="#1c2128" stroke="#30363d"/>
+          <text x="165" y="58" fill="#8b949e" text-anchor="middle">[1]</text>
+          <text x="165" y="72" fill="#d2a8ff" text-anchor="middle">AF_UNIX</text>
+          <!-- slot 2 -->
+          <rect x="210" y="44" width="90" height="34" fill="#388bfd22" stroke="#58a6ff" stroke-width="1.5"/>
+          <text x="255" y="58" fill="#58a6ff" text-anchor="middle">[2]</text>
+          <text x="255" y="72" fill="#58a6ff" text-anchor="middle">AF_INET</text>
+          <!-- slot 10 -->
+          <rect x="300" y="44" width="90" height="34" fill="#1c2128" stroke="#30363d"/>
+          <text x="345" y="58" fill="#8b949e" text-anchor="middle">[10]</text>
+          <text x="345" y="72" fill="#58a6ff" text-anchor="middle">AF_INET6</text>
+          <!-- slot 16 -->
+          <rect x="390" y="44" width="90" height="34" fill="#3fb95022" stroke="#3fb950" stroke-width="1.5"/>
+          <text x="435" y="58" fill="#3fb950" text-anchor="middle">[16]</text>
+          <text x="435" y="72" fill="#3fb950" text-anchor="middle">AF_NETLINK</text>
+          <!-- slot 17 -->
+          <rect x="480" y="44" width="90" height="34" fill="#1c2128" stroke="#30363d"/>
+          <text x="525" y="58" fill="#8b949e" text-anchor="middle">[17]</text>
+          <text x="525" y="72" fill="#ffa657" text-anchor="middle">AF_PACKET</text>
+          <!-- dots -->
+          <text x="600" y="66" fill="#6e7681" font-size="16">…</text>
+          <!-- slot 45 -->
+          <rect x="625" y="44" width="55" height="34" fill="#1c2128" stroke="#30363d"/>
+          <text x="652" y="58" fill="#6e7681" text-anchor="middle">[45]</text>
+          <text x="652" y="72" fill="#6e7681" text-anchor="middle">NULL</text>
+        </g>
+
+        <!-- Arrows to implementations -->
+        <line x1="255" y1="78" x2="255" y2="110" stroke="#58a6ff" stroke-width="1.5" marker-end="url(#arr)"/>
+        <line x1="435" y1="78" x2="435" y2="110" stroke="#3fb950" stroke-width="1.5" marker-end="url(#arr2)"/>
+
+        <!-- inet_family_ops box -->
+        <rect x="150" y="110" width="210" height="100" fill="#1c2128" stroke="#58a6ff" stroke-width="1" rx="6"/>
+        <text x="255" y="128" fill="#58a6ff" font-size="11" font-weight="700" text-anchor="middle" font-family="monospace">inet_family_ops</text>
+        <text x="165" y="145" fill="#8b949e" font-size="10" font-family="monospace">.family = PF_INET (2)</text>
+        <text x="165" y="160" fill="#e6edf3" font-size="10" font-family="monospace">.create = inet_create</text>
+        <text x="165" y="175" fill="#8b949e" font-size="10" font-family="monospace">.owner  = THIS_MODULE</text>
+        <rect x="160" y="185" width="180" height="16" fill="#0d1117" rx="3"/>
+        <text x="250" y="196" fill="#6e7681" font-size="9" text-anchor="middle">net/ipv4/af_inet.c</text>
+
+        <!-- netlink_family_ops box -->
+        <rect x="360" y="110" width="210" height="100" fill="#1c2128" stroke="#3fb950" stroke-width="1" rx="6"/>
+        <text x="465" y="128" fill="#3fb950" font-size="11" font-weight="700" text-anchor="middle" font-family="monospace">netlink_family_ops</text>
+        <text x="375" y="145" fill="#8b949e" font-size="10" font-family="monospace">.family = PF_NETLINK (16)</text>
+        <text x="375" y="160" fill="#e6edf3" font-size="10" font-family="monospace">.create = netlink_create</text>
+        <text x="375" y="175" fill="#8b949e" font-size="10" font-family="monospace">.owner  = THIS_MODULE</text>
+        <rect x="375" y="185" width="180" height="16" fill="#0d1117" rx="3"/>
+        <text x="465" y="196" fill="#6e7681" font-size="9" text-anchor="middle">net/netlink/af_netlink.c</text>
+      </svg>
+      <div class="diagram-caption">图 2-1：net_families 全局数组结构，PF_INET=2，PF_NETLINK=16</div>
+    </div>
+
+    <div class="callout callout-principle">
+      <div class="callout-title">🧩 第一性原理</div>
+      <p>协议族的注册机制体现了<strong>"开放-封闭原则"（OCP）</strong>：内核的 socket 创建主路径（<code>__sock_create</code>）对修改封闭，对扩展开放。任何新协议只需调用 <code>sock_register()</code>，无需修改 <code>net/socket.c</code> 中的任何代码。这正是操作系统级"插件系统"的实现方式——用全局数组 + 函数指针替代硬编码的 if-else 判断链。</p>
+    </div>
+  </section>
+
+  <!-- S3 -->
+  <section class="section" id="s3">
+    <div class="section-num">第 03 章</div>
+    <h2>proto_ops 与 proto：两级操作函数表</h2>
+    <p>在协议族内部，Linux 使用两个结构体承载操作函数，形成清晰的两层抽象：</p>
+
+    <h3>struct proto_ops — 协议族操作表（socket 层）</h3>
+    <p>挂在 <code>socket->ops</code> 上，提供面向 BSD socket API 的操作（bind、connect、sendmsg、recvmsg 等）。</p>
+    <pre><code><span class="cm">/* include/linux/net.h */</span>
+<span class="kw">struct</span> <span class="ty">proto_ops</span> {
+    <span class="kw">int</span>  family;
+    <span class="kw">int</span>  (*<span class="fn">release</span>)  (<span class="kw">struct</span> socket *sock);
+    <span class="kw">int</span>  (*<span class="fn">bind</span>)     (<span class="kw">struct</span> socket *sock, <span class="kw">struct</span> sockaddr *myaddr, <span class="kw">int</span> len);
+    <span class="kw">int</span>  (*<span class="fn">connect</span>)  (<span class="kw">struct</span> socket *sock, <span class="kw">struct</span> sockaddr *vaddr, <span class="kw">int</span> len, <span class="kw">int</span> flags);
+    <span class="kw">int</span>  (*<span class="fn">accept</span>)   (<span class="kw">struct</span> socket *sock, <span class="kw">struct</span> socket *newsock, <span class="kw">int</span> flags, ...);
+    <span class="kw">int</span>  (*<span class="fn">sendmsg</span>)  (<span class="kw">struct</span> socket *sock, <span class="kw">struct</span> msghdr *m, <span class="kw">size_t</span> len);
+    <span class="kw">int</span>  (*<span class="fn">recvmsg</span>)  (<span class="kw">struct</span> socket *sock, <span class="kw">struct</span> msghdr *m, <span class="kw">size_t</span> len, <span class="kw">int</span> flags);
+    <span class="cm">/* … */</span>
+};</code></pre>
+
+    <p>AF_INET 定义了三种 proto_ops，分别对应三种 socket 类型：</p>
+    <pre><code><span class="cm">/* net/ipv4/af_inet.c */</span>
+<span class="kw">const struct</span> <span class="ty">proto_ops</span> <span class="nm">inet_stream_ops</span>  = { .sendmsg = <span class="fn">inet_sendmsg</span>, .connect = <span class="fn">inet_stream_connect</span>, ... };
+<span class="kw">const struct</span> <span class="ty">proto_ops</span> <span class="nm">inet_dgram_ops</span>   = { .sendmsg = <span class="fn">inet_sendmsg</span>, .connect = <span class="fn">inet_dgram_connect</span>, ... };
+<span class="kw">const struct</span> <span class="ty">proto_ops</span> <span class="nm">inet_sockraw_ops</span> = { .sendmsg = <span class="fn">inet_sendmsg</span>, ... };</code></pre>
+
+    <h3>struct proto — 传输协议操作表（sock 层）</h3>
+    <p>挂在 <code>sock->sk_prot</code> 上，提供协议特定的实现（如 <code>tcp_v4_connect</code>、<code>udp_sendmsg</code>）。</p>
+    <pre><code><span class="cm">/* include/net/sock.h */</span>
+<span class="kw">struct</span> <span class="ty">proto</span> {
+    <span class="kw">void</span>  (*<span class="fn">close</span>)   (<span class="kw">struct</span> sock *sk, <span class="kw">long</span> timeout);
+    <span class="kw">int</span>   (*<span class="fn">connect</span>) (<span class="kw">struct</span> sock *sk, <span class="kw">struct</span> sockaddr *uaddr, <span class="kw">int</span> len);
+    <span class="kw">int</span>   (*<span class="fn">sendmsg</span>) (<span class="kw">struct</span> sock *sk, <span class="kw">struct</span> msghdr *msg, <span class="kw">size_t</span> len);
+    <span class="kw">int</span>   (*<span class="fn">recvmsg</span>) (<span class="kw">struct</span> sock *sk, <span class="kw">struct</span> msghdr *msg, <span class="kw">size_t</span> len, ...);
+    <span class="kw">int</span>   (*<span class="fn">init</span>)    (<span class="kw">struct</span> sock *sk);  <span class="cm">/* 如 tcp_v4_init_sock() */</span>
+    <span class="kw">void</span>  (*<span class="fn">hash</span>)    (<span class="kw">struct</span> sock *sk);  <span class="cm">/* 加入哈希表 */</span>
+    <span class="kw">void</span>  (*<span class="fn">unhash</span>)  (<span class="kw">struct</span> sock *sk);
+    <span class="kw">int</span>   (*<span class="fn">get_port</span>)(<span class="kw">struct</span> sock *sk, <span class="kw">unsigned short</span> snum);
+    <span class="kw">char</span>  name[32];
+    <span class="kw">size_t</span> obj_size; <span class="cm">/* slab 分配大小，如 sizeof(struct tcp_sock) */</span>
+    <span class="cm">/* … */</span>
+};</code></pre>
+
+    <div class="diagram-wrap">
+      <svg viewBox="0 0 720 200" width="720" height="200" xmlns="http://www.w3.org/2000/svg">
+        <rect x="0" y="0" width="720" height="200" fill="#161b22" rx="8"/>
+
+        <!-- syscall -->
+        <rect x="280" y="10" width="160" height="32" fill="#388bfd22" stroke="#58a6ff" stroke-width="1" rx="4"/>
+        <text x="360" y="31" fill="#58a6ff" font-size="12" text-anchor="middle" font-family="monospace">sendmsg() syscall</text>
+        <line x1="360" y1="42" x2="360" y2="60" stroke="#58a6ff" stroke-width="1.5" marker-end="url(#arr)"/>
+
+        <!-- proto_ops -->
+        <rect x="190" y="60" width="340" height="50" fill="#1c2128" stroke="#ff7b72" stroke-width="1.5" rx="6"/>
+        <text x="360" y="80" fill="#ff7b72" font-size="12" font-weight="700" text-anchor="middle" font-family="monospace">socket→ops  (struct proto_ops)</text>
+        <text x="360" y="98" fill="#8b949e" font-size="11" text-anchor="middle" font-family="monospace">inet_stream_ops.sendmsg = inet_sendmsg()</text>
+        <line x1="360" y1="110" x2="360" y2="128" stroke="#ff7b72" stroke-width="1.5" marker-end="url(#arr)"/>
+
+        <!-- proto -->
+        <rect x="180" y="128" width="360" height="50" fill="#1c2128" stroke="#ffa657" stroke-width="1.5" rx="6"/>
+        <text x="360" y="148" fill="#ffa657" font-size="12" font-weight="700" text-anchor="middle" font-family="monospace">sock→sk_prot  (struct proto)</text>
+        <text x="360" y="166" fill="#8b949e" font-size="11" text-anchor="middle" font-family="monospace">tcp_prot.sendmsg = tcp_sendmsg() / udp_prot.sendmsg = udp_sendmsg()</text>
+
+        <!-- labels -->
+        <text x="30" y="92" fill="#6e7681" font-size="10">BSS Socket API 层</text>
+        <text x="30" y="155" fill="#6e7681" font-size="10">传输协议实现层</text>
+      </svg>
+      <div class="diagram-caption">图 3-1：两级操作表调用链，proto_ops 委托给 proto</div>
+    </div>
+
+    <div class="callout callout-principle">
+      <div class="callout-title">🧩 第一性原理</div>
+      <p><code>proto_ops</code> 与 <code>proto</code> 的分离实现了<strong>委托模式（Delegation Pattern）</strong>：<code>proto_ops</code> 负责与 VFS 接口交接，完成通用参数检查，然后"委托"给 <code>proto</code> 的协议特定实现。这允许同一个 <code>proto_ops</code>（如 <code>inet_dgram_ops</code>）被 UDP、ICMP ping 等多个协议共用，减少重复代码，而各自的 <code>proto</code> 结构承载差异化实现。</p>
+    </div>
+  </section>
+
+  <!-- S4 -->
+  <section class="section" id="s4">
+    <div class="section-num">第 04 章</div>
+    <h2>socket() 系统调用与第一级分流</h2>
+    <p>所有 socket 的创建都经过 <code>net/socket.c</code> 中的 <code>__sock_create()</code>，该函数实现了第一级分流。</p>
+
+    <pre><code><span class="cm">/* net/socket.c — 调用路径 */</span>
+SYSCALL_DEFINE3(socket, <span class="kw">int</span>, family, <span class="kw">int</span>, type, <span class="kw">int</span>, protocol)
+  → <span class="fn">__sys_socket</span>()
+    → <span class="fn">sock_create</span>()
+      → <span class="fn">__sock_create</span>()
+        → <span class="fn">pf->create</span>()  <span class="cm">/* 第一级分流：按 family 调用对应的 create */</span>
+    → <span class="fn">sock_map_fd</span>()  <span class="cm">/* 绑定到用户态 fd */</span></code></pre>
+
+    <h3>__sock_create() 核心逻辑</h3>
+    <pre><code><span class="kw">int</span> <span class="fn">__sock_create</span>(<span class="kw">struct</span> net *net, <span class="kw">int</span> family, <span class="kw">int</span> type,
+                   <span class="kw">int</span> protocol, <span class="kw">struct</span> socket **res, <span class="kw">int</span> kern)
+{
+    <span class="kw">struct</span> <span class="ty">socket</span> *sock;
+    <span class="kw">const struct</span> <span class="ty">net_proto_family</span> *pf;
+
+    sock = <span class="fn">sock_alloc</span>();       <span class="cm">/* 分配 struct socket */</span>
+    sock->type = type;
+
+    <span class="cm">/* ★ 第一级分流：用 family 作为 key 查 net_families 数组 */</span>
+    pf = <span class="fn">rcu_dereference</span>(<span class="nm">net_families</span>[family]);
+    <span class="kw">if</span> (!pf) <span class="kw">return</span> -EAFNOSUPPORT;
+
+    <span class="cm">/* 调用协议族的 create 函数，如 inet_create() */</span>
+    err = <span class="fn">pf->create</span>(net, sock, protocol, kern);
+    <span class="kw">return</span> err;
+}</code></pre>
+
+    <div class="diagram-wrap">
+      <svg viewBox="0 0 740 360" width="740" height="360" xmlns="http://www.w3.org/2000/svg">
+        <rect x="0" y="0" width="740" height="360" fill="#161b22" rx="8"/>
+        <!-- Flow chart -->
+        <!-- Step 1 -->
+        <rect x="270" y="10" width="200" height="36" fill="#388bfd22" stroke="#58a6ff" rx="4"/>
+        <text x="370" y="33" fill="#58a6ff" font-size="12" text-anchor="middle" font-family="monospace">socket(family, type, proto)</text>
+        <line x1="370" y1="46" x2="370" y2="64" stroke="#58a6ff" stroke-width="1.5" marker-end="url(#arr)"/>
+
+        <!-- Step 2 -->
+        <rect x="250" y="64" width="240" height="36" fill="#1c2128" stroke="#30363d" rx="4"/>
+        <text x="370" y="87" fill="#e6edf3" font-size="12" text-anchor="middle" font-family="monospace">__sock_create()</text>
+        <line x1="370" y1="100" x2="370" y2="118" stroke="#8b949e" stroke-width="1.5" marker-end="url(#arr)"/>
+
+        <!-- Step 3: lookup -->
+        <rect x="200" y="118" width="340" height="36" fill="#1c2128" stroke="#ffa657" stroke-width="1.5" rx="4"/>
+        <text x="370" y="141" fill="#ffa657" font-size="12" text-anchor="middle" font-family="monospace">pf = net_families[family]</text>
+        <!-- Decision -->
+        <line x1="200" y1="136" x2="100" y2="136" stroke="#ff7b72" stroke-width="1" stroke-dasharray="4,3"/>
+        <text x="95" y="130" fill="#ff7b72" font-size="10" text-anchor="end">NULL →</text>
+        <text x="95" y="142" fill="#ff7b72" font-size="10" text-anchor="end">EAFNOSUPPORT</text>
+        <line x1="370" y1="154" x2="370" y2="172" stroke="#8b949e" stroke-width="1.5" marker-end="url(#arr)"/>
+
+        <!-- Step 4: pf->create -->
+        <rect x="200" y="172" width="340" height="36" fill="#3fb95022" stroke="#3fb950" stroke-width="1.5" rx="4"/>
+        <text x="370" y="195" fill="#3fb950" font-size="12" text-anchor="middle" font-family="monospace">pf→create(net, sock, protocol)</text>
+
+        <!-- Branch lines -->
+        <line x1="200" y1="190" x2="50" y2="250" stroke="#58a6ff" stroke-width="1.5" marker-end="url(#arr)"/>
+        <line x1="280" y1="208" x2="200" y2="250" stroke="#d2a8ff" stroke-width="1.5" marker-end="url(#arr)"/>
+        <line x1="370" y1="208" x2="370" y2="250" stroke="#3fb950" stroke-width="1.5" marker-end="url(#arr2)"/>
+        <line x1="460" y1="208" x2="540" y2="250" stroke="#ffa657" stroke-width="1.5" marker-end="url(#arr)"/>
+        <line x1="540" y1="208" x2="680" y2="250" stroke="#8b949e" stroke-width="1.5" marker-end="url(#arr)"/>
+
+        <!-- Protocol boxes -->
+        <rect x="10" y="250" width="100" height="50" fill="#1c2128" stroke="#58a6ff" rx="4"/>
+        <text x="60" y="270" fill="#58a6ff" font-size="11" text-anchor="middle" font-family="monospace">AF_UNIX</text>
+        <text x="60" y="286" fill="#6e7681" font-size="9" text-anchor="middle">unix_create()</text>
+
+        <rect x="120" y="250" width="100" height="50" fill="#1c2128" stroke="#d2a8ff" rx="4"/>
+        <text x="170" y="270" fill="#d2a8ff" font-size="11" text-anchor="middle" font-family="monospace">AF_INET</text>
+        <text x="170" y="286" fill="#6e7681" font-size="9" text-anchor="middle">inet_create()</text>
+
+        <rect x="320" y="250" width="100" height="50" fill="#1c2128" stroke="#3fb950" rx="4"/>
+        <text x="370" y="270" fill="#3fb950" font-size="11" text-anchor="middle" font-family="monospace">AF_NETLINK</text>
+        <text x="370" y="286" fill="#6e7681" font-size="9" text-anchor="middle">netlink_create()</text>
+
+        <rect x="480" y="250" width="100" height="50" fill="#1c2128" stroke="#ffa657" rx="4"/>
+        <text x="530" y="270" fill="#ffa657" font-size="11" text-anchor="middle" font-family="monospace">AF_PACKET</text>
+        <text x="530" y="286" fill="#6e7681" font-size="9" text-anchor="middle">packet_create()</text>
+
+        <rect x="620" y="250" width="100" height="50" fill="#1c2128" stroke="#8b949e" rx="4"/>
+        <text x="670" y="270" fill="#8b949e" font-size="11" text-anchor="middle" font-family="monospace">AF_INET6</text>
+        <text x="670" y="286" fill="#6e7681" font-size="9" text-anchor="middle">inet6_create()</text>
+
+        <!-- Result -->
+        <line x1="370" y1="300" x2="370" y2="328" stroke="#3fb950" stroke-width="1.5" marker-end="url(#arr2)"/>
+        <rect x="230" y="328" width="280" height="28" fill="#1c2128" stroke="#30363d" rx="4"/>
+        <text x="370" y="347" fill="#8b949e" font-size="11" text-anchor="middle" font-family="monospace">sock_map_fd() → 返回 fd</text>
+      </svg>
+      <div class="diagram-caption">图 4-1：__sock_create() 第一级分流流程</div>
+    </div>
+
+    <div class="callout callout-principle">
+      <div class="callout-title">🧩 第一性原理</div>
+      <p>第一级分流的本质是<strong>数组索引的 O(1) 查找</strong>，用整型协议族编号直接索引指针数组，无任何循环或比较。这是计算机科学中最基础的"哈希"思想极端形式——当 key 空间有界（NPROTO=46）且稀疏可接受时，直接用数组代替哈希表，将查找时间压缩到单次内存访问。同时 RCU（Read-Copy-Update）保护让高并发路径无锁读取，这是 Linux 内核性能设计的典型范式。</p>
+    </div>
+  </section>
+
+  <!-- S5 -->
+  <section class="section" id="s5">
+    <div class="section-num">第 05 章</div>
+    <h2>AF_INET 内部：inetsw 第二级分流</h2>
+    <p>当 <code>net_families[AF_INET]->create</code>（即 <code>inet_create()</code>）被调用后，需要在 AF_INET 内部进一步按 <code>type</code>（socket 类型）和 <code>protocol</code>（传输层协议号）二次分流，确定具体是 TCP、UDP、RAW 还是 ICMP ping。</p>
+
+    <h3>inetsw_array — 静态注册表</h3>
+    <pre><code><span class="cm">/* net/ipv4/af_inet.c — 静态协议描述数组（来自官方内核源码） */</span>
+<span class="kw">static struct</span> <span class="ty">inet_protosw</span> <span class="nm">inetsw_array</span>[] = {
+    {
+        .type     = SOCK_STREAM,
+        .protocol = IPPROTO_TCP,
+        .prot     = &<span class="nm">tcp_prot</span>,        <span class="cm">/* tcp_sendmsg, tcp_recvmsg … */</span>
+        .ops      = &<span class="nm">inet_stream_ops</span>,  <span class="cm">/* inet_stream_connect … */</span>
+        .flags    = INET_PROTOSW_PERMANENT | INET_PROTOSW_ICSK,
+    },
+    {
+        .type     = SOCK_DGRAM,
+        .protocol = IPPROTO_UDP,
+        .prot     = &<span class="nm">udp_prot</span>,
+        .ops      = &<span class="nm">inet_dgram_ops</span>,
+        .flags    = INET_PROTOSW_PERMANENT,
+    },
+    {
+        .type     = SOCK_DGRAM,
+        .protocol = IPPROTO_ICMP,        <span class="cm">/* ping socket */</span>
+        .prot     = &<span class="nm">ping_prot</span>,
+        .ops      = &<span class="nm">inet_sockraw_ops</span>,
+        .flags    = INET_PROTOSW_REUSE,
+    },
+    {
+        .type     = SOCK_RAW,
+        .protocol = IPPROTO_IP,          <span class="cm">/* 通配符：SOCK_RAW 入口 */</span>
+        .prot     = &<span class="nm">raw_prot</span>,
+        .ops      = &<span class="nm">inet_sockraw_ops</span>,
+        .flags    = INET_PROTOSW_REUSE,
+    }
+};</code></pre>
+
+    <p>内核初始化时，<code>inet_init()</code> 将 <code>inetsw_array</code> 中的每个条目注册到 <code>inetsw[SOCK_MAX]</code>（按 type 分类的链表数组）：</p>
+    <pre><code><span class="cm">/* net/ipv4/af_inet.c */</span>
+<span class="kw">static struct</span> <span class="ty">list_head</span> <span class="nm">inetsw</span>[SOCK_MAX];  <span class="cm">/* 按 type 索引的链表数组 */</span>
+
+<span class="kw">static int</span> __init <span class="fn">inet_init</span>(<span class="kw">void</span>)
+{
+    <span class="cm">/* 注册 TCP、UDP、RAW 协议到 proto_list */</span>
+    rc = <span class="fn">proto_register</span>(&tcp_prot, 1);
+    rc = <span class="fn">proto_register</span>(&udp_prot, 1);
+    rc = <span class="fn">proto_register</span>(&raw_prot, 1);
+    rc = <span class="fn">proto_register</span>(&ping_prot, 1);
+
+    <span class="cm">/* 将 inetsw_array 注册到 inetsw 链表 */</span>
+    <span class="kw">for</span> (q = inetsw_array; q < &inetsw_array[INETSW_ARRAY_LEN]; ++q)
+        <span class="fn">inet_register_protosw</span>(q);
+
+    <span class="cm">/* 注册 AF_INET 协议族 */</span>
+    <span class="fn">sock_register</span>(&inet_family_ops);
+    ...
+}</code></pre>
+
+    <h3>inet_create() — 第二级分流核心</h3>
+    <pre><code><span class="cm">/* net/ipv4/af_inet.c */</span>
+<span class="kw">static int</span> <span class="fn">inet_create</span>(<span class="kw">struct</span> net *net, <span class="kw">struct</span> socket *sock,
+                        <span class="kw">int</span> protocol, <span class="kw">int</span> kern)
+{
+    <span class="kw">struct</span> <span class="ty">inet_protosw</span> *answer;
+
+    <span class="cm">/* ★ 第二级分流：在 inetsw[sock->type] 链表中匹配 protocol */</span>
+    <span class="fn">list_for_each_entry_rcu</span>(answer, &<span class="nm">inetsw</span>[sock->type], list) {
+        <span class="kw">if</span> (protocol == answer->protocol) {
+            <span class="kw">if</span> (protocol != IPPROTO_IP) <span class="kw">break</span>;
+        } <span class="kw">else</span> {
+            <span class="kw">if</span> (IPPROTO_IP == protocol)  { protocol = answer->protocol; <span class="kw">break</span>; }
+            <span class="kw">if</span> (IPPROTO_IP == answer->protocol) <span class="kw">break</span>;
+        }
+    }
+
+    <span class="cm">/* 赋值操作表 — 分流完成 */</span>
+    sock->ops     = answer->ops;     <span class="cm">/* 如 inet_stream_ops */</span>
+    answer_prot   = answer->prot;    <span class="cm">/* 如 tcp_prot */</span>
+
+    <span class="cm">/* 分配 struct sock，绑定 sk_prot */</span>
+    sk = <span class="fn">sk_alloc</span>(net, PF_INET, GFP_KERNEL, answer_prot, kern);
+    <span class="fn">sock_init_data</span>(sock, sk);        <span class="cm">/* sock->sk = sk; sk->sk_socket = sock */</span>
+
+    <span class="kw">if</span> (sk->sk_prot->init)
+        err = sk->sk_prot-><span class="fn">init</span>(sk); <span class="cm">/* 如 tcp_v4_init_sock() */</span>
+}</code></pre>
+
+    <div class="diagram-wrap">
+      <svg viewBox="0 0 720 300" width="720" height="300" xmlns="http://www.w3.org/2000/svg">
+        <rect x="0" y="0" width="720" height="300" fill="#161b22" rx="8"/>
+
+        <!-- inetsw array -->
+        <text x="30" y="28" fill="#ffa657" font-size="12" font-weight="700" font-family="monospace">inetsw[SOCK_MAX]  (按 socket type 索引的链表数组)</text>
+
+        <!-- SOCK_STREAM row -->
+        <rect x="30" y="40" width="120" height="34" fill="#388bfd22" stroke="#58a6ff" stroke-width="1.5" rx="4"/>
+        <text x="90" y="61" fill="#58a6ff" font-size="11" text-anchor="middle" font-family="monospace">SOCK_STREAM</text>
+        <line x1="150" y1="57" x2="185" y2="57" stroke="#58a6ff" stroke-width="1.5" marker-end="url(#arr)"/>
+        <rect x="185" y="40" width="130" height="34" fill="#1c2128" stroke="#30363d" rx="4"/>
+        <text x="250" y="58" fill="#e6edf3" font-size="11" text-anchor="middle" font-family="monospace">IPPROTO_TCP</text>
+        <text x="250" y="68" fill="#6e7681" font-size="9" text-anchor="middle">tcp_prot+stream_ops</text>
+        <text x="320" y="62" fill="#6e7681" font-size="12">→ NULL</text>
+
+        <!-- SOCK_DGRAM row -->
+        <rect x="30" y="88" width="120" height="34" fill="#ffa65722" stroke="#ffa657" stroke-width="1.5" rx="4"/>
+        <text x="90" y="109" fill="#ffa657" font-size="11" text-anchor="middle" font-family="monospace">SOCK_DGRAM</text>
+        <line x1="150" y1="105" x2="185" y2="105" stroke="#ffa657" stroke-width="1.5" marker-end="url(#arr)"/>
+        <rect x="185" y="88" width="130" height="34" fill="#1c2128" stroke="#30363d" rx="4"/>
+        <text x="250" y="106" fill="#e6edf3" font-size="11" text-anchor="middle" font-family="monospace">IPPROTO_UDP</text>
+        <text x="250" y="116" fill="#6e7681" font-size="9" text-anchor="middle">udp_prot+dgram_ops</text>
+        <line x1="315" y1="105" x2="350" y2="105" stroke="#ffa657" stroke-width="1.2" marker-end="url(#arr)"/>
+        <rect x="350" y="88" width="130" height="34" fill="#1c2128" stroke="#30363d" rx="4"/>
+        <text x="415" y="106" fill="#e6edf3" font-size="11" text-anchor="middle" font-family="monospace">IPPROTO_ICMP</text>
+        <text x="415" y="116" fill="#6e7681" font-size="9" text-anchor="middle">ping_prot+raw_ops</text>
+        <text x="485" y="109" fill="#6e7681" font-size="12">→ NULL</text>
+
+        <!-- SOCK_RAW row -->
+        <rect x="30" y="136" width="120" height="34" fill="#8b949e22" stroke="#8b949e" stroke-width="1.5" rx="4"/>
+        <text x="90" y="157" fill="#8b949e" font-size="11" text-anchor="middle" font-family="monospace">SOCK_RAW</text>
+        <line x1="150" y1="153" x2="185" y2="153" stroke="#8b949e" stroke-width="1.5" marker-end="url(#arr)"/>
+        <rect x="185" y="136" width="130" height="34" fill="#1c2128" stroke="#30363d" rx="4"/>
+        <text x="250" y="154" fill="#e6edf3" font-size="11" text-anchor="middle" font-family="monospace">IPPROTO_IP</text>
+        <text x="250" y="164" fill="#6e7681" font-size="9" text-anchor="middle">raw_prot+raw_ops</text>
+        <text x="320" y="157" fill="#6e7681" font-size="12">→ NULL</text>
+
+        <!-- Lookup path annotation -->
+        <rect x="30" y="190" width="660" height="96" fill="#0d1117" stroke="#30363d" rx="6"/>
+        <text x="50" y="212" fill="#3fb950" font-size="11" font-weight="700" font-family="monospace">inet_create() 查找过程：</text>
+        <text x="50" y="230" fill="#8b949e" font-size="11" font-family="monospace">  socket(AF_INET, SOCK_STREAM, IPPROTO_TCP)  →  遍历 inetsw[SOCK_STREAM]  →  匹配 IPPROTO_TCP</text>
+        <text x="50" y="248" fill="#8b949e" font-size="11" font-family="monospace">  socket(AF_INET, SOCK_DGRAM,  IPPROTO_UDP)  →  遍历 inetsw[SOCK_DGRAM]   →  匹配 IPPROTO_UDP</text>
+        <text x="50" y="266" fill="#8b949e" font-size="11" font-family="monospace">  socket(AF_INET, SOCK_DGRAM,  0)            →  遍历 inetsw[SOCK_DGRAM]   →  匹配第一个 (UDP)</text>
+        <text x="50" y="280" fill="#58a6ff" font-size="10" font-family="monospace">  结果: sock→ops = answer→ops,  sk→sk_prot = answer→prot</text>
+      </svg>
+      <div class="diagram-caption">图 5-1：inetsw 链表数组结构与 inet_create() 查找逻辑</div>
+    </div>
+
+    <div class="callout callout-principle">
+      <div class="callout-title">🧩 第一性原理</div>
+      <p>第二级分流采用<strong>链表线性扫描</strong>而非数组直接索引，原因是 AF_INET 内部的协议数量少（约 4 个），且允许运行时通过 <code>inet_register_protosw()</code> 动态插入新协议（如模块化的 SCTP）。链表的插入/删除 O(1) 远比维护稀疏数组的复杂度更重要。这是对"查找"与"扩展"两个目标的权衡——协议数量少时，线性扫描的 O(n) 开销可忽略，而开放扩展性是首要设计目标。</p>
+    </div>
+  </section>
+
+  <!-- S6 -->
+  <section class="section" id="s6">
+    <div class="section-num">第 06 章</div>
+    <h2>Netlink 协议族独立分流</h2>
+    <p>Netlink（AF_NETLINK）是内核与用户空间通信的重要机制（路由、防火墙、网络设备管理等都通过它实现），其分流机制与 AF_INET 有所不同。</p>
+
+    <h3>Netlink 的注册方式</h3>
+    <pre><code><span class="cm">/* net/netlink/af_netlink.c — 注册为独立协议族 */</span>
+<span class="kw">static const struct</span> <span class="ty">net_proto_family</span> <span class="nm">netlink_family_ops</span> = {
+    .family = PF_NETLINK,
+    .create = <span class="fn">netlink_create</span>,
+    .owner  = THIS_MODULE,
+};
+
+<span class="kw">static int</span> __init <span class="fn">netlink_proto_init</span>(<span class="kw">void</span>)
+{
+    <span class="fn">sock_register</span>(&netlink_family_ops);
+    ...
+}</code></pre>
+
+    <p>在 <code>netlink_create()</code> 内，第三个参数 <code>protocol</code> 指定 Netlink 类型（如 <code>NETLINK_ROUTE=0</code>，<code>NETLINK_NETFILTER=12</code>），通过 <code>nl_table</code> 数组进一步分流：</p>
+
+    <pre><code><span class="cm">/* net/netlink/af_netlink.c */</span>
+<span class="kw">static int</span> <span class="fn">netlink_create</span>(<span class="kw">struct</span> net *net, <span class="kw">struct</span> socket *sock,
+                            <span class="kw">int</span> protocol, <span class="kw">int</span> kern)
+{
+    <span class="kw">struct</span> <span class="ty">netlink_sock</span> *nlk;
+    <span class="cm">/* protocol 即 NETLINK_ROUTE / NETLINK_NETFILTER 等 */</span>
+    <span class="kw">if</span> (protocol < 0 || protocol >= MAX_LINKS) <span class="kw">return</span> -EPROTONOSUPPORT;
+
+    sock->ops = &<span class="nm">netlink_ops</span>;
+    sk = <span class="fn">sk_alloc</span>(net, PF_NETLINK, GFP_KERNEL, &<span class="nm">netlink_proto</span>, kern);
+    <span class="fn">sock_init_data</span>(sock, sk);
+    nlk = <span class="fn">nlk_sk</span>(sk);
+    nlk->netlink_rcv = <span class="nm">nl_table</span>[protocol].registered ?  <span class="cm">/* 按协议号查表 */</span>
+                       <span class="nm">nl_table</span>[protocol].cb_mutex : ...;
+}</code></pre>
+
+    <table>
+      <tr><th>Netlink 协议号</th><th>常量名</th><th>用途</th></tr>
+      <tr><td>0</td><td><code>NETLINK_ROUTE</code></td><td>路由、链路、地址管理（ip route, ip link）</td></tr>
+      <tr><td>1</td><td><code>NETLINK_UNUSED</code></td><td>保留</td></tr>
+      <tr><td>3</td><td><code>NETLINK_FIREWALL</code></td><td>netfilter（部分历史功能）</td></tr>
+      <tr><td>4</td><td><code>NETLINK_SOCK_DIAG</code></td><td>socket 诊断（ss 命令使用）</td></tr>
+      <tr><td>7</td><td><code>NETLINK_NFLOG</code></td><td>Netfilter 日志</td></tr>
+      <tr><td>8</td><td><code>NETLINK_XFRM</code></td><td>IPsec / XFRM 框架</td></tr>
+      <tr><td>12</td><td><code>NETLINK_NETFILTER</code></td><td>nftables, iptables 配置</td></tr>
+      <tr><td>15</td><td><code>NETLINK_KOBJECT_UEVENT</code></td><td>内核 uevent（udev 使用）</td></tr>
+    </table>
+
+    <div class="callout callout-info">
+      <div class="callout-title">📌 Netlink 与 AF_INET 分流的差异</div>
+      <p>AF_INET 的第二级分流在 <code>inetsw</code> 链表中匹配 <code>type + protocol</code> 组合，找到的是不同的 <code>proto_ops</code> 和 <code>proto</code> 实现（TCP 和 UDP 的代码完全不同）。而 Netlink 所有协议类型共用同一套 <code>netlink_ops</code> 和 <code>netlink_proto</code>，区别只是注册的回调函数（<code>netlink_rcv</code>）不同——因为 Netlink 协议的格式（<code>nlmsghdr</code>）统一，差异在于消息内容的处理，而非传输机制。</p>
+    </div>
+
+    <div class="callout callout-principle">
+      <div class="callout-title">🧩 第一性原理</div>
+      <p>Netlink 作为独立协议族（PF_NETLINK）而非 AF_INET 子协议，体现了"关注点分离"原则：它解决的是<strong>内核-用户空间通信</strong>问题，与 IP 网络传输无关。独立注册避免了将 IP 栈代码与内核管理接口耦合，每个协议族专注自身语义。这也说明 Linux 的分流框架具有足够的普适性——<code>sock_register()</code> 的设计对 IP 协议和非 IP 协议一视同仁。</p>
+    </div>
+  </section>
+
+  <!-- S7 -->
+  <section class="section" id="s7">
+    <div class="section-num">第 07 章</div>
+    <h2>接收路径 L2→L3：ptype_base EtherType 分流</h2>
+    <p>数据包接收路径的分流机制与发送路径相对独立。网卡驱动通过 NAPI 将数据包交给 <code>__netif_receive_skb()</code>，此时发生第一次分流——基于以太帧的 EtherType 字段。</p>
+
+    <pre><code><span class="cm">/* net/core/dev.c — L2 分流：ptype_base 哈希表 */</span>
+<span class="kw">static struct</span> <span class="ty">list_head</span> <span class="nm">ptype_base</span>[PTYPE_HASH_SIZE] __read_mostly;
+
+<span class="cm">/* 注册 IP 协议的 L2 处理器 */</span>
+<span class="kw">static struct</span> <span class="ty">packet_type</span> <span class="nm">ip_packet_type</span> __read_mostly = {
+    .type     = cpu_to_be16(ETH_P_IP),  <span class="cm">/* EtherType 0x0800 */</span>
+    .func     = <span class="fn">ip_rcv</span>,
+    .list_func = <span class="fn">ip_list_rcv</span>,
+};
+<span class="cm">/* 在 inet_init() 中注册到 ptype_base: */</span>
+<span class="fn">dev_add_pack</span>(&ip_packet_type);</code></pre>
+
+    <pre><code><span class="cm">/* net/core/dev.c — __netif_receive_skb_core() 关键逻辑（简化） */</span>
+<span class="fn">__netif_receive_skb_core</span>(skb, ...)
+{
+    type = skb->protocol;   <span class="cm">/* 以太帧 EtherType */</span>
+    <span class="cm">/* 在 ptype_base 哈希表中查找处理函数 */</span>
+    list = &<span class="nm">ptype_base</span>[ntohs(type) & PTYPE_HASH_MASK];
+    <span class="fn">list_for_each_entry_rcu</span>(ptype, list, list) {
+        <span class="kw">if</span> (ptype->type == type) {
+            <span class="fn">deliver_skb</span>(skb, ptype);  <span class="cm">/* 调用 ip_rcv() / arp_rcv() 等 */</span>
+        }
+    }
+}</code></pre>
+
+    <div class="diagram-wrap">
+      <svg viewBox="0 0 700 280" width="700" height="280" xmlns="http://www.w3.org/2000/svg">
+        <rect x="0" y="0" width="700" height="280" fill="#161b22" rx="8"/>
+        <!-- NIC -->
+        <rect x="280" y="10" width="140" height="34" fill="#1c2128" stroke="#8b949e" rx="4"/>
+        <text x="350" y="32" fill="#8b949e" font-size="12" text-anchor="middle" font-family="monospace">NIC / 网卡驱动</text>
+        <line x1="350" y1="44" x2="350" y2="62" stroke="#8b949e" stroke-width="1.5" marker-end="url(#arr)"/>
+
+        <!-- netif_receive_skb -->
+        <rect x="195" y="62" width="310" height="34" fill="#1c2128" stroke="#30363d" rx="4"/>
+        <text x="350" y="84" fill="#e6edf3" font-size="11" text-anchor="middle" font-family="monospace">__netif_receive_skb_core(skb)</text>
+        <line x1="350" y1="96" x2="350" y2="114" stroke="#8b949e" stroke-width="1.5" marker-end="url(#arr)"/>
+
+        <!-- ptype_base lookup -->
+        <rect x="160" y="114" width="380" height="36" fill="#1c2128" stroke="#ffa657" stroke-width="1.5" rx="4"/>
+        <text x="350" y="136" fill="#ffa657" font-size="12" text-anchor="middle" font-family="monospace">ptype_base[EtherType &amp; mask] → ptype->func()</text>
+
+        <!-- Branch arrows -->
+        <line x1="210" y1="150" x2="100" y2="190" stroke="#58a6ff" stroke-width="1.5" marker-end="url(#arr)"/>
+        <line x1="310" y1="150" x2="280" y2="190" stroke="#3fb950" stroke-width="1.5" marker-end="url(#arr2)"/>
+        <line x1="410" y1="150" x2="440" y2="190" stroke="#ffa657" stroke-width="1.5" marker-end="url(#arr)"/>
+        <line x1="490" y1="150" x2="600" y2="190" stroke="#d2a8ff" stroke-width="1.5" marker-end="url(#arr)"/>
+
+        <!-- Protocol boxes -->
+        <rect x="20" y="190" width="150" height="50" fill="#1c2128" stroke="#58a6ff" rx="4"/>
+        <text x="95" y="210" fill="#58a6ff" font-size="11" text-anchor="middle" font-family="monospace">ETH_P_IP (0x0800)</text>
+        <text x="95" y="228" fill="#3fb950" font-size="10" text-anchor="middle">ip_rcv()</text>
+
+        <rect x="200" y="190" width="150" height="50" fill="#1c2128" stroke="#3fb950" rx="4"/>
+        <text x="275" y="210" fill="#3fb950" font-size="11" text-anchor="middle" font-family="monospace">ETH_P_IPV6 (0x86DD)</text>
+        <text x="275" y="228" fill="#3fb950" font-size="10" text-anchor="middle">ipv6_rcv()</text>
+
+        <rect x="370" y="190" width="150" height="50" fill="#1c2128" stroke="#ffa657" rx="4"/>
+        <text x="445" y="210" fill="#ffa657" font-size="11" text-anchor="middle" font-family="monospace">ETH_P_ARP (0x0806)</text>
+        <text x="445" y="228" fill="#ffa657" font-size="10" text-anchor="middle">arp_rcv()</text>
+
+        <rect x="540" y="190" width="140" height="50" fill="#1c2128" stroke="#d2a8ff" rx="4"/>
+        <text x="610" y="210" fill="#d2a8ff" font-size="11" text-anchor="middle" font-family="monospace">ETH_P_8021Q…</text>
+        <text x="610" y="228" fill="#6e7681" font-size="10" text-anchor="middle">vlan_rcv()…</text>
+
+        <!-- Label -->
+        <text x="350" y="258" fill="#6e7681" font-size="10" text-anchor="middle">L2→L3 EtherType 分流（ptype_base 哈希链表）</text>
+      </svg>
+      <div class="diagram-caption">图 7-1：L2→L3 基于 EtherType 的接收分流</div>
+    </div>
+
+    <div class="callout callout-principle">
+      <div class="callout-title">🧩 第一性原理</div>
+      <p><code>ptype_base</code> 用哈希链表（而非直接数组）分流，是因为 EtherType 是 16 位值（0~65535），直接数组会浪费大量内存。用 <code>EtherType & PTYPE_HASH_MASK</code> 做哈希桶索引，将 O(65536) 空间压缩到 O(16)。这是"空间-时间"权衡的经典范例：当 key 空间太大时，哈希取代直接索引。</p>
+    </div>
+  </section>
+
+  <!-- S8 -->
+  <section class="section" id="s8">
+    <div class="section-num">第 08 章</div>
+    <h2>接收路径 L3→L4：inet_protos 传输层分流</h2>
+    <p>经过 IP 层处理（路由查找、Netfilter 钩子）后，数据包到达 <code>ip_local_deliver_finish()</code>，此处发生最关键的 L3→L4 分流，使用 <code>inet_protos[256]</code> 数组。</p>
+
+    <pre><code><span class="cm">/* net/ipv4/protocol.c — L3→L4 分流表 */</span>
+<span class="kw">const struct</span> <span class="ty">net_protocol</span> __rcu *<span class="nm">inet_protos</span>[MAX_INET_PROTOS]  <span class="cm">/* 256个槽 */</span>
+        __read_mostly;
+
+<span class="cm">/* include/net/protocol.h — 传输层协议描述子 */</span>
+<span class="kw">struct</span> <span class="ty">net_protocol</span> {
+    <span class="kw">int</span>  (*<span class="fn">early_demux</span>)(struct sk_buff *skb);      <span class="cm">/* 早期优化 demux */</span>
+    <span class="kw">int</span>  (*<span class="fn">handler</span>)    (struct sk_buff *skb);      <span class="cm">/* 主接收函数 */</span>
+    <span class="kw">int</span>  (*<span class="fn">err_handler</span>)(struct sk_buff *skb, u32 info); <span class="cm">/* ICMP 错误处理 */</span>
+    <span class="kw">unsigned int</span> no_policy:1;  <span class="cm">/* 是否跳过 IPsec 策略检查 */</span>
+};
+
+<span class="cm">/* net/ipv4/ip_input.c — ip_protocol_deliver_rcu() 核心逻辑 */</span>
+<span class="kw">void</span> <span class="fn">ip_protocol_deliver_rcu</span>(<span class="kw">struct</span> net *net, <span class="kw">struct</span> sk_buff *skb, <span class="kw">int</span> protocol)
+{
+    <span class="kw">const struct</span> <span class="ty">net_protocol</span> *ipprot;
+
+resubmit:
+    raw = <span class="fn">raw_local_deliver</span>(skb, protocol);  <span class="cm">/* RAW socket 优先 */</span>
+
+    <span class="cm">/* ★ 核心：以 IP 头 protocol 字段为 key，O(1) 查 inet_protos 数组 */</span>
+    ipprot = <span class="fn">rcu_dereference</span>(<span class="nm">inet_protos</span>[protocol]);
+    <span class="kw">if</span> (ipprot) {
+        <span class="cm">/* 调用 tcp_v4_rcv() 或 udp_rcv() 等 */</span>
+        ret = INDIRECT_CALL_2(ipprot-><span class="fn">handler</span>, tcp_v4_rcv, udp_rcv, skb);
+        <span class="kw">if</span> (ret < 0) { protocol = -ret; <span class="kw">goto</span> resubmit; }
+    } <span class="kw">else</span> {
+        <span class="kw">if</span> (!raw) {
+            <span class="cm">/* 未知协议，发送 ICMP "Protocol Unreachable" */</span>
+            <span class="fn">icmp_send</span>(skb, ICMP_DEST_UNREACH, ICMP_PROT_UNREACH, 0);
+        }
+    }
+}</code></pre>
+
+    <h3>各传输协议的注册</h3>
+    <pre><code><span class="cm">/* net/ipv4/af_inet.c — inet_init() 中注册 L4 协议到 inet_protos */</span>
+<span class="kw">static const struct</span> <span class="ty">net_protocol</span> <span class="nm">tcp_protocol</span> = {
+    .early_demux        = <span class="fn">tcp_v4_early_demux</span>,
+    .handler            = <span class="fn">tcp_v4_rcv</span>,     <span class="cm">/* protocol=6 时调用 */</span>
+    .err_handler        = <span class="fn">tcp_v4_err</span>,
+    .no_policy          = 1,
+};
+<span class="kw">static const struct</span> <span class="ty">net_protocol</span> <span class="nm">udp_protocol</span> = {
+    .early_demux        = <span class="fn">udp_v4_early_demux</span>,
+    .handler            = <span class="fn">udp_rcv</span>,         <span class="cm">/* protocol=17 时调用 */</span>
+    .err_handler        = <span class="fn">udp_err</span>,
+    .no_policy          = 1,
+};
+<span class="kw">static const struct</span> <span class="ty">net_protocol</span> <span class="nm">icmp_protocol</span> = {
+    .handler            = <span class="fn">icmp_rcv</span>,        <span class="cm">/* protocol=1 时调用 */</span>
+    .err_handler        = <span class="fn">icmp_err</span>,
+};
+
+<span class="fn">inet_add_protocol</span>(&icmp_protocol, IPPROTO_ICMP);  <span class="cm">/* 注册到 inet_protos[1] */</span>
+<span class="fn">inet_add_protocol</span>(&udp_protocol,  IPPROTO_UDP);   <span class="cm">/* 注册到 inet_protos[17] */</span>
+<span class="fn">inet_add_protocol</span>(&tcp_protocol,  IPPROTO_TCP);   <span class="cm">/* 注册到 inet_protos[6] */</span></code></pre>
+
+    <div class="diagram-wrap">
+      <svg viewBox="0 0 720 270" width="720" height="270" xmlns="http://www.w3.org/2000/svg">
+        <rect x="0" y="0" width="720" height="270" fill="#161b22" rx="8"/>
+
+        <!-- inet_protos label -->
+        <text x="30" y="28" fill="#ffa657" font-size="12" font-weight="700" font-family="monospace">inet_protos[MAX_INET_PROTOS=256]  (全局 RCU 数组)</text>
+
+        <!-- Array boxes -->
+        <g font-family="monospace" font-size="10">
+          <!-- [0] -->
+          <rect x="30" y="40" width="58" height="52" fill="#1c2128" stroke="#30363d"/>
+          <text x="59" y="58" fill="#6e7681" text-anchor="middle">[0]</text>
+          <text x="59" y="72" fill="#6e7681" text-anchor="middle">NULL</text>
+          <!-- [1] ICMP -->
+          <rect x="88" y="40" width="58" height="52" fill="#1c2128" stroke="#ffa657" stroke-width="1.5"/>
+          <text x="117" y="58" fill="#ffa657" text-anchor="middle">[1]</text>
+          <text x="117" y="72" fill="#e6edf3" text-anchor="middle">ICMP</text>
+          <text x="117" y="84" fill="#6e7681" text-anchor="middle" font-size="9">icmp_rcv</text>
+          <!-- [2] IGMP -->
+          <rect x="146" y="40" width="58" height="52" fill="#1c2128" stroke="#30363d"/>
+          <text x="175" y="58" fill="#8b949e" text-anchor="middle">[2]</text>
+          <text x="175" y="72" fill="#8b949e" text-anchor="middle">IGMP</text>
+          <text x="175" y="84" fill="#6e7681" text-anchor="middle" font-size="9">igmp_rcv</text>
+          <!-- dots -->
+          <text x="212" y="72" fill="#6e7681" font-size="16">…</text>
+          <!-- [6] TCP -->
+          <rect x="230" y="40" width="58" height="52" fill="#388bfd22" stroke="#58a6ff" stroke-width="2"/>
+          <text x="259" y="58" fill="#58a6ff" text-anchor="middle">[6]</text>
+          <text x="259" y="72" fill="#e6edf3" text-anchor="middle" font-weight="700">TCP</text>
+          <text x="259" y="84" fill="#58a6ff" text-anchor="middle" font-size="9">tcp_v4_rcv</text>
+          <!-- dots -->
+          <text x="296" y="72" fill="#6e7681" font-size="16">…</text>
+          <!-- [17] UDP -->
+          <rect x="314" y="40" width="58" height="52" fill="#ffa65722" stroke="#ffa657" stroke-width="2"/>
+          <text x="343" y="58" fill="#ffa657" text-anchor="middle">[17]</text>
+          <text x="343" y="72" fill="#e6edf3" text-anchor="middle" font-weight="700">UDP</text>
+          <text x="343" y="84" fill="#ffa657" text-anchor="middle" font-size="9">udp_rcv</text>
+          <!-- dots -->
+          <text x="380" y="72" fill="#6e7681" font-size="16">…</text>
+          <!-- [33] DCCP -->
+          <rect x="396" y="40" width="58" height="52" fill="#1c2128" stroke="#30363d"/>
+          <text x="425" y="58" fill="#8b949e" text-anchor="middle">[33]</text>
+          <text x="425" y="72" fill="#8b949e" text-anchor="middle">DCCP</text>
+          <text x="425" y="84" fill="#6e7681" text-anchor="middle" font-size="9">dccp_rcv</text>
+          <!-- [47] GRE -->
+          <rect x="454" y="40" width="58" height="52" fill="#1c2128" stroke="#30363d"/>
+          <text x="483" y="58" fill="#8b949e" text-anchor="middle">[47]</text>
+          <text x="483" y="72" fill="#8b949e" text-anchor="middle">GRE</text>
+          <text x="483" y="84" fill="#6e7681" text-anchor="middle" font-size="9">gre_rcv</text>
+          <!-- [132] SCTP -->
+          <rect x="512" y="40" width="58" height="52" fill="#1c2128" stroke="#3fb950" stroke-width="1.5"/>
+          <text x="541" y="58" fill="#3fb950" text-anchor="middle">[132]</text>
+          <text x="541" y="72" fill="#3fb950" text-anchor="middle">SCTP</text>
+          <text x="541" y="84" fill="#6e7681" text-anchor="middle" font-size="9">sctp_rcv</text>
+          <!-- dots -->
+          <text x="578" y="72" fill="#6e7681" font-size="16">…</text>
+          <!-- [255] NULL -->
+          <rect x="596" y="40" width="58" height="52" fill="#1c2128" stroke="#30363d"/>
+          <text x="625" y="58" fill="#6e7681" text-anchor="middle">[255]</text>
+          <text x="625" y="72" fill="#6e7681" text-anchor="middle">NULL</text>
+        </g>
+
+        <!-- inet_add_protocol -->
+        <rect x="30" y="112" width="660" height="56" fill="#0d1117" stroke="#30363d" rx="6"/>
+        <text x="50" y="132" fill="#3fb950" font-size="11" font-weight="700" font-family="monospace">inet_add_protocol(&amp;tcp_protocol,  IPPROTO_TCP=6)   → inet_protos[6]  = &tcp_protocol</text>
+        <text x="50" y="150" fill="#3fb950" font-size="11" font-family="monospace">inet_add_protocol(&amp;udp_protocol,  IPPROTO_UDP=17)  → inet_protos[17] = &udp_protocol</text>
+
+        <!-- Flow -->
+        <rect x="30" y="185" width="660" height="72" fill="#1c2128" stroke="#30363d" rx="6"/>
+        <text x="50" y="205" fill="#ffa657" font-size="11" font-weight="700" font-family="monospace">ip_protocol_deliver_rcu() 执行过程：</text>
+        <text x="50" y="222" fill="#8b949e" font-size="11" font-family="monospace">  1. iph = ip_hdr(skb)  →  读取 IPv4 头 Protocol 字段（1字节）</text>
+        <text x="50" y="238" fill="#8b949e" font-size="11" font-family="monospace">  2. ipprot = inet_protos[iph-&gt;protocol]  →  O(1) 数组查找</text>
+        <text x="50" y="252" fill="#58a6ff" font-size="11" font-family="monospace">  3. ipprot-&gt;handler(skb)  →  tcp_v4_rcv() / udp_rcv() / icmp_rcv() …</text>
+      </svg>
+      <div class="diagram-caption">图 8-1：inet_protos[256] 数组与 ip_protocol_deliver_rcu() 分流逻辑</div>
+    </div>
+
+    <table>
+      <tr><th>协议号</th><th>协议名</th><th>handler 函数</th><th>err_handler 函数</th></tr>
+      <tr><td>1</td><td>ICMP</td><td><code>icmp_rcv()</code></td><td><code>icmp_err()</code></td></tr>
+      <tr><td>2</td><td>IGMP</td><td><code>igmp_rcv()</code></td><td>—</td></tr>
+      <tr><td>6</td><td>TCP</td><td><code>tcp_v4_rcv()</code></td><td><code>tcp_v4_err()</code></td></tr>
+      <tr><td>17</td><td>UDP</td><td><code>udp_rcv()</code></td><td><code>udp_err()</code></td></tr>
+      <tr><td>33</td><td>DCCP</td><td><code>dccp_v4_rcv()</code></td><td><code>dccp_v4_err()</code></td></tr>
+      <tr><td>47</td><td>GRE</td><td><code>gre_rcv()</code></td><td><code>gre_err()</code></td></tr>
+      <tr><td>50</td><td>IPSEC-ESP</td><td><code>xfrm4_esp_rcv()</code></td><td><code>xfrm4_esp_err()</code></td></tr>
+      <tr><td>132</td><td>SCTP</td><td><code>sctp_rcv()</code></td><td><code>sctp_v4_err()</code></td></tr>
+    </table>
+    <p><small>参考来源：<a href="https://thermalcircle.de/doku.php?id=blog:linux:sockets_in_the_linux_kernel_1_l4prot_demux_on_rx" target="_blank">thermalcircle.de - Sockets in the Linux Kernel Part 1（Linux v6.12）</a></small></p>
+
+    <div class="callout callout-principle">
+      <div class="callout-title">🧩 第一性原理</div>
+      <p><code>inet_protos[256]</code> 利用了 IPv4 Protocol 字段恰好为 8 位（值域 0~255）这一特性，实现了<strong>完美哈希</strong>——协议号本身就是数组下标，O(1) 无冲突查找。这是操作系统设计中"利用协议约束简化实现"的典型范例：IANA 分配协议号的机制保证了 key 唯一性，内核直接将这个外部约束转化为数据结构优势。同时 RCU 无锁读取让热路径（每个数据包都要执行）零竞争，是高吞吐网络栈的关键性能保障。</p>
+    </div>
+  </section>
+
+  <!-- S9 -->
+  <section class="section" id="s9">
+    <div class="section-num">第 09 章</div>
+    <h2>UDP/TCP 完整接收路径</h2>
+    <p>以 UDP 为例，展示从网卡到用户空间的完整接收调用链（基于 <a href="https://liuhangbin.netlify.app/post/linux-socket/" target="_blank">Linux kernel 5.13 源码分析</a>）：</p>
+
+    <div class="diagram-wrap">
+      <svg viewBox="0 0 720 480" width="720" height="480" xmlns="http://www.w3.org/2000/svg">
+        <rect x="0" y="0" width="720" height="480" fill="#161b22" rx="8"/>
+
+        <!-- Left path: kernel recv -->
+        <text x="30" y="24" fill="#58a6ff" font-size="11" font-weight="700" font-family="monospace">内核路径（下半部 softirq）</text>
+        <!-- Steps -->
+        <g font-family="monospace" font-size="10" fill="#8b949e">
+          <rect x="20" y="35" width="310" height="26" fill="#1c2128" stroke="#30363d" rx="3"/>
+          <text x="175" y="52" text-anchor="middle" fill="#e6edf3">NET_RX_SOFTIRQ → net_rx_action()</text>
+
+          <line x1="175" y1="61" x2="175" y2="75" stroke="#58a6ff" stroke-width="1.2" marker-end="url(#arr)"/>
+          <rect x="20" y="75" width="310" height="26" fill="#1c2128" stroke="#30363d" rx="3"/>
+          <text x="175" y="92" text-anchor="middle">napi_poll() → process_backlog()</text>
+
+          <line x1="175" y1="101" x2="175" y2="115" stroke="#58a6ff" stroke-width="1.2" marker-end="url(#arr)"/>
+          <rect x="20" y="115" width="310" height="26" fill="#1c2128" stroke="#30363d" rx="3"/>
+          <text x="175" y="132" text-anchor="middle">__netif_receive_skb()</text>
+
+          <line x1="175" y1="141" x2="175" y2="155" stroke="#58a6ff" stroke-width="1.2" marker-end="url(#arr)"/>
+          <rect x="20" y="155" width="310" height="26" fill="#388bfd22" stroke="#58a6ff" rx="3"/>
+          <text x="175" y="172" text-anchor="middle" fill="#58a6ff">ip_rcv() [EtherType=0x0800]</text>
+
+          <line x1="175" y1="181" x2="175" y2="195" stroke="#58a6ff" stroke-width="1.2" marker-end="url(#arr)"/>
+          <rect x="20" y="195" width="310" height="26" fill="#1c2128" stroke="#30363d" rx="3"/>
+          <text x="175" y="212" text-anchor="middle">ip_rcv_finish() → dst_input()</text>
+
+          <line x1="175" y1="221" x2="175" y2="235" stroke="#58a6ff" stroke-width="1.2" marker-end="url(#arr)"/>
+          <rect x="20" y="235" width="310" height="26" fill="#1c2128" stroke="#30363d" rx="3"/>
+          <text x="175" y="252" text-anchor="middle">ip_local_deliver() [Netfilter INPUT]</text>
+
+          <line x1="175" y1="261" x2="175" y2="275" stroke="#58a6ff" stroke-width="1.2" marker-end="url(#arr)"/>
+          <rect x="20" y="275" width="310" height="26" fill="#ffa65722" stroke="#ffa657" rx="3"/>
+          <text x="175" y="292" text-anchor="middle" fill="#ffa657">ip_protocol_deliver_rcu() [inet_protos[17]]</text>
+
+          <line x1="175" y1="301" x2="175" y2="315" stroke="#ffa657" stroke-width="1.2" marker-end="url(#arr)"/>
+          <rect x="20" y="315" width="310" height="26" fill="#1c2128" stroke="#30363d" rx="3"/>
+          <text x="175" y="332" text-anchor="middle">udp_rcv() → __udp4_lib_rcv()</text>
+
+          <line x1="175" y1="341" x2="175" y2="355" stroke="#ffa657" stroke-width="1.2" marker-end="url(#arr)"/>
+          <rect x="20" y="355" width="310" height="26" fill="#1c2128" stroke="#30363d" rx="3"/>
+          <text x="175" y="372" text-anchor="middle">__udp4_lib_lookup_skb() [socket 查找]</text>
+
+          <line x1="175" y1="381" x2="175" y2="395" stroke="#3fb950" stroke-width="1.2" marker-end="url(#arr2)"/>
+          <rect x="20" y="395" width="310" height="26" fill="#3fb95022" stroke="#3fb950" rx="3"/>
+          <text x="175" y="412" text-anchor="middle" fill="#3fb950">udp_queue_rcv_skb() → 入 sk_receive_queue</text>
+        </g>
+
+        <!-- Divider -->
+        <line x1="360" y1="20" x2="360" y2="460" stroke="#30363d" stroke-width="1" stroke-dasharray="4,4"/>
+        <text x="360" y="445" fill="#30363d" font-size="10" text-anchor="middle">────</text>
+
+        <!-- Right path: user recv -->
+        <text x="390" y="24" fill="#3fb950" font-size="11" font-weight="700" font-family="monospace">用户空间路径（进程上下文）</text>
+        <g font-family="monospace" font-size="10" fill="#8b949e">
+          <rect x="380" y="35" width="310" height="26" fill="#1c2128" stroke="#30363d" rx="3"/>
+          <text x="535" y="52" text-anchor="middle" fill="#e6edf3">recvmsg(fd, &amp;msg, flags)</text>
+
+          <line x1="535" y1="61" x2="535" y2="75" stroke="#3fb950" stroke-width="1.2" marker-end="url(#arr2)"/>
+          <rect x="380" y="75" width="310" height="26" fill="#1c2128" stroke="#30363d" rx="3"/>
+          <text x="535" y="92" text-anchor="middle">SYSCALL_DEFINE3(recvmsg, …)</text>
+
+          <line x1="535" y1="101" x2="535" y2="115" stroke="#3fb950" stroke-width="1.2" marker-end="url(#arr2)"/>
+          <rect x="380" y="115" width="310" height="26" fill="#1c2128" stroke="#30363d" rx="3"/>
+          <text x="535" y="132" text-anchor="middle">__sys_recvmsg()</text>
+
+          <line x1="535" y1="141" x2="535" y2="155" stroke="#3fb950" stroke-width="1.2" marker-end="url(#arr2)"/>
+          <rect x="380" y="155" width="310" height="26" fill="#388bfd22" stroke="#58a6ff" rx="3"/>
+          <text x="535" y="172" text-anchor="middle" fill="#58a6ff">socket→ops→recvmsg()  [proto_ops]</text>
+
+          <line x1="535" y1="181" x2="535" y2="195" stroke="#3fb950" stroke-width="1.2" marker-end="url(#arr2)"/>
+          <rect x="380" y="195" width="310" height="26" fill="#1c2128" stroke="#30363d" rx="3"/>
+          <text x="535" y="212" text-anchor="middle">inet_recvmsg()  [inet_dgram_ops]</text>
+
+          <line x1="535" y1="221" x2="535" y2="235" stroke="#3fb950" stroke-width="1.2" marker-end="url(#arr2)"/>
+          <rect x="380" y="235" width="310" height="26" fill="#ffa65722" stroke="#ffa657" rx="3"/>
+          <text x="535" y="252" text-anchor="middle" fill="#ffa657">sk→sk_prot→recvmsg()  [proto]</text>
+
+          <line x1="535" y1="261" x2="535" y2="275" stroke="#3fb950" stroke-width="1.2" marker-end="url(#arr2)"/>
+          <rect x="380" y="275" width="310" height="26" fill="#1c2128" stroke="#30363d" rx="3"/>
+          <text x="535" y="292" text-anchor="middle">udp_recvmsg()  [udp_prot]</text>
+
+          <line x1="535" y1="301" x2="535" y2="315" stroke="#3fb950" stroke-width="1.2" marker-end="url(#arr2)"/>
+          <rect x="380" y="315" width="310" height="26" fill="#3fb95022" stroke="#3fb950" rx="3"/>
+          <text x="535" y="332" text-anchor="middle" fill="#3fb950">skb_copy_datagram_msg() → 数据拷贝到用户</text>
+        </g>
+
+        <!-- Join arrow between paths -->
+        <line x1="330" y1="408" x2="378" y2="328" stroke="#d2a8ff" stroke-width="1.5" stroke-dasharray="4,3" marker-end="url(#arr)"/>
+        <text x="350" y="380" fill="#d2a8ff" font-size="10" text-anchor="middle">sk_data_ready()</text>
+        <text x="350" y="392" fill="#d2a8ff" font-size="10" text-anchor="middle">唤醒进程</text>
+      </svg>
+      <div class="diagram-caption">图 9-1：UDP 数据包完整接收路径（左：内核 softirq；右：用户进程系统调用）</div>
+    </div>
+
+    <h3>TCP 接收路径要点</h3>
+    <p>TCP 接收路径类似，但在 <code>tcp_v4_rcv()</code> 中有额外的 socket 查找（<code>inet_hashtables</code>）和状态机处理：</p>
+    <pre><code><span class="cm">/* net/ipv4/tcp_ipv4.c — tcp_v4_rcv() 简化流程 */</span>
+<span class="kw">int</span> <span class="fn">tcp_v4_rcv</span>(<span class="kw">struct</span> sk_buff *skb)
+{
+    th = <span class="fn">tcp_hdr</span>(skb);
+    iph = <span class="fn">ip_hdr</span>(skb);
+
+    <span class="cm">/* 通过四元组 (src_ip, src_port, dst_ip, dst_port) 查找 socket */</span>
+    sk = <span class="fn">__inet_lookup_skb</span>(&tcp_hashinfo, skb, ...);
+
+    <span class="kw">if</span> (sk->sk_state == TCP_TIME_WAIT) { ... }
+    <span class="kw">if</span> (sk->sk_state == TCP_NEW_SYN_RECV) { ... }
+
+    <span class="cm">/* TCP 状态机处理 */</span>
+    <span class="kw">if</span> (sk->sk_state == TCP_LISTEN)
+        <span class="fn">tcp_v4_do_rcv</span>(sk, skb);  <span class="cm">/* 处理握手 */</span>
+    <span class="kw">else</span>
+        <span class="fn">tcp_rcv_established</span>(sk, skb); <span class="cm">/* 接收数据 */</span>
+}</code></pre>
+
+    <div class="callout callout-principle">
+      <div class="callout-title">🧩 第一性原理</div>
+      <p>UDP 和 TCP 的接收路径在 <code>inet_protos</code> 层面统一分流，但之后走向完全不同的实现。这是<strong>"统一接口，差异实现"</strong>模式的完美体现。分流的本质目的是：让公共路径（IP 层）保持精简高效，将协议特定的复杂性（TCP 状态机、UDP 无连接查找）下沉到各协议的 <code>handler()</code> 中，互不干扰。每个协议只"看到"自己的 skb，公共的 IP 头解析只做一次，之后由协议自行处理剩余工作。</p>
+    </div>
+  </section>
+
+  <!-- S10 -->
+  <section class="section" id="s10">
+    <div class="section-num">第 10 章</div>
+    <h2>注册机制与模块化扩展</h2>
+    <p>Linux socket 分流框架的可扩展性体现在多个层面，无论是内核模块还是内置协议，都通过统一的注册接口接入系统。</p>
+
+    <h3>扩展一个新协议族的完整步骤</h3>
+    <p>参考 <a href="https://linuxwarrior.wordpress.com/2008/12/02/add-a-new-protocol-to-linux-kernel/" target="_blank">Add a new protocol to Linux Kernel</a>，添加新协议族需要：</p>
+
+    <pre><code><span class="cm">/* 步骤 1：定义 struct proto，注册到 proto_list */</span>
+<span class="kw">struct</span> <span class="ty">my_sock</span> {
+    <span class="kw">struct</span> inet_sock isk;  <span class="cm">/* 必须首字段嵌套，支持强制转型 */</span>
+    <span class="cm">/* 协议特定字段 … */</span>
+};
+
+<span class="kw">struct</span> <span class="ty">proto</span> <span class="nm">my_proto</span> = {
+    .name     = <span class="st">"MY_PROTO"</span>,
+    .close    = <span class="fn">my_close</span>,
+    .connect  = <span class="fn">my_connect</span>,
+    .sendmsg  = <span class="fn">my_sendmsg</span>,
+    .recvmsg  = <span class="fn">my_recvmsg</span>,
+    .obj_size = <span class="kw">sizeof</span>(<span class="kw">struct</span> my_sock),
+    .owner    = THIS_MODULE,
+};
+<span class="fn">proto_register</span>(&my_proto, 1);  <span class="cm">/* 注册到 /proc/net/protocols */</span>
+
+<span class="cm">/* 步骤 2：定义 struct proto_ops */</span>
+<span class="kw">const struct</span> <span class="ty">proto_ops</span> <span class="nm">my_proto_ops</span> = {
+    .family   = MY_PF,
+    .bind     = <span class="fn">my_bind</span>,
+    .connect  = <span class="fn">my_stream_connect</span>,
+    .sendmsg  = <span class="fn">inet_sendmsg</span>,   <span class="cm">/* 可复用已有实现 */</span>
+    .recvmsg  = <span class="fn">sock_common_recvmsg</span>,
+    ...
+};
+
+<span class="cm">/* 步骤 3：定义 create 函数，设置 socket->ops 和 sk->sk_prot */</span>
+<span class="kw">static int</span> <span class="fn">my_create</span>(<span class="kw">struct</span> net *net, <span class="kw">struct</span> socket *sock, <span class="kw">int</span> proto, <span class="kw">int</span> kern)
+{
+    <span class="kw">struct</span> <span class="ty">sock</span> *sk;
+    sock->ops = &<span class="nm">my_proto_ops</span>;
+    sk = <span class="fn">sk_alloc</span>(net, MY_PF, GFP_KERNEL, &<span class="nm">my_proto</span>, kern);
+    <span class="fn">sock_init_data</span>(sock, sk);
+    <span class="kw">return</span> 0;
+}
+
+<span class="cm">/* 步骤 4：注册到 net_families */</span>
+<span class="kw">static const struct</span> <span class="ty">net_proto_family</span> <span class="nm">my_family_ops</span> = {
+    .family = MY_PF,
+    .create = <span class="fn">my_create</span>,
+    .owner  = THIS_MODULE,
+};
+
+<span class="kw">static int</span> __init <span class="fn">my_proto_init</span>(<span class="kw">void</span>)
+{
+    <span class="fn">proto_register</span>(&my_proto, 1);
+    <span class="fn">sock_register</span>(&my_family_ops);
+    <span class="kw">return</span> 0;
+}
+module_init(<span class="fn">my_proto_init</span>);</code></pre>
+
+    <h3>运行时动态注册示例：GRE 模块</h3>
+    <pre><code><span class="cm">/* net/ipv4/gre_demux.c — GRE 作为内核模块动态注册 */</span>
+<span class="kw">static const struct</span> <span class="ty">net_protocol</span> <span class="nm">net_gre_protocol</span> = {
+    .handler     = <span class="fn">gre_rcv</span>,
+    .err_handler = <span class="fn">gre_err</span>,
+};
+
+<span class="kw">static int</span> __init <span class="fn">gre_init</span>(<span class="kw">void</span>)
+{
+    <span class="cm">/* 加载模块时注册到 inet_protos[47] */</span>
+    <span class="fn">inet_add_protocol</span>(&net_gre_protocol, IPPROTO_GRE);
+}
+<span class="kw">static void</span> __exit <span class="fn">gre_exit</span>(<span class="kw">void</span>)
+{
+    <span class="cm">/* 卸载模块时注销 */</span>
+    <span class="fn">inet_del_protocol</span>(&net_gre_protocol, IPPROTO_GRE);
+}
+module_init(<span class="fn">gre_init</span>);
+module_exit(<span class="fn">gre_exit</span>);</code></pre>
+
+    <div class="diagram-wrap">
+      <svg viewBox="0 0 700 280" width="700" height="280" xmlns="http://www.w3.org/2000/svg">
+        <rect x="0" y="0" width="700" height="280" fill="#161b22" rx="8"/>
+
+        <!-- Title -->
+        <text x="30" y="28" fill="#ffa657" font-size="12" font-weight="700" font-family="monospace">四大注册接口 — 不同层次的扩展点</text>
+
+        <!-- sock_register -->
+        <rect x="30" y="44" width="300" height="80" fill="#1c2128" stroke="#58a6ff" stroke-width="1.5" rx="6"/>
+        <text x="180" y="64" fill="#58a6ff" font-size="12" font-weight="700" text-anchor="middle" font-family="monospace">sock_register()</text>
+        <text x="50" y="82" fill="#8b949e" font-size="10" font-family="monospace">目标: net_families[family]</text>
+        <text x="50" y="96" fill="#8b949e" font-size="10" font-family="monospace">扩展: 新协议族 (AF_XXX)</text>
+        <text x="50" y="110" fill="#6e7681" font-size="10" font-family="monospace">例: AF_NETLINK, AF_PACKET</text>
+
+        <!-- inet_register_protosw -->
+        <rect x="370" y="44" width="300" height="80" fill="#1c2128" stroke="#d2a8ff" stroke-width="1.5" rx="6"/>
+        <text x="520" y="64" fill="#d2a8ff" font-size="12" font-weight="700" text-anchor="middle" font-family="monospace">inet_register_protosw()</text>
+        <text x="390" y="82" fill="#8b949e" font-size="10" font-family="monospace">目标: inetsw[sock_type] 链表</text>
+        <text x="390" y="96" fill="#8b949e" font-size="10" font-family="monospace">扩展: AF_INET 内新协议</text>
+        <text x="390" y="110" fill="#6e7681" font-size="10" font-family="monospace">例: SCTP over IP</text>
+
+        <!-- inet_add_protocol -->
+        <rect x="30" y="152" width="300" height="80" fill="#1c2128" stroke="#3fb950" stroke-width="1.5" rx="6"/>
+        <text x="180" y="172" fill="#3fb950" font-size="12" font-weight="700" text-anchor="middle" font-family="monospace">inet_add_protocol()</text>
+        <text x="50" y="190" fill="#8b949e" font-size="10" font-family="monospace">目标: inet_protos[ip_proto]</text>
+        <text x="50" y="204" fill="#8b949e" font-size="10" font-family="monospace">扩展: 新 IP 传输层协议</text>
+        <text x="50" y="218" fill="#6e7681" font-size="10" font-family="monospace">例: GRE(47), SCTP(132) 模块</text>
+
+        <!-- proto_register -->
+        <rect x="370" y="152" width="300" height="80" fill="#1c2128" stroke="#ffa657" stroke-width="1.5" rx="6"/>
+        <text x="520" y="172" fill="#ffa657" font-size="12" font-weight="700" text-anchor="middle" font-family="monospace">proto_register()</text>
+        <text x="390" y="190" fill="#8b949e" font-size="10" font-family="monospace">目标: proto_list 全局链表</text>
+        <text x="390" y="204" fill="#8b949e" font-size="10" font-family="monospace">扩展: 任意新 struct proto</text>
+        <text x="390" y="218" fill="#6e7681" font-size="10" font-family="monospace">/proc/net/protocols 可见</text>
+
+        <!-- Layer labels -->
+        <text x="350" y="100" fill="#6e7681" font-size="10" text-anchor="middle">L3 协议族层</text>
+        <text x="350" y="208" fill="#6e7681" font-size="10" text-anchor="middle">L4 传输层</text>
+      </svg>
+      <div class="diagram-caption">图 10-1：四大注册接口覆盖不同扩展层次</div>
+    </div>
+
+    <div class="callout callout-principle">
+      <div class="callout-title">🧩 第一性原理</div>
+      <p>Linux 网络协议栈的可扩展性源于"<strong>依赖倒置原则</strong>"（DIP）的彻底实践：高层模块（<code>net/socket.c</code>、<code>net/ipv4/ip_input.c</code>）不依赖具体协议实现，而是依赖抽象接口（<code>net_proto_family</code>、<code>net_protocol</code>、<code>proto_ops</code>、<code>proto</code>）。具体协议通过注册函数将自身"插入"这些抽象容器。这使得 GRE、SCTP、QUIC 隧道等协议可以作为内核模块在运行时动态加载/卸载，而内核主路径代码无需修改——这正是操作系统内核实现高度可组合性的根本设计哲学。</p>
+    </div>
+  </section>
+
+  <!-- S11 -->
+  <section class="section" id="s11">
+    <div class="section-num">第 11 章</div>
+    <h2>全景架构与第一性原理总结</h2>
+
+    <div class="diagram-wrap">
+      <svg viewBox="0 0 740 580" width="740" height="580" xmlns="http://www.w3.org/2000/svg">
+        <defs>
+          <marker id="a3" markerWidth="8" markerHeight="6" refX="8" refY="3" orient="auto">
+            <polygon points="0 0, 8 3, 0 6" fill="#8b949e"/>
+          </marker>
+        </defs>
+        <rect x="0" y="0" width="740" height="580" fill="#0d1117" rx="8"/>
+
+        <!-- Title -->
+        <text x="370" y="24" fill="#58a6ff" font-size="14" font-weight="700" text-anchor="middle" font-family="monospace">Linux Socket 层完整分流架构图</text>
+
+        <!-- User space -->
+        <rect x="10" y="38" width="720" height="46" fill="#1c2128" stroke="#388bfd" stroke-width="1" rx="6"/>
+        <text x="26" y="58" fill="#58a6ff" font-size="11" font-weight="700" font-family="monospace">用户空间</text>
+        <text x="200" y="67" fill="#e6edf3" font-size="12" font-family="monospace">socket()   bind()   connect()   send()   recv()</text>
+
+        <!-- Arrow -->
+        <line x1="370" y1="84" x2="370" y2="100" stroke="#58a6ff" stroke-width="1.5" marker-end="url(#arr)"/>
+
+        <!-- VFS layer -->
+        <rect x="10" y="100" width="720" height="34" fill="#1c2128" stroke="#30363d" rx="4"/>
+        <text x="370" y="121" fill="#8b949e" font-size="11" text-anchor="middle" font-family="monospace">VFS 层  (socket_file_ops → sock_read_iter / sock_write_iter)</text>
+
+        <line x1="370" y1="134" x2="370" y2="150" stroke="#8b949e" stroke-width="1.5" marker-end="url(#a3)"/>
+
+        <!-- BSD socket layer -->
+        <rect x="10" y="150" width="720" height="46" fill="#1c2128" stroke="#d2a8ff" stroke-width="1.5" rx="6"/>
+        <text x="26" y="170" fill="#d2a8ff" font-size="11" font-weight="700" font-family="monospace">BSD Socket 层  net/socket.c</text>
+        <text x="26" y="186" fill="#8b949e" font-size="10" font-family="monospace">__sock_create() → net_families[family]→create()    [第 1 级分流: O(1) 数组查找]</text>
+        <rect x="560" y="156" width="160" height="22" fill="#d2a8ff22" stroke="#d2a8ff" rx="3"/>
+        <text x="640" y="171" fill="#d2a8ff" font-size="10" text-anchor="middle" font-family="monospace">net_families[46]</text>
+
+        <!-- Arrow with label -->
+        <line x1="200" y1="196" x2="140" y2="220" stroke="#58a6ff" stroke-width="1.5" marker-end="url(#arr)"/>
+        <line x1="370" y1="196" x2="370" y2="220" stroke="#ffa657" stroke-width="1.5" marker-end="url(#arr)"/>
+        <line x1="540" y1="196" x2="600" y2="220" stroke="#3fb950" stroke-width="1.5" marker-end="url(#arr2)"/>
+
+        <!-- Protocol families row -->
+        <rect x="80" y="220" width="140" height="50" fill="#1c2128" stroke="#d2a8ff" rx="4"/>
+        <text x="150" y="242" fill="#d2a8ff" font-size="12" text-anchor="middle" font-family="monospace">AF_UNIX</text>
+        <text x="150" y="258" fill="#6e7681" font-size="10" text-anchor="middle">unix_create()</text>
+
+        <rect x="240" y="220" width="260" height="50" fill="#1c2128" stroke="#ffa657" stroke-width="1.5" rx="4"/>
+        <text x="370" y="240" fill="#ffa657" font-size="12" font-weight="700" text-anchor="middle" font-family="monospace">AF_INET  [第 2 级分流]</text>
+        <text x="370" y="258" fill="#8b949e" font-size="10" text-anchor="middle">inet_create() → inetsw[type] 链表匹配</text>
+
+        <rect x="530" y="220" width="160" height="50" fill="#1c2128" stroke="#3fb950" stroke-width="1.5" rx="4"/>
+        <text x="610" y="242" fill="#3fb950" font-size="12" font-weight="700" text-anchor="middle" font-family="monospace">AF_NETLINK</text>
+        <text x="610" y="258" fill="#6e7681" font-size="10" text-anchor="middle">netlink_create()</text>
+
+        <!-- AF_INET internals -->
+        <line x1="295" y1="270" x2="290" y2="295" stroke="#ffa657" stroke-width="1.2" marker-end="url(#arr)"/>
+        <line x1="370" y1="270" x2="370" y2="295" stroke="#ffa657" stroke-width="1.2" marker-end="url(#arr)"/>
+        <line x1="445" y1="270" x2="450" y2="295" stroke="#ffa657" stroke-width="1.2" marker-end="url(#arr)"/>
+
+        <rect x="250" y="295" width="80" height="40" fill="#0d1117" stroke="#ff7b72" rx="3"/>
+        <text x="290" y="314" fill="#ff7b72" font-size="11" text-anchor="middle" font-family="monospace">TCP</text>
+        <text x="290" y="327" fill="#6e7681" font-size="9" text-anchor="middle">tcp_prot</text>
+
+        <rect x="340" y="295" width="80" height="40" fill="#0d1117" stroke="#ffa657" rx="3"/>
+        <text x="380" y="314" fill="#ffa657" font-size="11" text-anchor="middle" font-family="monospace">UDP</text>
+        <text x="380" y="327" fill="#6e7681" font-size="9" text-anchor="middle">udp_prot</text>
+
+        <rect x="430" y="295" width="80" height="40" fill="#0d1117" stroke="#8b949e" rx="3"/>
+        <text x="470" y="314" fill="#8b949e" font-size="11" text-anchor="middle" font-family="monospace">RAW</text>
+        <text x="470" y="327" fill="#6e7681" font-size="9" text-anchor="middle">raw_prot</text>
+
+        <!-- Horizontal divider -->
+        <line x1="10" y1="360" x2="730" y2="360" stroke="#30363d" stroke-width="1" stroke-dasharray="6,4"/>
+        <text x="370" y="374" fill="#6e7681" font-size="10" text-anchor="middle">─── 接收路径（RX） ───</text>
+
+        <!-- RX path -->
+        <rect x="10" y="384" width="720" height="34" fill="#1c2128" stroke="#30363d" rx="4"/>
+        <text x="370" y="405" fill="#8b949e" font-size="11" text-anchor="middle" font-family="monospace">__netif_receive_skb() → ptype_base[EtherType]  [L2→L3 EtherType 分流]</text>
+
+        <line x1="240" y1="418" x2="240" y2="438" stroke="#58a6ff" stroke-width="1.2" marker-end="url(#arr)"/>
+        <line x1="500" y1="418" x2="500" y2="438" stroke="#6e7681" stroke-width="1.2" marker-end="url(#a3)"/>
+
+        <rect x="140" y="438" width="210" height="34" fill="#388bfd22" stroke="#58a6ff" stroke-width="1.5" rx="4"/>
+        <text x="245" y="459" fill="#58a6ff" font-size="11" text-anchor="middle" font-family="monospace">ip_rcv() → ip_local_deliver()</text>
+
+        <rect x="400" y="438" width="200" height="34" fill="#1c2128" stroke="#30363d" rx="4"/>
+        <text x="500" y="459" fill="#6e7681" font-size="11" text-anchor="middle" font-family="monospace">arp_rcv / ipv6_rcv …</text>
+
+        <line x1="245" y1="472" x2="245" y2="492" stroke="#58a6ff" stroke-width="1.2" marker-end="url(#arr)"/>
+
+        <rect x="80" y="492" width="350" height="34" fill="#ffa65722" stroke="#ffa657" stroke-width="1.5" rx="4"/>
+        <text x="255" y="513" fill="#ffa657" font-size="11" text-anchor="middle" font-family="monospace">ip_protocol_deliver_rcu() → inet_protos[proto]  [第 3 级 L3→L4 分流]</text>
+
+        <!-- final handlers -->
+        <line x1="150" y1="526" x2="140" y2="548" stroke="#ffa657" stroke-width="1.2" marker-end="url(#arr)"/>
+        <line x1="245" y1="526" x2="280" y2="548" stroke="#ffa657" stroke-width="1.2" marker-end="url(#arr)"/>
+        <line x1="340" y1="526" x2="370" y2="548" stroke="#ffa657" stroke-width="1.2" marker-end="url(#arr)"/>
+
+        <rect x="80" y="548" width="85" height="26" fill="#0d1117" stroke="#ff7b72" rx="3"/>
+        <text x="123" y="565" fill="#ff7b72" font-size="10" text-anchor="middle" font-family="monospace">tcp_v4_rcv</text>
+
+        <rect x="230" y="548" width="85" height="26" fill="#0d1117" stroke="#ffa657" rx="3"/>
+        <text x="273" y="565" fill="#ffa657" font-size="10" text-anchor="middle" font-family="monospace">udp_rcv</text>
+
+        <rect x="335" y="548" width="85" height="26" fill="#0d1117" stroke="#8b949e" rx="3"/>
+        <text x="378" y="565" fill="#8b949e" font-size="10" text-anchor="middle" font-family="monospace">icmp_rcv</text>
+      </svg>
+      <div class="diagram-caption">图 11-1：Linux Socket 层完整分流架构全景图（发送路径上半部分，接收路径下半部分）</div>
+    </div>
+
+    <h3>三级分流对照表</h3>
+    <table>
+      <tr><th>分流层次</th><th>触发时机</th><th>Key</th><th>数据结构</th><th>注册接口</th><th>复杂度</th></tr>
+      <tr>
+        <td><span class="tag tag-blue">第1级</span> 协议族</td>
+        <td>socket() 系统调用</td>
+        <td><code>family</code>（int）</td>
+        <td><code>net_families[NPROTO]</code> 数组</td>
+        <td><code>sock_register()</code></td>
+        <td>O(1)</td>
+      </tr>
+      <tr>
+        <td><span class="tag tag-purple">第2级</span> AF_INET 内</td>
+        <td>inet_create() 内</td>
+        <td><code>type + protocol</code></td>
+        <td><code>inetsw[SOCK_MAX]</code> 链表</td>
+        <td><code>inet_register_protosw()</code></td>
+        <td>O(n)，n很小</td>
+      </tr>
+      <tr>
+        <td><span class="tag tag-green">第3级</span> IP→L4 (RX)</td>
+        <td>ip_local_deliver_finish()</td>
+        <td>IPv4 Protocol 字段（8bit）</td>
+        <td><code>inet_protos[256]</code> 数组</td>
+        <td><code>inet_add_protocol()</code></td>
+        <td>O(1)</td>
+      </tr>
+      <tr>
+        <td><span class="tag tag-orange">L2→L3</span> EtherType</td>
+        <td>__netif_receive_skb()</td>
+        <td>EtherType（16bit）</td>
+        <td><code>ptype_base[]</code> 哈希链表</td>
+        <td><code>dev_add_pack()</code></td>
+        <td>O(1) 均摊</td>
+      </tr>
+    </table>
+
+    <h3>设计原则总结</h3>
+    <div class="callout callout-info">
+      <div class="callout-title">📐 开放-封闭原则（OCP）</div>
+      <p>所有分流表（<code>net_families</code>、<code>inetsw</code>、<code>inet_protos</code>）对新协议的注册开放，但核心分流代码（<code>__sock_create</code>、<code>ip_protocol_deliver_rcu</code>）对修改封闭。添加 SCTP、QUIC、GRE 等无需修改任何主路径代码。</p>
+    </div>
+    <div class="callout callout-info">
+      <div class="callout-title">🔒 依赖倒置原则（DIP）</div>
+      <p>高层模块（IP 层、socket 层）依赖 <code>net_protocol</code>、<code>proto_ops</code> 等抽象接口，而非 <code>tcp_v4_rcv</code>、<code>udp_rcv</code> 等具体函数（除 <code>INDIRECT_CALL_2</code> 优化宏的两个热点外）。具体协议的存在对上层透明。</p>
+    </div>
+    <div class="callout callout-info">
+      <div class="callout-title">⚡ RCU 无锁并发</div>
+      <p>所有分流表均使用 RCU（Read-Copy-Update）保护。读路径（数据包处理）完全无锁，写路径（协议注册/注销）使用 spinlock + RCU 同步。这保证了高并发场景下分流本身不成为性能瓶颈。</p>
+    </div>
+    <div class="callout callout-info">
+      <div class="callout-title">🎯 索引策略适配</div>
+      <p>不同层次选择不同的索引结构：协议族用数组（key 空间小且稀疏可接受），L4 分流用数组（key 恰好是 8 位协议号），L2 EtherType 用哈希（key 空间 16 位太大）。这说明分流框架的设计者对每一层的 key 特性做了针对性分析，而非一刀切。</p>
+    </div>
+
+    <div class="callout callout-principle">
+      <div class="callout-title">🧩 第一性原理终极总结</div>
+      <p>Linux socket 层分流框架解决的是计算机科学最基本的问题之一：<strong>如何将一个多路复用的输入流，根据协议标识符，准确、高效、可扩展地分发到对应的处理器</strong>。</p>
+      <p>从第一性原理出发：任何分流系统都需要 1）<em>标识符</em>（family、type、protocol 号）；2）<em>映射表</em>（数组/链表/哈希）；3）<em>跳转机制</em>（函数指针）；4）<em>注册能力</em>（运行时扩展）。Linux 内核将这四个要素在三个不同层次上分别实现，每层的实现策略都由该层 key 的特性决定——这是"因地制宜"工程设计的典范。</p>
+      <p>整个框架的灵魂在于<strong>函数指针即接口</strong>：C 语言没有 interface 关键字，但通过结构体中的函数指针字段，Linux 内核实现了与面向对象语言中多态机制等价的能力，且零运行时开销（除虚表查找的一次内存访问外），这是 Linux 网络栈能在数十年间持续扩展而不腐化的根本原因。</p>
+    </div>
+  </section>
+
+</div><!-- /main -->
+
+<div class="key-hint">
+  <kbd>←</kbd><kbd>→</kbd> 键盘翻章
+</div>
+
+<script>
+// ── 章节列表 ──
+const SECTIONS = ['s0','s1','s2','s3','s4','s5','s6','s7','s8','s9','s10','s11'];
+let currentSection = 0;
+
+// ── 进度条 ──
+const progressBar = document.getElementById('progress-bar');
+function updateProgress() {
+  const scrollTop = window.scrollY;
+  const docH = document.documentElement.scrollHeight - window.innerHeight;
+  progressBar.style.width = (docH > 0 ? (scrollTop / docH * 100) : 0) + '%';
+}
+
+// ── 高亮导航 ──
+const navItems = document.querySelectorAll('.nav-item');
+function setActiveNav(id) {
+  navItems.forEach(item => {
+    item.classList.toggle('active', item.getAttribute('href') === '#' + id);
+  });
+}
+
+function getVisibleSection() {
+  let best = SECTIONS[0];
+  let bestDist = Infinity;
+  SECTIONS.forEach(id => {
+    const el = document.getElementById(id);
+    if (!el) return;
+    const rect = el.getBoundingClientRect();
+    const dist = Math.abs(rect.top - 80);
+    if (rect.top <= window.innerHeight * 0.6 && dist < bestDist) {
+      bestDist = dist;
+      best = id;
+    }
+  });
+  return best;
+}
+
+function onScroll() {
+  updateProgress();
+  const visible = getVisibleSection();
+  currentSection = SECTIONS.indexOf(visible);
+  setActiveNav(visible);
+  // scroll nav item into view
+  const activeNav = document.querySelector('.nav-item.active');
+  if (activeNav) {
+    activeNav.scrollIntoView({ block: 'nearest', behavior: 'smooth' });
+  }
+}
+
+window.addEventListener('scroll', onScroll, { passive: true });
+
+// ── 导航点击 ──
+function navClick(e, id) {
+  e.preventDefault();
+  const el = document.getElementById(id);
+  if (el) {
+    el.scrollIntoView({ behavior: 'smooth' });
+    // Close mobile sidebar
+    if (window.innerWidth <= 768) closeSidebar();
+  }
+}
+
+// ── 键盘导航 ──
+document.addEventListener('keydown', e => {
+  if (e.key === 'ArrowRight' || e.key === 'ArrowDown') {
+    e.preventDefault();
+    const next = Math.min(currentSection + 1, SECTIONS.length - 1);
+    navigateTo(next);
+  } else if (e.key === 'ArrowLeft' || e.key === 'ArrowUp') {
+    e.preventDefault();
+    const prev = Math.max(currentSection - 1, 0);
+    navigateTo(prev);
+  }
+});
+
+function navigateTo(idx) {
+  const id = SECTIONS[idx];
+  const el = document.getElementById(id);
+  if (el) { el.scrollIntoView({ behavior: 'smooth' }); }
+}
+
+// ── 移动端汉堡菜单 ──
+const hamburger = document.getElementById('hamburger');
+const sidebar = document.getElementById('sidebar');
+const overlay = document.getElementById('overlay');
+
+function closeSidebar() {
+  sidebar.classList.remove('open');
+  hamburger.classList.remove('open');
+  overlay.classList.remove('active');
+  document.body.style.overflow = '';
+}
+function openSidebar() {
+  sidebar.classList.add('open');
+  hamburger.classList.add('open');
+  overlay.classList.add('active');
+  document.body.style.overflow = 'hidden';
+}
+
+hamburger.addEventListener('click', () => {
+  if (sidebar.classList.contains('open')) closeSidebar();
+  else openSidebar();
+});
+overlay.addEventListener('click', closeSidebar);
+
+// ── Prev/Next buttons (mobile) ──
+document.getElementById('btn-prev')?.addEventListener('click', () => {
+  navigateTo(Math.max(currentSection - 1, 0));
+});
+document.getElementById('btn-next')?.addEventListener('click', () => {
+  navigateTo(Math.min(currentSection + 1, SECTIONS.length - 1));
+});
+
+// ── Init ──
+updateProgress();
+setActiveNav(SECTIONS[0]);
+</script>
+</body>
+</html>

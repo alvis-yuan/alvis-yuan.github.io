@@ -1,0 +1,2321 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Linux 5.4 蓝牙 L2CAP 深度解析</title>
+<style>
+  :root {
+    --bg: #0d1117;
+    --sidebar-bg: #161b22;
+    --border: #30363d;
+    --text: #e6edf3;
+    --text-muted: #8b949e;
+    --accent: #58a6ff;
+    --accent2: #3fb950;
+    --accent3: #d2a8ff;
+    --accent4: #ffa657;
+    --accent5: #ff7b72;
+    --code-bg: #161b22;
+    --table-head: #1c2128;
+    --highlight: #1f6feb33;
+    --nav-active: #1f6feb;
+    --progress-bar: #58a6ff;
+    --sidebar-width: 280px;
+    --content-max: 900px;
+  }
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  html { scroll-behavior: smooth; }
+  body {
+    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", "Noto Sans SC", sans-serif;
+    background: var(--bg);
+    color: var(--text);
+    line-height: 1.7;
+    overflow-x: hidden;
+  }
+
+  /* ── Progress Bar ── */
+  #progress-bar {
+    position: fixed; top: 0; left: 0; height: 3px;
+    background: linear-gradient(90deg, var(--accent), var(--accent3));
+    z-index: 9999; width: 0%; transition: width 0.1s linear;
+    box-shadow: 0 0 8px var(--accent);
+  }
+
+  /* ── Top Nav (mobile) ── */
+  #topnav {
+    display: none;
+    position: fixed; top: 0; left: 0; right: 0; height: 52px;
+    background: var(--sidebar-bg); border-bottom: 1px solid var(--border);
+    align-items: center; padding: 0 16px; z-index: 100;
+    justify-content: space-between;
+  }
+  #topnav .logo { font-weight: 700; font-size: 15px; color: var(--accent); }
+  #hamburger {
+    background: none; border: 1px solid var(--border); color: var(--text);
+    border-radius: 6px; padding: 6px 10px; cursor: pointer; font-size: 18px;
+  }
+
+  /* ── Sidebar ── */
+  #sidebar {
+    position: fixed; left: 0; top: 0; bottom: 0;
+    width: var(--sidebar-width);
+    background: var(--sidebar-bg);
+    border-right: 1px solid var(--border);
+    overflow-y: auto; z-index: 50;
+    transition: transform 0.3s ease;
+    padding-top: 3px;
+  }
+  #sidebar::-webkit-scrollbar { width: 4px; }
+  #sidebar::-webkit-scrollbar-thumb { background: var(--border); border-radius: 4px; }
+  .sidebar-header {
+    padding: 20px 16px 12px;
+    border-bottom: 1px solid var(--border);
+    position: sticky; top: 0; background: var(--sidebar-bg); z-index: 1;
+  }
+  .sidebar-header h2 { font-size: 13px; color: var(--accent); font-weight: 700; letter-spacing: 0.05em; text-transform: uppercase; }
+  .sidebar-header p { font-size: 11px; color: var(--text-muted); margin-top: 4px; }
+  .nav-group { margin: 8px 0; }
+  .nav-group-title {
+    padding: 6px 16px; font-size: 11px; font-weight: 700;
+    color: var(--text-muted); text-transform: uppercase; letter-spacing: 0.08em;
+  }
+  .nav-item {
+    display: block; padding: 6px 16px 6px 24px;
+    font-size: 13px; color: var(--text-muted);
+    text-decoration: none; border-radius: 0;
+    border-left: 3px solid transparent;
+    transition: all 0.15s; cursor: pointer;
+    white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+  }
+  .nav-item:hover { color: var(--text); background: rgba(88,166,255,0.08); }
+  .nav-item.active {
+    color: var(--accent); border-left-color: var(--accent);
+    background: rgba(88,166,255,0.1); font-weight: 600;
+  }
+
+  /* ── Main Content ── */
+  #main {
+    margin-left: var(--sidebar-width);
+    min-height: 100vh;
+    padding: 40px 40px 80px;
+  }
+  .content-wrap {
+    max-width: var(--content-max);
+    margin: 0 auto;
+  }
+
+  /* ── Section ── */
+  .section {
+    margin-bottom: 80px;
+    scroll-margin-top: 24px;
+  }
+  .section-tag {
+    display: inline-block; font-size: 11px; font-weight: 700;
+    color: var(--accent); text-transform: uppercase; letter-spacing: 0.1em;
+    margin-bottom: 8px;
+  }
+  h1 { font-size: 32px; font-weight: 800; line-height: 1.25; margin-bottom: 16px;
+       background: linear-gradient(135deg, var(--accent), var(--accent3));
+       -webkit-background-clip: text; -webkit-text-fill-color: transparent; }
+  h2 { font-size: 24px; font-weight: 700; margin-bottom: 20px; color: var(--text);
+       padding-bottom: 10px; border-bottom: 1px solid var(--border); }
+  h3 { font-size: 18px; font-weight: 700; margin: 28px 0 12px; color: var(--accent3); }
+  h4 { font-size: 15px; font-weight: 700; margin: 20px 0 8px; color: var(--accent4); }
+  p { margin-bottom: 14px; color: var(--text); }
+  a { color: var(--accent); text-decoration: none; }
+  a:hover { text-decoration: underline; }
+  ul, ol { margin: 10px 0 14px 22px; }
+  li { margin-bottom: 6px; color: var(--text); }
+  strong { color: #fff; font-weight: 700; }
+  em { color: var(--accent4); font-style: normal; font-weight: 600; }
+
+  /* ── Code ── */
+  code {
+    font-family: "Fira Code", "Cascadia Code", "Consolas", monospace;
+    background: var(--code-bg); border: 1px solid var(--border);
+    border-radius: 4px; padding: 1px 6px; font-size: 13px; color: var(--accent2);
+  }
+  pre {
+    background: var(--code-bg); border: 1px solid var(--border);
+    border-radius: 8px; padding: 20px; overflow-x: auto;
+    margin: 16px 0; font-size: 13px; line-height: 1.6;
+    max-width: 100%;
+  }
+  pre code { background: none; border: none; padding: 0; color: var(--text); font-size: 13px; }
+  .kw { color: #ff7b72; }
+  .ty { color: #d2a8ff; }
+  .cm { color: #8b949e; font-style: italic; }
+  .st { color: #a5d6ff; }
+  .nm { color: #ffa657; }
+  .fn { color: #d2a8ff; }
+
+  /* ── Tables ── */
+  .table-wrap { overflow-x: auto; margin: 16px 0; border-radius: 8px; border: 1px solid var(--border); }
+  table { width: 100%; border-collapse: collapse; font-size: 13px; }
+  thead th {
+    background: var(--table-head); padding: 10px 14px;
+    text-align: left; font-weight: 700; color: var(--text-muted);
+    font-size: 12px; text-transform: uppercase; letter-spacing: 0.05em;
+    border-bottom: 1px solid var(--border);
+  }
+  tbody td { padding: 9px 14px; border-bottom: 1px solid #21262d; }
+  tbody tr:last-child td { border-bottom: none; }
+  tbody tr:hover td { background: rgba(88,166,255,0.04); }
+  .badge {
+    display: inline-block; padding: 2px 8px; border-radius: 12px;
+    font-size: 11px; font-weight: 700; letter-spacing: 0.04em;
+  }
+  .badge-blue { background: rgba(88,166,255,0.15); color: #58a6ff; border: 1px solid rgba(88,166,255,0.3); }
+  .badge-green { background: rgba(63,185,80,0.15); color: #3fb950; border: 1px solid rgba(63,185,80,0.3); }
+  .badge-purple { background: rgba(210,168,255,0.15); color: #d2a8ff; border: 1px solid rgba(210,168,255,0.3); }
+  .badge-orange { background: rgba(255,166,87,0.15); color: #ffa657; border: 1px solid rgba(255,166,87,0.3); }
+  .badge-red { background: rgba(255,123,114,0.15); color: #ff7b72; border: 1px solid rgba(255,123,114,0.3); }
+
+  /* ── Info/Note Boxes ── */
+  .info-box {
+    border-radius: 8px; padding: 14px 18px; margin: 16px 0;
+    border-left: 4px solid;
+  }
+  .info-box.note { border-color: var(--accent); background: rgba(88,166,255,0.06); }
+  .info-box.warn { border-color: var(--accent4); background: rgba(255,166,87,0.06); }
+  .info-box.principle { border-color: var(--accent3); background: rgba(210,168,255,0.06); }
+  .info-box strong { display: block; margin-bottom: 6px; font-size: 12px; text-transform: uppercase; letter-spacing: 0.08em; }
+  .info-box.note strong { color: var(--accent); }
+  .info-box.warn strong { color: var(--accent4); }
+  .info-box.principle strong { color: var(--accent3); }
+
+  /* ── Source Links ── */
+  .src-link {
+    display: inline-flex; align-items: center; gap: 6px;
+    font-size: 12px; color: var(--text-muted); background: var(--code-bg);
+    border: 1px solid var(--border); border-radius: 6px;
+    padding: 4px 10px; margin: 4px 0; text-decoration: none;
+    transition: all 0.15s;
+  }
+  .src-link:hover { color: var(--accent); border-color: var(--accent); background: rgba(88,166,255,0.06); }
+  .src-link::before { content: "⟨/⟩"; font-size: 11px; }
+
+  /* ── SVG Diagrams ── */
+  .diagram-wrap {
+    background: var(--code-bg); border: 1px solid var(--border);
+    border-radius: 10px; padding: 20px; margin: 20px 0;
+    text-align: center; overflow-x: auto;
+  }
+  .diagram-wrap svg { max-width: 100%; height: auto; }
+  .diagram-caption {
+    font-size: 12px; color: var(--text-muted);
+    text-align: center; margin-top: 10px; font-style: italic;
+  }
+
+  /* ── Chapter Nav ── */
+  #chapter-nav {
+    position: fixed; bottom: 24px; right: 24px;
+    display: flex; gap: 8px; z-index: 60;
+  }
+  .chapter-btn {
+    background: var(--sidebar-bg); border: 1px solid var(--border);
+    color: var(--text-muted); border-radius: 8px; padding: 8px 16px;
+    cursor: pointer; font-size: 13px; transition: all 0.15s;
+    backdrop-filter: blur(10px);
+  }
+  .chapter-btn:hover { color: var(--accent); border-color: var(--accent); background: rgba(88,166,255,0.1); }
+
+  /* ── Responsive ── */
+  @media (max-width: 768px) {
+    #topnav { display: flex; }
+    #sidebar {
+      transform: translateX(-100%);
+      top: 52px; z-index: 200;
+    }
+    #sidebar.open { transform: translateX(0); }
+    #main { margin-left: 0; padding: 72px 16px 60px; }
+    h1 { font-size: 24px; }
+    h2 { font-size: 20px; }
+    #chapter-nav { bottom: 12px; right: 12px; }
+    .chapter-btn { padding: 6px 12px; font-size: 12px; }
+    pre { font-size: 12px; padding: 14px; }
+  }
+  @media (max-width: 480px) {
+    #main { padding: 68px 12px 60px; }
+  }
+
+  /* ── Overlay (mobile) ── */
+  #overlay {
+    display: none; position: fixed; inset: 0;
+    background: rgba(0,0,0,0.5); z-index: 150;
+  }
+  #overlay.show { display: block; }
+
+  /* ── Misc ── */
+  .divider { height: 1px; background: var(--border); margin: 32px 0; }
+  .meta { font-size: 12px; color: var(--text-muted); margin-bottom: 24px; }
+  .meta span { margin-right: 16px; }
+  .grid-2 { display: grid; grid-template-columns: 1fr 1fr; gap: 16px; margin: 16px 0; }
+  @media (max-width: 600px) { .grid-2 { grid-template-columns: 1fr; } }
+  .card {
+    background: var(--code-bg); border: 1px solid var(--border);
+    border-radius: 8px; padding: 16px;
+  }
+  .card h4 { margin-top: 0; }
+  .fn-callout {
+    background: linear-gradient(135deg, rgba(88,166,255,0.04), rgba(210,168,255,0.04));
+    border: 1px solid var(--border); border-radius: 8px;
+    padding: 16px 20px; margin: 16px 0;
+  }
+</style>
+</head>
+<body>
+
+<div id="progress-bar"></div>
+
+<!-- Mobile Top Nav -->
+<nav id="topnav">
+  <span class="logo">L2CAP 深度解析</span>
+  <button id="hamburger" onclick="toggleSidebar()">☰</button>
+</nav>
+<div id="overlay" onclick="toggleSidebar()"></div>
+
+<!-- Sidebar -->
+<aside id="sidebar">
+  <div class="sidebar-header">
+    <h2>L2CAP 深度解析</h2>
+    <p>Linux Kernel v5.4 · 蓝牙协议栈</p>
+  </div>
+
+  <div class="nav-group">
+    <div class="nav-group-title">📖 概述</div>
+    <a class="nav-item" onclick="goSection('s0')">引言与文档说明</a>
+    <a class="nav-item" onclick="goSection('s1')">L2CAP 设计原理</a>
+  </div>
+  <div class="nav-group">
+    <div class="nav-group-title">🏗️ 架构</div>
+    <a class="nav-item" onclick="goSection('s2')">协议栈层次结构</a>
+    <a class="nav-item" onclick="goSection('s3')">信道标识符 CID</a>
+    <a class="nav-item" onclick="goSection('s4')">数据包格式 PDU</a>
+  </div>
+  <div class="nav-group">
+    <div class="nav-group-title">⚙️ 工作模式</div>
+    <a class="nav-item" onclick="goSection('s5')">Basic Mode</a>
+    <a class="nav-item" onclick="goSection('s6')">ERTM 增强重传模式</a>
+    <a class="nav-item" onclick="goSection('s7')">Streaming 流模式</a>
+    <a class="nav-item" onclick="goSection('s8')">LE Credit Flow Control</a>
+  </div>
+  <div class="nav-group">
+    <div class="nav-group-title">🔌 连接管理</div>
+    <a class="nav-item" onclick="goSection('s9')">信令通道与命令</a>
+    <a class="nav-item" onclick="goSection('s10')">连接建立流程</a>
+    <a class="nav-item" onclick="goSection('s11')">配置协商机制</a>
+  </div>
+  <div class="nav-group">
+    <div class="nav-group-title">💻 内核实现</div>
+    <a class="nav-item" onclick="goSection('s12')">核心数据结构</a>
+    <a class="nav-item" onclick="goSection('s13')">l2cap_chan 生命周期</a>
+    <a class="nav-item" onclick="goSection('s14')">ERTM 状态机实现</a>
+    <a class="nav-item" onclick="goSection('s15')">分段与重组 SAR</a>
+    <a class="nav-item" onclick="goSection('s16')">Socket 接口层</a>
+  </div>
+  <div class="nav-group">
+    <div class="nav-group-title">🔒 安全与调试</div>
+    <a class="nav-item" onclick="goSection('s17')">安全机制</a>
+    <a class="nav-item" onclick="goSection('s18')">调试与工具</a>
+    <a class="nav-item" onclick="goSection('s19')">总结</a>
+  </div>
+</aside>
+
+<!-- Main -->
+<main id="main">
+<div class="content-wrap">
+
+<!-- ═══════════════════════════════════════ S0 ═══ -->
+<section class="section" id="s0">
+  <span class="section-tag">引言</span>
+  <h1>Linux 5.4 蓝牙 L2CAP 深度解析</h1>
+  <p class="meta">
+    <span>📌 基准版本：Linux Kernel v5.4</span>
+    <span>📁 源码路径：<code>net/bluetooth/l2cap_core.c</code></span>
+    <span>📋 规范来源：Bluetooth Core Spec 5.x Vol.3 Part A</span>
+  </p>
+
+  <div class="info-box note">
+    <strong>📚 原始资料来源（官方）</strong>
+    本文内容严格基于以下官方权威资料编写，不含推测或演绎：
+    <ul style="margin-top:8px;">
+      <li><a href="https://github.com/torvalds/linux/blob/v5.4/net/bluetooth/l2cap_core.c" target="_blank">Linux kernel v5.4 — net/bluetooth/l2cap_core.c</a></li>
+      <li><a href="https://github.com/torvalds/linux/blob/v5.4/include/net/bluetooth/l2cap.h" target="_blank">Linux kernel v5.4 — include/net/bluetooth/l2cap.h</a></li>
+      <li><a href="https://www.bluetooth.com/wp-content/uploads/Files/Specification/HTML/Core-54/out/en/host/logical-link-control-and-adaptation-protocol-specification.html" target="_blank">Bluetooth Core Specification — Part A: L2CAP</a></li>
+      <li><a href="https://github.com/bluez/bluez/wiki/L2CAP" target="_blank">BlueZ Wiki — L2CAP Socket Interface</a></li>
+    </ul>
+  </div>
+
+  <p>L2CAP（Logical Link Control and Adaptation Protocol，逻辑链路控制与适配协议）是蓝牙协议栈中介于底层 HCI（Host Controller Interface）与上层应用协议之间的核心中间件层。它提供多路复用、数据包分段与重组（SAR）、逐信道流量控制和错误控制四大核心能力。</p>
+
+  <div class="info-box principle">
+    <strong>🎯 第一性原理：L2CAP 存在的根本原因</strong>
+    无线信道本质上是不可靠、带宽受限的共享介质。蓝牙基带只提供原始的 ACL 数据包传输，不区分上层协议，也不支持多路复用。L2CAP 解决的核心问题是：<strong>如何在单条物理链路上，可靠地承载多个相互独立的逻辑数据流？</strong> 答案是：用 CID 做多路复用，用 SAR 适配 MTU，用可选的 ERTM/流控模式按需提供可靠性保障。
+  </div>
+</section>
+
+<!-- ═══════════════════════════════════════ S1 ═══ -->
+<section class="section" id="s1">
+  <span class="section-tag">设计原理</span>
+  <h2>L2CAP 设计原理</h2>
+
+  <h3>1.1 核心功能目标</h3>
+  <p>依据 Bluetooth Core Specification Vol.3 Part A Section 1.1，L2CAP 的功能需求包含：</p>
+  <ul>
+    <li><strong>协议/信道多路复用（Protocol/Channel Multiplexing）</strong>：单条 ACL 逻辑链路上同时承载多个上层协议（RFCOMM、AVDTP、ATT、SMP 等）</li>
+    <li><strong>分段与重组（SAR）</strong>：将上层 SDU（最大 64KB）切分成适合 HCI 缓冲区的 PDU 并在接收端重组</li>
+    <li><strong>逐信道流控（Per-channel Flow Control）</strong>：防止接收方缓冲区溢出</li>
+    <li><strong>错误控制与重传（Error Control & Retransmission）</strong>：补偿基带误码，提供比 Controller 更高的可靠性</li>
+    <li><strong>QoS 协商</strong>：在连接建立阶段交换质量期望参数</li>
+  </ul>
+
+  <h3>1.2 架构假设</h3>
+  <div class="info-box note">
+    <strong>规范原文 Section 1.2 — Assumptions</strong>
+    规范明确设计依赖以下前提：Controller 保证数据包有序投递，但可能存在单包损坏和重复；Controller 始终呈现全双工信道；部分应用需要比 Controller 更好的错误控制能力（因此 L2CAP 提供 ERTM 等可选模式）。
+  </div>
+
+  <h3>1.3 L2CAP 功能架构块</h3>
+  <p>规范将 L2CAP 分为三个内部功能块（Section 1.1 Figure 1.1）：</p>
+
+  <div class="diagram-wrap">
+    <svg viewBox="0 0 700 320" xmlns="http://www.w3.org/2000/svg" style="font-family:monospace;font-size:13px;">
+      <defs>
+        <linearGradient id="g1" x1="0" y1="0" x2="1" y2="1">
+          <stop offset="0%" stop-color="#1f6feb" stop-opacity="0.3"/>
+          <stop offset="100%" stop-color="#388bfd" stop-opacity="0.1"/>
+        </linearGradient>
+        <linearGradient id="g2" x1="0" y1="0" x2="1" y2="1">
+          <stop offset="0%" stop-color="#3fb950" stop-opacity="0.3"/>
+          <stop offset="100%" stop-color="#3fb950" stop-opacity="0.1"/>
+        </linearGradient>
+        <linearGradient id="g3" x1="0" y1="0" x2="1" y2="1">
+          <stop offset="0%" stop-color="#d2a8ff" stop-opacity="0.3"/>
+          <stop offset="100%" stop-color="#d2a8ff" stop-opacity="0.1"/>
+        </linearGradient>
+      </defs>
+      <!-- Upper Layer -->
+      <rect x="10" y="10" width="680" height="40" rx="6" fill="url(#g1)" stroke="#388bfd" stroke-width="1.5"/>
+      <text x="350" y="34" fill="#58a6ff" text-anchor="middle" font-weight="bold">上层协议（RFCOMM / AVDTP / ATT / SMP / 应用）</text>
+
+      <!-- L2CAP box -->
+      <rect x="10" y="65" width="680" height="180" rx="8" fill="none" stroke="#30363d" stroke-width="1.5" stroke-dasharray="4"/>
+      <text x="24" y="84" fill="#8b949e" font-size="11" font-weight="bold">L2CAP 层</text>
+
+      <!-- Channel Manager -->
+      <rect x="30" y="90" width="200" height="140" rx="6" fill="url(#g2)" stroke="#3fb950" stroke-width="1.5"/>
+      <text x="130" y="115" fill="#3fb950" text-anchor="middle" font-weight="bold">Channel Manager</text>
+      <text x="130" y="135" fill="#8b949e" text-anchor="middle" font-size="11">信令/状态机</text>
+      <text x="130" y="152" fill="#8b949e" text-anchor="middle" font-size="11">L2CAP_CONN_REQ/RSP</text>
+      <text x="130" y="169" fill="#8b949e" text-anchor="middle" font-size="11">L2CAP_CONF_REQ/RSP</text>
+      <text x="130" y="186" fill="#8b949e" text-anchor="middle" font-size="11">L2CAP_DISCONN_REQ/RSP</text>
+      <text x="130" y="203" fill="#8b949e" text-anchor="middle" font-size="11">CID 分配与管理</text>
+
+      <!-- Retransmission & Flow Control -->
+      <rect x="250" y="90" width="210" height="140" rx="6" fill="url(#g3)" stroke="#d2a8ff" stroke-width="1.5"/>
+      <text x="355" y="115" fill="#d2a8ff" text-anchor="middle" font-weight="bold">Retransmission &amp;</text>
+      <text x="355" y="132" fill="#d2a8ff" text-anchor="middle" font-weight="bold">Flow Control</text>
+      <text x="355" y="155" fill="#8b949e" text-anchor="middle" font-size="11">ERTM / Streaming</text>
+      <text x="355" y="172" fill="#8b949e" text-anchor="middle" font-size="11">I-frame / S-frame</text>
+      <text x="355" y="189" fill="#8b949e" text-anchor="middle" font-size="11">窗口/计时器</text>
+      <text x="355" y="206" fill="#8b949e" text-anchor="middle" font-size="11">SAR 分段重组</text>
+
+      <!-- Resource Manager -->
+      <rect x="480" y="90" width="190" height="140" rx="6" fill="url(#g1)" stroke="#58a6ff" stroke-width="1.5"/>
+      <text x="575" y="115" fill="#58a6ff" text-anchor="middle" font-weight="bold">Resource Manager</text>
+      <text x="575" y="140" fill="#8b949e" text-anchor="middle" font-size="11">帧中继服务</text>
+      <text x="575" y="157" fill="#8b949e" text-anchor="middle" font-size="11">多信道复用调度</text>
+      <text x="575" y="174" fill="#8b949e" text-anchor="middle" font-size="11">TX/RX 协调</text>
+      <text x="575" y="191" fill="#8b949e" text-anchor="middle" font-size="11">HCI ACL 数据包</text>
+
+      <!-- Lower Layer -->
+      <rect x="10" y="260" width="680" height="40" rx="6" fill="#161b22" stroke="#30363d" stroke-width="1.5"/>
+      <text x="350" y="284" fill="#8b949e" text-anchor="middle">下层：HCI Driver / BR-EDR Controller / LE Controller</text>
+
+      <!-- arrows -->
+      <line x1="350" y1="50" x2="350" y2="65" stroke="#58a6ff" stroke-width="1.5" marker-end="url(#arr)"/>
+      <line x1="350" y1="245" x2="350" y2="260" stroke="#58a6ff" stroke-width="1.5" marker-end="url(#arr)"/>
+      <defs>
+        <marker id="arr" markerWidth="8" markerHeight="8" refX="6" refY="3" orient="auto">
+          <path d="M0,0 L0,6 L8,3 Z" fill="#58a6ff"/>
+        </marker>
+      </defs>
+    </svg>
+    <p class="diagram-caption">图1-1：L2CAP 功能架构块（基于规范 Section 1.1 Figure 1.1）</p>
+  </div>
+
+  <div class="info-box principle">
+    <strong>🎯 第一性原理：分层解耦</strong>
+    L2CAP 的三个功能块体现了"关注点分离"原则：Channel Manager 管理控制平面（状态机/信令），Retransmission & Flow Control 管理数据平面可靠性，Resource Manager 负责与硬件接口的适配调度。这三者的清晰分工使得不同可靠性需求的信道可以共存于同一物理链路上，而互不干扰。
+  </div>
+</section>
+
+<!-- ═══════════════════════════════════════ S2 ═══ -->
+<section class="section" id="s2">
+  <span class="section-tag">架构</span>
+  <h2>协议栈层次结构</h2>
+
+  <h3>2.1 Linux 蓝牙协议栈整体架构</h3>
+  <p>在 Linux 5.4 内核中，蓝牙子系统位于 <code>net/bluetooth/</code> 目录，L2CAP 是其中最核心的中间层：</p>
+
+  <div class="diagram-wrap">
+    <svg viewBox="0 0 680 500" xmlns="http://www.w3.org/2000/svg" style="font-family:monospace;font-size:12px;">
+      <!-- Application -->
+      <rect x="40" y="10" width="600" height="44" rx="6" fill="rgba(88,166,255,0.08)" stroke="#58a6ff" stroke-width="1.5"/>
+      <text x="340" y="36" fill="#58a6ff" text-anchor="middle" font-weight="bold" font-size="13">用户空间：应用程序（BlueZ / bluetoothd / 自定义 App）</text>
+
+      <!-- AF_BLUETOOTH socket -->
+      <rect x="40" y="70" width="600" height="40" rx="6" fill="rgba(210,168,255,0.08)" stroke="#d2a8ff" stroke-width="1.5"/>
+      <text x="340" y="94" fill="#d2a8ff" text-anchor="middle" font-weight="bold">AF_BLUETOOTH Socket 接口（l2cap_sock.c）</text>
+
+      <line x1="340" y1="110" x2="340" y2="125" stroke="#30363d" stroke-width="2" stroke-dasharray="4"/>
+
+      <!-- L2CAP Core -->
+      <rect x="40" y="125" width="600" height="100" rx="8" fill="rgba(63,185,80,0.06)" stroke="#3fb950" stroke-width="2"/>
+      <text x="340" y="150" fill="#3fb950" text-anchor="middle" font-weight="bold" font-size="14">L2CAP Core（l2cap_core.c）</text>
+      <rect x="60" y="160" width="170" height="52" rx="4" fill="rgba(63,185,80,0.08)" stroke="#3fb950" stroke-width="1"/>
+      <text x="145" y="180" fill="#3fb950" text-anchor="middle" font-size="11">信道管理</text>
+      <text x="145" y="196" fill="#8b949e" text-anchor="middle" font-size="10">l2cap_chan / l2cap_conn</text>
+      <rect x="245" y="160" width="170" height="52" rx="4" fill="rgba(63,185,80,0.08)" stroke="#3fb950" stroke-width="1"/>
+      <text x="330" y="180" fill="#3fb950" text-anchor="middle" font-size="11">ERTM 状态机</text>
+      <text x="330" y="196" fill="#8b949e" text-anchor="middle" font-size="10">l2cap_tx / l2cap_rx</text>
+      <rect x="430" y="160" width="185" height="52" rx="4" fill="rgba(63,185,80,0.08)" stroke="#3fb950" stroke-width="1"/>
+      <text x="522" y="180" fill="#3fb950" text-anchor="middle" font-size="11">配置协商</text>
+      <text x="522" y="196" fill="#8b949e" text-anchor="middle" font-size="10">l2cap_parse_conf_req/rsp</text>
+
+      <line x1="340" y1="225" x2="340" y2="245" stroke="#30363d" stroke-width="2" stroke-dasharray="4"/>
+
+      <!-- HCI Core -->
+      <rect x="40" y="245" width="600" height="60" rx="8" fill="rgba(255,166,87,0.06)" stroke="#ffa657" stroke-width="1.5"/>
+      <text x="340" y="270" fill="#ffa657" text-anchor="middle" font-weight="bold" font-size="13">HCI Core（hci_core.c / hci_conn.c）</text>
+      <text x="340" y="290" fill="#8b949e" text-anchor="middle" font-size="11">hci_conn → hci_chan → ACL 数据包路由</text>
+
+      <line x1="340" y1="305" x2="340" y2="325" stroke="#30363d" stroke-width="2" stroke-dasharray="4"/>
+
+      <!-- HCI Transport -->
+      <rect x="40" y="325" width="600" height="50" rx="8" fill="rgba(255,123,114,0.06)" stroke="#ff7b72" stroke-width="1.5"/>
+      <text x="340" y="350" fill="#ff7b72" text-anchor="middle" font-weight="bold">HCI Transport（USB / UART / SDIO）</text>
+      <text x="340" y="368" fill="#8b949e" text-anchor="middle" font-size="11">hci_usb.c / btusb.c / hci_uart.c</text>
+
+      <line x1="340" y1="375" x2="340" y2="395" stroke="#30363d" stroke-width="2" stroke-dasharray="4"/>
+
+      <!-- Controller -->
+      <rect x="40" y="395" width="600" height="50" rx="8" fill="rgba(88,166,255,0.04)" stroke="#30363d" stroke-width="1.5"/>
+      <text x="340" y="418" fill="#8b949e" text-anchor="middle" font-weight="bold">蓝牙 Controller 硬件（BR/EDR + LE）</text>
+      <text x="340" y="436" fill="#8b949e" text-anchor="middle" font-size="10">射频基带 · 链路管理器 · 物理层</text>
+
+      <!-- 侧边注解 -->
+      <text x="10" y="95" fill="#d2a8ff" font-size="10" transform="rotate(-90,10,95)">用户态</text>
+      <text x="10" y="200" fill="#3fb950" font-size="10" transform="rotate(-90,10,200)">内核态</text>
+    </svg>
+    <p class="diagram-caption">图2-1：Linux 5.4 蓝牙协议栈层次结构</p>
+  </div>
+
+  <h3>2.2 核心源文件</h3>
+  <div class="table-wrap">
+    <table>
+      <thead><tr><th>文件</th><th>角色</th><th>主要内容</th></tr></thead>
+      <tbody>
+        <tr><td><code>net/bluetooth/l2cap_core.c</code></td><td><span class="badge badge-green">核心</span></td><td>L2CAP 信道管理、ERTM 状态机、分段重组、信令处理</td></tr>
+        <tr><td><code>net/bluetooth/l2cap_sock.c</code></td><td><span class="badge badge-blue">接口</span></td><td>AF_BLUETOOTH socket 系统调用适配、ops 回调</td></tr>
+        <tr><td><code>include/net/bluetooth/l2cap.h</code></td><td><span class="badge badge-purple">头文件</span></td><td>所有数据结构、宏定义、枚举类型</td></tr>
+        <tr><td><code>net/bluetooth/hci_core.c</code></td><td><span class="badge badge-orange">依赖</span></td><td>HCI 连接管理，L2CAP 通过它发送/接收 ACL 数据包</td></tr>
+      </tbody>
+    </table>
+  </div>
+
+  <p>源码参考链接：</p>
+  <a class="src-link" href="https://github.com/torvalds/linux/blob/v5.4/net/bluetooth/l2cap_core.c" target="_blank">linux/v5.4/net/bluetooth/l2cap_core.c</a><br>
+  <a class="src-link" href="https://github.com/torvalds/linux/blob/v5.4/net/bluetooth/l2cap_sock.c" target="_blank">linux/v5.4/net/bluetooth/l2cap_sock.c</a><br>
+  <a class="src-link" href="https://github.com/torvalds/linux/blob/v5.4/include/net/bluetooth/l2cap.h" target="_blank">linux/v5.4/include/net/bluetooth/l2cap.h</a>
+
+  <div class="info-box principle">
+    <strong>🎯 第一性原理：关注点分离</strong>
+    内核将 L2CAP 分成 core（协议逻辑）和 sock（POSIX 接口）两层，使得协议实现与系统调用接口解耦。core 层可以被 AF_BLUETOOTH socket、SMP、A2MP 等多种上层共用，而无需重复实现底层 PDU 处理逻辑。
+  </div>
+</section>
+
+<!-- ═══════════════════════════════════════ S3 ═══ -->
+<section class="section" id="s3">
+  <span class="section-tag">架构</span>
+  <h2>信道标识符 CID</h2>
+
+  <h3>3.1 CID 概念与作用域</h3>
+  <p>根据规范 Section 2.1，CID（Channel Identifier）是设备端对逻辑信道端点的本地名称。CID 的作用域与逻辑链路绑定，即同一设备上不同 ACL 连接的 CID 空间相互独立。</p>
+
+  <div class="diagram-wrap">
+    <svg viewBox="0 0 680 240" xmlns="http://www.w3.org/2000/svg" style="font-family:monospace;font-size:12px;">
+      <!-- Device A -->
+      <rect x="20" y="30" width="260" height="180" rx="8" fill="rgba(88,166,255,0.04)" stroke="#30363d" stroke-width="1.5"/>
+      <text x="150" y="54" fill="#58a6ff" text-anchor="middle" font-weight="bold">设备 A</text>
+      <rect x="40" y="65" width="220" height="30" rx="4" fill="rgba(88,166,255,0.12)" stroke="#58a6ff" stroke-width="1"/>
+      <text x="150" y="84" fill="#58a6ff" text-anchor="middle">SCID: 0x0040 (本地端)</text>
+      <rect x="40" y="105" width="220" height="30" rx="4" fill="rgba(63,185,80,0.12)" stroke="#3fb950" stroke-width="1"/>
+      <text x="150" y="124" fill="#3fb950" text-anchor="middle">SCID: 0x0041 (本地端)</text>
+      <rect x="40" y="145" width="220" height="30" rx="4" fill="rgba(210,168,255,0.12)" stroke="#d2a8ff" stroke-width="1"/>
+      <text x="150" y="164" fill="#d2a8ff" text-anchor="middle">CID: 0x0001 (信令固定)</text>
+      <text x="150" y="200" fill="#8b949e" text-anchor="middle" font-size="11">ACL 连接 Handle: 0x0042</text>
+
+      <!-- Arrow -->
+      <line x1="280" y1="120" x2="400" y2="120" stroke="#58a6ff" stroke-width="1.5"/>
+      <polygon points="400,115 410,120 400,125" fill="#58a6ff"/>
+      <polygon points="280,115 270,120 280,125" fill="#58a6ff"/>
+      <text x="340" y="112" fill="#8b949e" text-anchor="middle" font-size="11">ACL 链路</text>
+      <text x="340" y="136" fill="#8b949e" text-anchor="middle" font-size="10">CID 对 = SCID + DCID</text>
+
+      <!-- Device B -->
+      <rect x="400" y="30" width="260" height="180" rx="8" fill="rgba(63,185,80,0.04)" stroke="#30363d" stroke-width="1.5"/>
+      <text x="530" y="54" fill="#3fb950" text-anchor="middle" font-weight="bold">设备 B</text>
+      <rect x="420" y="65" width="220" height="30" rx="4" fill="rgba(88,166,255,0.12)" stroke="#58a6ff" stroke-width="1"/>
+      <text x="530" y="84" fill="#58a6ff" text-anchor="middle">DCID: 0x0040 (对端端)</text>
+      <rect x="420" y="105" width="220" height="30" rx="4" fill="rgba(63,185,80,0.12)" stroke="#3fb950" stroke-width="1"/>
+      <text x="530" y="124" fill="#3fb950" text-anchor="middle">DCID: 0x0041 (对端端)</text>
+      <rect x="420" y="145" width="220" height="30" rx="4" fill="rgba(210,168,255,0.12)" stroke="#d2a8ff" stroke-width="1"/>
+      <text x="530" y="164" fill="#d2a8ff" text-anchor="middle">CID: 0x0001 (信令固定)</text>
+      <text x="530" y="200" fill="#8b949e" text-anchor="middle" font-size="11">ACL 连接 Handle: 0x0042</text>
+    </svg>
+    <p class="diagram-caption">图3-1：CID 在两端设备上的对应关系（SCID=源端，DCID=目的端）</p>
+  </div>
+
+  <h3>3.2 BR/EDR 固定信道 CID 表</h3>
+  <p>规范 Section 2.1 Table 2.1 定义了 BR/EDR 的 CID 分配：</p>
+  <div class="table-wrap">
+    <table>
+      <thead><tr><th>CID</th><th>描述</th><th>特性</th><th>内核宏定义</th></tr></thead>
+      <tbody>
+        <tr><td><code>0x0000</code></td><td>Null 标识符</td><td><span class="badge badge-red">禁止使用</span></td><td>—</td></tr>
+        <tr><td><code>0x0001</code></td><td>L2CAP 信令信道（BR/EDR）</td><td><span class="badge badge-blue">固定</span></td><td><code>L2CAP_CID_SIGNALING</code></td></tr>
+        <tr><td><code>0x0002</code></td><td>无连接接收信道</td><td><span class="badge badge-blue">固定</span></td><td><code>L2CAP_CID_CONN_LESS</code></td></tr>
+        <tr><td><code>0x0003</code></td><td>AMP Manager Protocol</td><td><span class="badge badge-purple">固定</span></td><td><code>L2CAP_CID_A2MP</code></td></tr>
+        <tr><td><code>0x0004</code></td><td>ATT（属性协议）</td><td><span class="badge badge-green">LE 固定</span></td><td><code>L2CAP_CID_ATT</code></td></tr>
+        <tr><td><code>0x0005</code></td><td>LE 信令信道</td><td><span class="badge badge-green">LE 固定</span></td><td><code>L2CAP_CID_LE_SIGNALING</code></td></tr>
+        <tr><td><code>0x0006</code></td><td>LE SMP（安全管理）</td><td><span class="badge badge-green">LE 固定</span></td><td><code>L2CAP_CID_SMP</code></td></tr>
+        <tr><td><code>0x0007</code></td><td>BR/EDR SMP</td><td><span class="badge badge-blue">固定</span></td><td><code>L2CAP_CID_BR_SMP</code></td></tr>
+        <tr><td><code>0x0040–0xFFFF</code></td><td>动态分配信道</td><td><span class="badge badge-orange">动态</span></td><td><code>L2CAP_CID_DYN_START</code></td></tr>
+      </tbody>
+    </table>
+  </div>
+
+  <h3>3.3 PSM（Protocol/Service Multiplexer）</h3>
+  <p>对于动态信道，连接请求需要携带 PSM 值来路由到正确的上层协议。PSM 分两个范围：</p>
+  <div class="table-wrap">
+    <table>
+      <thead><tr><th>PSM 范围</th><th>分配方</th><th>典型值</th></tr></thead>
+      <tbody>
+        <tr><td><code>0x0001–0x00FF</code>（奇数）</td><td>Bluetooth SIG 分配</td><td>SDP=0x0001, RFCOMM=0x0003, AVDTP=0x0019, AVCTP=0x0017</td></tr>
+        <tr><td><code>0x1001–0xFFFF</code>（奇数）</td><td>厂商自定义</td><td>各厂商私有协议</td></tr>
+      </tbody>
+    </table>
+  </div>
+
+  <div class="info-box note">
+    <strong>🔍 内核实现：PSM 注册</strong>
+    在 Linux 5.4 中，上层协议通过 <code>l2cap_add_psm(chan, psm)</code> 注册 PSM，内核维护一个全局的 <code>chan_list</code> 链表，当收到 <code>L2CAP_CONN_REQ</code> 时在该链表中查找匹配的 PSM 处理信道。
+  </div>
+
+  <div class="info-box principle">
+    <strong>🎯 第一性原理：用数字代替名字</strong>
+    CID 和 PSM 本质上都是解决"如何在共享信道上区分不同会话"的问题。CID 是连接建立后动态协商的本地端口号（类比 TCP 端口），PSM 是服务发现阶段的协议标识（类比 TCP 端口的固定知名端口）。固定信道（0x0001–0x003F）则是"永远在线"的特殊服务，无需握手。
+  </div>
+</section>
+
+<!-- ═══════════════════════════════════════ S4 ═══ -->
+<section class="section" id="s4">
+  <span class="section-tag">架构</span>
+  <h2>数据包格式 PDU</h2>
+
+  <h3>4.1 基本 L2CAP 头部</h3>
+  <p>所有 L2CAP PDU 均以 4 字节基本头部开始（规范 Section 3.1）：</p>
+
+  <div class="diagram-wrap">
+    <svg viewBox="0 0 680 130" xmlns="http://www.w3.org/2000/svg" style="font-family:monospace;font-size:12px;">
+      <!-- Bit ruler -->
+      <text x="30" y="20" fill="#8b949e" font-size="10">Octet 0</text>
+      <text x="200" y="20" fill="#8b949e" font-size="10">Octet 1</text>
+      <text x="370" y="20" fill="#8b949e" font-size="10">Octet 2</text>
+      <text x="540" y="20" fill="#8b949e" font-size="10">Octet 3</text>
+
+      <!-- Boxes -->
+      <rect x="20" y="30" width="330" height="50" rx="4" fill="rgba(88,166,255,0.12)" stroke="#58a6ff" stroke-width="1.5"/>
+      <text x="185" y="52" fill="#58a6ff" text-anchor="middle" font-weight="bold">PDU Length (16 bits LE)</text>
+      <text x="185" y="70" fill="#8b949e" text-anchor="middle" font-size="11">L2CAP payload 字节数（不含头部）</text>
+
+      <rect x="360" y="30" width="300" height="50" rx="4" fill="rgba(210,168,255,0.12)" stroke="#d2a8ff" stroke-width="1.5"/>
+      <text x="510" y="52" fill="#d2a8ff" text-anchor="middle" font-weight="bold">Channel ID (16 bits LE)</text>
+      <text x="510" y="70" fill="#8b949e" text-anchor="middle" font-size="11">目标信道标识符 CID</text>
+
+      <!-- Payload -->
+      <rect x="20" y="90" width="640" height="30" rx="4" fill="rgba(63,185,80,0.08)" stroke="#3fb950" stroke-width="1"/>
+      <text x="340" y="110" fill="#3fb950" text-anchor="middle">Information Payload（0 ~ 65535 bytes）</text>
+    </svg>
+    <p class="diagram-caption">图4-1：L2CAP 基本头部格式（B-frame）</p>
+  </div>
+
+  <h3>4.2 PDU 类型汇总</h3>
+  <div class="table-wrap">
+    <table>
+      <thead><tr><th>PDU 类型</th><th>全称</th><th>使用场景</th><th>控制字段</th></tr></thead>
+      <tbody>
+        <tr><td><span class="badge badge-blue">B-frame</span></td><td>Basic frame</td><td>Basic Mode 数据传输</td><td>无</td></tr>
+        <tr><td><span class="badge badge-green">I-frame</span></td><td>Information frame</td><td>ERTM/Streaming 数据传输</td><td>TxSeq / SAR / ReqSeq / P/F bit</td></tr>
+        <tr><td><span class="badge badge-purple">S-frame</span></td><td>Supervisory frame</td><td>ERTM 流控/确认（RR/RNR/REJ/SREJ）</td><td>ReqSeq / S / P/F bit</td></tr>
+        <tr><td><span class="badge badge-orange">C-frame</span></td><td>Control frame</td><td>信令信道命令（CID 0x0001/0x0005）</td><td>Code / Ident / Length</td></tr>
+        <tr><td><span class="badge badge-blue">G-frame</span></td><td>Group frame</td><td>无连接信道（CID 0x0002）</td><td>PSM 字段</td></tr>
+        <tr><td><span class="badge badge-green">K-frame</span></td><td>Credit-based frame</td><td>LE Credit Based / ECOC 模式</td><td>SDU Length（首帧）</td></tr>
+      </tbody>
+    </table>
+  </div>
+
+  <h3>4.3 ERTM I-frame 控制字段（标准 2 字节）</h3>
+
+  <div class="diagram-wrap">
+    <svg viewBox="0 0 680 160" xmlns="http://www.w3.org/2000/svg" style="font-family:monospace;font-size="11px;">
+      <text x="340" y="18" fill="#8b949e" text-anchor="middle" font-size="11">I-frame 控制字段（Standard Control - 2 bytes, bit 0=0）</text>
+      <!-- bit labels top -->
+      <text x="30" y="38" fill="#8b949e" font-size="9">bit 15</text>
+      <text x="620" y="38" fill="#8b949e" font-size="9">bit 0</text>
+
+      <!-- Fields -->
+      <rect x="20" y="45" width="80" height="40" rx="3" fill="rgba(88,166,255,0.15)" stroke="#58a6ff" stroke-width="1"/>
+      <text x="60" y="62" fill="#58a6ff" text-anchor="middle" font-size="10" font-weight="bold">SAR</text>
+      <text x="60" y="76" fill="#8b949e" text-anchor="middle" font-size="9">[15:14]</text>
+
+      <rect x="105" y="45" width="30" height="40" rx="3" fill="rgba(210,168,255,0.15)" stroke="#d2a8ff" stroke-width="1"/>
+      <text x="120" y="62" fill="#d2a8ff" text-anchor="middle" font-size="9">Rsvd</text>
+      <text x="120" y="76" fill="#8b949e" text-anchor="middle" font-size="9">[13]</text>
+
+      <rect x="140" y="45" width="130" height="40" rx="3" fill="rgba(63,185,80,0.15)" stroke="#3fb950" stroke-width="1"/>
+      <text x="205" y="62" fill="#3fb950" text-anchor="middle" font-size="10" font-weight="bold">ReqSeq</text>
+      <text x="205" y="76" fill="#8b949e" text-anchor="middle" font-size="9">[12:8] 确认号</text>
+
+      <rect x="275" y="45" width="30" height="40" rx="3" fill="rgba(255,166,87,0.15)" stroke="#ffa657" stroke-width="1"/>
+      <text x="290" y="62" fill="#ffa657" text-anchor="middle" font-size="9">F</text>
+      <text x="290" y="76" fill="#8b949e" text-anchor="middle" font-size="9">[7]</text>
+
+      <rect x="310" y="45" width="130" height="40" rx="3" fill="rgba(88,166,255,0.15)" stroke="#58a6ff" stroke-width="1"/>
+      <text x="375" y="62" fill="#58a6ff" text-anchor="middle" font-size="10" font-weight="bold">TxSeq</text>
+      <text x="375" y="76" fill="#8b949e" text-anchor="middle" font-size="9">[6:1] 发送序号</text>
+
+      <rect x="445" y="45" width="30" height="40" rx="3" fill="rgba(255,123,114,0.15)" stroke="#ff7b72" stroke-width="1"/>
+      <text x="460" y="62" fill="#ff7b72" text-anchor="middle" font-size="9">0</text>
+      <text x="460" y="76" fill="#8b949e" text-anchor="middle" font-size="9">[0]</text>
+
+      <!-- Legends -->
+      <text x="20" y="110" fill="#8b949e" font-size="10">SAR: 00=不分段 01=首段 10=末段 11=继续段</text>
+      <text x="20" y="128" fill="#8b949e" font-size="10">F-bit: Final bit（对P-bit的响应）</text>
+      <text x="20" y="146" fill="#8b949e" font-size="10">bit[0]=0 表示 I-frame；bit[0]=1 表示 S-frame</text>
+    </svg>
+    <p class="diagram-caption">图4-2：ERTM I-frame 标准控制字段位域布局</p>
+  </div>
+
+  <h3>4.4 ERTM S-frame 控制字段（标准 2 字节）</h3>
+  <div class="diagram-wrap">
+    <svg viewBox="0 0 680 120" xmlns="http://www.w3.org/2000/svg" style="font-family:monospace;font-size:11px;">
+      <text x="340" y="18" fill="#8b949e" text-anchor="middle" font-size="11">S-frame 控制字段（bit 0=1）</text>
+      <rect x="20" y="30" width="80" height="40" rx="3" fill="rgba(88,166,255,0.15)" stroke="#58a6ff" stroke-width="1"/>
+      <text x="60" y="47" fill="#58a6ff" text-anchor="middle" font-size="10">Rsvd</text>
+      <text x="60" y="61" fill="#8b949e" text-anchor="middle" font-size="9">[15:14]</text>
+
+      <rect x="105" y="30" width="30" height="40" rx="3" fill="rgba(210,168,255,0.15)" stroke="#d2a8ff" stroke-width="1"/>
+      <text x="120" y="47" fill="#d2a8ff" text-anchor="middle" font-size="9">P</text>
+      <text x="120" y="61" fill="#8b949e" text-anchor="middle" font-size="9">[13]</text>
+
+      <rect x="140" y="30" width="130" height="40" rx="3" fill="rgba(63,185,80,0.15)" stroke="#3fb950" stroke-width="1"/>
+      <text x="205" y="47" fill="#3fb950" text-anchor="middle" font-size="10" font-weight="bold">ReqSeq</text>
+      <text x="205" y="61" fill="#8b949e" text-anchor="middle" font-size="9">[12:8]</text>
+
+      <rect x="275" y="30" width="30" height="40" rx="3" fill="rgba(255,166,87,0.15)" stroke="#ffa657" stroke-width="1"/>
+      <text x="290" y="47" fill="#ffa657" text-anchor="middle" font-size="9">F</text>
+      <text x="290" y="61" fill="#8b949e" text-anchor="middle" font-size="9">[7]</text>
+
+      <rect x="310" y="30" width="80" height="40" rx="3" fill="rgba(255,123,114,0.15)" stroke="#ff7b72" stroke-width="1"/>
+      <text x="350" y="47" fill="#ff7b72" text-anchor="middle" font-size="10" font-weight="bold">S-type</text>
+      <text x="350" y="61" fill="#8b949e" text-anchor="middle" font-size="9">[4:3]</text>
+
+      <rect x="395" y="30" width="80" height="40" rx="3" fill="rgba(88,166,255,0.08)" stroke="#30363d" stroke-width="1"/>
+      <text x="435" y="47" fill="#8b949e" text-anchor="middle" font-size="9">Rsvd</text>
+      <text x="435" y="61" fill="#8b949e" text-anchor="middle" font-size="9">[2]</text>
+
+      <rect x="480" y="30" width="30" height="40" rx="3" fill="rgba(255,123,114,0.15)" stroke="#ff7b72" stroke-width="1"/>
+      <text x="495" y="47" fill="#ff7b72" text-anchor="middle" font-size="9">1</text>
+      <text x="495" y="61" fill="#8b949e" text-anchor="middle" font-size="9">[0]</text>
+
+      <text x="20" y="96" fill="#8b949e" font-size="10">S-type: 00=RR(Receiver Ready)  01=REJ(Reject)  10=RNR(Not Ready)  11=SREJ(Selective Reject)</text>
+    </svg>
+    <p class="diagram-caption">图4-3：ERTM S-frame 控制字段（监督帧）</p>
+  </div>
+
+  <div class="info-box principle">
+    <strong>🎯 第一性原理：帧格式即协议语义</strong>
+    帧格式的每一个 bit 都是一个有限状态机的"词汇"。I-frame 的 TxSeq/ReqSeq 实现滑动窗口；SAR 字段实现 SDU 边界标记；P/F bit 实现主动重传探测（Poll）和响应确认（Final）。S-frame 是纯控制信号，4 种类型（RR/RNR/REJ/SREJ）足以描述接收方的所有状态。
+  </div>
+</section>
+
+<!-- ═══════════════════════════════════════ S5 ═══ -->
+<section class="section" id="s5">
+  <span class="section-tag">工作模式</span>
+  <h2>Basic Mode（基本模式）</h2>
+
+  <h3>5.1 定义</h3>
+  <p>Basic Mode 是 L2CAP 的默认和最简单模式，对应规范 Section 3.1 和 Section 7。在此模式下：</p>
+  <ul>
+    <li>没有重传机制，没有 ACK</li>
+    <li>上层 SDU 直接映射为 B-frame PDU</li>
+    <li>如果接收缓冲区满，内核直接丢包（规范称为"bad"，但别无选择）</li>
+    <li>MTU 默认值：<strong>672 字节</strong>（<code>L2CAP_DEFAULT_MTU</code>）</li>
+    <li>最小 MTU：<strong>48 字节</strong>（<code>L2CAP_DEFAULT_MIN_MTU</code>）</li>
+  </ul>
+
+  <h3>5.2 内核实现（l2cap_core.c）</h3>
+  <pre><code><span class="cm">/* Basic Mode 数据发送路径 (l2cap_chan_send) */</span>
+<span class="kw">case</span> <span class="nm">L2CAP_MODE_BASIC</span>:
+    <span class="cm">/* 直接分配 skb，写入 L2CAP 基本头部 */</span>
+    skb = <span class="fn">l2cap_create_basic_pdu</span>(chan, msg, len);
+    <span class="kw">if</span> (<span class="nm">IS_ERR</span>(skb))
+        <span class="kw">return</span> <span class="nm">PTR_ERR</span>(skb);
+    <span class="fn">l2cap_do_send</span>(chan, skb);  <span class="cm">/* 调用 hci_send_acl */</span>
+    err = len;
+    <span class="kw">break</span>;
+
+<span class="cm">/* Basic Mode 接收路径 (l2cap_data_channel) */</span>
+<span class="kw">case</span> <span class="nm">L2CAP_MODE_BASIC</span>:
+    <span class="kw">if</span> (chan->imtu &lt; skb->len)
+        <span class="kw">goto</span> drop;  <span class="cm">/* 超过 MTU 直接丢弃 */</span>
+    <span class="kw">if</span> (!<span class="fn">sock_queue_rcv_skb</span>(sk, skb))
+        <span class="kw">goto</span> done;
+    <span class="kw">break</span>;</code></pre>
+
+  <h3>5.3 适用场景</h3>
+  <div class="grid-2">
+    <div class="card">
+      <h4 style="color:#3fb950">✅ 适合使用</h4>
+      <ul>
+        <li>SDP 服务发现</li>
+        <li>ATT 属性协议（BLE GATT）</li>
+        <li>SMP 安全管理</li>
+        <li>对延迟敏感、丢包可容忍的场景</li>
+      </ul>
+    </div>
+    <div class="card">
+      <h4 style="color:#ff7b72">❌ 不适合</h4>
+      <ul>
+        <li>需要数据完整性保证（如文件传输）</li>
+        <li>基带错误率较高的环境</li>
+        <li>大数据量传输（无法利用 SAR）</li>
+      </ul>
+    </div>
+  </div>
+
+  <div class="info-box principle">
+    <strong>🎯 第一性原理：够用原则</strong>
+    Basic Mode 体现了"不为不需要的功能付费"的设计哲学。对于 SDP、ATT 这类"查询-响应"型协议，底层蓝牙基带的 CRC 校验已经提供了足够可靠性，额外的 ERTM 重传机制只会增加延迟和实现复杂度。
+  </div>
+</section>
+
+<!-- ═══════════════════════════════════════ S6 ═══ -->
+<section class="section" id="s6">
+  <span class="section-tag">工作模式</span>
+  <h2>ERTM — 增强重传模式</h2>
+
+  <h3>6.1 设计目标</h3>
+  <p>ERTM（Enhanced Retransmission Mode）在规范 Section 8 中详细定义。其目标是在 BR/EDR 链路上提供接近 TCP 的可靠性，通过滑动窗口 + 选择性重传（SREJ）实现高效数据传输。</p>
+
+  <h3>6.2 关键参数</h3>
+  <div class="table-wrap">
+    <table>
+      <thead><tr><th>参数</th><th>协商字段</th><th>Linux 5.4 默认值</th><th>说明</th></tr></thead>
+      <tbody>
+        <tr><td>TxWindow</td><td><code>txwin_size</code></td><td>63</td><td>发送窗口大小（未确认帧数上限）</td></tr>
+        <tr><td>MaxTransmit</td><td><code>max_transmit</code></td><td>3</td><td>单帧最大重传次数</td></tr>
+        <tr><td>RetransTimeout</td><td><code>retrans_timeout</code></td><td>2000 ms</td><td>重传定时器超时时间</td></tr>
+        <tr><td>MonitorTimeout</td><td><code>monitor_timeout</code></td><td>12000 ms</td><td>监控定时器（无响应时的探测间隔）</td></tr>
+        <tr><td>MaxPDUSize</td><td><code>max_pdu_size</code></td><td>1009 bytes</td><td>单个 I-frame 最大 payload</td></tr>
+        <tr><td>FCS</td><td><code>fcs</code></td><td>CRC-16</td><td>帧校验序列（可协商为 None）</td></tr>
+      </tbody>
+    </table>
+  </div>
+
+  <h3>6.3 ERTM 状态机概述</h3>
+  <p>规范 Section 8 定义了 ERTM 的发送状态机（TX）和接收状态机（RX），Linux 5.4 在 <code>l2cap_core.c</code> 中实现了这两套状态机：</p>
+
+  <div class="diagram-wrap">
+    <svg viewBox="0 0 680 360" xmlns="http://www.w3.org/2000/svg" style="font-family:monospace;font-size:11px;">
+      <text x="340" y="20" fill="#58a6ff" text-anchor="middle" font-weight="bold" font-size="13">ERTM 发送状态机（TX State Machine）</text>
+
+      <!-- XMIT state -->
+      <rect x="60" y="50" width="180" height="60" rx="8" fill="rgba(63,185,80,0.15)" stroke="#3fb950" stroke-width="2"/>
+      <text x="150" y="78" fill="#3fb950" text-anchor="middle" font-weight="bold">XMIT</text>
+      <text x="150" y="96" fill="#8b949e" text-anchor="middle" font-size="10">正常发送状态</text>
+
+      <!-- WAIT_F state -->
+      <rect x="440" y="50" width="180" height="60" rx="8" fill="rgba(255,166,87,0.15)" stroke="#ffa657" stroke-width="2"/>
+      <text x="530" y="78" fill="#ffa657" text-anchor="middle" font-weight="bold">WAIT_F</text>
+      <text x="530" y="96" fill="#8b949e" text-anchor="middle" font-size="10">等待 F-bit 响应</text>
+
+      <!-- Arrows XMIT -> WAIT_F -->
+      <line x1="240" y1="75" x2="440" y2="75" stroke="#ffa657" stroke-width="1.5" marker-end="url(#arr2)"/>
+      <text x="340" y="65" fill="#8b949e" text-anchor="middle" font-size="10">Send RR/RNR(P=1) 或 MonitorTO</text>
+      <defs>
+        <marker id="arr2" markerWidth="8" markerHeight="8" refX="6" refY="3" orient="auto">
+          <path d="M0,0 L0,6 L8,3 Z" fill="#ffa657"/>
+        </marker>
+        <marker id="arr3" markerWidth="8" markerHeight="8" refX="6" refY="3" orient="auto">
+          <path d="M0,0 L0,6 L8,3 Z" fill="#3fb950"/>
+        </marker>
+      </defs>
+
+      <!-- Arrow WAIT_F -> XMIT -->
+      <path d="M 530 110 Q 530 145 340 145 Q 150 145 150 110" fill="none" stroke="#3fb950" stroke-width="1.5" marker-end="url(#arr3)"/>
+      <text x="340" y="162" fill="#8b949e" text-anchor="middle" font-size="10">Recv I/RR/RNR(F=1) → 停止 MonitorTimer</text>
+
+      <!-- RX state machine -->
+      <text x="340" y="210" fill="#d2a8ff" text-anchor="middle" font-weight="bold" font-size="13">ERTM 接收状态机（RX State Machine）</text>
+
+      <rect x="20" y="230" width="140" height="55" rx="8" fill="rgba(88,166,255,0.12)" stroke="#58a6ff" stroke-width="2"/>
+      <text x="90" y="256" fill="#58a6ff" text-anchor="middle" font-weight="bold">RECV</text>
+      <text x="90" y="272" fill="#8b949e" text-anchor="middle" font-size="10">正常接收</text>
+
+      <rect x="190" y="230" width="140" height="55" rx="8" fill="rgba(210,168,255,0.12)" stroke="#d2a8ff" stroke-width="2"/>
+      <text x="260" y="256" fill="#d2a8ff" text-anchor="middle" font-weight="bold">SREJ_SENT</text>
+      <text x="260" y="272" fill="#8b949e" text-anchor="middle" font-size="10">已发 SREJ</text>
+
+      <rect x="360" y="230" width="140" height="55" rx="8" fill="rgba(255,123,114,0.12)" stroke="#ff7b72" stroke-width="2"/>
+      <text x="430" y="256" fill="#ff7b72" text-anchor="middle" font-weight="bold">WAIT_P</text>
+      <text x="430" y="272" fill="#8b949e" text-anchor="middle" font-size="10">等待 P-bit</text>
+
+      <rect x="530" y="230" width="130" height="55" rx="8" fill="rgba(255,166,87,0.12)" stroke="#ffa657" stroke-width="2"/>
+      <text x="595" y="256" fill="#ffa657" text-anchor="middle" font-weight="bold">WAIT_F</text>
+      <text x="595" y="272" fill="#8b949e" text-anchor="middle" font-size="10">等待 F-bit</text>
+
+      <!-- RX transitions -->
+      <line x1="160" y1="257" x2="190" y2="257" stroke="#d2a8ff" stroke-width="1.5" marker-end="url(#arr4)"/>
+      <defs>
+        <marker id="arr4" markerWidth="6" markerHeight="6" refX="5" refY="3" orient="auto">
+          <path d="M0,0 L0,6 L6,3 Z" fill="#d2a8ff"/>
+        </marker>
+      </defs>
+      <text x="175" y="245" fill="#8b949e" text-anchor="middle" font-size="9">丢帧→发SREJ</text>
+
+      <line x1="330" y1="257" x2="360" y2="257" stroke="#ff7b72" stroke-width="1.5"/>
+      <polygon points="360,252 368,257 360,262" fill="#ff7b72"/>
+      <text x="345" y="247" fill="#8b949e" text-anchor="middle" font-size="9">RetransTO</text>
+
+      <!-- Events legend -->
+      <text x="20" y="320" fill="#8b949e" font-size="10">事件类型：DATA_REQUEST · LOCAL_BUSY_DETECTED/CLEAR · RECV_REQSEQ_AND_FBIT · RECV_FBIT · RETRANS_TO · MONITOR_TO · EXPLICIT_POLL · RECV_IFRAME · RECV_RR/REJ/RNR/SREJ</text>
+    </svg>
+    <p class="diagram-caption">图6-1：ERTM 双状态机简化图（TX 状态机 + RX 状态机）</p>
+  </div>
+
+  <h3>6.4 滑动窗口与重传机制</h3>
+  <div class="diagram-wrap">
+    <svg viewBox="0 0 680 200" xmlns="http://www.w3.org/2000/svg" style="font-family:monospace;font-size:11px;">
+      <text x="340" y="18" fill="#8b949e" text-anchor="middle">滑动窗口示意（TxWindow=8，已发送 5 帧，3 帧未确认）</text>
+      <!-- Frames -->
+      <g>
+        <!-- acked -->
+        <rect x="20" y="40" width="60" height="40" rx="3" fill="rgba(63,185,80,0.2)" stroke="#3fb950" stroke-width="1.5"/>
+        <text x="50" y="58" fill="#3fb950" text-anchor="middle" font-weight="bold">Seq 0</text>
+        <text x="50" y="72" fill="#3fb950" text-anchor="middle" font-size="9">ACK'd</text>
+
+        <rect x="85" y="40" width="60" height="40" rx="3" fill="rgba(63,185,80,0.2)" stroke="#3fb950" stroke-width="1.5"/>
+        <text x="115" y="58" fill="#3fb950" text-anchor="middle" font-weight="bold">Seq 1</text>
+        <text x="115" y="72" fill="#3fb950" text-anchor="middle" font-size="9">ACK'd</text>
+
+        <!-- unacked -->
+        <rect x="150" y="40" width="60" height="40" rx="3" fill="rgba(255,166,87,0.2)" stroke="#ffa657" stroke-width="1.5"/>
+        <text x="180" y="58" fill="#ffa657" text-anchor="middle" font-weight="bold">Seq 2</text>
+        <text x="180" y="72" fill="#ffa657" text-anchor="middle" font-size="9">未ACK</text>
+
+        <rect x="215" y="40" width="60" height="40" rx="3" fill="rgba(255,166,87,0.2)" stroke="#ffa657" stroke-width="1.5"/>
+        <text x="245" y="58" fill="#ffa657" text-anchor="middle" font-weight="bold">Seq 3</text>
+        <text x="245" y="72" fill="#ffa657" text-anchor="middle" font-size="9">未ACK</text>
+
+        <rect x="280" y="40" width="60" height="40" rx="3" fill="rgba(255,166,87,0.2)" stroke="#ffa657" stroke-width="1.5"/>
+        <text x="310" y="58" fill="#ffa657" text-anchor="middle" font-weight="bold">Seq 4</text>
+        <text x="310" y="72" fill="#ffa657" text-anchor="middle" font-size="9">未ACK</text>
+
+        <!-- sendable -->
+        <rect x="345" y="40" width="60" height="40" rx="3" fill="rgba(88,166,255,0.08)" stroke="#58a6ff" stroke-width="1.5" stroke-dasharray="4"/>
+        <text x="375" y="58" fill="#58a6ff" text-anchor="middle" font-weight="bold">Seq 5</text>
+        <text x="375" y="72" fill="#8b949e" text-anchor="middle" font-size="9">可发</text>
+
+        <rect x="410" y="40" width="60" height="40" rx="3" fill="rgba(88,166,255,0.08)" stroke="#58a6ff" stroke-width="1.5" stroke-dasharray="4"/>
+        <text x="440" y="58" fill="#58a6ff" text-anchor="middle" font-weight="bold">Seq 6</text>
+        <text x="440" y="72" fill="#8b949e" text-anchor="middle" font-size="9">可发</text>
+
+        <rect x="475" y="40" width="60" height="40" rx="3" fill="rgba(88,166,255,0.08)" stroke="#58a6ff" stroke-width="1.5" stroke-dasharray="4"/>
+        <text x="505" y="58" fill="#58a6ff" text-anchor="middle" font-weight="bold">Seq 7</text>
+        <text x="505" y="72" fill="#8b949e" text-anchor="middle" font-size="9">可发</text>
+
+        <!-- not in window -->
+        <rect x="540" y="40" width="60" height="40" rx="3" fill="rgba(30,30,30,0.5)" stroke="#30363d" stroke-width="1"/>
+        <text x="570" y="58" fill="#30363d" text-anchor="middle" font-weight="bold">Seq 8</text>
+        <text x="570" y="72" fill="#30363d" text-anchor="middle" font-size="9">窗口外</text>
+      </g>
+
+      <!-- Window bracket -->
+      <line x1="150" y1="92" x2="535" y2="92" stroke="#58a6ff" stroke-width="1.5"/>
+      <line x1="150" y1="88" x2="150" y2="96" stroke="#58a6ff" stroke-width="1.5"/>
+      <line x1="535" y1="88" x2="535" y2="96" stroke="#58a6ff" stroke-width="1.5"/>
+      <text x="342" y="108" fill="#58a6ff" text-anchor="middle" font-size="11">TxWindow = 8 (未ACK + 可发)</text>
+
+      <!-- Pointers -->
+      <text x="155" y="130" fill="#ffa657" font-size="10">↑ last_acked_seq</text>
+      <text x="300" y="150" fill="#ffa657" font-size="10">↑ next_tx_seq</text>
+      <text x="20" y="175" fill="#8b949e" font-size="10">若收到 SREJ(seq=3) → 单独重传 Seq 3，Seq 2/4 继续等待</text>
+      <text x="20" y="192" fill="#8b949e" font-size="10">若收到 REJ(seq=2) → 从 Seq 2 开始全部重传（Go-Back-N 语义）</text>
+    </svg>
+    <p class="diagram-caption">图6-2：ERTM 滑动窗口与 SREJ/REJ 重传示意</p>
+  </div>
+
+  <h3>6.5 定时器机制</h3>
+  <p>Linux 5.4 实现了三个 ERTM 定时器（均用 <code>delayed_work</code> 实现）：</p>
+  <pre><code><span class="cm">/* include/net/bluetooth/l2cap.h */</span>
+<span class="kw">struct</span> <span class="ty">l2cap_chan</span> {
+    ...
+    <span class="kw">struct</span> <span class="ty">delayed_work</span> <span class="nm">retrans_timer</span>;   <span class="cm">/* 重传定时器：2000ms */</span>
+    <span class="kw">struct</span> <span class="ty">delayed_work</span> <span class="nm">monitor_timer</span>;   <span class="cm">/* 监控定时器：12000ms */</span>
+    <span class="kw">struct</span> <span class="ty">delayed_work</span> <span class="nm">ack_timer</span>;       <span class="cm">/* ACK 延迟定时器：200ms */</span>
+    ...
+};</code></pre>
+
+  <div class="table-wrap">
+    <table>
+      <thead><tr><th>定时器</th><th>启动时机</th><th>超时动作</th></tr></thead>
+      <tbody>
+        <tr><td>RetransTimer</td><td>发送 I-frame 后，无已发送的 S-frame(P=1)</td><td>重传所有未 ACK 的帧，发 RR(P=1)，启动 MonitorTimer</td></tr>
+        <tr><td>MonitorTimer</td><td>RetransTimer 超时后，或发 RR/RNR(P=1) 后</td><td>重新发 RR(P=1)；超时次数超限则断开连接</td></tr>
+        <tr><td>AckTimer</td><td>收到 I-frame 但暂时不想立刻发 S-frame</td><td>发送延迟的 RR ACK（批量确认优化）</td></tr>
+      </tbody>
+    </table>
+  </div>
+
+  <h3>6.6 内核 ERTM 初始化（l2cap_ertm_init）</h3>
+  <pre><code><span class="kw">static int</span> <span class="fn">l2cap_ertm_init</span>(<span class="kw">struct</span> <span class="ty">l2cap_chan</span> *chan)
+{
+    chan->next_tx_seq = 0;
+    chan->expected_tx_seq = 0;
+    chan->expected_ack_seq = 0;
+    chan->unacked_frames = 0;
+    chan->buffer_seq = 0;
+    chan->tx_win = min_t(u16, chan->tx_win,
+                         L2CAP_DEFAULT_TX_WINDOW);
+    chan->tx_win_max = L2CAP_DEFAULT_EXT_WINDOW;
+
+    <span class="cm">/* 初始化 SREJ 队列和列表 */</span>
+    skb_queue_head_init(&chan->srej_q);
+    <span class="fn">l2cap_seq_list_init</span>(&chan->srej_list, chan->tx_win);
+
+    <span class="cm">/* 初始化三个定时器 */</span>
+    INIT_DELAYED_WORK(&chan->retrans_timer, l2cap_retrans_timeout);
+    INIT_DELAYED_WORK(&chan->monitor_timer, l2cap_monitor_timeout);
+    INIT_DELAYED_WORK(&chan->ack_timer, l2cap_ack_timeout);
+
+    <span class="kw">return</span> 0;
+}</code></pre>
+
+  <div class="info-box principle">
+    <strong>🎯 第一性原理：可靠性的代价</strong>
+    ERTM 的本质是：用内存（重传缓冲区、SREJ 队列）和时间（等待 ACK）换取可靠性。SREJ 比 REJ（Go-Back-N）更高效，因为它只重传真正丢失的帧，而非整段重传。但 SREJ 要求接收方有乱序缓冲区，增加了内存需求。这是典型的"时间-空间-可靠性"三角权衡。
+  </div>
+</section>
+
+<!-- ═══════════════════════════════════════ S7 ═══ -->
+<section class="section" id="s7">
+  <span class="section-tag">工作模式</span>
+  <h2>Streaming Mode（流模式）</h2>
+
+  <h3>7.1 设计哲学</h3>
+  <p>规范 Section 8.7 定义了 Streaming Mode。它使用与 ERTM 相同的帧格式（I-frame），但<strong>完全不确认（No ACK）</strong>，不使用 RR/REJ/RNR/SREJ，不启动 RetransTimer 和 MonitorTimer。</p>
+
+  <p>这是专为音频/视频流设计的模式——对于这类应用，<strong>延迟比完整性更重要</strong>：一个迟到的音频帧比没有音频帧更差。</p>
+
+  <h3>7.2 Streaming Mode 与 ERTM 对比</h3>
+  <div class="table-wrap">
+    <table>
+      <thead><tr><th>特性</th><th>ERTM</th><th>Streaming Mode</th></tr></thead>
+      <tbody>
+        <tr><td>帧格式</td><td>I-frame + S-frame</td><td>I-frame only（无 S-frame）</td></tr>
+        <tr><td>序列号（TxSeq）</td><td>有，用于确认和重传</td><td>有，但仅用于检测丢帧</td></tr>
+        <tr><td>ACK 机制</td><td>RR/SREJ 确认</td><td>无</td></tr>
+        <tr><td>重传</td><td>支持（RetransTimer）</td><td>不支持</td></tr>
+        <tr><td>F-bit</td><td>用于 Poll-Final 握手</td><td>始终为 0（忽略）</td></tr>
+        <tr><td>丢帧处理</td><td>SREJ 请求重传</td><td>标记为丢失，继续处理后续帧</td></tr>
+        <tr><td>FlushTimeout</td><td>无穷大（不冲刷）</td><td>有限值（保证数据流动）</td></tr>
+        <tr><td>典型用途</td><td>OBEX 文件传输、RFCOMM</td><td>A2DP 音频（AVDTP 承载）</td></tr>
+      </tbody>
+    </table>
+  </div>
+
+  <h3>7.3 内核实现</h3>
+  <pre><code><span class="cm">/* Streaming 发送路径（l2cap_chan_send） */</span>
+<span class="kw">case</span> <span class="nm">L2CAP_MODE_STREAMING</span>:
+    __skb_queue_head_init(&seg_queue);
+    err = <span class="fn">l2cap_segment_sdu</span>(chan, &seg_queue, msg, len);
+    <span class="kw">if</span> (err) <span class="kw">break</span>;
+    <span class="fn">l2cap_streaming_send</span>(chan, &seg_queue);  <span class="cm">/* 直接发出，不等 ACK */</span>
+    err = len;
+    <span class="kw">break</span>;
+
+<span class="cm">/* l2cap_streaming_send 关键逻辑 */</span>
+<span class="kw">static void</span> <span class="fn">l2cap_streaming_send</span>(<span class="kw">struct</span> <span class="ty">l2cap_chan</span> *chan,
+                                  <span class="kw">struct</span> <span class="ty">sk_buff_head</span> *skbs)
+{
+    <span class="kw">struct</span> <span class="ty">sk_buff</span> *skb;
+    <span class="kw">struct</span> <span class="ty">l2cap_ctrl</span> *control;
+
+    <span class="fn">skb_queue_splice_tail_init</span>(skbs, &chan->tx_q);
+    <span class="kw">while</span> ((skb = <span class="fn">skb_dequeue</span>(&chan->tx_q))) {
+        control = &bt_cb(skb)->l2cap;
+        control->txseq = chan->next_tx_seq;
+        chan->next_tx_seq = <span class="fn">__next_seq</span>(chan, chan->next_tx_seq);
+        <span class="fn">l2cap_do_send</span>(chan, skb);  <span class="cm">/* 立即发送，不存入重传队列 */</span>
+    }
+}</code></pre>
+
+  <div class="info-box principle">
+    <strong>🎯 第一性原理：实时性优先</strong>
+    Streaming Mode 的本质逻辑是：对于音频/视频这类时效性数据，重传会导致时序混乱（新数据必须等待重传的旧数据），这比直接丢帧更有害。因此放弃重传，用 TxSeq 仅作丢包检测（通知上层哪些帧丢了），让上层 codec 进行错误隐藏（PLC）。这是"信息论最优"策略：不浪费带宽和时间在对实时性无益的重传上。
+  </div>
+</section>
+
+<!-- ═══════════════════════════════════════ S8 ═══ -->
+<section class="section" id="s8">
+  <span class="section-tag">工作模式</span>
+  <h2>LE Credit Based Flow Control</h2>
+
+  <h3>8.1 背景与目标</h3>
+  <p>BLE 引入了全新的流控模式（规范 Section 10.1），专门为 LE L2CAP 面向连接信道设计，使用信用（Credit）机制替代 ERTM 的确认机制，更适合低功耗场景。</p>
+
+  <h3>8.2 Credit 机制原理</h3>
+  <div class="diagram-wrap">
+    <svg viewBox="0 0 680 260" xmlns="http://www.w3.org/2000/svg" style="font-family:monospace;font-size:11px;">
+      <!-- Device A -->
+      <rect x="10" y="30" width="160" height="220" rx="8" fill="rgba(88,166,255,0.04)" stroke="#30363d" stroke-width="1.5"/>
+      <text x="90" y="55" fill="#58a6ff" text-anchor="middle" font-weight="bold">发送方 A</text>
+      <rect x="25" y="65" width="130" height="35" rx="4" fill="rgba(88,166,255,0.12)" stroke="#58a6ff" stroke-width="1"/>
+      <text x="90" y="82" fill="#58a6ff" text-anchor="middle" font-size="10">Credits = 5</text>
+      <text x="90" y="97" fill="#8b949e" text-anchor="middle" font-size="9">(B 授予的配额)</text>
+
+      <!-- Device B -->
+      <rect x="510" y="30" width="160" height="220" rx="8" fill="rgba(63,185,80,0.04)" stroke="#30363d" stroke-width="1.5"/>
+      <text x="590" y="55" fill="#3fb950" text-anchor="middle" font-weight="bold">接收方 B</text>
+      <rect x="525" y="65" width="130" height="35" rx="4" fill="rgba(63,185,80,0.12)" stroke="#3fb950" stroke-width="1"/>
+      <text x="590" y="82" fill="#3fb950" text-anchor="middle" font-size="10">Credits = 5</text>
+      <text x="590" y="97" fill="#8b949e" text-anchor="middle" font-size="9">(自己的接收余量)</text>
+
+      <!-- K-frames -->
+      <line x1="170" y1="120" x2="510" y2="120" stroke="#ffa657" stroke-width="1.5" marker-end="url(#arr5)"/>
+      <text x="340" y="110" fill="#ffa657" text-anchor="middle" font-size="10">K-frame 1 → Credits:5→4</text>
+      <defs>
+        <marker id="arr5" markerWidth="8" markerHeight="8" refX="6" refY="3" orient="auto">
+          <path d="M0,0 L0,6 L8,3 Z" fill="#ffa657"/>
+        </marker>
+        <marker id="arr6" markerWidth="8" markerHeight="8" refX="6" refY="3" orient="auto">
+          <path d="M0,0 L0,6 L8,3 Z" fill="#ffa657"/>
+        </marker>
+        <marker id="arr7" markerWidth="8" markerHeight="8" refX="6" refY="3" orient="auto">
+          <path d="M0,0 L0,6 L8,3 Z" fill="#3fb950"/>
+        </marker>
+      </defs>
+      <line x1="170" y1="150" x2="510" y2="150" stroke="#ffa657" stroke-width="1.5" marker-end="url(#arr6)"/>
+      <text x="340" y="140" fill="#ffa657" text-anchor="middle" font-size="10">K-frame 2 → Credits:4→3</text>
+
+      <line x1="170" y1="180" x2="510" y2="180" stroke="#ffa657" stroke-width="1.5" marker-end="url(#arr6)"/>
+      <text x="340" y="170" fill="#ffa657" text-anchor="middle" font-size="10">K-frame 3 → Credits:3→2</text>
+
+      <!-- Credit replenishment -->
+      <line x1="510" y1="210" x2="170" y2="210" stroke="#3fb950" stroke-width="1.5" stroke-dasharray="5,3" marker-end="url(#arr7)"/>
+      <text x="340" y="205" fill="#3fb950" text-anchor="middle" font-size="10">FLOW_CONTROL_CREDIT_IND (Credits += 3) ←</text>
+
+      <text x="90" y="235" fill="#8b949e" text-anchor="middle" font-size="10">Credits: 2 → 5</text>
+      <text x="590" y="235" fill="#8b949e" text-anchor="middle" font-size="10">已处理 3 帧，补充信用</text>
+    </svg>
+    <p class="diagram-caption">图8-1：LE Credit Based Flow Control 信用机制示意</p>
+  </div>
+
+  <h3>8.3 连接建立流程（LE CoC）</h3>
+  <p>LE Credit Based Connection 通过 LE 信令信道（CID 0x0005）建立，使用 <code>L2CAP_LE_CONN_REQ</code> / <code>L2CAP_LE_CONN_RSP</code>：</p>
+
+  <div class="table-wrap">
+    <table>
+      <thead><tr><th>字段</th><th>含义</th><th>Linux 5.4 宏定义</th></tr></thead>
+      <tbody>
+        <tr><td>PSM</td><td>目标服务标识</td><td>动态 PSM</td></tr>
+        <tr><td>SCID</td><td>源 CID（动态分配）</td><td><code>L2CAP_CID_DYN_START ~ L2CAP_CID_LE_DYN_END</code></td></tr>
+        <tr><td>MTU</td><td>最大 SDU 大小</td><td>接收方 SDU 上限</td></tr>
+        <tr><td>MPS</td><td>最大 PDU payload</td><td>单个 K-frame 最大负载</td></tr>
+        <tr><td>Initial Credits</td><td>初始信用值</td><td><code>LE_FLOWCTL_MAX_CREDITS = 65535</code></td></tr>
+      </tbody>
+    </table>
+  </div>
+
+  <h3>8.4 Enhanced Credit Based（ECOC，Linux 5.4 引入）</h3>
+  <div class="info-box note">
+    <strong>ℹ️ ECOC in Linux 5.4</strong>
+    Linux 5.4 通过 <code>enable_ecred</code> 模块参数（<code>CONFIG_BT_LE_L2CAP_ECRED</code>）支持 Enhanced Credit Based，允许一次请求同时建立最多 5 条信道（L2CAP_CREDIT_BASED_CONNECTION_REQ），并支持信道重配置。
+  </div>
+
+  <div class="info-box principle">
+    <strong>🎯 第一性原理：推模型 vs. 拉模型</strong>
+    传统 ERTM 是"推模型"：发送方不断发送，接收方用 RNR 刹车。Credit 机制是"拉模型"：接收方主动给出许可配额，发送方用完就停。拉模型在低功耗场景更优，因为接收方可以精确控制自己的缓冲区消耗，不需要频繁的 RNR/RR 往返，更节能。
+  </div>
+</section>
+
+<!-- ═══════════════════════════════════════ S9 ═══ -->
+<section class="section" id="s9">
+  <span class="section-tag">连接管理</span>
+  <h2>信令通道与命令</h2>
+
+  <h3>9.1 信令信道</h3>
+  <p>L2CAP 使用固定信道 <code>CID 0x0001</code>（BR/EDR）和 <code>CID 0x0005</code>（LE）传输信令命令（C-frame）。一个 C-frame 在 BR/EDR 上可以携带多个命令（批处理）；而 LE 信令信道每个 C-frame 只携带一个命令。</p>
+
+  <h3>9.2 信令命令表</h3>
+  <div class="table-wrap">
+    <table>
+      <thead><tr><th>Code</th><th>命令名</th><th>方向</th><th>用途</th></tr></thead>
+      <tbody>
+        <tr><td><code>0x01</code></td><td>L2CAP_COMMAND_REJ</td><td>双向</td><td>拒绝无法理解的命令</td></tr>
+        <tr><td><code>0x02</code></td><td>L2CAP_CONN_REQ</td><td>发起方→接收方</td><td>请求建立连接</td></tr>
+        <tr><td><code>0x03</code></td><td>L2CAP_CONN_RSP</td><td>接收方→发起方</td><td>响应连接请求</td></tr>
+        <tr><td><code>0x04</code></td><td>L2CAP_CONF_REQ</td><td>双向</td><td>请求配置信道参数</td></tr>
+        <tr><td><code>0x05</code></td><td>L2CAP_CONF_RSP</td><td>双向</td><td>响应配置请求</td></tr>
+        <tr><td><code>0x06</code></td><td>L2CAP_DISCONN_REQ</td><td>双向</td><td>请求断开连接</td></tr>
+        <tr><td><code>0x07</code></td><td>L2CAP_DISCONN_RSP</td><td>双向</td><td>响应断开请求</td></tr>
+        <tr><td><code>0x0a</code></td><td>L2CAP_INFO_REQ</td><td>双向</td><td>查询对端能力（特性掩码等）</td></tr>
+        <tr><td><code>0x0b</code></td><td>L2CAP_INFO_RSP</td><td>双向</td><td>响应能力查询</td></tr>
+        <tr><td><code>0x12</code></td><td>L2CAP_CONN_PARAM_UPDATE_REQ</td><td>LE</td><td>LE 连接参数更新请求</td></tr>
+        <tr><td><code>0x14</code></td><td>L2CAP_LE_CONN_REQ</td><td>LE</td><td>LE Credit Based 连接请求</td></tr>
+        <tr><td><code>0x15</code></td><td>L2CAP_LE_CONN_RSP</td><td>LE</td><td>LE Credit Based 连接响应</td></tr>
+        <tr><td><code>0x16</code></td><td>L2CAP_FLOW_CONTROL_CREDIT</td><td>LE</td><td>发送信用补充</td></tr>
+      </tbody>
+    </table>
+  </div>
+
+  <h3>9.3 信令命令格式</h3>
+  <div class="diagram-wrap">
+    <svg viewBox="0 0 680 100" xmlns="http://www.w3.org/2000/svg" style="font-family:monospace;font-size:12px;">
+      <rect x="20" y="20" width="100" height="50" rx="4" fill="rgba(255,123,114,0.12)" stroke="#ff7b72" stroke-width="1.5"/>
+      <text x="70" y="42" fill="#ff7b72" text-anchor="middle" font-weight="bold">Code</text>
+      <text x="70" y="58" fill="#8b949e" text-anchor="middle" font-size="10">1 byte</text>
+
+      <rect x="125" y="20" width="100" height="50" rx="4" fill="rgba(210,168,255,0.12)" stroke="#d2a8ff" stroke-width="1.5"/>
+      <text x="175" y="42" fill="#d2a8ff" text-anchor="middle" font-weight="bold">Identifier</text>
+      <text x="175" y="58" fill="#8b949e" text-anchor="middle" font-size="10">1 byte</text>
+
+      <rect x="230" y="20" width="100" height="50" rx="4" fill="rgba(63,185,80,0.12)" stroke="#3fb950" stroke-width="1.5"/>
+      <text x="280" y="42" fill="#3fb950" text-anchor="middle" font-weight="bold">Length</text>
+      <text x="280" y="58" fill="#8b949e" text-anchor="middle" font-size="10">2 bytes LE</text>
+
+      <rect x="335" y="20" width="325" height="50" rx="4" fill="rgba(88,166,255,0.08)" stroke="#58a6ff" stroke-width="1"/>
+      <text x="497" y="42" fill="#58a6ff" text-anchor="middle">Data（由 Code 决定格式）</text>
+      <text x="497" y="58" fill="#8b949e" text-anchor="middle" font-size="10">0 ~ N bytes</text>
+
+      <text x="340" y="90" fill="#8b949e" text-anchor="middle" font-size="10">Identifier 用于匹配 Request 和 Response；同一连接上的命令 Identifier 必须唯一</text>
+    </svg>
+    <p class="diagram-caption">图9-1：L2CAP 信令命令通用格式</p>
+  </div>
+
+  <div class="info-box principle">
+    <strong>🎯 第一性原理：带外控制</strong>
+    将信令命令放在固定信道（0x0001）而非数据信道上，实现了控制平面与数据平面的分离。这样，即使某条数据信道发生拥塞或错误，控制信令仍然能够正常传递，保证了协议的可管理性。Identifier 字段则解决了异步通信中的"请求-响应匹配"问题，本质上是一个简单的事务标识符（类似 DNS 报文的 Transaction ID）。
+  </div>
+</section>
+
+<!-- ═══════════════════════════════════════ S10 ═══ -->
+<section class="section" id="s10">
+  <span class="section-tag">连接管理</span>
+  <h2>连接建立流程</h2>
+
+  <h3>10.1 BR/EDR L2CAP 连接时序</h3>
+  <div class="diagram-wrap">
+    <svg viewBox="0 0 680 480" xmlns="http://www.w3.org/2000/svg" style="font-family:monospace;font-size:11px;">
+      <!-- Columns -->
+      <text x="120" y="25" fill="#58a6ff" text-anchor="middle" font-weight="bold">发起方 (A)</text>
+      <text x="560" y="25" fill="#3fb950" text-anchor="middle" font-weight="bold">接受方 (B)</text>
+      <line x1="120" y1="30" x2="120" y2="465" stroke="#58a6ff" stroke-width="1.5" stroke-dasharray="5,3" opacity="0.4"/>
+      <line x1="560" y1="30" x2="560" y2="465" stroke="#3fb950" stroke-width="1.5" stroke-dasharray="5,3" opacity="0.4"/>
+
+      <!-- Phase 1: HCI Connection -->
+      <rect x="20" y="35" width="640" height="22" rx="3" fill="rgba(255,166,87,0.06)" stroke="#ffa657" stroke-width="1"/>
+      <text x="340" y="50" fill="#ffa657" text-anchor="middle" font-size="10">阶段 1：HCI ACL 连接建立（BB/LM 层完成，L2CAP 不参与）</text>
+
+      <!-- Phase 2: L2CAP Info Exchange -->
+      <rect x="20" y="62" width="640" height="22" rx="3" fill="rgba(210,168,255,0.06)" stroke="#d2a8ff" stroke-width="1"/>
+      <text x="340" y="77" fill="#d2a8ff" text-anchor="middle" font-size="10">阶段 2：L2CAP 特性交换（可选，查询对端支持的功能）</text>
+
+      <!-- INFO_REQ -->
+      <line x1="120" y1="95" x2="560" y2="115" stroke="#d2a8ff" stroke-width="1.5" marker-end="url(#arrp)"/>
+      <text x="340" y="102" fill="#d2a8ff" text-anchor="middle" font-size="10">L2CAP_INFO_REQ (type=FEAT_MASK)</text>
+      <defs>
+        <marker id="arrp" markerWidth="8" markerHeight="8" refX="6" refY="3" orient="auto">
+          <path d="M0,0 L0,6 L8,3 Z" fill="#d2a8ff"/>
+        </marker>
+        <marker id="arrg" markerWidth="8" markerHeight="8" refX="6" refY="3" orient="auto">
+          <path d="M0,0 L0,6 L8,3 Z" fill="#3fb950"/>
+        </marker>
+        <marker id="arro" markerWidth="8" markerHeight="8" refX="6" refY="3" orient="auto">
+          <path d="M0,0 L0,6 L8,3 Z" fill="#ffa657"/>
+        </marker>
+      </defs>
+      <line x1="560" y1="125" x2="120" y2="145" stroke="#d2a8ff" stroke-width="1.5" marker-end="url(#arrp)"/>
+      <text x="340" y="132" fill="#d2a8ff" text-anchor="middle" font-size="10">L2CAP_INFO_RSP (feat_mask: ERTM|STREAM|FCS...)</text>
+
+      <!-- Phase 3: Connection -->
+      <rect x="20" y="158" width="640" height="22" rx="3" fill="rgba(63,185,80,0.06)" stroke="#3fb950" stroke-width="1"/>
+      <text x="340" y="173" fill="#3fb950" text-anchor="middle" font-size="10">阶段 3：L2CAP 连接请求（面向连接信道建立）</text>
+
+      <!-- CONN_REQ -->
+      <line x1="120" y1="190" x2="560" y2="210" stroke="#58a6ff" stroke-width="1.5" marker-end="url(#arrp)"/>
+      <text x="340" y="197" fill="#58a6ff" text-anchor="middle" font-size="10">L2CAP_CONN_REQ (PSM=0x0003, SCID=0x0040)</text>
+      <line x1="560" y1="220" x2="120" y2="240" stroke="#3fb950" stroke-width="1.5" marker-end="url(#arrg)"/>
+      <text x="340" y="227" fill="#3fb950" text-anchor="middle" font-size="10">L2CAP_CONN_RSP (DCID=0x0041, SCID=0x0040, Result=PENDING)</text>
+      <line x1="560" y1="252" x2="120" y2="272" stroke="#3fb950" stroke-width="1.5" marker-end="url(#arrg)"/>
+      <text x="340" y="259" fill="#3fb950" text-anchor="middle" font-size="10">L2CAP_CONN_RSP (DCID=0x0041, SCID=0x0040, Result=SUCCESS)</text>
+
+      <!-- Phase 4: Config -->
+      <rect x="20" y="285" width="640" height="22" rx="3" fill="rgba(255,166,87,0.06)" stroke="#ffa657" stroke-width="1"/>
+      <text x="340" y="300" fill="#ffa657" text-anchor="middle" font-size="10">阶段 4：配置协商（双向独立进行）</text>
+
+      <line x1="120" y1="318" x2="560" y2="338" stroke="#ffa657" stroke-width="1.5" marker-end="url(#arro)"/>
+      <text x="340" y="325" fill="#ffa657" text-anchor="middle" font-size="10">L2CAP_CONF_REQ (A→B: MTU=672, RFC=ERTM, FCS=CRC16)</text>
+      <line x1="560" y1="350" x2="120" y2="370" stroke="#ffa657" stroke-width="1.5" marker-end="url(#arro)"/>
+      <text x="340" y="357" fill="#ffa657" text-anchor="middle" font-size="10">L2CAP_CONF_RSP (Result=SUCCESS, MTU=672)</text>
+      <line x1="560" y1="380" x2="120" y2="400" stroke="#ffa657" stroke-width="1.5" marker-end="url(#arro)"/>
+      <text x="340" y="387" fill="#ffa657" text-anchor="middle" font-size="10">L2CAP_CONF_REQ (B→A: MTU=512, RFC=ERTM)</text>
+      <line x1="120" y1="412" x2="560" y2="432" stroke="#ffa657" stroke-width="1.5" marker-end="url(#arro)"/>
+      <text x="340" y="419" fill="#ffa657" text-anchor="middle" font-size="10">L2CAP_CONF_RSP (Result=SUCCESS)</text>
+
+      <!-- Phase 5: Data -->
+      <rect x="20" y="445" width="640" height="20" rx="3" fill="rgba(88,166,255,0.08)" stroke="#58a6ff" stroke-width="1"/>
+      <text x="340" y="460" fill="#58a6ff" text-anchor="middle" font-size="10">阶段 5：数据传输（BT_CONNECTED 状态）</text>
+    </svg>
+    <p class="diagram-caption">图10-1：BR/EDR L2CAP 连接建立完整时序（基于规范 Section 4 & Appendix A）</p>
+  </div>
+
+  <h3>10.2 连接状态机（l2cap_chan 状态）</h3>
+  <p>Linux 5.4 中 <code>l2cap_chan</code> 使用 <code>sk_state</code> 跟踪状态：</p>
+
+  <div class="diagram-wrap">
+    <svg viewBox="0 0 680 200" xmlns="http://www.w3.org/2000/svg" style="font-family:monospace;font-size:11px;">
+      <defs>
+        <marker id="as" markerWidth="7" markerHeight="7" refX="5" refY="3" orient="auto">
+          <path d="M0,0 L0,6 L7,3 Z" fill="#58a6ff"/>
+        </marker>
+      </defs>
+      <!-- States -->
+      <rect x="10" y="80" width="80" height="35" rx="16" fill="rgba(88,166,255,0.12)" stroke="#58a6ff" stroke-width="1.5"/>
+      <text x="50" y="102" fill="#58a6ff" text-anchor="middle" font-size="10">BT_OPEN</text>
+
+      <rect x="120" y="80" width="90" height="35" rx="16" fill="rgba(88,166,255,0.12)" stroke="#58a6ff" stroke-width="1.5"/>
+      <text x="165" y="102" fill="#58a6ff" text-anchor="middle" font-size="10">BT_BOUND</text>
+
+      <rect x="240" y="30" width="100" height="35" rx="16" fill="rgba(255,166,87,0.15)" stroke="#ffa657" stroke-width="1.5"/>
+      <text x="290" y="52" fill="#ffa657" text-anchor="middle" font-size="10">BT_CONNECT</text>
+
+      <rect x="240" y="130" width="100" height="35" rx="16" fill="rgba(255,166,87,0.15)" stroke="#ffa657" stroke-width="1.5"/>
+      <text x="290" y="152" fill="#ffa657" text-anchor="middle" font-size="10">BT_CONNECT2</text>
+
+      <rect x="370" y="80" width="100" height="35" rx="16" fill="rgba(210,168,255,0.15)" stroke="#d2a8ff" stroke-width="1.5"/>
+      <text x="420" y="102" fill="#d2a8ff" text-anchor="middle" font-size="10">BT_CONFIG</text>
+
+      <rect x="500" y="80" width="110" height="35" rx="16" fill="rgba(63,185,80,0.2)" stroke="#3fb950" stroke-width="2"/>
+      <text x="555" y="102" fill="#3fb950" text-anchor="middle" font-size="10" font-weight="bold">BT_CONNECTED</text>
+
+      <rect x="610" y="30" width="60" height="35" rx="16" fill="rgba(255,123,114,0.15)" stroke="#ff7b72" stroke-width="1.5"/>
+      <text x="640" y="52" fill="#ff7b72" text-anchor="middle" font-size="10">BT_DISCONN</text>
+
+      <rect x="610" y="130" width="60" height="35" rx="16" fill="rgba(255,123,114,0.12)" stroke="#ff7b72" stroke-width="1"/>
+      <text x="640" y="152" fill="#ff7b72" text-anchor="middle" font-size="10">BT_CLOSED</text>
+
+      <!-- Arrows -->
+      <line x1="90" y1="97" x2="120" y2="97" stroke="#58a6ff" stroke-width="1" marker-end="url(#as)"/>
+      <line x1="210" y1="87" x2="240" y2="55" stroke="#ffa657" stroke-width="1" marker-end="url(#as)"/>
+      <line x1="210" y1="107" x2="240" y2="140" stroke="#ffa657" stroke-width="1" marker-end="url(#as)"/>
+      <line x1="340" y1="50" x2="370" y2="90" stroke="#d2a8ff" stroke-width="1" marker-end="url(#as)"/>
+      <line x1="340" y1="150" x2="370" y2="110" stroke="#d2a8ff" stroke-width="1" marker-end="url(#as)"/>
+      <line x1="470" y1="97" x2="500" y2="97" stroke="#3fb950" stroke-width="1.5" marker-end="url(#as)"/>
+      <line x1="610" y1="97" x2="580" y2="50" stroke="#ff7b72" stroke-width="1" marker-end="url(#as)"/>
+    </svg>
+    <p class="diagram-caption">图10-2：l2cap_chan 连接状态机简化图</p>
+  </div>
+
+  <div class="info-box principle">
+    <strong>🎯 第一性原理：两阶段握手 + 参数协商</strong>
+    L2CAP 连接建立是"先建连，后配置"的两阶段设计。CONN_REQ/RSP 完成身份确认（PSM 验证、安全检查、CID 分配），CONF_REQ/RSP 完成参数协商（MTU、模式、FCS）。两阶段分离的好处是：即使配置协商失败，也能明确区分"建连失败"和"配置失败"，便于错误诊断和重试策略。
+  </div>
+</section>
+
+<!-- ═══════════════════════════════════════ S11 ═══ -->
+<section class="section" id="s11">
+  <span class="section-tag">连接管理</span>
+  <h2>配置协商机制</h2>
+
+  <h3>11.1 配置选项（Configuration Parameter Options）</h3>
+  <p>配置请求（CONF_REQ）携带若干 TLV 格式的选项：</p>
+
+  <div class="table-wrap">
+    <table>
+      <thead><tr><th>Type</th><th>选项名</th><th>长度</th><th>含义</th><th>内核宏</th></tr></thead>
+      <tbody>
+        <tr><td><code>0x01</code></td><td>MTU</td><td>2 bytes</td><td>最大传输单元</td><td><code>L2CAP_CONF_MTU</code></td></tr>
+        <tr><td><code>0x02</code></td><td>Flush Timeout</td><td>2 bytes</td><td>自动冲刷超时（0xFFFF = 不冲刷）</td><td><code>L2CAP_CONF_FLUSH_TO</code></td></tr>
+        <tr><td><code>0x03</code></td><td>QoS</td><td>22 bytes</td><td>服务质量参数（带宽、延迟等）</td><td><code>L2CAP_CONF_QOS</code></td></tr>
+        <tr><td><code>0x04</code></td><td>RFC（重传流控）</td><td>9 bytes</td><td>选择工作模式及其参数</td><td><code>L2CAP_CONF_RFC</code></td></tr>
+        <tr><td><code>0x05</code></td><td>FCS</td><td>1 byte</td><td>帧校验序列（0=无，1=CRC-16）</td><td><code>L2CAP_CONF_FCS</code></td></tr>
+        <tr><td><code>0x06</code></td><td>Extended Flow Spec</td><td>16 bytes</td><td>AMP 扩展流规格</td><td><code>L2CAP_CONF_EFS</code></td></tr>
+        <tr><td><code>0x07</code></td><td>Extended Window Size</td><td>2 bytes</td><td>扩展窗口（最大 16383）</td><td><code>L2CAP_CONF_EWS</code></td></tr>
+      </tbody>
+    </table>
+  </div>
+
+  <h3>11.2 RFC 选项（模式协商）</h3>
+  <p>RFC 选项（类型 0x04）携带完整的 <code>l2cap_conf_rfc</code> 结构：</p>
+  <pre><code><span class="cm">/* include/net/bluetooth/l2cap.h */</span>
+<span class="kw">struct</span> <span class="ty">l2cap_conf_rfc</span> {
+    __u8   mode;              <span class="cm">/* 0x00=Basic 0x03=ERTM 0x04=Streaming */</span>
+    __u8   txwin_size;        <span class="cm">/* 发送窗口大小（1-63，扩展时最大16383）*/</span>
+    __u8   max_transmit;      <span class="cm">/* 最大重传次数 */</span>
+    __le16 retrans_timeout;   <span class="cm">/* 重传定时器（ms）*/</span>
+    __le16 monitor_timeout;   <span class="cm">/* 监控定时器（ms）*/</span>
+    __le16 max_pdu_size;      <span class="cm">/* 最大 PDU payload 大小 */</span>
+} __packed;</code></pre>
+
+  <h3>11.3 配置协商算法（l2cap_parse_conf_req）</h3>
+  <p>Linux 5.4 的 <code>l2cap_parse_conf_req()</code> 实现了如下模式选择逻辑：</p>
+
+  <div class="diagram-wrap">
+    <svg viewBox="0 0 680 280" xmlns="http://www.w3.org/2000/svg" style="font-family:monospace;font-size:11px;">
+      <defs>
+        <marker id="fd" markerWidth="8" markerHeight="8" refX="6" refY="3" orient="auto">
+          <path d="M0,0 L0,6 L8,3 Z" fill="#58a6ff"/>
+        </marker>
+      </defs>
+      <!-- Start -->
+      <rect x="260" y="10" width="160" height="35" rx="6" fill="rgba(88,166,255,0.12)" stroke="#58a6ff" stroke-width="1.5"/>
+      <text x="340" y="32" fill="#58a6ff" text-anchor="middle">收到 CONF_REQ</text>
+      <line x1="340" y1="45" x2="340" y2="65" stroke="#58a6ff" stroke-width="1" marker-end="url(#fd)"/>
+
+      <!-- State 2 check -->
+      <rect x="240" y="65" width="200" height="35" rx="6" fill="rgba(210,168,255,0.12)" stroke="#d2a8ff" stroke-width="1.5"/>
+      <text x="340" y="87" fill="#d2a8ff" text-anchor="middle">是 State 2 设备?</text>
+      <line x1="340" y1="100" x2="340" y2="120" stroke="#d2a8ff" stroke-width="1" marker-end="url(#fd)"/>
+      <text x="350" y="115" fill="#8b949e" font-size="10">是</text>
+
+      <!-- Mode check -->
+      <rect x="230" y="120" width="220" height="35" rx="6" fill="rgba(255,166,87,0.12)" stroke="#ffa657" stroke-width="1.5"/>
+      <text x="340" y="142" fill="#ffa657" text-anchor="middle">远端 mode == 本地期望 mode?</text>
+
+      <!-- Yes branch -->
+      <line x1="450" y1="137" x2="530" y2="137" stroke="#3fb950" stroke-width="1" marker-end="url(#fd)"/>
+      <text x="490" y="130" fill="#3fb950" font-size="10">是</text>
+      <rect x="530" y="118" width="130" height="35" rx="6" fill="rgba(63,185,80,0.12)" stroke="#3fb950" stroke-width="1.5"/>
+      <text x="595" y="140" fill="#3fb950" text-anchor="middle">接受（SUCCESS）</text>
+
+      <!-- No branch -->
+      <line x1="340" y1="155" x2="340" y2="175" stroke="#ff7b72" stroke-width="1" marker-end="url(#fd)"/>
+      <text x="350" y="170" fill="#ff7b72" font-size="10">否</text>
+      <rect x="230" y="175" width="220" height="35" rx="6" fill="rgba(255,123,114,0.12)" stroke="#ff7b72" stroke-width="1.5"/>
+      <text x="340" y="197" fill="#ff7b72" text-anchor="middle">断开连接（ECONNREFUSED）</text>
+
+      <!-- Not state2 branch -->
+      <line x1="240" y1="82" x2="120" y2="82" stroke="#d2a8ff" stroke-width="1" marker-end="url(#fd)"/>
+      <text x="180" y="75" fill="#8b949e" font-size="10">否</text>
+      <rect x="10" y="65" width="110" height="35" rx="6" fill="rgba(88,166,255,0.08)" stroke="#30363d" stroke-width="1.5"/>
+      <text x="65" y="87" fill="#8b949e" text-anchor="middle" font-size="10">l2cap_select_mode()</text>
+
+      <line x1="65" y1="100" x2="65" y2="175" stroke="#58a6ff" stroke-width="1"/>
+      <line x1="65" y1="175" x2="230" y2="185" stroke="#58a6ff" stroke-width="1" marker-end="url(#fd)"/>
+      <text x="140" y="168" fill="#8b949e" text-anchor="middle" font-size="10">根据特性掩码选择最优模式</text>
+
+      <!-- CONF flags -->
+      <text x="340" y="240" fill="#8b949e" text-anchor="middle" font-size="10">关键 conf_state 标志位：CONF_REQ_SENT · CONF_INPUT_DONE · CONF_OUTPUT_DONE</text>
+      <text x="340" y="258" fill="#8b949e" text-anchor="middle" font-size="10">双向均 DONE 后 → l2cap_ertm_init() → l2cap_chan_ready()</text>
+    </svg>
+    <p class="diagram-caption">图11-1：l2cap_parse_conf_req 模式协商决策流程</p>
+  </div>
+
+  <h3>11.4 配置状态位</h3>
+  <pre><code><span class="cm">/* include/net/bluetooth/l2cap.h — conf_state 枚举 */</span>
+<span class="kw">enum</span> {
+    <span class="nm">CONF_REQ_SENT</span>,      <span class="cm">/* 已发送 CONF_REQ */</span>
+    <span class="nm">CONF_INPUT_DONE</span>,    <span class="cm">/* 入方向配置完成（收到对端 CONF_RSP SUCCESS）*/</span>
+    <span class="nm">CONF_OUTPUT_DONE</span>,   <span class="cm">/* 出方向配置完成（对端 CONF_REQ 已接受）*/</span>
+    <span class="nm">CONF_MTU_DONE</span>,      <span class="cm">/* MTU 协商完成 */</span>
+    <span class="nm">CONF_MODE_DONE</span>,     <span class="cm">/* 模式协商完成 */</span>
+    <span class="nm">CONF_CONNECT_PEND</span>,  <span class="cm">/* 等待安全验证 */</span>
+    <span class="nm">CONF_RECV_NO_FCS</span>,   <span class="cm">/* 对端不要求 FCS */</span>
+    <span class="nm">CONF_STATE2_DEVICE</span>, <span class="cm">/* 本地是 State 2 设备 */</span>
+    ...
+};</code></pre>
+
+  <div class="info-box principle">
+    <strong>🎯 第一性原理：协商而非强制</strong>
+    L2CAP 配置是双向独立的对称协商。每一端都可以提出自己的期望，对端可以接受（SUCCESS）、拒绝并建议替代方案（UNACCEPT）或拒绝未知选项（UNKNOWN）。这种设计允许新旧版本设备互操作（向后兼容），比 TCP 的固定参数更灵活。State 2 设备概念则解决了"谁说了算"的问题：如果一端有强制要求（如必须 ERTM），它成为 State 2 设备，强制对端接受其模式。
+  </div>
+</section>
+
+<!-- ═══════════════════════════════════════ S12 ═══ -->
+<section class="section" id="s12">
+  <span class="section-tag">内核实现</span>
+  <h2>核心数据结构</h2>
+
+  <h3>12.1 l2cap_chan — 逻辑信道</h3>
+  <p><code>struct l2cap_chan</code> 是 Linux 5.4 L2CAP 实现的核心数据结构，代表一条逻辑信道：</p>
+  <pre><code><span class="cm">/* include/net/bluetooth/l2cap.h（节选关键字段）*/</span>
+<span class="kw">struct</span> <span class="ty">l2cap_chan</span> {
+    <span class="kw">struct</span> <span class="ty">l2cap_conn</span>   *conn;       <span class="cm">/* 所属的 L2CAP 连接 */</span>
+    <span class="kw">struct</span> <span class="ty">kref</span>          kref;       <span class="cm">/* 引用计数 */</span>
+
+    <span class="cm">/* 地址/标识 */</span>
+    __u8    chan_type;   <span class="cm">/* CONN_ORIENTED / CONN_LESS / RAW / FIXED */</span>
+    __u16   psm;        <span class="cm">/* Protocol/Service Multiplexer */</span>
+    __u16   scid;       <span class="cm">/* 本地 CID */</span>
+    __u16   dcid;       <span class="cm">/* 对端 CID */</span>
+
+    <span class="cm">/* 工作模式 */</span>
+    __u8    mode;       <span class="cm">/* L2CAP_MODE_BASIC/ERTM/STREAMING/... */</span>
+    __u8    imtu;       <span class="cm">/* 入方向 MTU（incoming）*/</span>
+    __u16   omtu;       <span class="cm">/* 出方向 MTU（outgoing）*/</span>
+
+    <span class="cm">/* ERTM 发送状态 */</span>
+    __u8    tx_state;   <span class="cm">/* L2CAP_TX_STATE_XMIT / WAIT_F */</span>
+    __u16   next_tx_seq;
+    __u16   expected_ack_seq;
+    __u16   unacked_frames;
+    __u16   tx_win;     <span class="cm">/* 发送窗口大小 */</span>
+    __u8    max_tx;     <span class="cm">/* 最大重传次数 */</span>
+
+    <span class="cm">/* ERTM 接收状态 */</span>
+    __u8    rx_state;   <span class="cm">/* L2CAP_RX_STATE_RECV / SREJ_SENT / ... */</span>
+    __u16   buffer_seq;
+    __u16   expected_tx_seq;
+    __u16   last_acked_seq;
+
+    <span class="cm">/* 缓冲队列 */</span>
+    <span class="kw">struct</span> <span class="ty">sk_buff_head</span>  tx_q;      <span class="cm">/* 发送队列 */</span>
+    <span class="kw">struct</span> <span class="ty">sk_buff_head</span>  srej_q;    <span class="cm">/* SREJ 乱序缓冲队列 */</span>
+    <span class="kw">struct</span> <span class="ty">l2cap_seq_list</span> srej_list; <span class="cm">/* 已发 SREJ 的序号列表 */</span>
+
+    <span class="cm">/* 定时器 */</span>
+    <span class="kw">struct</span> <span class="ty">delayed_work</span>  retrans_timer;
+    <span class="kw">struct</span> <span class="ty">delayed_work</span>  monitor_timer;
+    <span class="kw">struct</span> <span class="ty">delayed_work</span>  ack_timer;
+
+    <span class="cm">/* 配置状态 */</span>
+    <span class="kw">unsigned long</span>        conf_state; <span class="cm">/* CONF_REQ_SENT | CONF_INPUT_DONE | ... */</span>
+    <span class="kw">unsigned long</span>        conn_state; <span class="cm">/* CONN_SREJ_SENT | CONN_REMOTE_BUSY | ... */</span>
+    <span class="kw">unsigned long</span>        flags;      <span class="cm">/* FLAG_EXT_CTRL | FLAG_EFS_ENABLE | ... */</span>
+
+    <span class="cm">/* 回调接口（ops pattern）*/</span>
+    <span class="kw">const struct</span> <span class="ty">l2cap_ops</span> *ops;
+
+    <span class="cm">/* LE Credit Based */</span>
+    __u16   credits;        <span class="cm">/* 当前可用信用数 */</span>
+    __u16   sdu_len;        <span class="cm">/* SAR 重组中的 SDU 总长 */</span>
+    <span class="kw">struct</span> <span class="ty">sk_buff</span> *sdu;  <span class="cm">/* SAR 重组缓冲区 */</span>
+};</code></pre>
+
+  <h3>12.2 l2cap_conn — HCI 连接上的 L2CAP 会话</h3>
+  <pre><code><span class="kw">struct</span> <span class="ty">l2cap_conn</span> {
+    <span class="kw">struct</span> <span class="ty">hci_conn</span>   *hcon;      <span class="cm">/* 对应的 HCI ACL 连接 */</span>
+    <span class="kw">struct</span> <span class="ty">hci_chan</span>   *hchan;     <span class="cm">/* HCI 信道（数据路径）*/</span>
+    <span class="kw">unsigned int</span>       mtu;       <span class="cm">/* HCI ACL MTU */</span>
+
+    __u32   feat_mask;     <span class="cm">/* 对端特性掩码（INFO_RSP 获取）*/</span>
+    __u8    remote_fixed_chan;   <span class="cm">/* 对端支持的固定信道位图 */</span>
+
+    <span class="kw">struct</span> <span class="ty">sk_buff</span>   *rx_skb;    <span class="cm">/* 当前正在重组的 skb */</span>
+    __u32             rx_len;    <span class="cm">/* 剩余需接收字节数 */</span>
+
+    <span class="kw">struct</span> <span class="ty">list_head</span> chan_l;     <span class="cm">/* 该连接上的信道链表 */</span>
+    <span class="kw">struct</span> <span class="ty">mutex</span>     chan_lock;  <span class="cm">/* 信道链表锁 */</span>
+};</code></pre>
+
+  <h3>12.3 l2cap_ops — 回调接口</h3>
+  <p>Linux 5.4 使用 ops 模式将 core 层与上层（socket 层或其他协议）解耦：</p>
+  <pre><code><span class="kw">struct</span> <span class="ty">l2cap_ops</span> {
+    <span class="ty">char</span>   *name;
+    <span class="kw">struct</span> <span class="ty">l2cap_chan</span> *(*new_connection)(<span class="kw">struct</span> <span class="ty">l2cap_chan</span> *chan);
+    <span class="kw">int</span>  (*recv)(<span class="kw">struct</span> <span class="ty">l2cap_chan</span> *chan, <span class="kw">struct</span> <span class="ty">sk_buff</span> *skb);
+    <span class="kw">void</span> (*close)(<span class="kw">struct</span> <span class="ty">l2cap_chan</span> *chan);
+    <span class="kw">void</span> (*state_change)(<span class="kw">struct</span> <span class="ty">l2cap_chan</span> *chan, <span class="kw">int</span> state, <span class="kw">int</span> err);
+    <span class="kw">void</span> (*ready)(<span class="kw">struct</span> <span class="ty">l2cap_chan</span> *chan);   <span class="cm">/* 信道就绪（配置完成）*/</span>
+    <span class="kw">void</span> (*defer)(<span class="kw">struct</span> <span class="ty">l2cap_chan</span> *chan);   <span class="cm">/* 延迟建连 */</span>
+    <span class="kw">void</span> (*teardown)(<span class="kw">struct</span> <span class="ty">l2cap_chan</span> *chan, <span class="kw">int</span> err);
+    <span class="kw">struct</span> <span class="ty">sk_buff</span> *(*alloc_skb)(<span class="kw">struct</span> <span class="ty">l2cap_chan</span> *chan,
+                      <span class="kw">unsigned long</span> hdr_len,
+                      <span class="kw">unsigned long</span> len, <span class="kw">int</span> nb);
+    <span class="kw">int</span>  (*filter)(<span class="kw">struct</span> <span class="ty">l2cap_chan</span> *chan, <span class="kw">struct</span> <span class="ty">sk_buff</span> *skb);
+};</code></pre>
+
+  <div class="info-box principle">
+    <strong>🎯 第一性原理：数据即状态</strong>
+    <code>l2cap_chan</code> 将一条信道的完整状态（发送序号、接收序号、窗口大小、定时器、缓冲队列、配置标志）封装在单一结构体中。这遵循了"状态机的状态要集中存储"的原则——所有决策都基于这个结构体的字段，使得状态转换原子性更强，并发安全更易保证（每个 chan 有独立的锁 <code>l2cap_chan_lock</code>）。
+  </div>
+</section>
+
+<!-- ═══════════════════════════════════════ S13 ═══ -->
+<section class="section" id="s13">
+  <span class="section-tag">内核实现</span>
+  <h2>l2cap_chan 生命周期</h2>
+
+  <h3>13.1 创建与销毁</h3>
+  <div class="diagram-wrap">
+    <svg viewBox="0 0 680 200" xmlns="http://www.w3.org/2000/svg" style="font-family:monospace;font-size:11px;">
+      <defs>
+        <marker id="lc" markerWidth="7" markerHeight="7" refX="5" refY="3" orient="auto">
+          <path d="M0,0 L0,6 L7,3 Z" fill="#58a6ff"/>
+        </marker>
+      </defs>
+      <!-- Steps -->
+      <rect x="10" y="80" width="120" height="50" rx="6" fill="rgba(88,166,255,0.12)" stroke="#58a6ff" stroke-width="1.5"/>
+      <text x="70" y="102" fill="#58a6ff" text-anchor="middle">l2cap_chan_alloc</text>
+      <text x="70" y="118" fill="#8b949e" text-anchor="middle" font-size="9">kzalloc + kref_init</text>
+
+      <line x1="130" y1="105" x2="160" y2="105" stroke="#58a6ff" stroke-width="1" marker-end="url(#lc)"/>
+
+      <rect x="160" y="80" width="120" height="50" rx="6" fill="rgba(63,185,80,0.12)" stroke="#3fb950" stroke-width="1.5"/>
+      <text x="220" y="102" fill="#3fb950" text-anchor="middle">l2cap_chan_create</text>
+      <text x="220" y="118" fill="#8b949e" text-anchor="middle" font-size="9">注册到 chan_list</text>
+
+      <line x1="280" y1="105" x2="310" y2="105" stroke="#3fb950" stroke-width="1" marker-end="url(#lc)"/>
+
+      <rect x="310" y="80" width="120" height="50" rx="6" fill="rgba(210,168,255,0.12)" stroke="#d2a8ff" stroke-width="1.5"/>
+      <text x="370" y="102" fill="#d2a8ff" text-anchor="middle">l2cap_chan_connect</text>
+      <text x="370" y="118" fill="#8b949e" text-anchor="middle" font-size="9">发 CONN_REQ</text>
+
+      <line x1="430" y1="105" x2="460" y2="105" stroke="#d2a8ff" stroke-width="1" marker-end="url(#lc)"/>
+
+      <rect x="460" y="80" width="100" height="50" rx="6" fill="rgba(255,166,87,0.12)" stroke="#ffa657" stroke-width="1.5"/>
+      <text x="510" y="102" fill="#ffa657" text-anchor="middle">BT_CONNECTED</text>
+      <text x="510" y="118" fill="#8b949e" text-anchor="middle" font-size="9">数据传输</text>
+
+      <line x1="560" y1="105" x2="590" y2="105" stroke="#ffa657" stroke-width="1" marker-end="url(#lc)"/>
+
+      <rect x="590" y="80" width="85" height="50" rx="6" fill="rgba(255,123,114,0.12)" stroke="#ff7b72" stroke-width="1.5"/>
+      <text x="632" y="102" fill="#ff7b72" text-anchor="middle">l2cap_chan_del</text>
+      <text x="632" y="118" fill="#8b949e" text-anchor="middle" font-size="9">kref_put</text>
+
+      <!-- Labels -->
+      <text x="70" y="150" fill="#8b949e" text-anchor="middle" font-size="9">socket.c: l2cap_sock_alloc</text>
+      <text x="220" y="150" fill="#8b949e" text-anchor="middle" font-size="9">core.c: __l2cap_chan_add</text>
+      <text x="370" y="150" fill="#8b949e" text-anchor="middle" font-size="9">发起连接请求</text>
+      <text x="510" y="150" fill="#8b949e" text-anchor="middle" font-size="9">l2cap_chan_ready()</text>
+      <text x="632" y="150" fill="#8b949e" text-anchor="middle" font-size="9">引用归零自动释放</text>
+    </svg>
+    <p class="diagram-caption">图13-1：l2cap_chan 完整生命周期</p>
+  </div>
+
+  <h3>13.2 引用计数管理</h3>
+  <p>Linux 5.4 使用 <code>kref</code> 管理 <code>l2cap_chan</code> 的生命周期：</p>
+  <pre><code><span class="cm">/* l2cap_chan 引用计数操作 */</span>
+<span class="kw">struct</span> <span class="ty">l2cap_chan</span> *<span class="fn">l2cap_chan_hold</span>(<span class="kw">struct</span> <span class="ty">l2cap_chan</span> *c)
+{
+    <span class="fn">kref_get</span>(&c->kref);   <span class="cm">/* 增加引用 */</span>
+    <span class="kw">return</span> c;
+}
+
+<span class="kw">void</span> <span class="fn">l2cap_chan_put</span>(<span class="kw">struct</span> <span class="ty">l2cap_chan</span> *c)
+{
+    <span class="fn">kref_put</span>(&c->kref, l2cap_chan_destroy);  <span class="cm">/* 减引用，归零自动销毁 */</span>
+}
+
+<span class="kw">static void</span> <span class="fn">l2cap_chan_destroy</span>(<span class="kw">struct</span> <span class="ty">kref</span> *kref)
+{
+    <span class="kw">struct</span> <span class="ty">l2cap_chan</span> *chan = container_of(kref, <span class="kw">struct</span> <span class="ty">l2cap_chan</span>, kref);
+    <span class="fn">l2cap_seq_list_free</span>(&chan->srej_list);
+    <span class="fn">kfree</span>(chan);
+}</code></pre>
+
+  <h3>13.3 锁模型</h3>
+  <div class="table-wrap">
+    <table>
+      <thead><tr><th>锁</th><th>粒度</th><th>用途</th><th>类型</th></tr></thead>
+      <tbody>
+        <tr><td><code>l2cap_conn.chan_lock</code></td><td>连接级</td><td>保护 chan_l 链表遍历</td><td>mutex</td></tr>
+        <tr><td><code>l2cap_chan</code> 内部锁</td><td>信道级</td><td>保护单个 chan 的字段修改</td><td>mutex (嵌套级别区分)</td></tr>
+        <tr><td><code>chan_list_lock</code></td><td>全局</td><td>保护全局监听信道列表</td><td>rwlock</td></tr>
+      </tbody>
+    </table>
+  </div>
+  <div class="info-box warn">
+    <strong>⚠️ 锁嵌套规则</strong>
+    为避免死锁，Linux 5.4 定义了三级嵌套（<code>L2CAP_NESTING_SMP < L2CAP_NESTING_NORMAL < L2CAP_NESTING_PARENT</code>），使用 lockdep 注解确保锁顺序正确。
+  </div>
+
+  <div class="info-box principle">
+    <strong>🎯 第一性原理：所有权即责任</strong>
+    kref 引用计数解决了"谁负责释放内存"的问题。每个持有者（socket、连接链表、定时器回调）都持一份引用，只有当最后一个引用归零时才真正释放。这消除了 use-after-free 和 double-free 风险，是内核并发编程的标准模式。
+  </div>
+</section>
+
+<!-- ═══════════════════════════════════════ S14 ═══ -->
+<section class="section" id="s14">
+  <span class="section-tag">内核实现</span>
+  <h2>ERTM 状态机实现</h2>
+
+  <h3>14.1 核心入口函数</h3>
+  <p>ERTM 的核心是两个状态机驱动函数，由规范中的事件表直接映射而来：</p>
+
+  <pre><code><span class="cm">/* 发送状态机入口 */</span>
+<span class="kw">static void</span> <span class="fn">l2cap_tx</span>(<span class="kw">struct</span> <span class="ty">l2cap_chan</span> *chan,
+                     <span class="kw">struct</span> <span class="ty">l2cap_ctrl</span> *control,
+                     <span class="kw">struct</span> <span class="ty">sk_buff_head</span> *skbs,
+                     <span class="ty">u8</span> event)
+{
+    <span class="cm">/* event: L2CAP_EV_DATA_REQUEST / RECV_REQSEQ_AND_FBIT /
+              RECV_FBIT / RETRANS_TO / MONITOR_TO /
+              EXPLICIT_POLL / LOCAL_BUSY_DETECTED / CLEAR */</span>
+    <span class="fn">l2cap_tx_state_machine</span>[chan->tx_state][event](chan, control, skbs);
+}
+
+<span class="cm">/* 接收状态机入口 */</span>
+<span class="kw">static int</span> <span class="fn">l2cap_rx</span>(<span class="kw">struct</span> <span class="ty">l2cap_chan</span> *chan,
+                    <span class="kw">struct</span> <span class="ty">l2cap_ctrl</span> *control,
+                    <span class="kw">struct</span> <span class="ty">sk_buff</span> *skb,
+                    <span class="ty">u8</span> event)
+{
+    <span class="cm">/* event: RECV_IFRAME / RECV_RR / RECV_REJ / RECV_RNR / RECV_SREJ */</span>
+    <span class="kw">return</span> <span class="fn">l2cap_rx_state_machine</span>[chan->rx_state][event](chan, control, skb);
+}</code></pre>
+
+  <h3>14.2 关键事件处理（接收路径）</h3>
+  <pre><code><span class="cm">/* 接收到 I-frame 的处理（RECV 状态）*/</span>
+<span class="kw">static int</span> <span class="fn">l2cap_rx_state_recv</span>(<span class="kw">struct</span> <span class="ty">l2cap_chan</span> *chan,
+                               <span class="kw">struct</span> <span class="ty">l2cap_ctrl</span> *control,
+                               <span class="kw">struct</span> <span class="ty">sk_buff</span> *skb, <span class="ty">u8</span> event)
+{
+    <span class="kw">switch</span> (<span class="fn">l2cap_classify_txseq</span>(chan, control->txseq)) {
+    <span class="kw">case</span> <span class="nm">L2CAP_TXSEQ_EXPECTED</span>:
+        <span class="cm">/* 期望的序号 → 直接送达上层 */</span>
+        <span class="fn">l2cap_pass_to_tx</span>(chan, control);
+        chan->expected_tx_seq = <span class="fn">__next_seq</span>(chan, chan->expected_tx_seq);
+        <span class="fn">l2cap_reassemble_sdu</span>(chan, skb, control);
+        <span class="kw">break</span>;
+
+    <span class="kw">case</span> <span class="nm">L2CAP_TXSEQ_UNEXPECTED</span>:
+        <span class="cm">/* 乱序帧 → 发送 SREJ，进入 SREJ_SENT 状态 */</span>
+        <span class="fn">l2cap_send_srej</span>(chan, control->txseq);
+        chan->rx_state = <span class="nm">L2CAP_RX_STATE_SREJ_SENT</span>;
+        <span class="kw">break</span>;
+
+    <span class="kw">case</span> <span class="nm">L2CAP_TXSEQ_DUPLICATE</span>:
+        <span class="cm">/* 重复帧 → 发 RR 确认，忽略数据 */</span>
+        <span class="fn">l2cap_pass_to_tx</span>(chan, control);
+        <span class="kw">break</span>;
+
+    <span class="kw">case</span> <span class="nm">L2CAP_TXSEQ_INVALID</span>:
+        <span class="cm">/* 无效序号 → 断开连接 */</span>
+        <span class="fn">l2cap_send_disconn_req</span>(chan, <span class="nm">ECONNRESET</span>);
+        <span class="kw">break</span>;
+    }
+    <span class="kw">return</span> 0;
+}</code></pre>
+
+  <h3>14.3 TxSeq 分类（l2cap_classify_txseq）</h3>
+  <div class="table-wrap">
+    <table>
+      <thead><tr><th>分类</th><th>条件</th><th>动作</th></tr></thead>
+      <tbody>
+        <tr><td><code>TXSEQ_EXPECTED</code></td><td>txseq == expected_tx_seq</td><td>正常接收，更新 expected_tx_seq</td></tr>
+        <tr><td><code>TXSEQ_EXPECTED_SREJ</code></td><td>在 SREJ_SENT 状态中，txseq 是 srej_list.head</td><td>SREJ 请求的帧已补收</td></tr>
+        <tr><td><code>TXSEQ_UNEXPECTED</code></td><td>txseq 在窗口内但不是期望值</td><td>发 SREJ 请求丢失帧</td></tr>
+        <tr><td><code>TXSEQ_UNEXPECTED_SREJ</code></td><td>SREJ_SENT 中，收到不在 srej_list 中的帧</td><td>发 SREJ</td></tr>
+        <tr><td><code>TXSEQ_DUPLICATE</code></td><td>txseq &lt;= last_acked_seq</td><td>重复帧，忽略数据</td></tr>
+        <tr><td><code>TXSEQ_INVALID</code></td><td>txseq 超出有效范围</td><td>断开连接</td></tr>
+        <tr><td><code>TXSEQ_INVALID_IGNORE</code></td><td>窗口超过一半时的无效序号</td><td>静默忽略（双重 Poll 场景）</td></tr>
+      </tbody>
+    </table>
+  </div>
+
+  <h3>14.4 SREJ 重传实现</h3>
+  <pre><code><span class="kw">static void</span> <span class="fn">l2cap_send_srej</span>(<span class="kw">struct</span> <span class="ty">l2cap_chan</span> *chan, <span class="ty">u16</span> txseq)
+{
+    <span class="kw">struct</span> <span class="ty">l2cap_ctrl</span> control;
+    <span class="ty">u16</span> seq;
+
+    <span class="fn">memset</span>(&control, 0, <span class="kw">sizeof</span>(control));
+    control.sframe = 1;
+    control.super = <span class="nm">L2CAP_SUPER_SREJ</span>;
+
+    <span class="cm">/* 对 [expected_tx_seq, txseq) 中每个未请求的序号发一个 SREJ */</span>
+    <span class="kw">for</span> (seq = chan->expected_tx_seq; seq != txseq;
+         seq = <span class="fn">__next_seq</span>(chan, seq)) {
+        <span class="kw">if</span> (!<span class="fn">l2cap_ertm_seq_in_queue</span>(&chan->srej_q, seq)) {
+            control.reqseq = seq;
+            <span class="fn">l2cap_send_sframe</span>(chan, &control);
+            <span class="fn">l2cap_seq_list_append</span>(&chan->srej_list, seq);
+        }
+    }
+    chan->expected_tx_seq = <span class="fn">__next_seq</span>(chan, txseq);
+}</code></pre>
+
+  <div class="info-box principle">
+    <strong>🎯 第一性原理：状态机即规范的代码化</strong>
+    ERTM 的内核实现是规范 Section 8 状态表的直接映射：每个 (state, event) 对应一个处理函数。这种设计保证了实现与规范的一致性，任何偏差（bug）都可以通过对照规范状态表来发现。<code>l2cap_classify_txseq()</code> 是整个接收状态机的"判断门"，它将连续的序号空间切分为有限的、语义明确的类别，极大简化了后续处理逻辑。
+  </div>
+</section>
+
+<!-- ═══════════════════════════════════════ S15 ═══ -->
+<section class="section" id="s15">
+  <span class="section-tag">内核实现</span>
+  <h2>分段与重组 SAR</h2>
+
+  <h3>15.1 SDU 分段（l2cap_segment_sdu）</h3>
+  <p>当 SDU 大于协商的 MPS（最大 PDU payload），L2CAP 将其分割为多个 I-frame，通过 SAR 字段标记边界：</p>
+
+  <div class="diagram-wrap">
+    <svg viewBox="0 0 680 220" xmlns="http://www.w3.org/2000/svg" style="font-family:monospace;font-size:11px;">
+      <!-- SDU -->
+      <rect x="10" y="10" width="660" height="40" rx="4" fill="rgba(88,166,255,0.1)" stroke="#58a6ff" stroke-width="1.5"/>
+      <text x="340" y="35" fill="#58a6ff" text-anchor="middle" font-weight="bold">上层 SDU（如 3000 bytes）</text>
+
+      <!-- Arrow down -->
+      <line x1="340" y1="50" x2="340" y2="70" stroke="#58a6ff" stroke-width="1.5" marker-end="url(#as2)"/>
+      <defs><marker id="as2" markerWidth="7" markerHeight="7" refX="5" refY="3" orient="auto"><path d="M0,0 L0,6 L7,3 Z" fill="#58a6ff"/></marker></defs>
+      <text x="370" y="65" fill="#8b949e" font-size="10">l2cap_segment_sdu()</text>
+
+      <!-- Segments -->
+      <rect x="10" y="75" width="175" height="55" rx="4" fill="rgba(63,185,80,0.12)" stroke="#3fb950" stroke-width="1.5"/>
+      <text x="97" y="98" fill="#3fb950" text-anchor="middle" font-weight="bold">I-frame 0</text>
+      <text x="97" y="112" fill="#ffa657" text-anchor="middle" font-size="10">SAR=01（首段）</text>
+      <text x="97" y="126" fill="#8b949e" text-anchor="middle" font-size="9">含 SDU Length 字段（2字节）</text>
+
+      <rect x="195" y="75" width="155" height="55" rx="4" fill="rgba(210,168,255,0.12)" stroke="#d2a8ff" stroke-width="1.5"/>
+      <text x="272" y="98" fill="#d2a8ff" text-anchor="middle" font-weight="bold">I-frame 1</text>
+      <text x="272" y="112" fill="#ffa657" text-anchor="middle" font-size="10">SAR=11（继续段）</text>
+      <text x="272" y="126" fill="#8b949e" text-anchor="middle" font-size="9">MPS 大小的数据</text>
+
+      <rect x="360" y="75" width="155" height="55" rx="4" fill="rgba(210,168,255,0.12)" stroke="#d2a8ff" stroke-width="1.5"/>
+      <text x="437" y="98" fill="#d2a8ff" text-anchor="middle" font-weight="bold">I-frame 2</text>
+      <text x="437" y="112" fill="#ffa657" text-anchor="middle" font-size="10">SAR=11（继续段）</text>
+      <text x="437" y="126" fill="#8b949e" text-anchor="middle" font-size="9">MPS 大小的数据</text>
+
+      <rect x="525" y="75" width="155" height="55" rx="4" fill="rgba(255,166,87,0.12)" stroke="#ffa657" stroke-width="1.5"/>
+      <text x="602" y="98" fill="#ffa657" text-anchor="middle" font-weight="bold">I-frame 3</text>
+      <text x="602" y="112" fill="#ffa657" text-anchor="middle" font-size="10">SAR=10（末段）</text>
+      <text x="602" y="126" fill="#8b949e" text-anchor="middle" font-size="9">剩余数据</text>
+
+      <!-- Reassembly arrow -->
+      <line x1="340" y1="130" x2="340" y2="155" stroke="#3fb950" stroke-width="1.5" marker-end="url(#as2)"/>
+      <text x="390" y="148" fill="#8b949e" font-size="10">l2cap_reassemble_sdu()</text>
+
+      <rect x="10" y="160" width="660" height="40" rx="4" fill="rgba(63,185,80,0.08)" stroke="#3fb950" stroke-width="1"/>
+      <text x="340" y="185" fill="#3fb950" text-anchor="middle">重组后的完整 SDU → 送达上层（sock_queue_rcv_skb）</text>
+    </svg>
+    <p class="diagram-caption">图15-1：SDU 分段（SAR=01/11/11/10）与重组流程</p>
+  </div>
+
+  <h3>15.2 SAR 字段值定义</h3>
+  <div class="table-wrap">
+    <table>
+      <thead><tr><th>SAR 值</th><th>含义</th><th>内核宏</th><th>特殊字段</th></tr></thead>
+      <tbody>
+        <tr><td><code>0b00 (0)</code></td><td>未分段（完整 SDU）</td><td><code>L2CAP_SAR_UNSEGMENTED</code></td><td>无额外字段</td></tr>
+        <tr><td><code>0b01 (1)</code></td><td>首段（Start）</td><td><code>L2CAP_SAR_START</code></td><td>payload 前 2 字节 = SDU 总长度</td></tr>
+        <tr><td><code>0b10 (2)</code></td><td>末段（End）</td><td><code>L2CAP_SAR_END</code></td><td>无额外字段</td></tr>
+        <tr><td><code>0b11 (3)</code></td><td>中间段（Continue）</td><td><code>L2CAP_SAR_CONTINUE</code></td><td>无额外字段</td></tr>
+      </tbody>
+    </table>
+  </div>
+
+  <h3>15.3 重组实现</h3>
+  <pre><code><span class="kw">static int</span> <span class="fn">l2cap_reassemble_sdu</span>(<span class="kw">struct</span> <span class="ty">l2cap_chan</span> *chan,
+                                 <span class="kw">struct</span> <span class="ty">sk_buff</span> *skb,
+                                 <span class="kw">struct</span> <span class="ty">l2cap_ctrl</span> *control)
+{
+    <span class="kw">switch</span> (control->sar) {
+    <span class="kw">case</span> <span class="nm">L2CAP_SAR_UNSEGMENTED</span>:
+        <span class="cm">/* 未分段，直接回调上层 recv */</span>
+        chan->ops->recv(chan, skb);
+        <span class="kw">break</span>;
+
+    <span class="kw">case</span> <span class="nm">L2CAP_SAR_START</span>:
+        <span class="cm">/* 提取 SDU 总长，创建重组缓冲区 */</span>
+        chan->sdu_len = <span class="fn">get_unaligned_le16</span>(skb->data);
+        <span class="fn">skb_pull</span>(skb, L2CAP_SDULEN_SIZE);  <span class="cm">/* 去掉 2 字节 SDU Length */</span>
+        chan->sdu = skb;
+        <span class="kw">break</span>;
+
+    <span class="kw">case</span> <span class="nm">L2CAP_SAR_CONTINUE</span>:
+        <span class="cm">/* 追加到重组缓冲区 */</span>
+        <span class="fn">skb_copy_from_linear_data</span>(skb, <span class="fn">skb_put</span>(chan->sdu, skb->len),
+                                  skb->len);
+        <span class="kw">break</span>;
+
+    <span class="kw">case</span> <span class="nm">L2CAP_SAR_END</span>:
+        <span class="cm">/* 追加末段，SDU 完整，送达上层 */</span>
+        <span class="fn">skb_copy_from_linear_data</span>(skb, <span class="fn">skb_put</span>(chan->sdu, skb->len),
+                                  skb->len);
+        chan->ops->recv(chan, chan->sdu);
+        chan->sdu = NULL;
+        <span class="kw">break</span>;
+    }
+    <span class="kw">return</span> 0;
+}</code></pre>
+
+  <div class="info-box principle">
+    <strong>🎯 第一性原理：流切包</strong>
+    SAR 解决了一个根本问题：L2CAP SDU 可达 64KB，而蓝牙基带 ACL 数据包通常仅有几百字节。必须切片传输（分段），且接收方必须能还原原始边界（重组）。SAR 字段（2 bits）是最经济的边界标记方案——4 个状态恰好够用：不需要切/开始切/继续切/切完了。SDU Length 仅在首段携带，避免了每帧重复携带元信息的冗余。
+  </div>
+</section>
+
+<!-- ═══════════════════════════════════════ S16 ═══ -->
+<section class="section" id="s16">
+  <span class="section-tag">内核实现</span>
+  <h2>Socket 接口层</h2>
+
+  <h3>16.1 AF_BLUETOOTH L2CAP Socket</h3>
+  <p>用户空间通过 POSIX socket API 访问 L2CAP，由 <code>l2cap_sock.c</code> 实现适配：</p>
+
+  <pre><code><span class="cm">/* 创建 L2CAP socket */</span>
+l2cap_sock = <span class="fn">socket</span>(AF_BLUETOOTH, SOCK_SEQPACKET, BTPROTO_L2CAP);
+
+<span class="cm">/* 服务端绑定 */</span>
+<span class="kw">struct</span> <span class="ty">sockaddr_l2</span> addr = {
+    .l2_family  = AF_BLUETOOTH,
+    .l2_psm     = htobs(0x1001),   <span class="cm">/* PSM 值 */</span>
+    .l2_bdaddr  = *BDADDR_ANY,
+};
+<span class="fn">bind</span>(l2cap_sock, (<span class="kw">struct</span> <span class="ty">sockaddr</span> *)&addr, <span class="kw">sizeof</span>(addr));
+<span class="fn">listen</span>(l2cap_sock, 5);
+<span class="fn">accept</span>(l2cap_sock, ...);  <span class="cm">/* 等待连接 */</span>
+
+<span class="cm">/* 客户端连接 */</span>
+<span class="kw">struct</span> <span class="ty">sockaddr_l2</span> remote = {
+    .l2_family  = AF_BLUETOOTH,
+    .l2_psm     = htobs(0x1001),
+    .l2_bdaddr  = remote_bdaddr,
+};
+<span class="fn">connect</span>(l2cap_sock, (<span class="kw">struct</span> <span class="ty">sockaddr</span> *)&remote, <span class="kw">sizeof</span>(remote));</code></pre>
+
+  <h3>16.2 sockaddr_l2 结构</h3>
+  <pre><code><span class="cm">/* include/bluetooth/l2cap.h (用户空间头文件) */</span>
+<span class="kw">struct</span> <span class="ty">sockaddr_l2</span> {
+    <span class="ty">sa_family_t</span>    l2_family;       <span class="cm">/* AF_BLUETOOTH */</span>
+    <span class="ty">unsigned short</span> l2_psm;          <span class="cm">/* Protocol/Service Multiplexer (little-endian) */</span>
+    <span class="ty">bdaddr_t</span>       l2_bdaddr;       <span class="cm">/* 蓝牙设备地址 */</span>
+    <span class="ty">unsigned short</span> l2_cid;          <span class="cm">/* CID（用于固定信道或 LE CoC）*/</span>
+    <span class="ty">uint8_t</span>        l2_bdaddr_type;  <span class="cm">/* BDADDR_BREDR / BDADDR_LE_PUBLIC / LE_RANDOM */</span>
+};</code></pre>
+
+  <h3>16.3 Socket 选项（setsockopt）</h3>
+  <p>通过 <code>setsockopt(sock, SOL_BLUETOOTH, ...)</code> 配置 L2CAP 参数：</p>
+  <div class="table-wrap">
+    <table>
+      <thead><tr><th>选项名</th><th>引入版本</th><th>用途</th></tr></thead>
+      <tbody>
+        <tr><td><code>BT_SECURITY</code></td><td>Linux 2.6.30</td><td>安全等级（SDP/LOW/MEDIUM/HIGH/FIPS）</td></tr>
+        <tr><td><code>BT_DEFER_SETUP</code></td><td>Linux 2.6.30</td><td>延迟建连（等待用户空间授权）</td></tr>
+        <tr><td><code>BT_FLUSHABLE</code></td><td>Linux 2.6.39</td><td>数据是否可被冲刷</td></tr>
+        <tr><td><code>BT_POWER</code></td><td>Linux 3.1</td><td>是否强制退出 Sniff 模式</td></tr>
+        <tr><td><code>BT_CHANNEL_POLICY</code></td><td>Linux 3.10</td><td>AMP 信道策略（BR/EDR Only/Preferred/AMP Preferred）</td></tr>
+        <tr><td><code>BT_MODE</code></td><td>Linux 5.10</td><td>L2CAP 工作模式（Basic/ERTM/Stream/LE FlowCtl/Ext FlowCtl）</td></tr>
+      </tbody>
+    </table>
+  </div>
+
+  <h3>16.4 l2cap_sock_ops 回调映射</h3>
+  <pre><code><span class="cm">/* l2cap_sock.c — socket 操作回调 */</span>
+<span class="kw">static const struct</span> <span class="ty">proto_ops</span> l2cap_sock_ops = {
+    .family     = PF_BLUETOOTH,
+    .bind       = l2cap_sock_bind,
+    .connect    = l2cap_sock_connect,
+    .listen     = l2cap_sock_listen,
+    .accept     = l2cap_sock_accept,
+    .sendmsg    = l2cap_sock_sendmsg,   <span class="cm">/* → l2cap_chan_send() */</span>
+    .recvmsg    = l2cap_sock_recvmsg,   <span class="cm">/* → sock_queue_rcv_skb() */</span>
+    .setsockopt = l2cap_sock_setsockopt,
+    .getsockopt = l2cap_sock_getsockopt,
+    .shutdown   = l2cap_sock_shutdown,
+    .release    = l2cap_sock_release,
+};</code></pre>
+
+  <div class="info-box principle">
+    <strong>🎯 第一性原理：统一的抽象界面</strong>
+    POSIX socket API（socket/bind/connect/send/recv）是 Unix 网络编程的通用语言。将 L2CAP 适配到这套 API，让用户空间程序可以用熟悉的方式编写蓝牙应用，而无需了解 L2CAP 的内部实现细节。这是"界面稳定，实现可替换"的接口设计原则。
+  </div>
+</section>
+
+<!-- ═══════════════════════════════════════ S17 ═══ -->
+<section class="section" id="s17">
+  <span class="section-tag">安全与调试</span>
+  <h2>安全机制</h2>
+
+  <h3>17.1 连接安全等级</h3>
+  <p>L2CAP 在连接建立阶段强制执行安全策略，基于 <code>BT_SECURITY</code> 等级：</p>
+  <div class="table-wrap">
+    <table>
+      <thead><tr><th>等级</th><th>值</th><th>链路密钥类型</th><th>加密要求</th><th>典型场景</th></tr></thead>
+      <tbody>
+        <tr><td><code>BT_SECURITY_SDP</code></td><td>0</td><td>无</td><td>不需要</td><td>SDP 查询</td></tr>
+        <tr><td><code>BT_SECURITY_LOW</code></td><td>1</td><td>未认证</td><td>不需要</td><td>HID 等低安全需求</td></tr>
+        <tr><td><code>BT_SECURITY_MEDIUM</code></td><td>2（默认）</td><td>未认证</td><td>期望</td><td>RFCOMM 普通应用</td></tr>
+        <tr><td><code>BT_SECURITY_HIGH</code></td><td>3</td><td>已认证</td><td>必须</td><td>健康设备、支付</td></tr>
+        <tr><td><code>BT_SECURITY_FIPS</code></td><td>4</td><td>P-256 安全配对</td><td>必须</td><td>高安全要求场景</td></tr>
+      </tbody>
+    </table>
+  </div>
+
+  <h3>17.2 LE CoC 安全检查（Linux 5.4）</h3>
+  <p>对于 LE Credit Based 连接，Linux 5.4 在 <code>l2cap_le_connect_req()</code> 中强制校验加密密钥长度：</p>
+  <pre><code><span class="cm">/* net/bluetooth/l2cap_core.c */</span>
+<span class="kw">static int</span> <span class="fn">l2cap_le_connect_req</span>(<span class="kw">struct</span> <span class="ty">l2cap_conn</span> *conn, ...)
+{
+    <span class="cm">/* 检查 PSM 安全等级 */</span>
+    <span class="kw">if</span> (pchan->sec_level != BT_SECURITY_SDP &&
+        !<span class="fn">le_l2cap_key_size_sufficient</span>(conn->hcon, pchan->sec_level)) {
+        result = <span class="nm">L2CAP_CR_LE_BAD_KEY_SIZE</span>;
+        <span class="kw">goto</span> response_unlock;
+    }
+    ...
+    <span class="cm">/* 检查动态 CID 范围 */</span>
+    <span class="kw">if</span> (scid < <span class="nm">L2CAP_CID_DYN_START</span> || scid > <span class="nm">L2CAP_CID_LE_DYN_END</span>) {
+        result = <span class="nm">L2CAP_CR_LE_INVALID_SCID</span>;
+        <span class="kw">goto</span> response_unlock;
+    }
+}</code></pre>
+
+  <h3>17.3 FCS 帧校验</h3>
+  <p>ERTM 模式下，L2CAP 在每个 I-frame/S-frame 末尾附加 CRC-16 校验（可协商关闭）：</p>
+  <pre><code><span class="cm">/* CRC-16 计算（使用内核 crc16 模块）*/</span>
+<span class="kw">static inline</span> <span class="ty">u16</span> <span class="fn">l2cap_fcs_crc</span>(<span class="kw">const</span> <span class="ty">u8</span> *data, <span class="ty">size_t</span> len)
+{
+    <span class="kw">return</span> <span class="fn">crc16</span>(0, data, len);   <span class="cm">/* linux/crc16.h */</span>
+}
+
+<span class="cm">/* 发送时追加 FCS */</span>
+<span class="kw">static void</span> <span class="fn">l2cap_do_send</span>(<span class="kw">struct</span> <span class="ty">l2cap_chan</span> *chan, <span class="kw">struct</span> <span class="ty">sk_buff</span> *skb)
+{
+    <span class="kw">if</span> (chan->fcs == <span class="nm">L2CAP_FCS_CRC16</span>) {
+        <span class="ty">u16</span> fcs = <span class="fn">crc16</span>(0, skb->data, skb->len);
+        <span class="fn">put_unaligned_le16</span>(fcs, <span class="fn">skb_put</span>(skb, 2));
+    }
+    <span class="fn">hci_send_acl</span>(chan->conn->hchan, skb, flags);
+}</code></pre>
+
+  <div class="info-box principle">
+    <strong>🎯 第一性原理：纵深防御</strong>
+    L2CAP 安全是多层的：蓝牙基带提供 FHSS 防窃听；链路层提供 AES-128 加密；L2CAP 层提供 PSM 级别的访问控制和密钥长度验证；FCS 提供数据完整性校验。每一层解决不同的威胁模型，共同构成纵深防御体系。
+  </div>
+</section>
+
+<!-- ═══════════════════════════════════════ S18 ═══ -->
+<section class="section" id="s18">
+  <span class="section-tag">安全与调试</span>
+  <h2>调试与工具</h2>
+
+  <h3>18.1 内核调试接口</h3>
+  <p>Linux 5.4 通过多种机制暴露 L2CAP 内部状态：</p>
+
+  <div class="table-wrap">
+    <table>
+      <thead><tr><th>工具/接口</th><th>用途</th><th>命令/路径</th></tr></thead>
+      <tbody>
+        <tr><td>BT_DBG 宏</td><td>内核调试日志（需开启 CONFIG_BT_DEBUGFS）</td><td><code>dmesg | grep bluetooth</code></td></tr>
+        <tr><td>debugfs</td><td>运行时参数查看/修改</td><td><code>/sys/kernel/debug/bluetooth/hci0/</code></td></tr>
+        <tr><td>btmon</td><td>HCI 数据包捕获与解析（包含 L2CAP）</td><td><code>btmon -w capture.btsnoop</code></td></tr>
+        <tr><td>l2ping</td><td>L2CAP Echo 请求/响应测试</td><td><code>l2ping -c 5 XX:XX:XX:XX:XX:XX</code></td></tr>
+        <tr><td>l2test</td><td>L2CAP 各模式功能测试</td><td><code>l2test -r -m 3 (ERTM 服务端)</code></td></tr>
+        <tr><td>disable_ertm</td><td>模块参数禁用 ERTM</td><td><code>modprobe bluetooth disable_ertm=1</code></td></tr>
+      </tbody>
+    </table>
+  </div>
+
+  <h3>18.2 核心调试参数</h3>
+  <pre><code><span class="cm">/* net/bluetooth/l2cap_core.c 模块参数 */</span>
+<span class="kw">bool</span> disable_ertm;   <span class="cm">/* 禁用 ERTM（回退到 Basic Mode）*/</span>
+<span class="kw">bool</span> enable_ecred =  <span class="cm">/* 启用 Enhanced Credit Based (ECOC) */</span>
+    IS_ENABLED(CONFIG_BT_LE_L2CAP_ECRED);
+
+<span class="nm">module_param</span>(disable_ertm, <span class="ty">bool</span>, 0644);
+<span class="nm">MODULE_PARM_DESC</span>(disable_ertm, <span class="st">"Disable Enhanced Retransmission Mode"</span>);</code></pre>
+
+  <h3>18.3 btmon 数据包示例解析</h3>
+  <div class="info-box note">
+    <strong>📌 典型 btmon 输出（L2CAP Connection Request）</strong>
+    <pre style="margin-top:8px;background:none;border:none;padding:0;font-size:12px;color:#e6edf3;">
+&gt; ACL Data RX: Handle 42 flags 0x02 dlen 12
+      L2CAP: Connection Request (0x02) ident 1 len 4
+        PSM: 3 (0x0003)       ← RFCOMM PSM
+        Source CID: 64 (0x0040)
+
+&lt; ACL Data TX: Handle 42 flags 0x00 dlen 16
+      L2CAP: Connection Response (0x03) ident 1 len 8
+        Destination CID: 65 (0x0041)
+        Source CID: 64 (0x0040)
+        Result: Connection successful (0x0000)
+        Status: No further information available (0x0000)</pre>
+  </div>
+
+  <div class="info-box principle">
+    <strong>🎯 第一性原理：可观测性是可靠性的前提</strong>
+    生产系统中无法调试的问题约等于无法修复的问题。btmon 提供了完整的 HCI 数据包观测能力（相当于蓝牙的 Wireshark），BT_DBG 提供内核内部状态追踪，debugfs 提供运行时参数干预。三者共同构成了 L2CAP 的"可观测性基础设施"。
+  </div>
+</section>
+
+<!-- ═══════════════════════════════════════ S19 ═══ -->
+<section class="section" id="s19">
+  <span class="section-tag">总结</span>
+  <h2>总结</h2>
+
+  <h3>19.1 L2CAP 各模式对比总览</h3>
+  <div class="table-wrap">
+    <table>
+      <thead><tr><th>模式</th><th>可靠性</th><th>延迟</th><th>复杂度</th><th>ACK</th><th>SAR</th><th>典型应用</th></tr></thead>
+      <tbody>
+        <tr>
+          <td><span class="badge badge-blue">Basic</span></td>
+          <td>基带保证</td>
+          <td>最低</td>
+          <td>极低</td>
+          <td>无</td>
+          <td>无</td>
+          <td>SDP / ATT / SMP</td>
+        </tr>
+        <tr>
+          <td><span class="badge badge-green">ERTM</span></td>
+          <td>最高（SREJ+重传）</td>
+          <td>较高</td>
+          <td>高</td>
+          <td>RR/REJ/SREJ</td>
+          <td>支持</td>
+          <td>RFCOMM / OBEX</td>
+        </tr>
+        <tr>
+          <td><span class="badge badge-purple">Streaming</span></td>
+          <td>尽力而为</td>
+          <td>低</td>
+          <td>中</td>
+          <td>无</td>
+          <td>支持</td>
+          <td>A2DP / AVDTP</td>
+        </tr>
+        <tr>
+          <td><span class="badge badge-orange">LE Credit</span></td>
+          <td>信用流控</td>
+          <td>低</td>
+          <td>中</td>
+          <td>Credit</td>
+          <td>支持（K-frame）</td>
+          <td>BLE CoC（IoT）</td>
+        </tr>
+      </tbody>
+    </table>
+  </div>
+
+  <h3>19.2 Linux 5.4 L2CAP 关键调用链</h3>
+  <div class="diagram-wrap">
+    <svg viewBox="0 0 680 340" xmlns="http://www.w3.org/2000/svg" style="font-family:monospace;font-size:11px;">
+      <defs><marker id="as3" markerWidth="7" markerHeight="7" refX="5" refY="3" orient="auto"><path d="M0,0 L0,6 L7,3 Z" fill="#58a6ff"/></marker></defs>
+
+      <!-- TX Path -->
+      <text x="10" y="20" fill="#3fb950" font-weight="bold">发送路径（TX）</text>
+      <rect x="10" y="28" width="130" height="32" rx="4" fill="rgba(63,185,80,0.1)" stroke="#3fb950" stroke-width="1"/>
+      <text x="75" y="48" fill="#3fb950" text-anchor="middle" font-size="10">用户 sendmsg()</text>
+
+      <line x1="75" y1="60" x2="75" y2="78" stroke="#3fb950" stroke-width="1" marker-end="url(#as3)"/>
+      <rect x="10" y="78" width="130" height="32" rx="4" fill="rgba(63,185,80,0.1)" stroke="#3fb950" stroke-width="1"/>
+      <text x="75" y="98" fill="#3fb950" text-anchor="middle" font-size="10">l2cap_sock_sendmsg</text>
+
+      <line x1="75" y1="110" x2="75" y2="128" stroke="#3fb950" stroke-width="1" marker-end="url(#as3)"/>
+      <rect x="10" y="128" width="130" height="32" rx="4" fill="rgba(63,185,80,0.1)" stroke="#3fb950" stroke-width="1"/>
+      <text x="75" y="148" fill="#3fb950" text-anchor="middle" font-size="10">l2cap_chan_send</text>
+
+      <line x1="75" y1="160" x2="75" y2="178" stroke="#3fb950" stroke-width="1" marker-end="url(#as3)"/>
+      <rect x="10" y="178" width="130" height="32" rx="4" fill="rgba(63,185,80,0.1)" stroke="#3fb950" stroke-width="1"/>
+      <text x="75" y="198" fill="#3fb950" text-anchor="middle" font-size="10">l2cap_segment_sdu</text>
+
+      <line x1="75" y1="210" x2="75" y2="228" stroke="#3fb950" stroke-width="1" marker-end="url(#as3)"/>
+      <rect x="10" y="228" width="130" height="32" rx="4" fill="rgba(63,185,80,0.1)" stroke="#3fb950" stroke-width="1"/>
+      <text x="75" y="248" fill="#3fb950" text-anchor="middle" font-size="10">l2cap_tx(EV_DATA)</text>
+
+      <line x1="75" y1="260" x2="75" y2="278" stroke="#3fb950" stroke-width="1" marker-end="url(#as3)"/>
+      <rect x="10" y="278" width="130" height="32" rx="4" fill="rgba(63,185,80,0.1)" stroke="#3fb950" stroke-width="1"/>
+      <text x="75" y="298" fill="#3fb950" text-anchor="middle" font-size="10">l2cap_do_send</text>
+
+      <line x1="75" y1="310" x2="75" y2="328" stroke="#3fb950" stroke-width="1" marker-end="url(#as3)"/>
+      <rect x="10" y="328" width="130" height="12" rx="3" fill="rgba(255,166,87,0.1)" stroke="#ffa657" stroke-width="1"/>
+      <text x="75" y="338" fill="#ffa657" text-anchor="middle" font-size="9">hci_send_acl()</text>
+
+      <!-- RX Path -->
+      <text x="380" y="20" fill="#58a6ff" font-weight="bold">接收路径（RX）</text>
+      <rect x="380" y="28" width="130" height="32" rx="4" fill="rgba(88,166,255,0.1)" stroke="#58a6ff" stroke-width="1"/>
+      <text x="445" y="48" fill="#58a6ff" text-anchor="middle" font-size="10">hci_acldata_packet()</text>
+
+      <line x1="445" y1="60" x2="445" y2="78" stroke="#58a6ff" stroke-width="1" marker-end="url(#as3)"/>
+      <rect x="380" y="78" width="130" height="32" rx="4" fill="rgba(88,166,255,0.1)" stroke="#58a6ff" stroke-width="1"/>
+      <text x="445" y="98" fill="#58a6ff" text-anchor="middle" font-size="10">l2cap_recv_acldata</text>
+
+      <line x1="445" y1="110" x2="445" y2="128" stroke="#58a6ff" stroke-width="1" marker-end="url(#as3)"/>
+      <rect x="380" y="128" width="130" height="32" rx="4" fill="rgba(88,166,255,0.1)" stroke="#58a6ff" stroke-width="1"/>
+      <text x="445" y="148" fill="#58a6ff" text-anchor="middle" font-size="10">l2cap_recv_frame</text>
+
+      <line x1="445" y1="160" x2="445" y2="178" stroke="#58a6ff" stroke-width="1" marker-end="url(#as3)"/>
+      <rect x="380" y="178" width="130" height="32" rx="4" fill="rgba(88,166,255,0.1)" stroke="#58a6ff" stroke-width="1"/>
+      <text x="445" y="198" fill="#58a6ff" text-anchor="middle" font-size="10">l2cap_data_channel</text>
+
+      <line x1="445" y1="210" x2="445" y2="228" stroke="#58a6ff" stroke-width="1" marker-end="url(#as3)"/>
+      <rect x="380" y="228" width="130" height="32" rx="4" fill="rgba(88,166,255,0.1)" stroke="#58a6ff" stroke-width="1"/>
+      <text x="445" y="248" fill="#58a6ff" text-anchor="middle" font-size="10">l2cap_rx(EV_IFRAME)</text>
+
+      <line x1="445" y1="260" x2="445" y2="278" stroke="#58a6ff" stroke-width="1" marker-end="url(#as3)"/>
+      <rect x="380" y="278" width="130" height="32" rx="4" fill="rgba(88,166,255,0.1)" stroke="#58a6ff" stroke-width="1"/>
+      <text x="445" y="298" fill="#58a6ff" text-anchor="middle" font-size="10">l2cap_reassemble_sdu</text>
+
+      <line x1="445" y1="310" x2="445" y2="328" stroke="#58a6ff" stroke-width="1" marker-end="url(#as3)"/>
+      <rect x="380" y="328" width="130" height="12" rx="3" fill="rgba(63,185,80,0.1)" stroke="#3fb950" stroke-width="1"/>
+      <text x="445" y="338" fill="#3fb950" text-anchor="middle" font-size="9">sock_queue_rcv_skb()</text>
+
+      <!-- Middle connector -->
+      <rect x="200" y="160" width="100" height="20" rx="4" fill="rgba(210,168,255,0.1)" stroke="#d2a8ff" stroke-width="1"/>
+      <text x="250" y="173" fill="#d2a8ff" text-anchor="middle" font-size="9">信令处理路径</text>
+      <line x1="140" y1="170" x2="200" y2="170" stroke="#d2a8ff" stroke-width="1" stroke-dasharray="3"/>
+      <line x1="300" y1="170" x2="380" y2="170" stroke="#d2a8ff" stroke-width="1" stroke-dasharray="3"/>
+    </svg>
+    <p class="diagram-caption">图19-1：Linux 5.4 L2CAP 完整发送/接收调用链</p>
+  </div>
+
+  <h3>19.3 从第一性原理回望 L2CAP</h3>
+
+  <div class="info-box principle">
+    <strong>🎯 最终第一性原理归纳</strong>
+    <p style="margin-top:8px;">L2CAP 的所有设计都源于一个根本约束：<strong>蓝牙物理链路是单一的、共享的、不可靠的无线信道</strong>。面对这个约束，L2CAP 给出了以下"最小充分"解答：</p>
+    <ul style="margin-top:8px;">
+      <li><strong>多路复用问题</strong> → CID（数字标识符，零额外协商）</li>
+      <li><strong>MTU 适配问题</strong> → SAR（4 状态位标记切片边界）</li>
+      <li><strong>可靠性需求多样</strong> → 可插拔模式（Basic/ERTM/Stream/Credit），按需启用</li>
+      <li><strong>流控问题</strong> → 滑动窗口（ERTM）或 Credit（LE），两种范式各适其场</li>
+      <li><strong>互操作性问题</strong> → 配置协商（TLV 选项 + UNACCEPT 协商机制）</li>
+      <li><strong>安全性问题</strong> → PSM 级别访问控制 + 密钥长度验证 + FCS 完整性校验</li>
+    </ul>
+    <p style="margin-top:8px;">Linux 5.4 的实现将规范状态机一一映射为代码（<code>l2cap_tx/rx</code>），用 kref 管理生命周期，用 ops 模式解耦上层，用 mutex 保护并发。这是一个教科书级的"协议规范→内核实现"范例。</p>
+  </div>
+
+  <h3>19.4 参考资料与延伸阅读</h3>
+  <div class="grid-2">
+    <div class="card">
+      <h4>官方规范</h4>
+      <ul>
+        <li><a href="https://www.bluetooth.com/wp-content/uploads/Files/Specification/HTML/Core-54/out/en/host/logical-link-control-and-adaptation-protocol-specification.html" target="_blank">Bluetooth Core Spec 5.4 Vol.3 Part A</a></li>
+        <li><a href="https://github.com/bluez/bluez/wiki/L2CAP" target="_blank">BlueZ L2CAP Wiki</a></li>
+      </ul>
+    </div>
+    <div class="card">
+      <h4>内核源码（v5.4）</h4>
+      <ul>
+        <li><a href="https://github.com/torvalds/linux/blob/v5.4/net/bluetooth/l2cap_core.c" target="_blank">l2cap_core.c</a></li>
+        <li><a href="https://github.com/torvalds/linux/blob/v5.4/net/bluetooth/l2cap_sock.c" target="_blank">l2cap_sock.c</a></li>
+        <li><a href="https://github.com/torvalds/linux/blob/v5.4/include/net/bluetooth/l2cap.h" target="_blank">l2cap.h</a></li>
+      </ul>
+    </div>
+  </div>
+</section>
+
+</div><!-- content-wrap -->
+</main>
+
+<!-- Chapter Navigation Buttons -->
+<div id="chapter-nav">
+  <button class="chapter-btn" onclick="prevChapter()">← 上一章</button>
+  <button class="chapter-btn" onclick="nextChapter()">下一章 →</button>
+</div>
+
+<script>
+// ── Sections ──
+const sections = [
+  's0','s1','s2','s3','s4','s5','s6','s7','s8','s9',
+  's10','s11','s12','s13','s14','s15','s16','s17','s18','s19'
+];
+let currentSection = 0;
+
+function goSection(id) {
+  const el = document.getElementById(id);
+  if (el) {
+    el.scrollIntoView({ behavior: 'smooth', block: 'start' });
+    // close mobile sidebar
+    if (window.innerWidth <= 768) {
+      closeSidebar();
+    }
+  }
+}
+
+function nextChapter() {
+  if (currentSection < sections.length - 1) {
+    currentSection++;
+    goSection(sections[currentSection]);
+  }
+}
+
+function prevChapter() {
+  if (currentSection > 0) {
+    currentSection--;
+    goSection(sections[currentSection]);
+  }
+}
+
+// ── Progress Bar ──
+function updateProgress() {
+  const doc = document.documentElement;
+  const scrollTop = window.scrollY;
+  const scrollHeight = doc.scrollHeight - doc.clientHeight;
+  const pct = scrollHeight > 0 ? (scrollTop / scrollHeight) * 100 : 0;
+  document.getElementById('progress-bar').style.width = pct + '%';
+}
+
+// ── Active Nav Highlight ──
+function updateActiveNav() {
+  const scrollY = window.scrollY + 80;
+  let active = sections[0];
+  for (const id of sections) {
+    const el = document.getElementById(id);
+    if (el && el.offsetTop <= scrollY) {
+      active = id;
+    }
+  }
+  // Update currentSection index
+  currentSection = sections.indexOf(active);
+
+  document.querySelectorAll('.nav-item').forEach(item => {
+    item.classList.remove('active');
+  });
+  document.querySelectorAll('.nav-item').forEach(item => {
+    if (item.getAttribute('onclick') && item.getAttribute('onclick').includes("'" + active + "'")) {
+      item.classList.add('active');
+    }
+  });
+}
+
+window.addEventListener('scroll', () => {
+  updateProgress();
+  updateActiveNav();
+}, { passive: true });
+
+// ── Keyboard Navigation ──
+document.addEventListener('keydown', (e) => {
+  if (e.key === 'ArrowRight') nextChapter();
+  if (e.key === 'ArrowLeft') prevChapter();
+});
+
+// ── Mobile Sidebar ──
+function toggleSidebar() {
+  const sidebar = document.getElementById('sidebar');
+  const overlay = document.getElementById('overlay');
+  sidebar.classList.toggle('open');
+  overlay.classList.toggle('show');
+}
+
+function closeSidebar() {
+  document.getElementById('sidebar').classList.remove('open');
+  document.getElementById('overlay').classList.remove('show');
+}
+
+// ── Init ──
+updateProgress();
+updateActiveNav();
+</script>
+</body>
+</html>

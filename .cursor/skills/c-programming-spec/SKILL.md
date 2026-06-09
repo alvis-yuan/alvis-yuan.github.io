@@ -1,6 +1,6 @@
 ---
 name: c-programming-spec
-description: Applies a self-contained C99 programming standard — file organization, naming, types, error handling, mandatory LogError on every abnormal return path, Chinese comments and English log messages, pointer parameter qualifiers (const/restrict per semantics), RAII resource cleanup (reference/raii.h), GCC atomics (reference/atomic.h), compile-time checks (reference/compile_checks.h), memory safety, and documentation. Use when writing or reviewing C code, managing resources with multiple exit paths, autofd/autofree/WITH_LOCK, or C programming standards.
+description: Applies a self-contained C99 programming standard — file organization, naming, types, local variable placement at block/function start, K&R function declaration/definition format (return type and name on same line), error handling, mandatory LogError on every abnormal return path, Chinese comments and English log messages, pointer parameter qualifiers (const/restrict per semantics), RAII resource cleanup (reference/raii.h), GCC atomics (reference/atomic.h), compile-time checks (reference/compile_checks.h), memory safety, and documentation. Use when writing or reviewing C code, managing resources with multiple exit paths, autofd/autofree/WITH_LOCK, or C programming standards.
 ---
 
 # C 语言编程规范 (C99)
@@ -41,7 +41,7 @@ description: Applies a self-contained C99 programming standard — file organiza
 
 ---
 
-## 强制执行（三项）
+## 强制执行（四项）
 
 ### 指针形参 `const` / `restrict`
 
@@ -73,6 +73,35 @@ description: Applies a self-contained C99 programming standard — file organiza
 
 详例见 [ch20 §20.4](reference/ch20.md#204-注释与日志语言)。
 
+### 函数声明与定义格式（K&R 风格）
+
+**存储类、返回类型、函数名必须在同一行**；左花括号 `{` 另起一行。`.h` 声明与 `.c` 定义格式一致。
+
+参数过多时，**仅参数列表**换行缩进；**禁止**将返回类型与函数名拆到不同行（含 `static inline`）。
+
+```c
+/* ✅ 声明与定义：类型 + 函数名同一行 */
+void module_init(struct ctx *ctx);
+
+static void module_do_work(struct ctx *ctx)
+{
+    /* ... */
+}
+
+bool module_push(struct heap *h,
+                 struct node *node,
+                 uint64_t delay);
+
+/* ❌ 返回类型与函数名分行 */
+static void
+module_do_work(struct ctx *ctx)
+{
+    /* ... */
+}
+```
+
+详例见 [ch3 §3.2](reference/ch3.md#32-大括号与函数格式)、[ch8 §8.2](reference/ch8.md#82-函数声明规范)。
+
 ---
 
 ## 必遵规则（按主题）
@@ -83,9 +112,14 @@ description: Applies a self-contained C99 programming standard — file organiza
 - Include guard：`PROJECT_MODULE_H`；文件名小写+下划线
 - 公共符号带**模块前缀** `module_verb_noun`；禁 `_` / `__` 开头
 
-### 类型
+### 类型 / 局部变量
 
 - **声明即初始化**；指针初值 `NULL`；禁一行多变量
+- **C99 局部变量定义位置**（详见 [ch4 §4.1](reference/ch4.md#41-变量声明规则)）：
+  - 遵循 C99（含 `for (int i = …)` 等标准写法）；**禁** C89 式「函数顶堆声明、远处再赋值」
+  - **整函数**使用的变量 → 函数体 `{` 之后、首条语句之前集中定义
+  - **仅某 `{ … }` 块**使用的变量 → 该块 `{` 之后、块内首条语句之前定义
+  - **禁**变量定义与可执行语句交错混放（定义区与逻辑区分离）
 - 协议/硬件/位掩码 → `uint8_t`/`int32_t` 等定宽；**禁**假设 `int`/`long` 大小
 - 内存量/索引/`strlen`/`malloc` → `size_t`；指针差 → `ptrdiff_t`；指针↔整数 → `uintptr_t`
 - 布尔 → `bool`；字节流 → `unsigned char`/`uint8_t`
@@ -93,6 +127,7 @@ description: Applies a self-contained C99 programming standard — file organiza
 
 ### 函数 / API
 
+- **K&R 函数格式**：存储类 + 返回类型 + 函数名**同一行**，`{` 另起一行；`.h` 与 `.c` 一致（详见 [ch3 §3.2](reference/ch3.md#32-大括号与函数格式)）
 - 单一职责，≤50 行，嵌套 ≤3 层；公共 API 有 Doxygen
 - 返回值语义：**命令型** 0/负 errno；**谓词型** bool；**计算型** 有效值/NULL 哨兵
 - 公共 API **运行期**校验参数（NULL、值域、容量）；`assert` **仅**内部不变量
@@ -131,6 +166,8 @@ description: Applies a self-contained C99 programming standard — file organiza
 | 声明与定义限定符不一致 | UB |
 | 函数宏含 `return`/多次求值参数 | 控制流错乱 |
 | `for (i=n-1; i>=0; i--)` 中 `i` 为 `size_t` | 无符号永不 `<0` → 死循环 |
+| 变量定义与语句交错混放 | 可读性差、易漏初始化；违反块/函数定义区规则 |
+| 返回类型与函数名分行 | 声明/定义不一致、可读性差；违反 K&R 函数格式 |
 | VLA 大数组 | 栈溢出 |
 | 信号处理中 `printf`/`malloc`/加锁 | 死锁/UB |
 | `LogError`/`LogInfo` 等日志字符串使用中文 | 不利于 grep 与跨环境排障；与 errno 输出语言不一致 |
@@ -217,6 +254,8 @@ description: Applies a self-contained C99 programming standard — file organiza
 - [ ] 头文件自包含；include 顺序与 guard 正确
 - [ ] 模块前缀 + snake_case；`.h` 无定义
 - [ ] 类型选型正确（定宽/size_t/bool）；结构体对齐
+- [ ] 局部变量：整函数变量在函数首、块变量在块首；定义与语句不混放
+- [ ] 函数声明/定义：存储类 + 返回类型 + 函数名同一行，`{` 另起一行（K&R）
 - [ ] 指针形参 `const`/`restrict` 正确；声明=定义
 - [ ] 每个异常返回点有 `LogError`（**英文**）与足够上下文
 - [ ] 公共 API 参数校验 + 明确返回值语义

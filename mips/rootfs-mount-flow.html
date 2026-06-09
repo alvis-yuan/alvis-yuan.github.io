@@ -1,0 +1,774 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>根文件系统挂载过程分析</title>
+  <style>
+    :root {
+      --bg: #0f1117;
+      --bg2: #161b22;
+      --bg3: #1e2530;
+      --border: #30363d;
+      --accent: #0a84ff;
+      --accent2: #30d158;
+      --accent3: #ff453a;
+      --accent4: #bf5af2;
+      --warn: #ffa657;
+      --text: #e6edf3;
+      --text2: #8b949e;
+      --nav-w: 284px;
+      --header-h: 48px;
+      --radius: 8px;
+    }
+    * { box-sizing: border-box; }
+    html { scroll-behavior: smooth; }
+    body { margin: 0; font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', 'PingFang SC', 'Microsoft YaHei', sans-serif; background: var(--bg); color: var(--text); line-height: 1.75; overflow-x: hidden; }
+    a { color: #79c0ff; text-decoration-thickness: 1px; text-underline-offset: 3px; }
+    .progress { position: fixed; top: 0; left: 0; width: 100%; height: 3px; z-index: 1000; background: rgba(10,132,255,.12); }
+    .progress span { display: block; width: 0%; height: 100%; background: linear-gradient(90deg, var(--accent), var(--accent2)); transition: width 120ms linear; }
+    .topbar { position: fixed; top: 3px; left: 0; right: 0; height: var(--header-h); background: rgba(15,17,23,.95); backdrop-filter: blur(10px); border-bottom: 1px solid var(--border); display: flex; align-items: center; padding: 0 1rem; gap: .75rem; z-index: 900; }
+    .topbar h1 { font-size: .95rem; font-weight: 700; color: var(--accent); margin: 0; }
+    .topbar .meta { margin-left: auto; font-size: .75rem; color: var(--text2); }
+    .topbar a { color: var(--text2); text-decoration: none; font-size: .8rem; }
+    .topbar a:hover { color: var(--accent); }
+    .hamburger { width: 2.25rem; height: 2.25rem; border: 1px solid var(--border); background: transparent; color: var(--text); border-radius: var(--radius); cursor: pointer; font: inherit; }
+    .layout { display: block; min-height: 100vh; }
+    nav { position: fixed; top: calc(var(--header-h) + 3px); left: 0; bottom: 0; height: auto; width: var(--nav-w); background: var(--bg2); color: var(--text); border-right: 1px solid var(--border); padding: 1rem .5rem; z-index: 800; overflow: auto; }
+    .brand { border-bottom: 1px solid var(--border); padding: .35rem .75rem .9rem; margin-bottom: .5rem; }
+    .brand strong { display: block; color: var(--accent); font-size: .92rem; }
+    .brand small { display: block; color: var(--text2); font-size: .76rem; line-height: 1.55; margin-top: .3rem; }
+    details { border-bottom: 1px solid var(--border); padding: .25rem 0; }
+    summary { cursor: pointer; color: var(--text); font-size: .82rem; font-weight: 700; padding: .45rem .75rem; }
+    .nav-list { list-style: none; padding: 0 0 .35rem; margin: 0; }
+    .nav-list a { display: block; color: var(--text2); text-decoration: none; border-left: 3px solid transparent; border-radius: .4rem; font-size: .82rem; padding: .4rem .75rem .4rem 1.1rem; line-height: 1.35; }
+    .nav-list a:hover { background: var(--bg3); color: var(--text); }
+    .nav-list a.active { color: var(--accent); border-left-color: var(--accent); background: rgba(10,132,255,.08); }
+    main { margin: calc(var(--header-h) + 3px) 0 0 var(--nav-w); max-width: 1040px; padding: 2rem 2.5rem 4rem; width: auto; }
+    header.hero { border-bottom: 1px solid var(--border); margin-bottom: 3rem; padding-bottom: 1.2rem; }
+    .eyebrow { display: inline-block; color: var(--accent); font-size: .7rem; font-weight: 700; letter-spacing: .04em; padding: .2rem .55rem; border-radius: 99px; margin-bottom: .75rem; background: rgba(10,132,255,.15); border: 1px solid rgba(10,132,255,.35); }
+    h1, h2, h3 { line-height: 1.22; letter-spacing: 0; }
+    h1 { font-size: 1.8rem; margin: 0 0 .75rem; color: var(--text); }
+    h2 { font-size: 1.35rem; margin: 0 0 1rem; padding-bottom: .5rem; border-bottom: 1px solid var(--border); color: var(--text); }
+    h3 { font-size: 1.05rem; margin: 1.25rem 0 .75rem; color: var(--accent); }
+    .lead { font-size: 1.05rem; color: var(--text2); margin-bottom: 0; }
+    p, li { color: var(--text); font-size: .95rem; }
+    p { margin: 0 0 .75rem; }
+    section { margin-bottom: 3rem; scroll-margin-top: calc(var(--header-h) + 16px); }
+    code, .mono { font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; }
+    code { color: #79c0ff; }
+    pre { background: #0b0d12; color: #c9d1d9; border: 1px solid var(--border); border-radius: var(--radius); padding: 1rem; overflow-x: auto; font-size: .82rem; line-height: 1.55; margin: 1rem 0; }
+    table { width: 100%; border-collapse: collapse; margin: 1rem 0; font-size: .85rem; background: transparent; }
+    th, td { border: 1px solid var(--border); padding: .55rem .65rem; vertical-align: top; }
+    th { background: var(--bg3); color: var(--accent); font-weight: 600; text-align: left; }
+    td { color: var(--text); }
+    .panel { background: rgba(48,213,88,.08); border: 1px solid rgba(48,213,88,.25); border-radius: var(--radius); padding: 1rem; margin: 1rem 0; }
+    .quote { border-left: 4px solid var(--accent2); background: rgba(48,213,88,.08); color: var(--text); border-radius: 0 .6rem .6rem 0; padding: .8rem 1rem; margin: 1rem 0; }
+    .grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 1rem; margin: 1rem 0; }
+    .concept { border: 1px solid var(--border); background: var(--bg2); border-radius: var(--radius); padding: 1rem; }
+    .concept h3 { margin-top: 0; }
+    .svg-wrap { background: var(--bg2); border: 1px solid var(--border); border-radius: .75rem; padding: 1rem; margin: 1.25rem 0; overflow-x: auto; }
+    svg { display: block; max-width: 100%; height: auto; margin: 0 auto; font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', 'PingFang SC', 'Microsoft YaHei', sans-serif; }
+    .box { fill: var(--bg3); stroke: var(--border); stroke-width: 1.4; rx: 8; }
+    .box-accent { fill: rgba(10,132,255,.14); stroke: var(--accent); }
+    .box-good { fill: rgba(48,213,88,.10); stroke: var(--accent2); }
+    .box-warn { fill: rgba(255,166,87,.10); stroke: var(--warn); }
+    .box-danger { fill: rgba(255,69,58,.08); stroke: var(--accent3); }
+    .box-purple { fill: rgba(191,90,242,.12); stroke: var(--accent4); }
+    .wire { stroke: var(--text2); stroke-width: 2; fill: none; marker-end: url(#arrow); }
+    .wire-blue { stroke: var(--accent); stroke-width: 2; fill: none; marker-end: url(#arrowBlue); }
+    .wire-green { stroke: var(--accent2); stroke-width: 2; fill: none; marker-end: url(#arrowGreen); }
+    .wire-warn { stroke: var(--warn); stroke-width: 2; fill: none; marker-end: url(#arrowWarn); }
+    .svg-title { font-size: 16px; font-weight: 800; fill: var(--text); }
+    .svg-text { font-size: 13px; fill: var(--text); }
+    .svg-small { font-size: 11px; fill: var(--text2); }
+    .fig-cap { font-size: .8rem; color: var(--text2); text-align: center; margin-top: .5rem; }
+    .chapter-nav { display: flex; gap: .75rem; justify-content: space-between; margin-top: 3rem; padding-top: 1rem; border-top: 1px solid var(--border); }
+    .chapter-nav a { display: inline-flex; align-items: center; justify-content: center; min-height: 2.4rem; padding: .45rem .85rem; border: 1px solid var(--border); border-radius: var(--radius); background: var(--bg2); text-decoration: none; color: var(--text); }
+    @media (max-width: 900px) { .topbar .meta, .topbar a { display: none; } nav { transform: translateX(-100%); transition: transform 180ms ease; width: min(86vw, 20rem); } body.nav-open nav { transform: translateX(0); } main { margin-left: 0; padding: 1.25rem; } .grid { grid-template-columns: 1fr; } table { display: block; overflow-x: auto; } }
+    @media (min-width: 901px) { .topbar .hamburger { display: none; } }
+  </style>
+</head>
+<body>
+  <div class="progress" aria-hidden="true"><span id="progressBar"></span></div>
+  <header class="topbar">
+    <button class="hamburger" id="menuButton" aria-label="打开或关闭导航">☰</button>
+    <h1>rootfs mount flow</h1>
+    <a href="kernel-entry-before-start-kernel.html">入口文档</a>
+    <span class="meta">独立 HTML · 内联 SVG · 无外部资源依赖</span>
+  </header>
+
+  <div class="layout">
+    <nav id="sideNav" aria-label="章节导航">
+      <div class="brand">
+        <strong>根文件系统挂载</strong>
+        <small>当前配置：BLOCK、TMPFS、DEVTMPFS；未启用 BLK_DEV_INITRD、ROOT_NFS、CIFS_ROOT</small>
+      </div>
+      <details open><summary>一、依据与总览</summary><ul class="nav-list"><li><a href="#intro">范围说明</a></li><li><a href="#sources">官方依据</a></li><li><a href="#config">当前配置</a></li><li><a href="#timeline">总时序</a></li></ul></details>
+      <details open><summary>二、rootfs 初始根</summary><ul class="nav-list"><li><a href="#vfs-init">VFS 初始化</a></li><li><a href="#mount-tree">初始 mount namespace</a></li><li><a href="#default-rootfs">默认 rootfs 内容</a></li></ul></details>
+      <details open><summary>三、选择真实根</summary><ul class="nav-list"><li><a href="#kernel-init">kernel_init 决策</a></li><li><a href="#cmdline">命令行参数</a></li><li><a href="#prepare">prepare_namespace</a></li><li><a href="#name-to-dev">root= 解析</a></li></ul></details>
+      <details open><summary>四、挂载与切根</summary><ul class="nav-list"><li><a href="#mount-root">mount_root 分支</a></li><li><a href="#block-root">块设备根</a></li><li><a href="#vfs-mount">VFS 挂载调用链</a></li><li><a href="#move-root">MS_MOVE 到 /</a></li></ul></details>
+      <details open><summary>五、后续</summary><ul class="nav-list"><li><a href="#run-init">运行 init</a></li><li><a href="#links">相关文档</a></li><li><a href="#summary">总结</a></li></ul></details>
+    </nav>
+
+    <main>
+      <header class="hero" id="intro">
+        <div class="eyebrow">init/main.c · init/do_mounts.c · fs/namespace.c · fs/super.c · init/noinitramfs.c</div>
+        <h1>根文件系统从 rootfs 到真实根设备的挂载过程</h1>
+        <p class="lead">本文按当前仓库源码解释根文件系统挂载。官方文档说明通用 rootfs/initramfs/initrd 机制；当前源码树没有 `init/initramfs.c` 和 `do_mounts_rd.c`，配置也未启用 `CONFIG_BLK_DEV_INITRD`，所以实际主线是：先创建空 rootfs，再由 `prepare_namespace()` 挂载真实块设备根到 `/root`，最后把它移动为 `/`。</p>
+      </header>
+
+      <section id="sources">
+        <h2>官方依据</h2>
+        <table><thead><tr><th>主题</th><th>官方原文链接</th><th>本文使用的事实</th></tr></thead><tbody>
+          <tr><td>rootfs/initramfs</td><td><a href="https://www.kernel.org/doc/html/latest/filesystems/ramfs-rootfs-initramfs.html">Ramfs, rootfs and initramfs</a></td><td>rootfs 始终存在，是 ramfs 或 tmpfs 的特殊实例；initramfs 解包到 rootfs，如果存在 `/init`，由它负责后续挂载真实根。</td></tr>
+          <tr><td>initrd</td><td><a href="https://www.kernel.org/doc/html/latest/admin-guide/initrd.html">Using the initial RAM disk</a></td><td>initrd 用于两阶段启动，先挂载 RAM disk 作为根，再由用户态挂载真实根并切换。</td></tr>
+          <tr><td>pivot_root 背景</td><td><a href="https://www.kernel.org/doc/html/latest/filesystems/ramfs-rootfs-initramfs.html#what-is-initramfs">What is initramfs?</a></td><td>initramfs 场景推荐由用户态切换真实根；但当前源码主线使用内核 `prepare_namespace()` 旧路径。</td></tr>
+        </tbody></table>
+        <div class="panel"><strong>第一性原理概述：</strong>内核必须先有一个 VFS 根，路径解析才能工作；但真实根设备可能需要驱动探测、分区发现和文件系统识别。所以启动被拆成“先有 rootfs 作为临时根，再选择并挂载真实根”。</div>
+      </section>
+
+      <section id="config">
+        <h2>当前配置事实</h2>
+        <pre><code>/* include/generated/autoconf.h */
+#define CONFIG_DEVTMPFS 1
+#define CONFIG_DEVTMPFS_MOUNT 1
+#define CONFIG_BLOCK 1
+#define CONFIG_TMPFS 1</code></pre>
+        <p>本次搜索没有命中 `CONFIG_BLK_DEV_INITRD`、`CONFIG_ROOT_NFS`、`CONFIG_CIFS_ROOT`。因此 `initrd_load()` 在当前编译路径中是内联 `false`，NFS/CIFS 根挂载分支也不会编译进实际路径。`CONFIG_TMPFS` 会影响 rootfs 的底层实现：没有显式 `root=` 且 `rootfstype` 允许 tmpfs 时，rootfs 使用 tmpfs 初始化上下文。</p>
+        <div class="panel"><strong>第一性原理概述：</strong>根挂载不是单一路径，而是配置与命令行共同决定的状态机。当前配置把问题收敛到本地块设备根和 rootfs 临时根。</div>
+      </section>
+
+      <section id="timeline">
+        <h2>总时序</h2>
+        <div class="svg-wrap"><svg viewBox="0 0 980 470" role="img" aria-label="根文件系统挂载总时序">
+          <defs><marker id="arrowBlue" markerWidth="8" markerHeight="8" refX="7" refY="3" orient="auto"><path d="M0,0 L7,3 L0,6 Z" fill="#0a84ff"/></marker><marker id="arrowGreen" markerWidth="8" markerHeight="8" refX="7" refY="3" orient="auto"><path d="M0,0 L7,3 L0,6 Z" fill="#30d158"/></marker><marker id="arrowWarn" markerWidth="8" markerHeight="8" refX="7" refY="3" orient="auto"><path d="M0,0 L7,3 L0,6 Z" fill="#ffa657"/></marker></defs>
+          <text x="24" y="30" class="svg-title">MSC：从临时 rootfs 到真实根</text>
+          <line x1="110" y1="70" x2="110" y2="410" stroke="#30363d"/><line x1="300" y1="70" x2="300" y2="410" stroke="#30363d"/><line x1="500" y1="70" x2="500" y2="410" stroke="#30363d"/><line x1="700" y1="70" x2="700" y2="410" stroke="#30363d"/><line x1="880" y1="70" x2="880" y2="410" stroke="#30363d"/>
+          <text x="72" y="58" class="svg-text">start_kernel</text><text x="266" y="58" class="svg-text">VFS</text><text x="456" y="58" class="svg-text">rootfs</text><text x="638" y="58" class="svg-text">prepare_namespace</text><text x="846" y="58" class="svg-text">真实根</text>
+          <path d="M110 105 H300" class="wire-blue"/><text x="146" y="96" class="svg-small">vfs_caches_init()</text>
+          <path d="M300 160 H500" class="wire-blue"/><text x="335" y="151" class="svg-small">mnt_init/init_mount_tree</text>
+          <path d="M500 215 H700" class="wire-warn"/><text x="540" y="206" class="svg-small">/init 不存在</text>
+          <path d="M700 275 H880" class="wire-green"/><text x="736" y="266" class="svg-small">mount_root 到 /root</text>
+          <path d="M880 335 H500" class="wire-green"/><text x="612" y="326" class="svg-small">MS_MOVE /root → /; chroot .</text>
+        </svg><div class="fig-cap">图 1：当前源码中，rootfs 是临时根，真实根先挂载在 `/root`，再移动到 `/`。</div></div>
+        <div class="panel"><strong>第一性原理概述：</strong>切根的核心不是“改变一个字符串”，而是替换当前进程 mount namespace 的根挂载点，并把路径解析的 root/cwd 指向新根。</div>
+      </section>
+
+      <section id="vfs-init">
+        <h2>VFS 初始化先于真实根挂载</h2>
+        <pre><code>/* fs/dcache.c */
+void __init vfs_caches_init(void)
+{
+        names_cachep = kmem_cache_create_usercopy("names_cache", PATH_MAX, 0,
+                        SLAB_HWCACHE_ALIGN|SLAB_PANIC, 0, PATH_MAX, NULL);
+
+        dcache_init();
+        inode_init();
+        files_init();
+        files_maxfiles_init();
+        mnt_init();
+        bdev_cache_init();
+        chrdev_init();
+}</code></pre>
+        <p>逐段解释：`vfs_caches_init()` 初始化路径名、dentry、inode、file、mount、块设备和字符设备相关缓存。根文件系统挂载依赖这些 VFS 基础设施，因为挂载的结果要表现为 dentry、superblock、vfsmount 和 mount namespace。</p>
+        <p>`mnt_init()` 是本文第一个关键点，它会初始化 mount hash、sysfs、shmem/rootfs，并创建初始 mount tree。</p>
+        <div class="panel"><strong>第一性原理概述：</strong>文件系统不是块设备本身，而是 VFS 对超级块、目录项、inode 和挂载关系的统一视图。真实根挂载前必须先有这些抽象容器。</div>
+      </section>
+
+      <section id="mount-tree">
+        <h2>rootfs 与初始 mount namespace</h2>
+        <pre><code>/* fs/namespace.c */
+static void __init init_mount_tree(void)
+{
+        struct vfsmount *mnt;
+        struct mount *m;
+        struct mnt_namespace *ns;
+        struct path root;
+
+        mnt = vfs_kern_mount(&amp;rootfs_fs_type, 0, "rootfs", NULL);
+        if (IS_ERR(mnt))
+                panic("Can't create rootfs");
+
+        ns = alloc_mnt_ns(&amp;init_user_ns, false);
+        if (IS_ERR(ns))
+                panic("Can't allocate initial namespace");
+        m = real_mount(mnt);
+        m-&gt;mnt_ns = ns;
+        ns-&gt;root = m;
+        ns-&gt;mounts = 1;
+        list_add(&amp;m-&gt;mnt_list, &amp;ns-&gt;list);
+        init_task.nsproxy-&gt;mnt_ns = ns;
+        get_mnt_ns(ns);
+
+        root.mnt = mnt;
+        root.dentry = mnt-&gt;mnt_root;
+        mnt-&gt;mnt_flags |= MNT_LOCKED;
+
+        set_fs_pwd(current-&gt;fs, &amp;root);
+        set_fs_root(current-&gt;fs, &amp;root);
+}
+
+void __init mnt_init(void)
+{
+        ...
+        shmem_init();
+        init_rootfs();
+        init_mount_tree();
+}</code></pre>
+        <p>逐段解释：`vfs_kern_mount(&rootfs_fs_type, ...)` 创建 rootfs 的内核挂载。随后分配初始 `mnt_namespace`，把 rootfs mount 放入 namespace，并设置 `init_task.nsproxy->mnt_ns`。</p>
+        <p>`set_fs_pwd()` 和 `set_fs_root()` 把当前内核线程的当前目录和根目录都设为 rootfs 根。此后 `/dev/console`、`/root` 等路径才能被内核初始化代码正常解析。</p>
+        <div class="svg-wrap"><svg viewBox="0 0 900 300" role="img" aria-label="初始 mount namespace">
+          <text x="24" y="30" class="svg-title">初始根：rootfs 挂载到 mount namespace 的 /</text>
+          <rect x="70" y="80" width="210" height="78" class="box-accent"/><text x="110" y="114" class="svg-text">rootfs_fs_type</text><text x="112" y="138" class="svg-small">tmpfs 或 ramfs</text>
+          <rect x="360" y="80" width="210" height="78" class="box-good"/><text x="405" y="114" class="svg-text">vfsmount</text><text x="392" y="138" class="svg-small">mnt_root = /</text>
+          <rect x="650" y="80" width="190" height="78" class="box-purple"/><text x="682" y="114" class="svg-text">mnt_namespace</text><text x="688" y="138" class="svg-small">ns->root = m</text>
+          <path d="M280 119 H360" class="wire-blue"/><path d="M570 119 H650" class="wire-blue"/>
+          <rect x="250" y="210" width="390" height="50" class="box-warn"/><text x="312" y="241" class="svg-text">current->fs.root 和 pwd 都指向 rootfs /</text>
+        </svg></div>
+        <div class="panel"><strong>第一性原理概述：</strong>路径解析总要从某个根开始。rootfs 是内核给自己的最小根，使后续挂载真实根之前已有可工作的 VFS 命名空间。</div>
+      </section>
+
+      <section id="default-rootfs">
+        <h2>当前仓库的默认 rootfs 内容</h2>
+        <pre><code>/* init/noinitramfs.c */
+static int __init default_rootfs(void)
+{
+        int err;
+
+        err = init_mkdir("/dev", 0755);
+        if (err &lt; 0)
+                goto out;
+
+        err = init_mknod("/dev/console", S_IFCHR | S_IRUSR | S_IWUSR,
+                        new_encode_dev(MKDEV(5, 1)));
+        if (err &lt; 0)
+                goto out;
+
+        err = init_mkdir("/root", 0700);
+        if (err &lt; 0)
+                goto out;
+
+        return 0;
+
+out:
+        printk(KERN_WARNING "Failed to create a rootfs\n");
+        return err;
+}
+rootfs_initcall(default_rootfs);</code></pre>
+        <p>逐段解释：当前源码没有 initramfs 解包文件，只有 `noinitramfs.c`。它通过 `rootfs_initcall()` 在 rootfs 阶段创建 `/dev`、`/dev/console` 和 `/root`。</p>
+        <p>`/dev/console` 供 `console_on_rootfs()` 打开标准输入输出错误；`/root` 是 `do_mount_root()` 后续挂载真实根的临时挂载点。这个默认 rootfs 非常小，只满足内核继续启动所需的最小路径。</p>
+        <div class="panel"><strong>第一性原理概述：</strong>临时根不需要完整用户空间，只需要为内核后续操作提供几个确定路径：控制台设备和真实根挂载点。</div>
+      </section>
+
+      <section id="kernel-init">
+        <h2>`kernel_init_freeable()` 决定是否交给早期用户态</h2>
+        <pre><code>/* init/main.c */
+static noinline void __init kernel_init_freeable(void)
+{
+        ...
+        do_basic_setup();
+        ...
+        console_on_rootfs();
+
+        /*
+         * check if there is an early userspace init.  If yes, let it do all
+         * the work
+         */
+        if (init_eaccess(ramdisk_execute_command) != 0) {
+                ramdisk_execute_command = NULL;
+                prepare_namespace();
+        }
+        ...
+}</code></pre>
+        <p>逐段解释：`do_basic_setup()` 会运行各级 initcall，包括 `rootfs_initcall(default_rootfs)`。`console_on_rootfs()` 打开 `/dev/console` 并复制为 fd 0、1、2。</p>
+        <p>`ramdisk_execute_command` 默认是 `"/init"`。如果 rootfs 中 `/init` 可执行，内核不调用 `prepare_namespace()`，而是在后续 `kernel_init()` 中直接执行它，让早期用户态自己挂载真实根。当前默认 rootfs 不创建 `/init`，所以 `init_eaccess()` 失败，内核进入 `prepare_namespace()`。</p>
+        <div class="panel"><strong>第一性原理概述：</strong>如果早期用户态存在，根设备选择属于策略问题，交给用户态更灵活；如果没有 `/init`，内核必须走内置的根设备挂载逻辑。</div>
+      </section>
+
+      <section id="cmdline">
+        <h2>命令行参数：root、rw/ro、rootfstype、rootflags、rootdelay、rootwait</h2>
+        <pre><code>/* init/do_mounts.c */
+int root_mountflags = MS_RDONLY | MS_SILENT;
+static char * __initdata root_device_name;
+static char __initdata saved_root_name[64];
+static int root_wait;
+
+static int __init readonly(char *str)
+{
+        if (*str)
+                return 0;
+        root_mountflags |= MS_RDONLY;
+        return 1;
+}
+
+static int __init readwrite(char *str)
+{
+        if (*str)
+                return 0;
+        root_mountflags &amp;= ~MS_RDONLY;
+        return 1;
+}
+
+__setup("ro", readonly);
+__setup("rw", readwrite);
+
+static int __init root_dev_setup(char *line)
+{
+        strlcpy(saved_root_name, line, sizeof(saved_root_name));
+        return 1;
+}
+
+__setup("root=", root_dev_setup);
+...
+__setup("rootflags=", root_data_setup);
+__setup("rootfstype=", fs_names_setup);
+__setup("rootdelay=", root_delay_setup);</code></pre>
+        <p>逐段解释：默认根挂载参数是只读且安静：`MS_RDONLY | MS_SILENT`。`ro` 保持只读，`rw` 清除只读标志。</p>
+        <p>`root=` 保存到 `saved_root_name`，稍后在 `prepare_namespace()` 中解析为 `ROOT_DEV`。`rootfstype=` 限制尝试的文件系统类型，`rootflags=` 传给具体文件系统，`rootdelay=` 在挂载前固定等待，`rootwait` 则在设备尚未出现时循环等待。</p>
+        <div class="panel"><strong>第一性原理概述：</strong>根挂载需要四类输入：设备在哪里、用什么文件系统解释、用什么挂载参数、设备没准备好时等不等。命令行就是早期内核获取这些策略的通道。</div>
+      </section>
+
+      <section id="prepare">
+        <h2>`prepare_namespace()`：等待设备、解析 root、挂载并切根</h2>
+        <pre><code>/* init/do_mounts.c */
+void __init prepare_namespace(void)
+{
+        if (root_delay) {
+                printk(KERN_INFO "Waiting %d sec before mounting root device...\n",
+                       root_delay);
+                ssleep(root_delay);
+        }
+
+        wait_for_device_probe();
+
+        md_run_setup();
+
+        if (saved_root_name[0]) {
+                root_device_name = saved_root_name;
+                if (!strncmp(root_device_name, "mtd", 3) ||
+                    !strncmp(root_device_name, "ubi", 3)) {
+                        mount_block_root(root_device_name, root_mountflags);
+                        goto out;
+                }
+                ROOT_DEV = name_to_dev_t(root_device_name);
+                if (strncmp(root_device_name, "/dev/", 5) == 0)
+                        root_device_name += 5;
+        }
+
+        if (initrd_load())
+                goto out;
+
+        if ((ROOT_DEV == 0) &amp;&amp; root_wait) {
+                printk(KERN_INFO "Waiting for root device %s...\n",
+                        saved_root_name);
+                while (driver_probe_done() != 0 ||
+                        (ROOT_DEV = name_to_dev_t(saved_root_name)) == 0)
+                        msleep(5);
+                async_synchronize_full();
+        }
+
+        mount_root();
+out:
+        devtmpfs_mount();
+        init_mount(".", "/", NULL, MS_MOVE, NULL);
+        init_chroot(".");
+}</code></pre>
+        <p>逐段解释：函数先处理 `rootdelay`，再调用 `wait_for_device_probe()` 等待已知设备探测完成，随后启动 md RAID 设置。</p>
+        <p>如果指定了 `root=`，`mtd`/`ubi` 直接按名字挂载；普通块设备通过 `name_to_dev_t()` 转成 `dev_t`。当前配置中 `initrd_load()` 是 false，所以会继续走 `mount_root()`。</p>
+        <p>如果 `ROOT_DEV` 仍为 0 且指定 `rootwait`，内核会等驱动探测结束并反复解析 root 设备名，直到设备出现。挂载完成后，`devtmpfs_mount()` 挂载设备节点文件系统，然后 `MS_MOVE` 把当前目录挂载移动到 `/`，最后 `chroot(".")` 让进程根目录指向新根。</p>
+        <div class="svg-wrap"><svg viewBox="0 0 960 430" role="img" aria-label="prepare_namespace 流程">
+          <defs><marker id="arrowBlue2" markerWidth="8" markerHeight="8" refX="7" refY="3" orient="auto"><path d="M0,0 L7,3 L0,6 Z" fill="#0a84ff"/></marker><marker id="arrowGreen2" markerWidth="8" markerHeight="8" refX="7" refY="3" orient="auto"><path d="M0,0 L7,3 L0,6 Z" fill="#30d158"/></marker></defs>
+          <text x="24" y="30" class="svg-title">prepare_namespace 状态机</text>
+          <rect x="50" y="78" width="160" height="58" class="box-accent"/><text x="82" y="112" class="svg-text">rootdelay</text>
+          <rect x="260" y="78" width="180" height="58" class="box-warn"/><text x="292" y="112" class="svg-text">wait probe</text>
+          <rect x="490" y="78" width="180" height="58" class="box-good"/><text x="520" y="112" class="svg-text">name_to_dev_t</text>
+          <rect x="720" y="78" width="180" height="58" class="box-purple"/><text x="756" y="112" class="svg-text">mount_root</text>
+          <rect x="250" y="235" width="430" height="58" class="box-danger"/><text x="322" y="270" class="svg-text">devtmpfs_mount + MS_MOVE + chroot</text>
+          <path d="M210 107 H260" stroke="#0a84ff" stroke-width="2" fill="none" marker-end="url(#arrowBlue2)"/><path d="M440 107 H490" stroke="#0a84ff" stroke-width="2" fill="none" marker-end="url(#arrowBlue2)"/><path d="M670 107 H720" stroke="#0a84ff" stroke-width="2" fill="none" marker-end="url(#arrowBlue2)"/><path d="M810 136 C810 210 680 210 680 235" stroke="#30d158" stroke-width="2" fill="none" marker-end="url(#arrowGreen2)"/>
+        </svg></div>
+        <div class="panel"><strong>第一性原理概述：</strong>根挂载必须在设备发现和路径命名之间建立同步点。否则内核可能在块设备或分区还没注册时就错误地认定根设备不存在。</div>
+      </section>
+
+      <section id="name-to-dev">
+        <h2>`name_to_dev_t()`：把 root= 字符串变成设备号</h2>
+        <pre><code>/* init/do_mounts.c */
+/*
+ *      Convert a name into device number.  We accept the following variants:
+ *
+ *      1) &lt;hex_major&gt;&lt;hex_minor&gt; device number in hexadecimal represents itself
+ *      2) /dev/nfs represents Root_NFS (0xff)
+ *      3) /dev/&lt;disk_name&gt; represents the device number of disk
+ *      4) /dev/&lt;disk_name&gt;&lt;decimal&gt; represents the device number
+ *      6) PARTUUID=00112233-4455-6677-8899-AABBCCDDEEFF
+ *      8) &lt;major&gt;:&lt;minor&gt; major and minor number of the device separated by
+ *         a colon.
+ *      9) PARTLABEL=&lt;name&gt; with name being the GPT partition label.
+ *      10) /dev/cifs represents Root_CIFS (0xfe)
+ */
+dev_t name_to_dev_t(const char *name)
+{
+        char s[32];
+        char *p;
+        dev_t res = 0;
+        int part;
+
+#ifdef CONFIG_BLOCK
+        if (strncmp(name, "PARTUUID=", 9) == 0) {
+                name += 9;
+                res = devt_from_partuuid(name);
+                if (!res)
+                        goto fail;
+                goto done;
+        } else if (strncmp(name, "PARTLABEL=", 10) == 0) {
+                struct device *dev;
+
+                dev = class_find_device(&amp;block_class, NULL, name + 10,
+                                        &amp;match_dev_by_label);
+                if (!dev)
+                        goto fail;
+
+                res = dev-&gt;devt;
+                put_device(dev);
+                goto done;
+        }
+#endif
+        ...
+done:
+        return res;
+}</code></pre>
+        <p>逐段解释：这个函数接受多种 `root=` 形式：数字设备号、`major:minor`、`/dev/sda1`、`PARTUUID=`、`PARTLABEL=`、`/dev/nfs`、`/dev/cifs` 等。</p>
+        <p>当前启用 `CONFIG_BLOCK`，所以 PARTUUID/PARTLABEL 和块设备名查找路径可用。若找不到，返回 0；`rootwait` 场景下会稍后重试。</p>
+        <div class="panel"><strong>第一性原理概述：</strong>内核最终挂载块设备需要 `dev_t`，而用户和 bootloader 提供的是稳定性不同的名字。`name_to_dev_t()` 是从人类/固件命名到内核设备号的转换层。</div>
+      </section>
+
+      <section id="mount-root">
+        <h2>`mount_root()`：选择 NFS、CIFS 或块设备根</h2>
+        <pre><code>/* init/do_mounts.c */
+void __init mount_root(void)
+{
+#ifdef CONFIG_ROOT_NFS
+        if (ROOT_DEV == Root_NFS) {
+                if (!mount_nfs_root())
+                        printk(KERN_ERR "VFS: Unable to mount root fs via NFS.\n");
+                return;
+        }
+#endif
+#ifdef CONFIG_CIFS_ROOT
+        if (ROOT_DEV == Root_CIFS) {
+                if (!mount_cifs_root())
+                        printk(KERN_ERR "VFS: Unable to mount root fs via SMB.\n");
+                return;
+        }
+#endif
+#ifdef CONFIG_BLOCK
+        {
+                int err = create_dev("/dev/root", ROOT_DEV);
+
+                if (err &lt; 0)
+                        pr_emerg("Failed to create /dev/root: %d\n", err);
+                mount_block_root("/dev/root", root_mountflags);
+        }
+#endif
+}</code></pre>
+        <p>逐段解释：源码保留了 NFS 和 CIFS 根的条件分支，但当前配置没有启用它们。实际路径进入 `CONFIG_BLOCK` 分支。</p>
+        <p>`create_dev("/dev/root", ROOT_DEV)` 在 rootfs 上创建一个临时块设备节点，随后 `mount_block_root("/dev/root", root_mountflags)` 尝试把它作为真实根挂载。</p>
+        <div class="panel"><strong>第一性原理概述：</strong>根文件系统可以来自网络或块设备，但 VFS 挂载最终都需要一个 source、一个 fstype、一个 mountpoint 和一组 flags。`mount_root()` 负责选择 source 类别。</div>
+      </section>
+
+      <section id="block-root">
+        <h2>块设备根：枚举文件系统并挂载到 `/root`</h2>
+        <pre><code>/* init/do_mounts.c */
+static int __init do_mount_root(const char *name, const char *fs,
+                                 const int flags, const void *data)
+{
+        struct super_block *s;
+        struct page *p = NULL;
+        char *data_page = NULL;
+        int ret;
+
+        if (data) {
+                /* init_mount() requires a full page as fifth argument */
+                p = alloc_page(GFP_KERNEL);
+                if (!p)
+                        return -ENOMEM;
+                data_page = page_address(p);
+                strncpy(data_page, data, PAGE_SIZE);
+        }
+
+        ret = init_mount(name, "/root", fs, flags, data_page);
+        if (ret)
+                goto out;
+
+        init_chdir("/root");
+        s = current-&gt;fs-&gt;pwd.dentry-&gt;d_sb;
+        ROOT_DEV = s-&gt;s_dev;
+        printk(KERN_INFO
+               "VFS: Mounted root (%s filesystem)%s on device %u:%u.\n",
+               s-&gt;s_type-&gt;name,
+               sb_rdonly(s) ? " readonly" : "",
+               MAJOR(ROOT_DEV), MINOR(ROOT_DEV));
+
+out:
+        if (p)
+                put_page(p);
+        return ret;
+}
+
+void __init mount_block_root(char *name, int flags)
+{
+        struct page *page = alloc_page(GFP_KERNEL);
+        char *fs_names = page_address(page);
+        char *p;
+        char b[BDEVNAME_SIZE];
+
+        scnprintf(b, BDEVNAME_SIZE, "unknown-block(%u,%u)",
+                  MAJOR(ROOT_DEV), MINOR(ROOT_DEV));
+        get_fs_names(fs_names);
+retry:
+        for (p = fs_names; *p; p += strlen(p)+1) {
+                int err = do_mount_root(name, p, flags, root_mount_data);
+                switch (err) {
+                        case 0:
+                                goto out;
+                        case -EACCES:
+                        case -EINVAL:
+                                continue;
+                }
+                ...
+        }
+        if (!(flags &amp; SB_RDONLY)) {
+                flags |= SB_RDONLY;
+                goto retry;
+        }
+        ...
+out:
+        put_page(page);
+}</code></pre>
+        <p>逐段解释：`mount_block_root()` 先取得文件系统候选列表。如果指定了 `rootfstype=`，候选来自命令行；否则来自已注册文件系统列表。</p>
+        <p>它逐个调用 `do_mount_root()`。`-EACCES` 或 `-EINVAL` 通常表示该文件系统类型不适合当前设备或参数错误，可以继续尝试下一个类型。若读写挂载失败，代码会强制加上只读标志重试一次。</p>
+        <p>`do_mount_root()` 真正调用 `init_mount(name, "/root", fs, flags, data_page)`，成功后切换当前目录到 `/root`，读取 superblock 的 `s_dev` 更新 `ROOT_DEV`，并打印 “VFS: Mounted root ...”。</p>
+        <div class="svg-wrap"><svg viewBox="0 0 940 360" role="img" aria-label="块设备根挂载流程">
+          <defs><marker id="arrowGreen3" markerWidth="8" markerHeight="8" refX="7" refY="3" orient="auto"><path d="M0,0 L7,3 L0,6 Z" fill="#30d158"/></marker></defs>
+          <text x="24" y="30" class="svg-title">块设备根：root 设备 + 文件系统候选 → /root</text>
+          <rect x="60" y="82" width="170" height="66" class="box-accent"/><text x="92" y="120" class="svg-text">/dev/root</text>
+          <rect x="300" y="82" width="210" height="66" class="box-warn"/><text x="336" y="120" class="svg-text">fs_names 循环</text>
+          <rect x="580" y="82" width="230" height="66" class="box-good"/><text x="626" y="120" class="svg-text">init_mount 到 /root</text>
+          <rect x="350" y="230" width="260" height="58" class="box-purple"/><text x="382" y="265" class="svg-text">成功：pwd = /root，记录 ROOT_DEV</text>
+          <path d="M230 115 H300" stroke="#30d158" stroke-width="2" fill="none" marker-end="url(#arrowGreen3)"/><path d="M510 115 H580" stroke="#30d158" stroke-width="2" fill="none" marker-end="url(#arrowGreen3)"/><path d="M695 148 C695 210 610 210 610 230" stroke="#30d158" stroke-width="2" fill="none" marker-end="url(#arrowGreen3)"/>
+        </svg></div>
+        <div class="panel"><strong>第一性原理概述：</strong>块设备只提供字节块，文件系统驱动才解释目录树。内核必须枚举可能的文件系统类型，直到某个驱动能从该设备读出合法 superblock。</div>
+      </section>
+
+      <section id="vfs-mount">
+        <h2>VFS 挂载调用链：`init_mount → path_mount → do_new_mount → vfs_get_tree`</h2>
+        <pre><code>/* fs/init.c */
+int __init init_mount(const char *dev_name, const char *dir_name,
+                const char *type_page, unsigned long flags, void *data_page)
+{
+        struct path path;
+        int ret;
+
+        ret = kern_path(dir_name, LOOKUP_FOLLOW, &amp;path);
+        if (ret)
+                return ret;
+        ret = path_mount(dev_name, &amp;path, type_page, flags, data_page);
+        path_put(&amp;path);
+        return ret;
+}
+
+/* fs/namespace.c */
+int path_mount(const char *dev_name, struct path *path,
+                const char *type_page, unsigned long flags, void *data_page)
+{
+        ...
+        if (flags &amp; MS_MOVE)
+                return do_move_mount_old(path, dev_name);
+
+        return do_new_mount(path, type_page, sb_flags, mnt_flags, dev_name,
+                            data_page);
+}</code></pre>
+        <p>逐段解释：`init_mount()` 是早期内核专用版本，不从用户地址空间取参数，也不走文件描述符。它先把挂载点路径解析成 `struct path`，再调用 `path_mount()`。</p>
+        <p>`path_mount()` 解析 mount flags，把 superblock flags 和 per-mount flags 分离。普通新挂载进入 `do_new_mount()`；后续切根的 `MS_MOVE` 则进入 `do_move_mount_old()`。</p>
+        <pre><code>/* fs/namespace.c */
+static int do_new_mount(struct path *path, const char *fstype, int sb_flags,
+                        int mnt_flags, const char *name, void *data)
+{
+        struct file_system_type *type;
+        struct fs_context *fc;
+        const char *subtype = NULL;
+        int err = 0;
+
+        if (!fstype)
+                return -EINVAL;
+
+        type = get_fs_type(fstype);
+        if (!type)
+                return -ENODEV;
+        ...
+        fc = fs_context_for_mount(type, sb_flags);
+        put_filesystem(type);
+        if (IS_ERR(fc))
+                return PTR_ERR(fc);
+        ...
+        if (!err &amp;&amp; name)
+                err = vfs_parse_fs_string(fc, "source", name, strlen(name));
+        if (!err)
+                err = parse_monolithic_mount_data(fc, data);
+        if (!err &amp;&amp; !mount_capable(fc))
+                err = -EPERM;
+        if (!err)
+                err = vfs_get_tree(fc);
+        if (!err)
+                err = do_new_mount_fc(fc, path, mnt_flags);
+
+        put_fs_context(fc);
+        return err;
+}</code></pre>
+        <p>逐段解释：`do_new_mount()` 根据文件系统名查找 `file_system_type`，创建 `fs_context`，把 source 设为 `/dev/root`，解析挂载参数，然后调用 `vfs_get_tree()` 让具体文件系统获得 mountable root。</p>
+        <pre><code>/* fs/super.c */
+int vfs_get_tree(struct fs_context *fc)
+{
+        struct super_block *sb;
+        int error;
+
+        if (fc-&gt;root)
+                return -EBUSY;
+
+        error = fc-&gt;ops-&gt;get_tree(fc);
+        if (error &lt; 0)
+                return error;
+
+        if (!fc-&gt;root) {
+                pr_err("Filesystem %s get_tree() didn't set fc-&gt;root\n",
+                       fc-&gt;fs_type-&gt;name);
+                BUG();
+        }
+
+        sb = fc-&gt;root-&gt;d_sb;
+        WARN_ON(!sb-&gt;s_bdi);
+
+        smp_wmb();
+        sb-&gt;s_flags |= SB_BORN;
+
+        error = security_sb_set_mnt_opts(sb, fc-&gt;security, 0, NULL);
+        if (unlikely(error)) {
+                fc_drop_locked(fc);
+                return error;
+        }
+        ...
+        return 0;
+}</code></pre>
+        <p>逐段解释：`vfs_get_tree()` 调用具体文件系统的 `get_tree()` 创建或取得 superblock，并要求文件系统把根 dentry 放在 `fc->root`。成功后设置 `SB_BORN`，应用安全挂载选项，再由 `do_new_mount_fc()` 把新 mount 加到 namespace 树。</p>
+        <div class="panel"><strong>第一性原理概述：</strong>挂载的本质是把“某个文件系统实例的根 dentry”接到“当前命名空间中的某个挂载点”。设备、文件系统名和参数只是构造这个实例的输入。</div>
+      </section>
+
+      <section id="move-root">
+        <h2>把 `/root` 移到 `/`：`MS_MOVE` 与 `chroot`</h2>
+        <pre><code>/* init/do_mounts.c */
+out:
+        devtmpfs_mount();
+        init_mount(".", "/", NULL, MS_MOVE, NULL);
+        init_chroot(".");</code></pre>
+        <p>逐段解释：`do_mount_root()` 成功后已经 `init_chdir("/root")`，所以此处的 `"."` 就是新挂载的真实根。`init_mount(".", "/", NULL, MS_MOVE, NULL)` 触发 `path_mount()` 的 `MS_MOVE` 分支，把当前目录对应的挂载移动到 `/`。</p>
+        <p>`devtmpfs_mount()` 在切根前后确保 `/dev` 设备节点文件系统可用。`init_chroot(".")` 把当前进程根目录改到新根，后续执行 `/sbin/init` 等路径时就从真实根解析。</p>
+        <div class="svg-wrap"><svg viewBox="0 0 940 340" role="img" aria-label="MS_MOVE 切根示意图">
+          <defs><marker id="arrowWarn4" markerWidth="8" markerHeight="8" refX="7" refY="3" orient="auto"><path d="M0,0 L7,3 L0,6 Z" fill="#ffa657"/></marker></defs>
+          <text x="24" y="30" class="svg-title">切根：真实根先在 /root，再移动覆盖 /</text>
+          <rect x="70" y="88" width="240" height="82" class="box-accent"/><text x="112" y="122" class="svg-text">rootfs /</text><text x="104" y="146" class="svg-small">包含 /dev、/root</text>
+          <rect x="380" y="88" width="240" height="82" class="box-good"/><text x="418" y="122" class="svg-text">真实根挂载在 /root</text><text x="428" y="146" class="svg-small">current pwd = /root</text>
+          <rect x="690" y="88" width="190" height="82" class="box-purple"/><text x="736" y="122" class="svg-text">新 /</text><text x="720" y="146" class="svg-small">init_chroot(".")</text>
+          <path d="M310 129 H380" stroke="#ffa657" stroke-width="2" fill="none" marker-end="url(#arrowWarn4)"/><path d="M620 129 H690" stroke="#ffa657" stroke-width="2" fill="none" marker-end="url(#arrowWarn4)"/>
+          <text x="415" y="230" class="svg-small">MS_MOVE 只是移动挂载关系，不复制文件内容。</text>
+        </svg></div>
+        <div class="panel"><strong>第一性原理概述：</strong>切根改变的是 mount namespace 中“/ 指向哪个 mount”的拓扑关系。文件没有搬家，块设备没有复制，只是 VFS 的根引用换到真实根。</div>
+      </section>
+
+      <section id="run-init">
+        <h2>根挂载后执行第一个用户态 init</h2>
+        <pre><code>/* init/main.c */
+static int run_init_process(const char *init_filename)
+{
+        const char *const *p;
+
+        argv_init[0] = init_filename;
+        pr_info("Run %s as init process\n", init_filename);
+        ...
+        return kernel_execve(init_filename, argv_init, envp_init);
+}
+
+static int __ref kernel_init(void *unused)
+{
+        int ret;
+
+        kernel_init_freeable();
+        ...
+        if (ramdisk_execute_command) {
+                ret = run_init_process(ramdisk_execute_command);
+                if (!ret)
+                        return 0;
+                pr_err("Failed to execute %s (error %d)\n",
+                       ramdisk_execute_command, ret);
+        }
+        ...
+        if (!try_to_run_init_process("/sbin/init") ||
+            !try_to_run_init_process("/etc/init") ||
+            !try_to_run_init_process("/bin/init") ||
+            !try_to_run_init_process("/bin/sh"))
+                return 0;
+
+        panic("No working init found.  Try passing init= option to kernel. "
+              "See Linux Documentation/admin-guide/init.rst for guidance.");
+}</code></pre>
+        <p>逐段解释：如果早期 `/init` 存在，`ramdisk_execute_command` 保持有效，`kernel_init()` 会先执行它。当前默认 rootfs 没有 `/init`，所以前面已把它置空并挂载真实根。</p>
+        <p>真实根就位后，`kernel_init()` 按 `init=`、`CONFIG_DEFAULT_INIT`、`/sbin/init`、`/etc/init`、`/bin/init`、`/bin/sh` 的顺序尝试执行。成功后 PID 1 进入用户态，内核启动阶段完成。</p>
+        <div class="panel"><strong>第一性原理概述：</strong>挂载根文件系统只是为了让第一个用户态程序有可解析的路径和可读取的文件。最终目标不是“挂载”本身，而是成功 `execve()` PID 1。</div>
+      </section>
+
+      <section id="links">
+        <h2>相关本地文档链接</h2>
+        <table><thead><tr><th>文档</th><th>关联点</th></tr></thead><tbody>
+          <tr><td><a href="kernel-entry-before-start-kernel.html">kernel-entry-before-start-kernel.html</a></td><td>理解进入 `start_kernel()` 前的 MIPS 初始状态。</td></tr>
+          <tr><td><a href="memblock-buddy-handoff-flow.html">memblock-buddy-handoff-flow.html</a></td><td>理解 VFS 和挂载依赖的内存分配器如何建立。</td></tr>
+          <tr><td><a href="mips-page-table-flow.html">mips-page-table-flow.html</a></td><td>理解用户态 init 执行前页表和地址空间基础。</td></tr>
+          <tr><td><a href="process_memory_layout_view.html">process_memory_layout_view.html</a></td><td>理解后续 PID 1 进程的虚拟内存布局。</td></tr>
+        </tbody></table>
+        <div class="panel"><strong>第一性原理概述：</strong>根挂载位于启动链条的交界处：内存、页表、VFS、设备模型和用户态执行都必须先后接上，PID 1 才能运行。</div>
+      </section>
+
+      <section id="summary">
+        <h2>整体总结</h2>
+        <div class="grid">
+          <div class="concept"><h3>临时根</h3><p>`mnt_init()` 创建 rootfs 和初始 mount namespace。当前 `noinitramfs.c` 只创建 `/dev`、`/dev/console`、`/root`。</p></div>
+          <div class="concept"><h3>决策点</h3><p>`kernel_init_freeable()` 检查 `/init`。存在则早期用户态接管；不存在则内核调用 `prepare_namespace()`。</p></div>
+          <div class="concept"><h3>真实根</h3><p>`prepare_namespace()` 等待设备、解析 `root=`、调用 `mount_root()`。当前配置实际走块设备根，挂载到 `/root`。</p></div>
+          <div class="concept"><h3>切换</h3><p>成功后 `MS_MOVE` 把当前 `/root` 挂载移动到 `/`，`chroot(".")` 更新根目录，然后 `kernel_init()` 执行真正的 init。</p></div>
+        </div>
+        <div class="quote">从第一性原理看，根挂载过程就是把“可启动的最小 VFS 根”替换成“包含用户态 init 的真实目录树”。所有等待、解析、枚举文件系统和移动 mount 的代码，都是为了让 PID 1 的路径解析落在正确的根上。</div>
+      </section>
+
+      <div class="chapter-nav" aria-label="章节翻页"><a id="prevChapter" href="#intro">上一章</a><a id="nextChapter" href="#sources">下一章</a></div>
+    </main>
+  </div>
+
+  <script>
+    (function () {
+      const body = document.body;
+      const menuButton = document.getElementById('menuButton');
+      const progressBar = document.getElementById('progressBar');
+      const links = Array.from(document.querySelectorAll('.nav-list a'));
+      const sections = links.map(link => document.querySelector(link.getAttribute('href'))).filter(Boolean);
+      const prev = document.getElementById('prevChapter');
+      const next = document.getElementById('nextChapter');
+      function currentIndex() { const y = window.scrollY + 90; let index = 0; sections.forEach((section, i) => { if (section.offsetTop <= y) index = i; }); return index; }
+      function update() { const doc = document.documentElement; const max = Math.max(1, doc.scrollHeight - window.innerHeight); progressBar.style.width = Math.min(100, Math.max(0, window.scrollY / max * 100)) + '%'; const index = currentIndex(); links.forEach(link => link.classList.remove('active')); if (links[index]) links[index].classList.add('active'); if (sections[index - 1]) prev.href = '#' + sections[index - 1].id; else prev.href = '#' + sections[0].id; if (sections[index + 1]) next.href = '#' + sections[index + 1].id; else next.href = '#' + sections[sections.length - 1].id; }
+      menuButton.addEventListener('click', () => body.classList.toggle('nav-open'));
+      links.forEach(link => link.addEventListener('click', () => body.classList.remove('nav-open')));
+      window.addEventListener('scroll', update, { passive: true });
+      window.addEventListener('resize', update);
+      window.addEventListener('keydown', event => { if (event.altKey || event.ctrlKey || event.metaKey || event.shiftKey) return; if (event.key === 'ArrowLeft') { event.preventDefault(); location.hash = prev.getAttribute('href'); } if (event.key === 'ArrowRight') { event.preventDefault(); location.hash = next.getAttribute('href'); } });
+      update();
+    }());
+  </script>
+</body>
+</html>

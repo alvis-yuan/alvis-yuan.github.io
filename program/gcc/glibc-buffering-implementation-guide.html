@@ -1,0 +1,1944 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>glibc 缓冲实现原理</title>
+<style>
+  :root {
+    --sidebar-w: 260px;
+    --accent: #2563eb;
+    --accent-light: #dbeafe;
+    --accent-dark: #1d4ed8;
+    --bg: #f8fafc;
+    --surface: #ffffff;
+    --border: #e2e8f0;
+    --text: #1e293b;
+    --muted: #64748b;
+    --code-bg: #0f172a;
+    --code-text: #e2e8f0;
+    --green: #16a34a;
+    --orange: #ea580c;
+    --red: #dc2626;
+    --purple: #7c3aed;
+    --cyan: #0891b2;
+  }
+
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+
+  body {
+    font-family: 'Segoe UI', system-ui, -apple-system, sans-serif;
+    background: var(--bg);
+    color: var(--text);
+    line-height: 1.7;
+  }
+
+  /* ── Progress bar ── */
+  #progress-bar {
+    position: fixed;
+    top: 0; left: 0;
+    height: 3px;
+    background: linear-gradient(90deg, var(--accent), #60a5fa);
+    width: 0%;
+    z-index: 9999;
+    transition: width 0.1s;
+  }
+
+  /* ── Sidebar ── */
+  #sidebar {
+    position: fixed;
+    top: 0; left: 0;
+    width: var(--sidebar-w);
+    height: 100vh;
+    background: var(--surface);
+    border-right: 1px solid var(--border);
+    overflow-y: auto;
+    z-index: 100;
+    display: flex;
+    flex-direction: column;
+    transition: transform 0.3s ease;
+  }
+
+  #sidebar-header {
+    padding: 20px 16px 12px;
+    border-bottom: 1px solid var(--border);
+    position: sticky;
+    top: 0;
+    background: var(--surface);
+    z-index: 1;
+  }
+
+  #sidebar-header h2 {
+    font-size: 0.85rem;
+    font-weight: 700;
+    color: var(--accent);
+    text-transform: uppercase;
+    letter-spacing: 0.08em;
+  }
+
+  #sidebar-header p {
+    font-size: 0.75rem;
+    color: var(--muted);
+    margin-top: 2px;
+  }
+
+  .nav-group { padding: 8px 0; }
+  .nav-group-label {
+    font-size: 0.7rem;
+    font-weight: 700;
+    color: var(--muted);
+    text-transform: uppercase;
+    letter-spacing: 0.1em;
+    padding: 6px 16px 4px;
+  }
+
+  .nav-item {
+    display: block;
+    padding: 7px 16px 7px 20px;
+    font-size: 0.83rem;
+    color: var(--muted);
+    text-decoration: none;
+    border-left: 3px solid transparent;
+    transition: all 0.15s;
+    cursor: pointer;
+    line-height: 1.4;
+  }
+  .nav-item:hover { color: var(--accent); background: var(--accent-light); }
+  .nav-item.active {
+    color: var(--accent);
+    background: var(--accent-light);
+    border-left-color: var(--accent);
+    font-weight: 600;
+  }
+
+  /* ── Hamburger ── */
+  #hamburger {
+    display: none;
+    position: fixed;
+    top: 10px; left: 10px;
+    z-index: 200;
+    background: var(--accent);
+    color: white;
+    border: none;
+    border-radius: 8px;
+    width: 40px; height: 40px;
+    cursor: pointer;
+    font-size: 1.2rem;
+    align-items: center;
+    justify-content: center;
+  }
+
+  #overlay {
+    display: none;
+    position: fixed;
+    inset: 0;
+    background: rgba(0,0,0,0.4);
+    z-index: 90;
+  }
+  #overlay.show { display: block; }
+
+  /* ── Main content ── */
+  #main {
+    margin-left: var(--sidebar-w);
+    min-height: 100vh;
+  }
+
+  .chapter {
+    max-width: 860px;
+    margin: 0 auto;
+    padding: 60px 40px;
+    border-bottom: 2px solid var(--border);
+    min-height: 100vh;
+  }
+
+  .chapter:last-child { border-bottom: none; }
+
+  .chapter-badge {
+    display: inline-block;
+    background: var(--accent);
+    color: white;
+    font-size: 0.7rem;
+    font-weight: 700;
+    padding: 3px 10px;
+    border-radius: 20px;
+    margin-bottom: 12px;
+    letter-spacing: 0.05em;
+    text-transform: uppercase;
+  }
+
+  h1.chapter-title {
+    font-size: 2rem;
+    font-weight: 800;
+    color: var(--text);
+    margin-bottom: 8px;
+    line-height: 1.25;
+  }
+
+  .chapter-subtitle {
+    color: var(--muted);
+    font-size: 1rem;
+    margin-bottom: 32px;
+    padding-bottom: 24px;
+    border-bottom: 1px solid var(--border);
+  }
+
+  h2 {
+    font-size: 1.35rem;
+    font-weight: 700;
+    color: var(--text);
+    margin: 40px 0 16px;
+    padding-left: 12px;
+    border-left: 4px solid var(--accent);
+  }
+
+  h3 {
+    font-size: 1.05rem;
+    font-weight: 600;
+    color: var(--text);
+    margin: 28px 0 12px;
+  }
+
+  p { margin-bottom: 14px; color: #334155; }
+
+  /* ── Code blocks ── */
+  pre {
+    background: var(--code-bg);
+    color: var(--code-text);
+    border-radius: 10px;
+    padding: 20px;
+    overflow-x: auto;
+    font-family: 'Cascadia Code', 'Fira Code', 'Consolas', monospace;
+    font-size: 0.85rem;
+    line-height: 1.6;
+    margin: 16px 0;
+    border: 1px solid #1e3a5f;
+    max-width: 100%;
+  }
+
+  code {
+    font-family: 'Cascadia Code', 'Fira Code', 'Consolas', monospace;
+    font-size: 0.875em;
+    background: #f1f5f9;
+    border: 1px solid #cbd5e1;
+    padding: 2px 6px;
+    border-radius: 4px;
+    color: #c2185b;
+  }
+
+  pre code {
+    background: none;
+    border: none;
+    padding: 0;
+    color: inherit;
+    font-size: inherit;
+  }
+
+  .kw { color: #93c5fd; }
+  .ty { color: #6ee7b7; }
+  .cm { color: #64748b; font-style: italic; }
+  .str { color: #fca5a5; }
+  .num { color: #fde68a; }
+  .fn { color: #fbcfe8; }
+  .pp { color: #c4b5fd; }
+
+  /* ── Info boxes ── */
+  .info-box {
+    border-radius: 10px;
+    padding: 16px 20px;
+    margin: 20px 0;
+    border-left: 4px solid;
+  }
+  .info-box.note { background: #eff6ff; border-color: var(--accent); }
+  .info-box.warn { background: #fff7ed; border-color: var(--orange); }
+  .info-box.tip  { background: #f0fdf4; border-color: var(--green); }
+  .info-box.danger { background: #fef2f2; border-color: var(--red); }
+
+  .info-box .title {
+    font-weight: 700;
+    font-size: 0.85rem;
+    margin-bottom: 6px;
+    text-transform: uppercase;
+    letter-spacing: 0.05em;
+  }
+  .info-box.note .title { color: var(--accent); }
+  .info-box.warn .title { color: var(--orange); }
+  .info-box.tip .title  { color: var(--green); }
+  .info-box.danger .title { color: var(--red); }
+  .info-box p { margin-bottom: 0; }
+
+  /* ── First Principle box ── */
+  .first-principle {
+    background: linear-gradient(135deg, #1e1b4b 0%, #312e81 100%);
+    color: #e0e7ff;
+    border-radius: 12px;
+    padding: 24px 28px;
+    margin: 40px 0 20px;
+    position: relative;
+    overflow: hidden;
+  }
+  .first-principle::before {
+    content: '⚛';
+    position: absolute;
+    right: 20px; top: 10px;
+    font-size: 3rem;
+    opacity: 0.15;
+  }
+  .first-principle .fp-label {
+    font-size: 0.72rem;
+    font-weight: 700;
+    text-transform: uppercase;
+    letter-spacing: 0.12em;
+    color: #a5b4fc;
+    margin-bottom: 8px;
+  }
+  .first-principle h3 {
+    color: #c7d2fe;
+    font-size: 1rem;
+    margin: 0 0 10px;
+  }
+  .first-principle p {
+    color: #c7d2fe;
+    font-size: 0.95rem;
+    margin: 0;
+  }
+
+  /* ── SVG wrappers ── */
+  .svg-wrap {
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: 12px;
+    padding: 20px;
+    margin: 24px 0;
+    overflow-x: auto;
+    text-align: center;
+  }
+  .svg-wrap figcaption {
+    font-size: 0.8rem;
+    color: var(--muted);
+    margin-top: 10px;
+    text-align: center;
+  }
+
+  /* ── Table ── */
+  .table-wrap { overflow-x: auto; margin: 20px 0; }
+  table {
+    width: 100%;
+    border-collapse: collapse;
+    font-size: 0.88rem;
+  }
+  th {
+    background: var(--accent);
+    color: white;
+    padding: 10px 14px;
+    text-align: left;
+    font-weight: 600;
+  }
+  td { padding: 9px 14px; border-bottom: 1px solid var(--border); }
+  tr:nth-child(even) td { background: #f8fafc; }
+  tr:hover td { background: var(--accent-light); }
+
+  /* ── Source link ── */
+  .source-link {
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+    font-size: 0.8rem;
+    color: var(--accent);
+    text-decoration: none;
+    border: 1px solid var(--accent);
+    border-radius: 6px;
+    padding: 4px 12px;
+    margin: 8px 4px 8px 0;
+    transition: all 0.15s;
+  }
+  .source-link:hover { background: var(--accent); color: white; }
+
+  /* ── Keyboard nav hint ── */
+  #nav-hint {
+    position: fixed;
+    bottom: 20px; right: 20px;
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    padding: 8px 14px;
+    font-size: 0.75rem;
+    color: var(--muted);
+    display: flex;
+    gap: 8px;
+    align-items: center;
+    box-shadow: 0 4px 12px rgba(0,0,0,0.1);
+    z-index: 50;
+  }
+  .kbd {
+    background: #f1f5f9;
+    border: 1px solid #cbd5e1;
+    border-radius: 4px;
+    padding: 1px 7px;
+    font-size: 0.78rem;
+    font-weight: 600;
+    color: var(--text);
+  }
+
+  /* ── Responsive ── */
+  @media (max-width: 768px) {
+    #hamburger { display: flex; }
+    #sidebar { transform: translateX(-100%); }
+    #sidebar.open { transform: translateX(0); }
+    #main { margin-left: 0; }
+    .chapter { padding: 60px 20px 40px; }
+    h1.chapter-title { font-size: 1.5rem; }
+    h2 { font-size: 1.15rem; }
+    #nav-hint { display: none; }
+    pre { font-size: 0.78rem; }
+  }
+
+  @media (max-width: 480px) {
+    .chapter { padding: 56px 14px 32px; }
+  }
+
+  /* Scrollbar */
+  #sidebar::-webkit-scrollbar { width: 4px; }
+  #sidebar::-webkit-scrollbar-track { background: transparent; }
+  #sidebar::-webkit-scrollbar-thumb { background: #cbd5e1; border-radius: 2px; }
+</style>
+</head>
+<body>
+
+<div id="progress-bar"></div>
+
+<button id="hamburger" aria-label="菜单" onclick="toggleSidebar()">☰</button>
+<div id="overlay" onclick="closeSidebar()"></div>
+
+<!-- ══════════ SIDEBAR ══════════ -->
+<nav id="sidebar">
+  <div id="sidebar-header">
+    <h2>glibc 缓冲原理</h2>
+    <p>深度解析 · GNU C Library</p>
+  </div>
+
+  <div class="nav-group">
+    <div class="nav-group-label">基础概念</div>
+    <a class="nav-item" onclick="goTo('ch1')">1. 什么是 I/O 缓冲</a>
+    <a class="nav-item" onclick="goTo('ch2')">2. 三种缓冲模式</a>
+  </div>
+
+  <div class="nav-group">
+    <div class="nav-group-label">内部实现</div>
+    <a class="nav-item" onclick="goTo('ch3')">3. FILE 结构体剖析</a>
+    <a class="nav-item" onclick="goTo('ch4')">4. 缓冲区指针状态机</a>
+    <a class="nav-item" onclick="goTo('ch5')">5. 全缓冲实现原理</a>
+    <a class="nav-item" onclick="goTo('ch6')">6. 行缓冲实现原理</a>
+    <a class="nav-item" onclick="goTo('ch7')">7. 无缓冲实现原理</a>
+  </div>
+
+  <div class="nav-group">
+    <div class="nav-group-label">刷新与控制</div>
+    <a class="nav-item" onclick="goTo('ch8')">8. 缓冲区刷新机制</a>
+    <a class="nav-item" onclick="goTo('ch9')">9. 缓冲控制 API</a>
+  </div>
+
+  <div class="nav-group">
+    <div class="nav-group-label">综合</div>
+    <a class="nav-item" onclick="goTo('ch10')">10. 默认缓冲策略</a>
+    <a class="nav-item" onclick="goTo('ch11')">11. 实践与调试</a>
+  </div>
+</nav>
+
+<!-- ══════════ MAIN ══════════ -->
+<main id="main">
+
+<!-- ─────────── Chapter 1 ─────────── -->
+<section class="chapter" id="ch1">
+  <div class="chapter-badge">Chapter 01</div>
+  <h1 class="chapter-title">什么是 I/O 缓冲</h1>
+  <p class="chapter-subtitle">从系统调用代价出发，理解缓冲层的存在意义</p>
+
+  <h2>1.1 为什么需要缓冲？</h2>
+  <p>在 Linux 系统中，每一次 <code>read()</code> 或 <code>write()</code> 都是一次<strong>系统调用</strong>——从用户态切换到内核态，这个切换本身就有数百至数千纳秒的开销。如果每输出一个字符都进行一次系统调用，代价是灾难性的。</p>
+
+  <p>glibc 的 stdio 层在应用程序与内核之间维护一块<strong>用户态缓冲区</strong>，将多次小规模写入积攒成一次大规模 I/O，极大地降低了系统调用次数。</p>
+
+  <div class="svg-wrap">
+    <svg width="720" height="200" viewBox="0 0 720 200" xmlns="http://www.w3.org/2000/svg" style="max-width:100%">
+      <defs>
+        <marker id="arr" markerWidth="8" markerHeight="8" refX="6" refY="3" orient="auto">
+          <path d="M0,0 L0,6 L8,3 z" fill="#64748b"/>
+        </marker>
+        <marker id="arr-r" markerWidth="8" markerHeight="8" refX="6" refY="3" orient="auto">
+          <path d="M0,0 L0,6 L8,3 z" fill="#dc2626"/>
+        </marker>
+        <marker id="arr-g" markerWidth="8" markerHeight="8" refX="6" refY="3" orient="auto">
+          <path d="M0,0 L0,6 L8,3 z" fill="#16a34a"/>
+        </marker>
+      </defs>
+      <!-- App -->
+      <rect x="10" y="60" width="120" height="80" rx="8" fill="#dbeafe" stroke="#2563eb" stroke-width="1.5"/>
+      <text x="70" y="94" text-anchor="middle" font-size="13" font-weight="600" fill="#1d4ed8">应用程序</text>
+      <text x="70" y="112" text-anchor="middle" font-size="11" fill="#3b82f6">printf / fwrite</text>
+      <!-- Arrow: no buffer -->
+      <line x1="220" y1="80" x2="350" y2="80" stroke="#dc2626" stroke-width="2" marker-end="url(#arr-r)" stroke-dasharray="5,3"/>
+      <text x="285" y="72" text-anchor="middle" font-size="11" fill="#dc2626">无缓冲：每字节1次</text>
+      <text x="285" y="85" text-anchor="middle" font-size="10" fill="#dc2626">syscall</text>
+      <!-- Arrow: with buffer -->
+      <line x1="220" y1="130" x2="280" y2="130" stroke="#16a34a" stroke-width="2" marker-end="url(#arr-g)"/>
+      <!-- Buffer box -->
+      <rect x="280" y="110" width="110" height="40" rx="6" fill="#fef9c3" stroke="#ca8a04" stroke-width="1.5"/>
+      <text x="335" y="128" text-anchor="middle" font-size="12" font-weight="600" fill="#92400e">用户态缓冲区</text>
+      <text x="335" y="143" text-anchor="middle" font-size="10" fill="#a16207">glibc stdio</text>
+      <line x1="390" y1="130" x2="450" y2="130" stroke="#16a34a" stroke-width="2" marker-end="url(#arr-g)"/>
+      <text x="420" y="122" text-anchor="middle" font-size="10" fill="#16a34a">满/换行</text>
+      <text x="420" y="134" text-anchor="middle" font-size="10" fill="#16a34a">刷入</text>
+      <!-- Kernel -->
+      <rect x="450" y="60" width="120" height="80" rx="8" fill="#f0fdf4" stroke="#16a34a" stroke-width="1.5"/>
+      <text x="510" y="94" text-anchor="middle" font-size="13" font-weight="600" fill="#15803d">内核</text>
+      <text x="510" y="112" text-anchor="middle" font-size="11" fill="#16a34a">write() syscall</text>
+      <!-- File -->
+      <rect x="600" y="60" width="110" height="80" rx="8" fill="#faf5ff" stroke="#7c3aed" stroke-width="1.5"/>
+      <text x="655" y="94" text-anchor="middle" font-size="13" font-weight="600" fill="#6d28d9">文件/终端</text>
+      <text x="655" y="112" text-anchor="middle" font-size="11" fill="#7c3aed">磁盘/TTY</text>
+      <line x1="570" y1="100" x2="598" y2="100" stroke="#7c3aed" stroke-width="2" marker-end="url(#arr)"/>
+      <!-- App to kernel (no buf) -->
+      <line x1="130" y1="80" x2="448" y2="80" stroke="#dc2626" stroke-width="1.5" marker-end="url(#arr-r)" stroke-dasharray="5,3"/>
+      <!-- App to buffer -->
+      <line x1="130" y1="130" x2="278" y2="130" stroke="#16a34a" stroke-width="2" marker-end="url(#arr-g)"/>
+      <!-- Labels -->
+      <text x="70" y="170" text-anchor="middle" font-size="10" fill="#64748b">用户态</text>
+      <text x="510" y="170" text-anchor="middle" font-size="10" fill="#64748b">内核态</text>
+      <line x1="420" y1="20" x2="420" y2="185" stroke="#94a3b8" stroke-width="1" stroke-dasharray="4,3"/>
+      <text x="415" y="16" text-anchor="middle" font-size="10" fill="#94a3b8">用户态/内核态边界</text>
+    </svg>
+    <figcaption>图1-1：有/无缓冲的 I/O 路径对比</figcaption>
+  </div>
+
+  <h2>1.2 缓冲层的位置</h2>
+  <p>glibc 的 I/O 缓冲属于<strong>用户态缓冲</strong>，与下面几个缓冲层完全独立：</p>
+
+  <div class="table-wrap">
+    <table>
+      <tr><th>缓冲层</th><th>位置</th><th>管理者</th></tr>
+      <tr><td>glibc stdio 缓冲</td><td>用户态进程内存</td><td>程序员 / glibc</td></tr>
+      <tr><td>内核页缓存（Page Cache）</td><td>内核内存</td><td>Linux 内核</td></tr>
+      <tr><td>设备硬件缓冲</td><td>磁盘控制器缓存</td><td>硬件固件</td></tr>
+    </table>
+  </div>
+
+  <div class="info-box note">
+    <div class="title">官方原文</div>
+    <p>"Characters that are written to a stream are normally accumulated and transmitted asynchronously to the file in a block, instead of appearing as soon as they are output by the application program."<br>— <em>The GNU C Library Manual §12.20</em></p>
+  </div>
+
+  <a class="source-link" href="https://sourceware.org/glibc/manual/2.42/html_node/Stream-Buffering.html" target="_blank">🔗 GNU C Library §12.20 Stream Buffering</a>
+
+  <div class="first-principle">
+    <div class="fp-label">第一性原理</div>
+    <h3>系统调用是昂贵的</h3>
+    <p>I/O 缓冲的本质是：<strong>用空间换时间</strong>。每次系统调用都会触发用户态→内核态的上下文切换（寄存器保存/恢复、TLB 刷新等），代价高昂。缓冲将 N 次小写入合并为 1 次大写入，使系统调用次数降至 1/N，这是所有缓冲机制的根本动力。</p>
+  </div>
+</section>
+
+<!-- ─────────── Chapter 2 ─────────── -->
+<section class="chapter" id="ch2">
+  <div class="chapter-badge">Chapter 02</div>
+  <h1 class="chapter-title">三种缓冲模式</h1>
+  <p class="chapter-subtitle">无缓冲、行缓冲、全缓冲的定义与触发条件</p>
+
+  <h2>2.1 官方定义</h2>
+  <p>GNU C Library 定义了三种缓冲策略（来自官方手册 §12.20.1）：</p>
+
+  <div class="info-box note">
+    <div class="title">GNU C Library Manual §12.20.1 — 原文</div>
+    <p>
+      • <strong>无缓冲（Unbuffered）</strong>：Characters written to or read from an unbuffered stream are transmitted individually to or from the file as soon as possible.<br><br>
+      • <strong>行缓冲（Line Buffered）</strong>：Characters written to a line buffered stream are transmitted to the file in blocks when a newline character is encountered.<br><br>
+      • <strong>全缓冲（Fully Buffered）</strong>：Characters written to or read from a fully buffered stream are transmitted to or from the file in blocks of arbitrary size.
+    </p>
+  </div>
+
+  <h2>2.2 三种模式对比图</h2>
+
+  <div class="svg-wrap">
+    <svg width="680" height="340" viewBox="0 0 680 340" xmlns="http://www.w3.org/2000/svg" style="max-width:100%">
+      <!-- ── No Buffer ── -->
+      <text x="110" y="22" text-anchor="middle" font-size="13" font-weight="700" fill="#dc2626">无缓冲 _IONBF</text>
+      <!-- chars -->
+      <rect x="20" y="35" width="28" height="28" rx="4" fill="#fee2e2" stroke="#dc2626" stroke-width="1.5"/>
+      <text x="34" y="54" text-anchor="middle" font-size="13" fill="#dc2626">H</text>
+      <rect x="52" y="35" width="28" height="28" rx="4" fill="#fee2e2" stroke="#dc2626" stroke-width="1.5"/>
+      <text x="66" y="54" text-anchor="middle" font-size="13" fill="#dc2626">i</text>
+      <rect x="84" y="35" width="28" height="28" rx="4" fill="#fee2e2" stroke="#dc2626" stroke-width="1.5"/>
+      <text x="98" y="54" text-anchor="middle" font-size="13" fill="#dc2626">!</text>
+      <!-- arrows directly -->
+      <line x1="34" y1="63" x2="34" y2="88" stroke="#dc2626" stroke-width="1.5" marker-end="url(#arr-r)"/>
+      <line x1="66" y1="63" x2="66" y2="88" stroke="#dc2626" stroke-width="1.5" marker-end="url(#arr-r)"/>
+      <line x1="98" y1="63" x2="98" y2="88" stroke="#dc2626" stroke-width="1.5" marker-end="url(#arr-r)"/>
+      <rect x="20" y="90" width="180" height="28" rx="6" fill="#fecaca" stroke="#dc2626" stroke-width="1.5"/>
+      <text x="110" y="109" text-anchor="middle" font-size="11" fill="#991b1b">内核 write()  ×3 次</text>
+      <text x="110" y="135" text-anchor="middle" font-size="10" fill="#64748b">每字符立即传输，无积累</text>
+
+      <!-- ── Line Buffer ── -->
+      <text x="360" y="22" text-anchor="middle" font-size="13" font-weight="700" fill="#ca8a04">行缓冲 _IOLBF</text>
+      <rect x="270" y="35" width="28" height="28" rx="4" fill="#fef9c3" stroke="#ca8a04" stroke-width="1.5"/>
+      <text x="284" y="54" text-anchor="middle" font-size="13" fill="#92400e">H</text>
+      <rect x="302" y="35" width="28" height="28" rx="4" fill="#fef9c3" stroke="#ca8a04" stroke-width="1.5"/>
+      <text x="316" y="54" text-anchor="middle" font-size="13" fill="#92400e">e</text>
+      <rect x="334" y="35" width="28" height="28" rx="4" fill="#fef9c3" stroke="#ca8a04" stroke-width="1.5"/>
+      <text x="348" y="54" text-anchor="middle" font-size="13" fill="#92400e">l</text>
+      <rect x="366" y="35" width="28" height="28" rx="4" fill="#fef9c3" stroke="#ca8a04" stroke-width="1.5"/>
+      <text x="380" y="54" text-anchor="middle" font-size="13" fill="#92400e">o</text>
+      <rect x="398" y="35" width="28" height="28" rx="4" fill="#fde68a" stroke="#f59e0b" stroke-width="2"/>
+      <text x="412" y="54" text-anchor="middle" font-size="12" font-weight="700" fill="#92400e">\n</text>
+      <rect x="430" y="35" width="28" height="28" rx="4" fill="#fef9c3" stroke="#ca8a04" stroke-width="1.5"/>
+      <text x="444" y="54" text-anchor="middle" font-size="13" fill="#92400e">W</text>
+      <!-- arrow after \n -->
+      <line x1="412" y1="63" x2="360" y2="88" stroke="#ca8a04" stroke-width="1.5" marker-end="url(#arr)"/>
+      <!-- buffer -->
+      <rect x="270" y="90" width="180" height="28" rx="6" fill="#fef3c7" stroke="#ca8a04" stroke-width="1.5"/>
+      <text x="360" y="109" text-anchor="middle" font-size="11" fill="#92400e">write() 刷新 "Hello\n"</text>
+      <text x="360" y="135" text-anchor="middle" font-size="10" fill="#64748b">\n 触发刷新，W 继续积累</text>
+
+      <!-- ── Full Buffer ── -->
+      <text x="600" y="22" text-anchor="middle" font-size="13" font-weight="700" fill="#2563eb">全缓冲 _IOFBF</text>
+      <!-- many chars -->
+      <rect x="520" y="35" width="170" height="28" rx="6" fill="#dbeafe" stroke="#2563eb" stroke-width="1.5"/>
+      <text x="605" y="54" text-anchor="middle" font-size="11" fill="#1d4ed8">H e l l o W o r l d ...</text>
+      <text x="605" y="80" text-anchor="middle" font-size="10" fill="#64748b">积累到 BUFSIZ (8192 字节)</text>
+      <line x1="605" y1="85" x2="605" y2="100" stroke="#2563eb" stroke-width="1.5" marker-end="url(#arr)"/>
+      <rect x="520" y="102" width="170" height="28" rx="6" fill="#bfdbfe" stroke="#2563eb" stroke-width="1.5"/>
+      <text x="605" y="121" text-anchor="middle" font-size="11" fill="#1d4ed8">write() 一次性刷新</text>
+      <text x="605" y="140" text-anchor="middle" font-size="10" fill="#64748b">缓冲满时或显式 fflush</text>
+
+      <!-- ── Timeline ── -->
+      <line x1="20" y1="175" x2="650" y2="175" stroke="#e2e8f0" stroke-width="1.5"/>
+      <text x="20" y="168" font-size="10" fill="#94a3b8">时间轴</text>
+
+      <!-- No buf timeline -->
+      <text x="110" y="195" text-anchor="middle" font-size="11" font-weight="600" fill="#dc2626">无缓冲（syscall 次数：多）</text>
+      <rect x="25" y="200" width="14" height="16" rx="2" fill="#dc2626"/>
+      <rect x="43" y="200" width="14" height="16" rx="2" fill="#dc2626"/>
+      <rect x="61" y="200" width="14" height="16" rx="2" fill="#dc2626"/>
+      <rect x="79" y="200" width="14" height="16" rx="2" fill="#dc2626"/>
+      <rect x="97" y="200" width="14" height="16" rx="2" fill="#dc2626"/>
+      <rect x="115" y="200" width="14" height="16" rx="2" fill="#dc2626"/>
+      <rect x="133" y="200" width="14" height="16" rx="2" fill="#dc2626"/>
+      <rect x="151" y="200" width="14" height="16" rx="2" fill="#dc2626"/>
+      <text x="200" y="212" font-size="10" fill="#94a3b8">…</text>
+
+      <!-- Line buf timeline -->
+      <text x="360" y="195" text-anchor="middle" font-size="11" font-weight="600" fill="#ca8a04">行缓冲（每行1次）</text>
+      <rect x="270" y="200" width="60" height="16" rx="2" fill="#fde68a" stroke="#ca8a04" stroke-width="1"/>
+      <text x="300" y="212" text-anchor="middle" font-size="9" fill="#92400e">Line 1</text>
+      <rect x="338" y="200" width="60" height="16" rx="2" fill="#fde68a" stroke="#ca8a04" stroke-width="1"/>
+      <text x="368" y="212" text-anchor="middle" font-size="9" fill="#92400e">Line 2</text>
+      <rect x="406" y="200" width="60" height="16" rx="2" fill="#fde68a" stroke="#ca8a04" stroke-width="1"/>
+      <text x="436" y="212" text-anchor="middle" font-size="9" fill="#92400e">Line 3</text>
+
+      <!-- Full buf timeline -->
+      <text x="600" y="195" text-anchor="middle" font-size="11" font-weight="600" fill="#2563eb">全缓冲（缓冲满时1次）</text>
+      <rect x="520" y="200" width="160" height="16" rx="2" fill="#93c5fd" stroke="#2563eb" stroke-width="1"/>
+      <text x="600" y="212" text-anchor="middle" font-size="9" fill="#1d4ed8">积累 → 一次 write()</text>
+
+      <!-- Legend: call bars -->
+      <rect x="25" y="240" width="12" height="12" rx="2" fill="#dc2626"/>
+      <text x="42" y="251" font-size="10" fill="#64748b">= 1次 write() syscall</text>
+
+      <!-- Summary -->
+      <rect x="20" y="270" width="640" height="56" rx="8" fill="#f8fafc" stroke="#e2e8f0" stroke-width="1"/>
+      <text x="340" y="291" text-anchor="middle" font-size="11" font-weight="600" fill="#1e293b">syscall 次数对比（写入1000字节为例）</text>
+      <text x="110" y="312" text-anchor="middle" font-size="11" fill="#dc2626">无缓冲：≈1000次</text>
+      <text x="360" y="312" text-anchor="middle" font-size="11" fill="#ca8a04">行缓冲：≈行数次</text>
+      <text x="600" y="312" text-anchor="middle" font-size="11" fill="#2563eb">全缓冲：≈1次</text>
+    </svg>
+    <figcaption>图2-1：三种缓冲模式工作方式与系统调用次数对比</figcaption>
+  </div>
+
+  <h2>2.3 默认模式选择规则</h2>
+  <p>glibc 在打开流时通过 <code>isatty()</code> 探测文件描述符是否连接到终端，据此自动选择缓冲模式：</p>
+
+  <div class="table-wrap">
+    <table>
+      <tr><th>流</th><th>默认模式</th><th>原因</th></tr>
+      <tr><td><code>stderr</code></td><td>无缓冲（_IONBF）</td><td>错误信息必须立即可见</td></tr>
+      <tr><td><code>stdout</code>（连接终端）</td><td>行缓冲（_IOLBF）</td><td>交互式程序每行即时显示</td></tr>
+      <tr><td><code>stdout</code>（重定向到文件/管道）</td><td>全缓冲（_IOFBF）</td><td>最大化吞吐量</td></tr>
+      <tr><td>普通文件（fopen）</td><td>全缓冲（_IOFBF）</td><td>最大化文件 I/O 效率</td></tr>
+      <tr><td><code>stdin</code>（连接终端）</td><td>行缓冲（_IOLBF）</td><td>支持行编辑</td></tr>
+    </table>
+  </div>
+
+  <div class="info-box warn">
+    <div class="title">重要陷阱</div>
+    <p>当 <code>stdout</code> 被重定向到管道或文件时（如 <code>./prog | grep xxx</code>），它会从行缓冲切换为全缓冲！这是许多程序"输出不及时"的根本原因。</p>
+  </div>
+
+  <div class="first-principle">
+    <div class="fp-label">第一性原理</div>
+    <h3>模式选择的本质是：交互性 vs 吞吐量</h3>
+    <p>三种模式代表了对同一个矛盾的不同权衡：<strong>响应延迟</strong>与<strong>系统调用开销</strong>。终端是交互场景，要求低延迟，因此用行缓冲（或无缓冲）；文件/管道是批量场景，要求高吞吐，因此用全缓冲。<code>isatty()</code> 检测就是这个权衡的自动执行。</p>
+  </div>
+</section>
+
+<!-- ─────────── Chapter 3 ─────────── -->
+<section class="chapter" id="ch3">
+  <div class="chapter-badge">Chapter 03</div>
+  <h1 class="chapter-title">FILE 结构体剖析</h1>
+  <p class="chapter-subtitle">glibc 中 _IO_FILE 的内部布局与各字段含义</p>
+
+  <h2>3.1 FILE 的真实身份</h2>
+  <p>在 glibc 中，<code>FILE</code> 实际上是 <code>struct _IO_FILE</code> 的别名，定义于 <code>libio/bits/types/struct_FILE.h</code>。这是整个缓冲机制的核心数据结构。</p>
+
+  <pre><code><span class="cm">/* glibc/libio/bits/types/struct_FILE.h（节选，附中文注释）*/</span>
+<span class="kw">struct</span> <span class="ty">_IO_FILE</span>
+{
+  <span class="kw">int</span>   _flags;          <span class="cm">/* 高位是 _IO_MAGIC；低位是状态标志 */</span>
+
+  <span class="cm">/* ── 读缓冲区指针组 ── */</span>
+  <span class="kw">char</span> *_IO_read_ptr;    <span class="cm">/* 当前读位置（下一个待读字节） */</span>
+  <span class="kw">char</span> *_IO_read_end;    <span class="cm">/* 读区域结束（已从内核取回的末尾） */</span>
+  <span class="kw">char</span> *_IO_read_base;   <span class="cm">/* 读区域起始（含 putback 区） */</span>
+
+  <span class="cm">/* ── 写缓冲区指针组 ── */</span>
+  <span class="kw">char</span> *_IO_write_base;  <span class="cm">/* 写区域起始 */</span>
+  <span class="kw">char</span> *_IO_write_ptr;   <span class="cm">/* 当前写位置（下一个写入位置） */</span>
+  <span class="kw">char</span> *_IO_write_end;   <span class="cm">/* 写区域结束（控制何时触发 overflow） */</span>
+
+  <span class="cm">/* ── 总缓冲区边界 ── */</span>
+  <span class="kw">char</span> *_IO_buf_base;    <span class="cm">/* 分配的缓冲区起始地址 */</span>
+  <span class="kw">char</span> *_IO_buf_end;     <span class="cm">/* 分配的缓冲区结束地址 */</span>
+
+  <span class="cm">/* ── putback/备份区 ── */</span>
+  <span class="kw">char</span> *_IO_save_base;   <span class="cm">/* 非当前读区域的起始 */</span>
+  <span class="kw">char</span> *_IO_backup_base; <span class="cm">/* 备份区第一个有效字节 */</span>
+  <span class="kw">char</span> *_IO_save_end;    <span class="cm">/* 非当前读区域的结束 */</span>
+
+  <span class="kw">int</span>   _fileno;         <span class="cm">/* 底层文件描述符（fd） */</span>
+  <span class="kw">char</span>  _shortbuf[<span class="num">1</span>];    <span class="cm">/* 无缓冲模式使用的单字节缓冲 */</span>
+  <span class="cm">/* ... 其他字段省略 ... */</span>
+};</code></pre>
+
+  <a class="source-link" href="https://codebrowser.dev/glibc/glibc/libio/bits/types/struct_FILE.h.html" target="_blank">🔗 struct_FILE.h 源码（codebrowser）</a>
+
+  <h2>3.2 缓冲区内存布局可视化</h2>
+
+  <div class="svg-wrap">
+    <svg width="700" height="260" viewBox="0 0 700 260" xmlns="http://www.w3.org/2000/svg" style="max-width:100%">
+      <!-- Buffer strip -->
+      <rect x="60" y="80" width="580" height="50" rx="6" fill="#f1f5f9" stroke="#94a3b8" stroke-width="1.5"/>
+      <!-- buf_base to buf_end label -->
+      <text x="60" y="74" font-size="10" fill="#64748b">_IO_buf_base</text>
+      <text x="620" y="74" text-anchor="end" font-size="10" fill="#64748b">_IO_buf_end</text>
+
+      <!-- Write region -->
+      <rect x="60" y="80" width="200" height="50" rx="0" fill="#bfdbfe" stroke="none"/>
+      <text x="160" y="102" text-anchor="middle" font-size="11" fill="#1d4ed8" font-weight="600">已写入数据</text>
+      <text x="160" y="117" text-anchor="middle" font-size="10" fill="#3b82f6">write_base → write_ptr</text>
+
+      <!-- Write ptr marker -->
+      <line x1="260" y1="75" x2="260" y2="135" stroke="#2563eb" stroke-width="2" stroke-dasharray="4,2"/>
+      <text x="260" y="70" text-anchor="middle" font-size="9" fill="#2563eb">write_ptr</text>
+
+      <!-- Write end marker -->
+      <line x1="400" y1="75" x2="400" y2="135" stroke="#ea580c" stroke-width="2" stroke-dasharray="4,2"/>
+      <text x="400" y="70" text-anchor="middle" font-size="9" fill="#ea580c">write_end</text>
+
+      <!-- Free region -->
+      <rect x="260" y="80" width="140" height="50" fill="#dcfce7" stroke="none"/>
+      <text x="330" y="102" text-anchor="middle" font-size="11" fill="#16a34a">可用空间</text>
+      <text x="330" y="117" text-anchor="middle" font-size="10" fill="#16a34a">write_ptr → write_end</text>
+
+      <!-- Trigger zone -->
+      <rect x="400" y="80" width="240" height="50" fill="#fef2f2" stroke="none"/>
+      <text x="520" y="102" text-anchor="middle" font-size="11" fill="#dc2626">overflow 区域</text>
+      <text x="520" y="117" text-anchor="middle" font-size="10" fill="#dc2626">越过 write_end 触发刷新</text>
+
+      <!-- write_base marker -->
+      <line x1="60" y1="75" x2="60" y2="135" stroke="#1d4ed8" stroke-width="2" stroke-dasharray="4,2"/>
+      <text x="60" y="70" text-anchor="middle" font-size="9" fill="#1d4ed8">write_base</text>
+      <text x="640" y="70" text-anchor="middle" font-size="9" fill="#94a3b8">buf_end</text>
+
+      <!-- Read buffer section -->
+      <rect x="60" y="155" width="580" height="50" rx="6" fill="#f1f5f9" stroke="#94a3b8" stroke-width="1.5"/>
+      <text x="340" y="145" text-anchor="middle" font-size="11" fill="#7c3aed" font-weight="600">读模式下的缓冲区布局</text>
+
+      <!-- already consumed -->
+      <rect x="60" y="155" width="100" height="50" fill="#e0e7ff" stroke="none"/>
+      <text x="110" y="177" text-anchor="middle" font-size="10" fill="#4338ca">已消费</text>
+      <text x="110" y="191" text-anchor="middle" font-size="9" fill="#4338ca">read_base→ptr</text>
+
+      <!-- read_ptr -->
+      <line x1="160" y1="150" x2="160" y2="210" stroke="#7c3aed" stroke-width="2" stroke-dasharray="4,2"/>
+      <text x="160" y="145" text-anchor="middle" font-size="9" fill="#7c3aed">read_ptr</text>
+
+      <!-- Unread -->
+      <rect x="160" y="155" width="200" height="50" fill="#f3e8ff" stroke="none"/>
+      <text x="260" y="177" text-anchor="middle" font-size="10" fill="#7c3aed">未消费数据</text>
+      <text x="260" y="191" text-anchor="middle" font-size="9" fill="#7c3aed">read_ptr → read_end</text>
+
+      <!-- read_end -->
+      <line x1="360" y1="150" x2="360" y2="210" stroke="#7c3aed" stroke-width="2" stroke-dasharray="4,2"/>
+      <text x="360" y="145" text-anchor="middle" font-size="9" fill="#7c3aed">read_end</text>
+
+      <!-- Empty -->
+      <rect x="360" y="155" width="280" height="50" fill="#fafafa" stroke="none"/>
+      <text x="500" y="177" text-anchor="middle" font-size="10" fill="#94a3b8">未填充（等待内核读取）</text>
+
+      <!-- Legend -->
+      <rect x="60" y="225" width="14" height="12" fill="#bfdbfe"/>
+      <text x="79" y="236" font-size="10" fill="#64748b">已写入/已消费</text>
+      <rect x="180" y="225" width="14" height="12" fill="#dcfce7"/>
+      <text x="199" y="236" font-size="10" fill="#64748b">可用空间</text>
+      <rect x="290" y="225" width="14" height="12" fill="#fef2f2"/>
+      <text x="309" y="236" font-size="10" fill="#64748b">overflow触发区</text>
+      <rect x="440" y="225" width="14" height="12" fill="#f3e8ff"/>
+      <text x="459" y="236" font-size="10" fill="#64748b">未消费数据（读模式）</text>
+    </svg>
+    <figcaption>图3-1：_IO_FILE 内部缓冲区指针布局（写模式/读模式）</figcaption>
+  </div>
+
+  <h2>3.3 getc/putc 的快路径宏</h2>
+  <p>glibc 使用宏实现 <code>getc</code> 和 <code>putc</code> 的快路径，直接操作指针，避免函数调用开销：</p>
+
+  <pre><code><span class="cm">/* glibc/libio/bits/types/struct_FILE.h */</span>
+
+<span class="cm">/* getc 快路径：read_ptr 未到 read_end 时直接返回字节 */</span>
+<span class="pp">#define</span> <span class="fn">__getc_unlocked_body</span>(_fp)  \
+  (<span class="fn">__glibc_unlikely</span> ((_fp)->_IO_read_ptr >= (_fp)->_IO_read_end)  \
+   ? <span class="fn">__uflow</span> (_fp)                      <span class="cm">/* 慢路径：触发内核读 */</span>  \
+   : *(<span class="kw">unsigned char</span> *) (_fp)->_IO_read_ptr++)  <span class="cm">/* 快路径：指针++ */</span>
+
+<span class="cm">/* putc 快路径：write_ptr 未到 write_end 时直接写入 */</span>
+<span class="pp">#define</span> <span class="fn">__putc_unlocked_body</span>(_ch, _fp)  \
+  (<span class="fn">__glibc_unlikely</span> ((_fp)->_IO_write_ptr >= (_fp)->_IO_write_end)  \
+   ? <span class="fn">__overflow</span> (_fp, (<span class="kw">unsigned char</span>) (_ch))  <span class="cm">/* 慢路径：触发刷新 */</span>  \
+   : (<span class="kw">unsigned char</span>) (*(_fp)->_IO_write_ptr++ = (_ch)))  <span class="cm">/* 快路径 */</span></code></pre>
+
+  <div class="info-box tip">
+    <div class="title">设计亮点</div>
+    <p><strong>快路径（fast path）</strong>：指针比较 + 指针移动，纯用户态操作，无任何系统调用。<br>
+    <strong>慢路径（slow path）</strong>：只有在缓冲区满（<code>__overflow</code>）或空（<code>__uflow</code>）时才触发，进而调用 <code>write()</code>/<code>read()</code> 系统调用。</p>
+  </div>
+
+  <div class="first-principle">
+    <div class="fp-label">第一性原理</div>
+    <h3>缓冲的本质是指针状态管理</h3>
+    <p>glibc 缓冲机制的核心是维护一组指针（<code>buf_base/end</code>、<code>write_base/ptr/end</code>、<code>read_base/ptr/end</code>），通过比较指针位置判断缓冲区状态，无需任何锁或原子操作即可完成"是否需要刷新/填充"的判断。这是高性能 I/O 的关键设计。</p>
+  </div>
+</section>
+
+<!-- ─────────── Chapter 4 ─────────── -->
+<section class="chapter" id="ch4">
+  <div class="chapter-badge">Chapter 04</div>
+  <h1 class="chapter-title">缓冲区指针状态机</h1>
+  <p class="chapter-subtitle">overflow / underflow 触发与缓冲区状态转换</p>
+
+  <h2>4.1 写操作状态流转</h2>
+
+  <div class="svg-wrap">
+    <svg width="680" height="320" viewBox="0 0 680 320" xmlns="http://www.w3.org/2000/svg" style="max-width:100%">
+      <defs>
+        <marker id="a1" markerWidth="8" markerHeight="6" refX="6" refY="3" orient="auto">
+          <path d="M0,0 L0,6 L8,3 z" fill="#2563eb"/>
+        </marker>
+        <marker id="a2" markerWidth="8" markerHeight="6" refX="6" refY="3" orient="auto">
+          <path d="M0,0 L0,6 L8,3 z" fill="#dc2626"/>
+        </marker>
+        <marker id="a3" markerWidth="8" markerHeight="6" refX="6" refY="3" orient="auto">
+          <path d="M0,0 L0,6 L8,3 z" fill="#16a34a"/>
+        </marker>
+      </defs>
+
+      <!-- State: 初始 -->
+      <ellipse cx="100" cy="60" rx="80" ry="32" fill="#dbeafe" stroke="#2563eb" stroke-width="2"/>
+      <text x="100" y="55" text-anchor="middle" font-size="12" font-weight="700" fill="#1d4ed8">缓冲区初始</text>
+      <text x="100" y="72" text-anchor="middle" font-size="10" fill="#3b82f6">write_ptr == write_base</text>
+
+      <!-- State: 写入中 -->
+      <ellipse cx="340" cy="60" rx="90" ry="32" fill="#dcfce7" stroke="#16a34a" stroke-width="2"/>
+      <text x="340" y="55" text-anchor="middle" font-size="12" font-weight="700" fill="#15803d">写入中</text>
+      <text x="340" y="72" text-anchor="middle" font-size="10" fill="#16a34a">write_ptr &lt; write_end</text>
+
+      <!-- State: 缓冲满 -->
+      <ellipse cx="580" cy="60" rx="80" ry="32" fill="#fef2f2" stroke="#dc2626" stroke-width="2"/>
+      <text x="580" y="55" text-anchor="middle" font-size="12" font-weight="700" fill="#dc2626">overflow!</text>
+      <text x="580" y="72" text-anchor="middle" font-size="10" fill="#dc2626">write_ptr >= write_end</text>
+
+      <!-- Arrow: 初始 -> 写入中 -->
+      <line x1="180" y1="60" x2="248" y2="60" stroke="#2563eb" stroke-width="2" marker-end="url(#a1)"/>
+      <text x="214" y="52" text-anchor="middle" font-size="10" fill="#2563eb">putc(ch)</text>
+
+      <!-- Arrow: 写入中 -> overflow -->
+      <line x1="430" y1="60" x2="498" y2="60" stroke="#dc2626" stroke-width="2" marker-end="url(#a2)"/>
+      <text x="464" y="52" text-anchor="middle" font-size="10" fill="#dc2626">ptr >= end</text>
+
+      <!-- Arrow: overflow -> 写入中 (reset) -->
+      <path d="M580,92 Q580,130 340,130 Q200,130 200,92" fill="none" stroke="#16a34a" stroke-width="2" marker-end="url(#a3)" stroke-dasharray="none"/>
+      <text x="380" y="150" text-anchor="middle" font-size="10" fill="#16a34a">__overflow: write() + 重置 write_ptr = write_base</text>
+
+      <!-- Box: overflow action -->
+      <rect x="60" y="180" width="560" height="120" rx="10" fill="#fff7ed" stroke="#ea580c" stroke-width="1.5"/>
+      <text x="340" y="200" text-anchor="middle" font-size="12" font-weight="700" fill="#ea580c">__overflow() 执行过程</text>
+
+      <!-- Step 1 -->
+      <rect x="80" y="210" width="120" height="36" rx="6" fill="#fde68a" stroke="#f59e0b" stroke-width="1"/>
+      <text x="140" y="225" text-anchor="middle" font-size="10" fill="#92400e">1. 写入当前字符</text>
+      <text x="140" y="239" text-anchor="middle" font-size="10" fill="#92400e">到缓冲末尾</text>
+
+      <line x1="200" y1="228" x2="218" y2="228" stroke="#ea580c" stroke-width="1.5" marker-end="url(#a2)"/>
+
+      <!-- Step 2 -->
+      <rect x="220" y="210" width="130" height="36" rx="6" fill="#fed7aa" stroke="#ea580c" stroke-width="1"/>
+      <text x="285" y="225" text-anchor="middle" font-size="10" fill="#9a3412">2. 调用 _IO_do_write()</text>
+      <text x="285" y="239" text-anchor="middle" font-size="10" fill="#9a3412">= write(fd, buf, n)</text>
+
+      <line x1="350" y1="228" x2="368" y2="228" stroke="#ea580c" stroke-width="1.5" marker-end="url(#a2)"/>
+
+      <!-- Step 3 -->
+      <rect x="370" y="210" width="120" height="36" rx="6" fill="#fca5a5" stroke="#dc2626" stroke-width="1"/>
+      <text x="430" y="225" text-anchor="middle" font-size="10" fill="#7f1d1d">3. 重置指针</text>
+      <text x="430" y="239" text-anchor="middle" font-size="10" fill="#7f1d1d">write_ptr = write_base</text>
+
+      <line x1="490" y1="228" x2="508" y2="228" stroke="#ea580c" stroke-width="1.5" marker-end="url(#a2)"/>
+
+      <!-- Step 4 -->
+      <rect x="510" y="210" width="90" height="36" rx="6" fill="#bbf7d0" stroke="#16a34a" stroke-width="1"/>
+      <text x="555" y="225" text-anchor="middle" font-size="10" fill="#14532d">4. 返回</text>
+      <text x="555" y="239" text-anchor="middle" font-size="10" fill="#14532d">继续写入</text>
+    </svg>
+    <figcaption>图4-1：putc 写操作状态机与 __overflow 执行流程</figcaption>
+  </div>
+
+  <h2>4.2 读操作状态流转</h2>
+
+  <div class="svg-wrap">
+    <svg width="680" height="240" viewBox="0 0 680 240" xmlns="http://www.w3.org/2000/svg" style="max-width:100%">
+      <defs>
+        <marker id="b1" markerWidth="8" markerHeight="6" refX="6" refY="3" orient="auto">
+          <path d="M0,0 L0,6 L8,3 z" fill="#7c3aed"/>
+        </marker>
+        <marker id="b2" markerWidth="8" markerHeight="6" refX="6" refY="3" orient="auto">
+          <path d="M0,0 L0,6 L8,3 z" fill="#dc2626"/>
+        </marker>
+        <marker id="b3" markerWidth="8" markerHeight="6" refX="6" refY="3" orient="auto">
+          <path d="M0,0 L0,6 L8,3 z" fill="#16a34a"/>
+        </marker>
+      </defs>
+
+      <!-- State: 初始/空 -->
+      <ellipse cx="90" cy="60" rx="80" ry="30" fill="#f3e8ff" stroke="#7c3aed" stroke-width="2"/>
+      <text x="90" y="55" text-anchor="middle" font-size="11" font-weight="700" fill="#6d28d9">缓冲区空</text>
+      <text x="90" y="72" text-anchor="middle" font-size="9" fill="#7c3aed">read_ptr == read_end</text>
+
+      <!-- State: 已填充 -->
+      <ellipse cx="340" cy="60" rx="90" ry="30" fill="#dbeafe" stroke="#2563eb" stroke-width="2"/>
+      <text x="340" y="55" text-anchor="middle" font-size="11" font-weight="700" fill="#1d4ed8">缓冲区已填充</text>
+      <text x="340" y="72" text-anchor="middle" font-size="9" fill="#2563eb">read_ptr &lt; read_end</text>
+
+      <!-- State: 消费中 -->
+      <ellipse cx="580" cy="60" rx="80" ry="30" fill="#dcfce7" stroke="#16a34a" stroke-width="2"/>
+      <text x="580" y="55" text-anchor="middle" font-size="11" font-weight="700" fill="#15803d">消费中</text>
+      <text x="580" y="72" text-anchor="middle" font-size="9" fill="#16a34a">read_ptr++</text>
+
+      <!-- Arrow: 空 -> 已填充 -->
+      <line x1="170" y1="60" x2="248" y2="60" stroke="#7c3aed" stroke-width="2" marker-end="url(#b1)"/>
+      <text x="209" y="50" text-anchor="middle" font-size="9" fill="#7c3aed">__uflow: read()</text>
+      <text x="209" y="62" text-anchor="middle" font-size="9" fill="#7c3aed">填入缓冲区</text>
+
+      <!-- Arrow: 已填充 -> 消费中 -->
+      <line x1="430" y1="60" x2="498" y2="60" stroke="#16a34a" stroke-width="2" marker-end="url(#b3)"/>
+      <text x="464" y="50" text-anchor="middle" font-size="9" fill="#16a34a">getc()</text>
+
+      <!-- Arrow: 消费完 -> 空 -->
+      <path d="M580,90 Q580,140 340,140 Q200,140 90,90" fill="none" stroke="#dc2626" stroke-width="2" marker-end="url(#b2)"/>
+      <text x="340" y="158" text-anchor="middle" font-size="9" fill="#dc2626">read_ptr >= read_end → 再次触发 __uflow</text>
+
+      <!-- __uflow detail box -->
+      <rect x="60" y="172" width="560" height="56" rx="8" fill="#eff6ff" stroke="#2563eb" stroke-width="1"/>
+      <text x="340" y="190" text-anchor="middle" font-size="11" font-weight="700" fill="#1d4ed8">__uflow 执行：read(fd, buf_base, buf_end - buf_base) → 更新 read_end = buf_base + n</text>
+      <text x="340" y="212" text-anchor="middle" font-size="10" fill="#3b82f6">从内核读入最多 BUFSIZ 字节，充满缓冲区；read_ptr 重置到 buf_base</text>
+    </svg>
+    <figcaption>图4-2：getc 读操作状态机与 __uflow 执行流程</figcaption>
+  </div>
+
+  <div class="first-principle">
+    <div class="fp-label">第一性原理</div>
+    <h3>状态机就是指针比较</h3>
+    <p>"缓冲区空了吗？满了吗？"——这两个问题的答案完全由指针比较决定（<code>ptr >= end</code>），不需要维护额外的计数器或状态变量。这是 C 语言指针语义赋予的零成本抽象。</p>
+  </div>
+</section>
+
+<!-- ─────────── Chapter 5 ─────────── -->
+<section class="chapter" id="ch5">
+  <div class="chapter-badge">Chapter 05</div>
+  <h1 class="chapter-title">全缓冲实现原理</h1>
+  <p class="chapter-subtitle">_IOFBF 模式下的缓冲区管理与 BUFSIZ</p>
+
+  <h2>5.1 全缓冲的工作方式</h2>
+  <p>在全缓冲（<code>_IOFBF</code>）模式下，<code>write_end</code> 被设置为 <code>buf_end</code>，意味着只有当缓冲区被完全填满时，才会触发 <code>__overflow</code>，进而调用 <code>write()</code> 系统调用。</p>
+
+  <div class="info-box note">
+    <div class="title">官方手册原文</div>
+    <p>"Characters written to or read from a fully buffered stream are transmitted to or from the file in blocks of arbitrary size."<br>— <em>GNU C Library Manual §12.20.1</em></p>
+  </div>
+
+  <pre><code><span class="cm">/* glibc/libio/oldfileops.c 注释（第62行）*/</span>
+<span class="cm">/* We also have _IO_write_end == _IO_buf_end, but only in fully buffered mode. */</span>
+
+<span class="cm">/* 全缓冲模式的指针初始化（setvbuf 设置 _IOFBF 时）*/</span>
+fp->_IO_write_base = buf;
+fp->_IO_write_ptr  = buf;
+fp->_IO_write_end  = buf + size;  <span class="cm">/* == _IO_buf_end */</span>
+fp->_IO_buf_base   = buf;
+fp->_IO_buf_end    = buf + size;</code></pre>
+
+  <h2>5.2 全缓冲写入过程图解</h2>
+
+  <div class="svg-wrap">
+    <svg width="680" height="380" viewBox="0 0 680 380" xmlns="http://www.w3.org/2000/svg" style="max-width:100%">
+      <!-- Step labels -->
+      <text x="340" y="18" text-anchor="middle" font-size="13" font-weight="700" fill="#1e293b">全缓冲写入过程（BUFSIZ = 8192 字节）</text>
+
+      <!-- Step 1: initial -->
+      <text x="10" y="45" font-size="11" font-weight="600" fill="#2563eb">步骤1：初始状态</text>
+      <rect x="10" y="52" width="660" height="30" rx="4" fill="#f1f5f9" stroke="#94a3b8" stroke-width="1"/>
+      <rect x="10" y="52" width="4" height="30" rx="2" fill="#94a3b8"/>
+      <text x="25" y="70" font-size="10" fill="#64748b">write_base = write_ptr</text>
+      <text x="600" y="70" text-anchor="end" font-size="10" fill="#64748b">write_end = buf_end (8192B)</text>
+      <line x1="10" y1="52" x2="10" y2="82" stroke="#2563eb" stroke-width="2"/>
+      <text x="10" y="96" font-size="9" fill="#2563eb">base/ptr</text>
+      <line x1="670" y1="52" x2="670" y2="82" stroke="#ea580c" stroke-width="2"/>
+      <text x="670" y="96" text-anchor="end" font-size="9" fill="#ea580c">end</text>
+
+      <!-- Step 2: partial fill -->
+      <text x="10" y="120" font-size="11" font-weight="600" fill="#16a34a">步骤2：写入4096字节（未满）</text>
+      <rect x="10" y="127" width="660" height="30" rx="4" fill="#f1f5f9" stroke="#94a3b8" stroke-width="1"/>
+      <rect x="10" y="127" width="330" height="30" fill="#bfdbfe" stroke="none" rx="2"/>
+      <text x="175" y="147" text-anchor="middle" font-size="10" fill="#1d4ed8">4096 B 数据（write_base→write_ptr）</text>
+      <text x="500" y="147" text-anchor="middle" font-size="10" fill="#94a3b8">空闲 4096 B</text>
+      <line x1="340" y1="122" x2="340" y2="162" stroke="#2563eb" stroke-width="2"/>
+      <text x="340" y="170" text-anchor="middle" font-size="9" fill="#2563eb">write_ptr（未触发刷新）</text>
+
+      <!-- Step 3: overflow -->
+      <text x="10" y="194" font-size="11" font-weight="600" fill="#dc2626">步骤3：继续写满 → 触发 __overflow</text>
+      <rect x="10" y="201" width="660" height="30" rx="4" fill="#fef2f2" stroke="#dc2626" stroke-width="1.5"/>
+      <rect x="10" y="201" width="660" height="30" fill="#fca5a5" stroke="none" rx="4"/>
+      <text x="340" y="221" text-anchor="middle" font-size="10" fill="#7f1d1d">8192 B 全部填满 → __overflow() → write(fd, buf, 8192)</text>
+      <line x1="670" y1="196" x2="670" y2="236" stroke="#dc2626" stroke-width="2"/>
+      <text x="670" y="244" text-anchor="end" font-size="9" fill="#dc2626">write_ptr = write_end → overflow!</text>
+
+      <!-- Step 4: reset -->
+      <text x="10" y="268" font-size="11" font-weight="600" fill="#7c3aed">步骤4：刷新完成，指针重置</text>
+      <rect x="10" y="275" width="660" height="30" rx="4" fill="#f1f5f9" stroke="#94a3b8" stroke-width="1"/>
+      <rect x="10" y="275" width="4" height="30" rx="2" fill="#94a3b8"/>
+      <text x="340" y="295" text-anchor="middle" font-size="10" fill="#64748b">缓冲区清空，write_ptr 重置为 write_base</text>
+      <line x1="10" y1="275" x2="10" y2="305" stroke="#7c3aed" stroke-width="2"/>
+      <text x="10" y="318" font-size="9" fill="#7c3aed">base=ptr（重置）</text>
+
+      <!-- syscall count -->
+      <rect x="10" y="335" width="660" height="40" rx="8" fill="#f0fdf4" stroke="#16a34a" stroke-width="1.5"/>
+      <text x="340" y="352" text-anchor="middle" font-size="11" font-weight="700" fill="#15803d">系统调用统计：写入 100,000 字节 → 约 13 次 write() syscall</text>
+      <text x="340" y="368" text-anchor="middle" font-size="10" fill="#16a34a">⌈100000 / 8192⌉ = 13 次（vs 无缓冲 100,000 次）</text>
+    </svg>
+    <figcaption>图5-1：全缓冲模式写入流程</figcaption>
+  </div>
+
+  <h2>5.3 BUFSIZ 与最优缓冲大小</h2>
+  <p><code>BUFSIZ</code> 在大多数 Linux 系统上为 <strong>8192</strong> 字节。但官方手册建议使用 <code>fstat</code> 获取 <code>st_blksize</code> 作为更优的缓冲大小：</p>
+
+  <pre><code><span class="pp">#include</span> <span class="str">&lt;stdio.h&gt;</span>
+<span class="pp">#include</span> <span class="str">&lt;sys/stat.h&gt;</span>
+
+<span class="kw">int</span> <span class="fn">main</span>() {
+    FILE *fp = <span class="fn">fopen</span>(<span class="str">"data.bin"</span>, <span class="str">"wb"</span>);
+    <span class="kw">struct</span> stat st;
+    <span class="fn">fstat</span>(<span class="fn">fileno</span>(fp), &amp;st);
+
+    <span class="cm">/* st_blksize 是文件系统的最优块大小，用它做缓冲更高效 */</span>
+    <span class="kw">char</span> *mybuf = <span class="fn">malloc</span>(st.st_blksize);
+    <span class="fn">setvbuf</span>(fp, mybuf, _IOFBF, st.st_blksize);
+
+    <span class="cm">/* ... 写入操作 ... */</span>
+    <span class="fn">fclose</span>(fp);
+    <span class="fn">free</span>(mybuf);
+}</code></pre>
+
+  <div class="info-box note">
+    <div class="title">官方建议</div>
+    <p>"Actually, you can get an even better value to use for the buffer size by means of the fstat system call: it is found in the st_blksize field of the file attributes."<br>— <em>GNU C Library Manual §12.20.3</em></p>
+  </div>
+
+  <div class="first-principle">
+    <div class="fp-label">第一性原理</div>
+    <h3>全缓冲 = 最大化批处理规模</h3>
+    <p>全缓冲的目标是使每次系统调用携带尽可能多的数据。缓冲区大小应匹配文件系统的块大小（<code>st_blksize</code>），使每次 <code>write()</code> 都能完整写入一个块，避免内核侧的读改写（read-modify-write）操作，这是全缓冲效率最大化的物理基础。</p>
+  </div>
+</section>
+
+<!-- ─────────── Chapter 6 ─────────── -->
+<section class="chapter" id="ch6">
+  <div class="chapter-badge">Chapter 06</div>
+  <h1 class="chapter-title">行缓冲实现原理</h1>
+  <p class="chapter-subtitle">_IOLBF 模式：newline 触发机制与特殊行为</p>
+
+  <h2>6.1 行缓冲的核心机制</h2>
+  <p>行缓冲模式下，<code>write_end</code> 被设置为 <code>buf_base</code>（即缓冲区起始），这迫使每次 <code>putc</code> 都走"慢路径"（<code>__overflow</code>），在慢路径中再检查字符是否为换行符。</p>
+
+  <div class="info-box note">
+    <div class="title">glibc 源码注释（oldfileops.c 第81-87行）</div>
+    <p>
+      "LINE BUFFERED OUTPUT:<br>
+      During line buffered output, _IO_write_base==base() && epptr()==base().<br>
+      However, ptr() may be anywhere between base() and ebuf().<br>
+      This forces a call to filebuf::overflow(int C) on every put.<br>
+      If there is more space in the buffer, and C is not a '\n',<br>
+      then C is inserted, and pptr() incremented."
+    </p>
+  </div>
+
+  <h2>6.2 行缓冲写入流程图</h2>
+
+  <div class="svg-wrap">
+    <svg width="680" height="360" viewBox="0 0 680 360" xmlns="http://www.w3.org/2000/svg" style="max-width:100%">
+      <defs>
+        <marker id="c1" markerWidth="8" markerHeight="6" refX="6" refY="3" orient="auto">
+          <path d="M0,0 L0,6 L8,3 z" fill="#ca8a04"/>
+        </marker>
+        <marker id="c2" markerWidth="8" markerHeight="6" refX="6" refY="3" orient="auto">
+          <path d="M0,0 L0,6 L8,3 z" fill="#16a34a"/>
+        </marker>
+        <marker id="c3" markerWidth="8" markerHeight="6" refX="6" refY="3" orient="auto">
+          <path d="M0,0 L0,6 L8,3 z" fill="#dc2626"/>
+        </marker>
+      </defs>
+
+      <!-- putc call -->
+      <rect x="270" y="10" width="140" height="36" rx="8" fill="#fef9c3" stroke="#ca8a04" stroke-width="2"/>
+      <text x="340" y="28" text-anchor="middle" font-size="12" font-weight="700" fill="#92400e">putc(ch, fp)</text>
+      <text x="340" y="42" text-anchor="middle" font-size="10" fill="#a16207">行缓冲模式</text>
+
+      <line x1="340" y1="46" x2="340" y2="66" stroke="#ca8a04" stroke-width="2" marker-end="url(#c1)"/>
+
+      <!-- overflow always -->
+      <rect x="230" y="68" width="220" height="36" rx="6" fill="#fde68a" stroke="#f59e0b" stroke-width="1.5"/>
+      <text x="340" y="83" text-anchor="middle" font-size="11" fill="#92400e">write_end == buf_base</text>
+      <text x="340" y="97" text-anchor="middle" font-size="10" fill="#92400e">→ 始终触发 __overflow()</text>
+
+      <line x1="340" y1="104" x2="340" y2="124" stroke="#ca8a04" stroke-width="2" marker-end="url(#c1)"/>
+
+      <!-- decision: is \n? -->
+      <polygon points="340,126 430,156 340,186 250,156" fill="#fff7ed" stroke="#ea580c" stroke-width="2"/>
+      <text x="340" y="152" text-anchor="middle" font-size="11" fill="#9a3412">ch == '\n'</text>
+      <text x="340" y="167" text-anchor="middle" font-size="10" fill="#ea580c">?</text>
+
+      <!-- Yes branch -->
+      <line x1="430" y1="156" x2="530" y2="156" stroke="#dc2626" stroke-width="2" marker-end="url(#c3)"/>
+      <text x="480" y="148" text-anchor="middle" font-size="10" fill="#dc2626">是 (\n)</text>
+      <rect x="530" y="136" width="140" height="40" rx="6" fill="#fca5a5" stroke="#dc2626" stroke-width="1.5"/>
+      <text x="600" y="153" text-anchor="middle" font-size="11" fill="#7f1d1d">写入\n + 立即</text>
+      <text x="600" y="167" text-anchor="middle" font-size="11" fill="#7f1d1d">write() 刷新</text>
+
+      <!-- No branch -->
+      <line x1="250" y1="156" x2="120" y2="156" stroke="#16a34a" stroke-width="2" marker-end="url(#c2)"/>
+      <text x="185" y="148" text-anchor="middle" font-size="10" fill="#16a34a">否</text>
+      <rect x="10" y="136" width="110" height="40" rx="6" fill="#bbf7d0" stroke="#16a34a" stroke-width="1.5"/>
+      <text x="65" y="153" text-anchor="middle" font-size="11" fill="#14532d">写入字符到</text>
+      <text x="65" y="167" text-anchor="middle" font-size="11" fill="#14532d">缓冲区</text>
+
+      <!-- Also: buffer full -->
+      <line x1="340" y1="186" x2="340" y2="206" stroke="#ca8a04" stroke-width="2" marker-end="url(#c1)"/>
+      <rect x="230" y="208" width="220" height="36" rx="6" fill="#fed7aa" stroke="#ea580c" stroke-width="1.5"/>
+      <text x="340" y="223" text-anchor="middle" font-size="11" fill="#9a3412">缓冲区满（buf_end）时</text>
+      <text x="340" y="237" text-anchor="middle" font-size="10" fill="#9a3412">也会触发 write() 刷新</text>
+
+      <!-- Buffer visual -->
+      <text x="10" y="278" font-size="11" font-weight="600" fill="#1e293b">示例：printf("Hello\nWorld")</text>
+      <!-- chars -->
+      <rect x="10" y="286" width="36" height="28" rx="3" fill="#fef9c3" stroke="#ca8a04"/>
+      <text x="28" y="305" text-anchor="middle" font-size="12" fill="#92400e">H</text>
+      <rect x="50" y="286" width="36" height="28" rx="3" fill="#fef9c3" stroke="#ca8a04"/>
+      <text x="68" y="305" text-anchor="middle" font-size="12" fill="#92400e">e</text>
+      <rect x="90" y="286" width="36" height="28" rx="3" fill="#fef9c3" stroke="#ca8a04"/>
+      <text x="108" y="305" text-anchor="middle" font-size="12" fill="#92400e">l</text>
+      <rect x="130" y="286" width="36" height="28" rx="3" fill="#fef9c3" stroke="#ca8a04"/>
+      <text x="148" y="305" text-anchor="middle" font-size="12" fill="#92400e">l</text>
+      <rect x="170" y="286" width="36" height="28" rx="3" fill="#fef9c3" stroke="#ca8a04"/>
+      <text x="188" y="305" text-anchor="middle" font-size="12" fill="#92400e">o</text>
+      <!-- \n triggers flush -->
+      <rect x="210" y="286" width="36" height="28" rx="3" fill="#fca5a5" stroke="#dc2626" stroke-width="2"/>
+      <text x="228" y="302" text-anchor="middle" font-size="11" font-weight="700" fill="#dc2626">\n</text>
+      <text x="228" y="315" text-anchor="middle" font-size="8" fill="#dc2626">↓flush</text>
+      <!-- flush arrow -->
+      <line x1="228" y1="316" x2="228" y2="336" stroke="#dc2626" stroke-width="1.5" marker-end="url(#c3)"/>
+      <rect x="10" y="338" width="220" height="18" rx="4" fill="#fee2e2" stroke="#dc2626" stroke-width="1"/>
+      <text x="120" y="351" text-anchor="middle" font-size="10" fill="#7f1d1d">write(fd, "Hello\n", 6) ← 立即刷新</text>
+
+      <!-- W continues accumulating -->
+      <rect x="260" y="286" width="36" height="28" rx="3" fill="#fef9c3" stroke="#ca8a04"/>
+      <text x="278" y="305" text-anchor="middle" font-size="12" fill="#92400e">W</text>
+      <rect x="300" y="286" width="36" height="28" rx="3" fill="#fef9c3" stroke="#ca8a04"/>
+      <text x="318" y="305" text-anchor="middle" font-size="12" fill="#92400e">o</text>
+      <rect x="340" y="286" width="36" height="28" rx="3" fill="#fef9c3" stroke="#ca8a04"/>
+      <text x="358" y="305" text-anchor="middle" font-size="12" fill="#92400e">r</text>
+      <rect x="380" y="286" width="36" height="28" rx="3" fill="#fef9c3" stroke="#ca8a04"/>
+      <text x="398" y="305" text-anchor="middle" font-size="12" fill="#92400e">l</text>
+      <rect x="420" y="286" width="36" height="28" rx="3" fill="#fef9c3" stroke="#ca8a04"/>
+      <text x="438" y="305" text-anchor="middle" font-size="12" fill="#92400e">d</text>
+      <text x="480" y="305" font-size="11" fill="#94a3b8">← 待刷新（无\n）</text>
+    </svg>
+    <figcaption>图6-1：行缓冲写入流程与 \n 触发刷新示意</figcaption>
+  </div>
+
+  <h2>6.3 行缓冲的特殊规则</h2>
+  <p>来自 <code>setbuf(3)</code> Linux man page：</p>
+
+  <div class="info-box warn">
+    <div class="title">行缓冲触发条件（来自 man 手册原文）</div>
+    <p>"when it is line buffered, characters are saved up until a newline is output <strong>or input is read from any stream attached to a terminal device</strong> (typically stdin)."</p>
+    <p>即：从终端读取 stdin 时，也会触发所有行缓冲流的刷新！</p>
+  </div>
+
+  <div class="info-box note">
+    <div class="title">flushlbf 专用函数</div>
+    <p>glibc 提供了 <code>_flushlbf()</code>（声明于 <code>stdio_ext.h</code>）来刷新所有行缓冲流，这在从终端读取前隐式调用，确保提示符先于读操作显示。</p>
+  </div>
+
+  <pre><code><span class="cm">/* 行缓冲触发示例 */</span>
+<span class="pp">#include</span> <span class="str">&lt;stdio.h&gt;</span>
+
+<span class="kw">int</span> <span class="fn">main</span>() {
+    <span class="cm">/* stdout 连接终端时是行缓冲 */</span>
+    <span class="fn">printf</span>(<span class="str">"请输入姓名："</span>);   <span class="cm">/* 无\n → 正常情况下不刷新 */</span>
+    <span class="cm">/* 但读取 stdin 前，glibc 会自动调用 _flushlbf() */</span>
+    <span class="cm">/* 所以提示符会正确显示 */</span>
+    <span class="kw">char</span> name[<span class="num">64</span>];
+    <span class="fn">fgets</span>(name, <span class="kw">sizeof</span>(name), stdin);  <span class="cm">/* ← 此处触发 stdout 的行缓冲刷新 */</span>
+    <span class="fn">printf</span>(<span class="str">"你好, %s\n"</span>, name);
+}</code></pre>
+
+  <div class="first-principle">
+    <div class="fp-label">第一性原理</div>
+    <h3>行缓冲 = 以换行符为自然语义边界的批处理</h3>
+    <p>人类与终端的交互以"行"为单位——输入一行命令、显示一行结果。行缓冲将这个语义边界（换行符 <code>\n</code>）映射为 I/O 批处理边界，在兼顾交互实时性的同时，将同一行内的多个字符合并为一次系统调用。这是对"终端是交互设备"这一物理事实的直接建模。</p>
+  </div>
+</section>
+
+<!-- ─────────── Chapter 7 ─────────── -->
+<section class="chapter" id="ch7">
+  <div class="chapter-badge">Chapter 07</div>
+  <h1 class="chapter-title">无缓冲实现原理</h1>
+  <p class="chapter-subtitle">_IONBF：_shortbuf 与立即传输</p>
+
+  <h2>7.1 无缓冲的实现方式</h2>
+  <p>无缓冲模式下，glibc 使用 <code>_shortbuf[1]</code>——一个嵌入在 <code>_IO_FILE</code> 结构体中的单字节数组——作为"临时中转"，但每次写入后立即调用 <code>write()</code>。</p>
+
+  <pre><code><span class="cm">/* glibc/libio/oldfileops.c 注释（第88-90行）*/</span>
+<span class="cm">/* UNBUFFERED STREAMS:
+   If a filebuf is unbuffered(), the _shortbuf[1] is used as the buffer. */</span>
+
+<span class="cm">/* 无缓冲模式下的指针设置（setvbuf 设置 _IONBF 时）*/</span>
+fp->_IO_buf_base  = fp->_shortbuf;
+fp->_IO_buf_end   = fp->_shortbuf + <span class="num">1</span>;  <span class="cm">/* 缓冲区大小 = 1 字节 */</span>
+fp->_IO_write_base = fp->_shortbuf;
+fp->_IO_write_ptr  = fp->_shortbuf;
+fp->_IO_write_end  = fp->_shortbuf;    <span class="cm">/* write_end == write_base → 每次都 overflow */</span></code></pre>
+
+  <h2>7.2 无缓冲工作示意图</h2>
+
+  <div class="svg-wrap">
+    <svg width="680" height="220" viewBox="0 0 680 220" xmlns="http://www.w3.org/2000/svg" style="max-width:100%">
+      <defs>
+        <marker id="d1" markerWidth="8" markerHeight="6" refX="6" refY="3" orient="auto">
+          <path d="M0,0 L0,6 L8,3 z" fill="#dc2626"/>
+        </marker>
+      </defs>
+      <text x="340" y="18" text-anchor="middle" font-size="13" font-weight="700" fill="#dc2626">无缓冲模式（stderr 默认模式）</text>
+
+      <!-- _shortbuf -->
+      <rect x="290" y="28" width="100" height="40" rx="6" fill="#fee2e2" stroke="#dc2626" stroke-width="2"/>
+      <text x="340" y="45" text-anchor="middle" font-size="11" font-weight="600" fill="#dc2626">_shortbuf[1]</text>
+      <text x="340" y="60" text-anchor="middle" font-size="9" fill="#dc2626">1字节临时缓冲</text>
+
+      <!-- Chars -->
+      <text x="340" y="90" text-anchor="middle" font-size="11" fill="#64748b">写入 "Error!\n" (7字节)</text>
+
+      <!-- Each char triggers syscall -->
+      <rect x="20" y="100" width="30" height="26" rx="3" fill="#fca5a5" stroke="#dc2626"/>
+      <text x="35" y="117" text-anchor="middle" font-size="11" fill="#7f1d1d">E</text>
+      <line x1="35" y1="126" x2="35" y2="146" stroke="#dc2626" stroke-width="1.5" marker-end="url(#d1)"/>
+      <text x="35" y="160" text-anchor="middle" font-size="8" fill="#dc2626">write</text>
+
+      <rect x="60" y="100" width="30" height="26" rx="3" fill="#fca5a5" stroke="#dc2626"/>
+      <text x="75" y="117" text-anchor="middle" font-size="11" fill="#7f1d1d">r</text>
+      <line x1="75" y1="126" x2="75" y2="146" stroke="#dc2626" stroke-width="1.5" marker-end="url(#d1)"/>
+      <text x="75" y="160" text-anchor="middle" font-size="8" fill="#dc2626">write</text>
+
+      <rect x="100" y="100" width="30" height="26" rx="3" fill="#fca5a5" stroke="#dc2626"/>
+      <text x="115" y="117" text-anchor="middle" font-size="11" fill="#7f1d1d">r</text>
+      <line x1="115" y1="126" x2="115" y2="146" stroke="#dc2626" stroke-width="1.5" marker-end="url(#d1)"/>
+      <text x="115" y="160" text-anchor="middle" font-size="8" fill="#dc2626">write</text>
+
+      <rect x="140" y="100" width="30" height="26" rx="3" fill="#fca5a5" stroke="#dc2626"/>
+      <text x="155" y="117" text-anchor="middle" font-size="11" fill="#7f1d1d">o</text>
+      <line x1="155" y1="126" x2="155" y2="146" stroke="#dc2626" stroke-width="1.5" marker-end="url(#d1)"/>
+      <text x="155" y="160" text-anchor="middle" font-size="8" fill="#dc2626">write</text>
+
+      <rect x="180" y="100" width="30" height="26" rx="3" fill="#fca5a5" stroke="#dc2626"/>
+      <text x="195" y="117" text-anchor="middle" font-size="11" fill="#7f1d1d">r</text>
+      <line x1="195" y1="126" x2="195" y2="146" stroke="#dc2626" stroke-width="1.5" marker-end="url(#d1)"/>
+      <text x="195" y="160" text-anchor="middle" font-size="8" fill="#dc2626">write</text>
+
+      <rect x="220" y="100" width="30" height="26" rx="3" fill="#fca5a5" stroke="#dc2626"/>
+      <text x="235" y="117" text-anchor="middle" font-size="11" fill="#7f1d1d">!</text>
+      <line x1="235" y1="126" x2="235" y2="146" stroke="#dc2626" stroke-width="1.5" marker-end="url(#d1)"/>
+      <text x="235" y="160" text-anchor="middle" font-size="8" fill="#dc2626">write</text>
+
+      <rect x="260" y="100" width="30" height="26" rx="3" fill="#fca5a5" stroke="#dc2626"/>
+      <text x="275" y="117" text-anchor="middle" font-size="11" fill="#7f1d1d">\n</text>
+      <line x1="275" y1="126" x2="275" y2="146" stroke="#dc2626" stroke-width="1.5" marker-end="url(#d1)"/>
+      <text x="275" y="160" text-anchor="middle" font-size="8" fill="#dc2626">write</text>
+
+      <text x="330" y="120" font-size="14" fill="#94a3b8">→ 7次 write() syscall</text>
+
+      <!-- Contrast -->
+      <rect x="20" y="175" width="640" height="38" rx="8" fill="#fff7ed" stroke="#ea580c" stroke-width="1.5"/>
+      <text x="340" y="192" text-anchor="middle" font-size="11" font-weight="700" fill="#ea580c">为什么 stderr 要无缓冲？</text>
+      <text x="340" y="208" text-anchor="middle" font-size="10" fill="#9a3412">错误信息必须在程序崩溃前立即输出，不能因缓冲区未满而丢失。高代价是正当的安全成本。</text>
+    </svg>
+    <figcaption>图7-1：无缓冲模式每字节触发一次 write() 系统调用</figcaption>
+  </div>
+
+  <h2>7.3 用 setvbuf 设置无缓冲</h2>
+
+  <pre><code><span class="pp">#include</span> <span class="str">&lt;stdio.h&gt;</span>
+
+<span class="kw">int</span> <span class="fn">main</span>() {
+    <span class="cm">/* 将 stdout 设置为无缓冲，适用于实时监控场景 */</span>
+    <span class="fn">setvbuf</span>(stdout, NULL, _IONBF, <span class="num">0</span>);
+
+    <span class="cm">/* 等价于老式写法（不推荐） */</span>
+    <span class="cm">/* setbuf(stdout, NULL); */</span>
+
+    <span class="fn">printf</span>(<span class="str">"实时输出"</span>);  <span class="cm">/* 立即显示，无需\n */</span>
+}</code></pre>
+
+  <div class="info-box tip">
+    <div class="title">何时使用无缓冲？</div>
+    <p>• <strong>错误日志</strong>：确保崩溃前消息已输出（stderr 默认就是）<br>
+       • <strong>实时监控</strong>：每个字符/字节需即时可见<br>
+       • <strong>交互终端</strong>：精确控制输出时机（通常行缓冲已足够）</p>
+  </div>
+
+  <div class="first-principle">
+    <div class="fp-label">第一性原理</div>
+    <h3>无缓冲 = 以实时性换取吞吐量</h3>
+    <p>无缓冲是"不积攒、立即发送"的极端策略，将系统调用开销最大化，但将延迟最小化至零。<code>stderr</code> 之所以默认无缓冲，是因为错误信息的<strong>可靠送达</strong>（不因缓冲区未满而丢失）比性能更重要。这体现了"安全优先"的设计原则。</p>
+  </div>
+</section>
+
+<!-- ─────────── Chapter 8 ─────────── -->
+<section class="chapter" id="ch8">
+  <div class="chapter-badge">Chapter 08</div>
+  <h1 class="chapter-title">缓冲区刷新机制</h1>
+  <p class="chapter-subtitle">fflush、自动刷新条件与 __fpurge</p>
+
+  <h2>8.1 自动刷新的五种场景</h2>
+  <p>根据 GNU C Library 手册 §12.20.2，以下情况会自动刷新输出缓冲区：</p>
+
+  <div class="svg-wrap">
+    <svg width="680" height="280" viewBox="0 0 680 280" xmlns="http://www.w3.org/2000/svg" style="max-width:100%">
+      <text x="340" y="20" text-anchor="middle" font-size="13" font-weight="700" fill="#1e293b">缓冲区自动刷新的五种触发条件</text>
+      <!-- Central -->
+      <ellipse cx="340" cy="150" rx="75" ry="40" fill="#2563eb" stroke="#1d4ed8" stroke-width="2"/>
+      <text x="340" y="145" text-anchor="middle" font-size="12" font-weight="700" fill="white">缓冲区</text>
+      <text x="340" y="162" text-anchor="middle" font-size="11" fill="#bfdbfe">自动刷新</text>
+
+      <!-- 1: buffer full -->
+      <ellipse cx="100" cy="60" rx="88" ry="30" fill="#fee2e2" stroke="#dc2626" stroke-width="1.5"/>
+      <text x="100" y="55" text-anchor="middle" font-size="10" font-weight="600" fill="#dc2626">① 缓冲区满</text>
+      <text x="100" y="70" text-anchor="middle" font-size="9" fill="#dc2626">write_ptr >= write_end</text>
+      <line x1="170" y1="75" x2="270" y2="130" stroke="#dc2626" stroke-width="1.5" stroke-dasharray="4,2"/>
+
+      <!-- 2: fclose -->
+      <ellipse cx="580" cy="60" rx="88" ry="30" fill="#f3e8ff" stroke="#7c3aed" stroke-width="1.5"/>
+      <text x="580" y="55" text-anchor="middle" font-size="10" font-weight="600" fill="#7c3aed">② fclose()</text>
+      <text x="580" y="70" text-anchor="middle" font-size="9" fill="#7c3aed">关闭流时刷新</text>
+      <line x1="510" y1="75" x2="410" y2="130" stroke="#7c3aed" stroke-width="1.5" stroke-dasharray="4,2"/>
+
+      <!-- 3: exit -->
+      <ellipse cx="100" cy="240" rx="88" ry="30" fill="#dcfce7" stroke="#16a34a" stroke-width="1.5"/>
+      <text x="100" y="235" text-anchor="middle" font-size="10" font-weight="600" fill="#16a34a">③ exit()</text>
+      <text x="100" y="250" text-anchor="middle" font-size="9" fill="#16a34a">程序正常退出</text>
+      <line x1="175" y1="230" x2="270" y2="180" stroke="#16a34a" stroke-width="1.5" stroke-dasharray="4,2"/>
+
+      <!-- 4: newline (line buf) -->
+      <ellipse cx="340" cy="260" rx="88" ry="30" fill="#fef9c3" stroke="#ca8a04" stroke-width="1.5"/>
+      <text x="340" y="255" text-anchor="middle" font-size="10" font-weight="600" fill="#ca8a04">④ 写入 '\n'</text>
+      <text x="340" y="270" text-anchor="middle" font-size="9" fill="#ca8a04">仅限行缓冲流</text>
+      <line x1="340" y1="230" x2="340" y2="192" stroke="#ca8a04" stroke-width="1.5" stroke-dasharray="4,2"/>
+
+      <!-- 5: read from any stream -->
+      <ellipse cx="580" cy="240" rx="88" ry="30" fill="#e0f2fe" stroke="#0891b2" stroke-width="1.5"/>
+      <text x="580" y="233" text-anchor="middle" font-size="10" font-weight="600" fill="#0891b2">⑤ 任意流读操作</text>
+      <text x="580" y="248" text-anchor="middle" font-size="9" fill="#0891b2">实际从文件读数据时</text>
+      <line x1="507" y1="228" x2="410" y2="180" stroke="#0891b2" stroke-width="1.5" stroke-dasharray="4,2"/>
+    </svg>
+    <figcaption>图8-1：五种自动刷新触发条件（来自 GNU C Library §12.20.2）</figcaption>
+  </div>
+
+  <h2>8.2 fflush 函数</h2>
+
+  <div class="info-box note">
+    <div class="title">官方手册原文 §12.20.2</div>
+    <p>"This function causes any buffered output on stream to be delivered to the file. If stream is a null pointer, then fflush causes buffered output on <em>all</em> open output streams to be flushed."</p>
+  </div>
+
+  <pre><code><span class="pp">#include</span> <span class="str">&lt;stdio.h&gt;</span>
+
+<span class="kw">int</span> <span class="fn">main</span>() {
+    <span class="fn">printf</span>(<span class="str">"进度: 50%%"</span>);
+    <span class="fn">fflush</span>(stdout);          <span class="cm">/* 强制立即输出（无\n时） */</span>
+    <span class="fn">do_long_computation</span>();
+
+    <span class="fn">fflush</span>(NULL);             <span class="cm">/* 刷新所有打开的输出流 */</span>
+
+    <span class="cm">/* 仅刷新行缓冲流（glibc 扩展，来自 stdio_ext.h）*/</span>
+    <span class="fn">_flushlbf</span>();
+}</code></pre>
+
+  <h2>8.3 __fpurge：丢弃缓冲内容</h2>
+
+  <pre><code><span class="pp">#include</span> <span class="str">&lt;stdio_ext.h&gt;</span>
+
+<span class="cm">/* __fpurge：不写入底层文件，直接丢弃缓冲区内容 */</span>
+<span class="cm">/* 对读模式：丢弃已读入但未消费的数据 */</span>
+<span class="cm">/* 对写模式：丢弃未写出的数据（不会写入文件！） */</span>
+<span class="fn">__fpurge</span>(fp);
+
+<span class="cm">/* 查询缓冲状态（来自 stdio_ext.h，Solaris 引入，glibc 实现）*/</span>
+size_t bufsize = <span class="fn">__fbufsize</span>(fp);   <span class="cm">/* 缓冲区总大小 */</span>
+size_t pending = <span class="fn">__fpending</span>(fp);   <span class="cm">/* 待刷新字节数 */</span>
+<span class="kw">int</span>    is_lb   = <span class="fn">__flbf</span>(fp);       <span class="cm">/* 是否行缓冲 */</span></code></pre>
+
+  <h2>8.4 刷新与丢弃的区别</h2>
+  <div class="svg-wrap">
+    <svg width="600" height="160" viewBox="0 0 600 160" xmlns="http://www.w3.org/2000/svg" style="max-width:100%">
+      <defs>
+        <marker id="e1" markerWidth="8" markerHeight="6" refX="6" refY="3" orient="auto">
+          <path d="M0,0 L0,6 L8,3 z" fill="#2563eb"/>
+        </marker>
+        <marker id="e2" markerWidth="8" markerHeight="6" refX="6" refY="3" orient="auto">
+          <path d="M0,0 L0,6 L8,3 z" fill="#dc2626"/>
+        </marker>
+      </defs>
+      <!-- Buffer -->
+      <rect x="10" y="50" width="160" height="60" rx="6" fill="#bfdbfe" stroke="#2563eb" stroke-width="1.5"/>
+      <text x="90" y="76" text-anchor="middle" font-size="11" font-weight="600" fill="#1d4ed8">缓冲区</text>
+      <text x="90" y="92" text-anchor="middle" font-size="10" fill="#3b82f6">待写出数据</text>
+      <text x="90" y="108" text-anchor="middle" font-size="10" fill="#3b82f6">（n 字节）</text>
+
+      <!-- fflush arrow -->
+      <line x1="170" y1="70" x2="290" y2="70" stroke="#2563eb" stroke-width="2" marker-end="url(#e1)"/>
+      <text x="230" y="62" text-anchor="middle" font-size="10" fill="#2563eb">fflush()</text>
+      <rect x="290" y="50" width="120" height="40" rx="6" fill="#dcfce7" stroke="#16a34a" stroke-width="1.5"/>
+      <text x="350" y="68" text-anchor="middle" font-size="11" fill="#15803d">底层文件</text>
+      <text x="350" y="83" text-anchor="middle" font-size="10" fill="#16a34a">数据写入成功</text>
+
+      <!-- fpurge arrow -->
+      <line x1="170" y1="92" x2="290" y2="92" stroke="#dc2626" stroke-width="2" marker-end="url(#e2)" stroke-dasharray="5,3"/>
+      <text x="230" y="84" text-anchor="middle" font-size="10" fill="#dc2626">__fpurge()</text>
+      <rect x="290" y="80" width="120" height="40" rx="6" fill="#fee2e2" stroke="#dc2626" stroke-width="1.5"/>
+      <text x="350" y="98" text-anchor="middle" font-size="11" fill="#dc2626">数据丢弃</text>
+      <text x="350" y="112" text-anchor="middle" font-size="10" fill="#dc2626">不写文件</text>
+
+      <!-- Reset -->
+      <rect x="430" y="50" width="150" height="80" rx="6" fill="#f8fafc" stroke="#94a3b8" stroke-width="1"/>
+      <text x="505" y="70" text-anchor="middle" font-size="10" font-weight="600" fill="#64748b">两者之后：</text>
+      <text x="505" y="86" text-anchor="middle" font-size="9" fill="#64748b">write_ptr = write_base</text>
+      <text x="505" y="100" text-anchor="middle" font-size="9" fill="#64748b">缓冲区恢复空状态</text>
+      <text x="505" y="116" text-anchor="middle" font-size="9" fill="#64748b">（指针重置）</text>
+    </svg>
+    <figcaption>图8-2：fflush（写出并清空）与 __fpurge（丢弃并清空）的区别</figcaption>
+  </div>
+
+  <div class="first-principle">
+    <div class="fp-label">第一性原理</div>
+    <h3>刷新 = 将缓冲的承诺兑现给内核</h3>
+    <p>缓冲区中的数据是"已承诺给程序员但尚未兑现给内核"的数据。<code>fflush</code> 是将承诺兑现的动作；<code>__fpurge</code> 是撤销承诺。两者都将指针重置为空状态，区别仅在于数据是否真正传达到底层文件描述符。</p>
+  </div>
+</section>
+
+<!-- ─────────── Chapter 9 ─────────── -->
+<section class="chapter" id="ch9">
+  <div class="chapter-badge">Chapter 09</div>
+  <h1 class="chapter-title">缓冲控制 API</h1>
+  <p class="chapter-subtitle">setvbuf、setbuf、setbuffer、setlinebuf 详解</p>
+
+  <h2>9.1 API 总览</h2>
+  <div class="table-wrap">
+    <table>
+      <tr><th>函数</th><th>签名</th><th>等价于</th><th>来源</th></tr>
+      <tr><td><code>setvbuf</code></td><td><code>int setvbuf(FILE*, char*, int mode, size_t size)</code></td><td>核心函数</td><td>C89/C99 标准</td></tr>
+      <tr><td><code>setbuf</code></td><td><code>void setbuf(FILE*, char *buf)</code></td><td><code>setvbuf(f, buf, buf?_IOFBF:_IONBF, BUFSIZ)</code></td><td>C89（旧接口）</td></tr>
+      <tr><td><code>setbuffer</code></td><td><code>void setbuffer(FILE*, char*, size_t)</code></td><td><code>setvbuf(f, buf, _IOFBF, size)</code></td><td>BSD（glibc 扩展）</td></tr>
+      <tr><td><code>setlinebuf</code></td><td><code>void setlinebuf(FILE*)</code></td><td><code>setvbuf(f, NULL, _IOLBF, 0)</code></td><td>BSD（glibc 扩展）</td></tr>
+    </table>
+  </div>
+
+  <h2>9.2 setvbuf 详解</h2>
+
+  <pre><code><span class="pp">#include</span> <span class="str">&lt;stdio.h&gt;</span>
+
+<span class="cm">/**
+ * setvbuf - 设置流的缓冲模式
+ * @stream: 目标流
+ * @buf:    用户提供的缓冲区（NULL 则 glibc 用 malloc 分配）
+ * @mode:   _IOFBF | _IOLBF | _IONBF
+ * @size:   缓冲区大小（_IONBF 时忽略）
+ * 返回：0=成功，非0=失败
+ *
+ * 注意：必须在流打开后、任何 I/O 操作之前调用！
+ */</span>
+<span class="kw">int</span> <span class="fn">setvbuf</span>(FILE *stream, <span class="kw">char</span> *buf, <span class="kw">int</span> mode, size_t size);
+
+<span class="cm">/* ── 三种使用方式 ── */</span>
+
+<span class="cm">/* 1. 全缓冲，glibc 自动分配缓冲区 */</span>
+<span class="fn">setvbuf</span>(fp, NULL, _IOFBF, BUFSIZ);
+
+<span class="cm">/* 2. 行缓冲，用户提供缓冲区 */</span>
+<span class="kw">char</span> mybuf[<span class="num">1024</span>];
+<span class="fn">setvbuf</span>(fp, mybuf, _IOLBF, <span class="kw">sizeof</span>(mybuf));
+
+<span class="cm">/* 3. 无缓冲 */</span>
+<span class="fn">setvbuf</span>(fp, NULL, _IONBF, <span class="num">0</span>);</code></pre>
+
+  <h2>9.3 调用时机的约束</h2>
+
+  <div class="info-box warn">
+    <div class="title">官方手册警告（§12.20.3）</div>
+    <p>"After opening a stream (but <strong>before any other operations have been performed on it</strong>), you can explicitly specify what kind of buffering you want it to have using the setvbuf function."</p>
+    <p>必须在流打开后、首次 I/O 操作前调用。否则行为未定义。</p>
+  </div>
+
+  <h2>9.4 buf 参数的生命周期陷阱</h2>
+
+  <pre><code><span class="cm">/* ❌ 错误示例：栈上 buf 先于 stream 失效 */</span>
+<span class="kw">void</span> <span class="fn">bad_example</span>() {
+    <span class="kw">char</span> buf[BUFSIZ];          <span class="cm">/* 栈上变量 */</span>
+    <span class="fn">setvbuf</span>(stdin, buf, _IOFBF, BUFSIZ);
+    <span class="fn">printf</span>(<span class="str">"Hello, world!\n"</span>);
+    <span class="cm">/* 函数返回后 buf 失效，但 stream 仍在使用它！→ 未定义行为 */</span>
+}  <span class="cm">/* ← 此处 buf 被销毁，stream 留有悬空指针 */</span>
+
+<span class="cm">/* ✅ 正确示例：静态或堆分配 */</span>
+<span class="kw">static</span> <span class="kw">char</span> static_buf[BUFSIZ];
+<span class="fn">setvbuf</span>(fp, static_buf, _IOFBF, BUFSIZ);  <span class="cm">/* OK */</span>
+
+<span class="kw">char</span> *heap_buf = <span class="fn">malloc</span>(BUFSIZ);
+<span class="fn">setvbuf</span>(fp, heap_buf, _IOFBF, BUFSIZ);    <span class="cm">/* OK（记得 free）*/</span></code></pre>
+
+  <div class="svg-wrap">
+    <svg width="640" height="200" viewBox="0 0 640 200" xmlns="http://www.w3.org/2000/svg" style="max-width:100%">
+      <text x="320" y="20" text-anchor="middle" font-size="12" font-weight="700" fill="#1e293b">setvbuf 的 buf 参数：三种提供方式</text>
+
+      <!-- NULL -->
+      <rect x="20" y="35" width="180" height="130" rx="8" fill="#f0fdf4" stroke="#16a34a" stroke-width="1.5"/>
+      <text x="110" y="58" text-anchor="middle" font-size="11" font-weight="700" fill="#15803d">buf = NULL</text>
+      <text x="110" y="76" text-anchor="middle" font-size="10" fill="#16a34a">glibc 调用 malloc()</text>
+      <text x="110" y="92" text-anchor="middle" font-size="10" fill="#16a34a">自动分配缓冲区</text>
+      <text x="110" y="108" text-anchor="middle" font-size="10" fill="#16a34a">fclose() 时自动</text>
+      <text x="110" y="122" text-anchor="middle" font-size="10" fill="#16a34a">free()</text>
+      <text x="110" y="150" text-anchor="middle" font-size="10" font-weight="600" fill="#15803d">✅ 推荐默认选择</text>
+
+      <!-- Static -->
+      <rect x="230" y="35" width="180" height="130" rx="8" fill="#eff6ff" stroke="#2563eb" stroke-width="1.5"/>
+      <text x="320" y="58" text-anchor="middle" font-size="11" font-weight="700" fill="#1d4ed8">静态/全局数组</text>
+      <text x="320" y="76" text-anchor="middle" font-size="10" fill="#3b82f6">char buf[BUFSIZ];</text>
+      <text x="320" y="92" text-anchor="middle" font-size="10" fill="#3b82f6">（static/全局）</text>
+      <text x="320" y="108" text-anchor="middle" font-size="10" fill="#3b82f6">生命周期覆盖</text>
+      <text x="320" y="122" text-anchor="middle" font-size="10" fill="#3b82f6">整个程序</text>
+      <text x="320" y="150" text-anchor="middle" font-size="10" font-weight="600" fill="#1d4ed8">✅ 安全</text>
+
+      <!-- Heap -->
+      <rect x="440" y="35" width="180" height="130" rx="8" fill="#fff7ed" stroke="#ea580c" stroke-width="1.5"/>
+      <text x="530" y="58" text-anchor="middle" font-size="11" font-weight="700" fill="#9a3412">malloc 分配</text>
+      <text x="530" y="76" text-anchor="middle" font-size="10" fill="#ea580c">char *p = malloc(n);</text>
+      <text x="530" y="92" text-anchor="middle" font-size="10" fill="#ea580c">灵活大小</text>
+      <text x="530" y="108" text-anchor="middle" font-size="10" fill="#ea580c">需在 fclose()</text>
+      <text x="530" y="122" text-anchor="middle" font-size="10" fill="#ea580c">后手动 free(p)</text>
+      <text x="530" y="150" text-anchor="middle" font-size="10" font-weight="600" fill="#9a3412">⚠️ 需手动管理</text>
+    </svg>
+    <figcaption>图9-1：setvbuf 的 buf 参数三种提供方式对比</figcaption>
+  </div>
+
+  <a class="source-link" href="https://sourceware.org/glibc/manual/2.42/html_node/Controlling-Buffering.html" target="_blank">🔗 GNU C Library §12.20.3 Controlling Buffering</a>
+  <a class="source-link" href="https://man7.org/linux/man-pages/man3/setbuf.3.html" target="_blank">🔗 setbuf(3) Linux man page</a>
+
+  <div class="first-principle">
+    <div class="fp-label">第一性原理</div>
+    <h3>API 设计 = 封装策略选择权</h3>
+    <p><code>setvbuf</code> 将三个维度的控制权交给程序员：<strong>模式</strong>（何时刷新）、<strong>内存</strong>（谁提供缓冲区）、<strong>大小</strong>（每次批处理多少）。这三个参数对应了 I/O 性能调优的三个正交维度，而 <code>setbuf</code>/<code>setlinebuf</code> 等简化接口则固定了其中若干维度，降低使用门槛。</p>
+  </div>
+</section>
+
+<!-- ─────────── Chapter 10 ─────────── -->
+<section class="chapter" id="ch10">
+  <div class="chapter-badge">Chapter 10</div>
+  <h1 class="chapter-title">默认缓冲策略</h1>
+  <p class="chapter-subtitle">isatty() 检测、stdin/stdout/stderr 的默认行为</p>
+
+  <h2>10.1 glibc 如何决定默认缓冲模式</h2>
+  <p>glibc 在首次 I/O 操作或 <code>fopen</code> 时，通过 <code>isatty(fd)</code> 系统调用确定流连接的是终端还是文件/管道，据此选择缓冲策略：</p>
+
+  <div class="svg-wrap">
+    <svg width="680" height="300" viewBox="0 0 680 300" xmlns="http://www.w3.org/2000/svg" style="max-width:100%">
+      <defs>
+        <marker id="f1" markerWidth="8" markerHeight="6" refX="6" refY="3" orient="auto">
+          <path d="M0,0 L0,6 L8,3 z" fill="#1e293b"/>
+        </marker>
+        <marker id="f2" markerWidth="8" markerHeight="6" refX="6" refY="3" orient="auto">
+          <path d="M0,0 L0,6 L8,3 z" fill="#dc2626"/>
+        </marker>
+        <marker id="f3" markerWidth="8" markerHeight="6" refX="6" refY="3" orient="auto">
+          <path d="M0,0 L0,6 L8,3 z" fill="#ca8a04"/>
+        </marker>
+        <marker id="f4" markerWidth="8" markerHeight="6" refX="6" refY="3" orient="auto">
+          <path d="M0,0 L0,6 L8,3 z" fill="#2563eb"/>
+        </marker>
+      </defs>
+
+      <!-- fopen / stream open -->
+      <rect x="250" y="10" width="180" height="36" rx="8" fill="#1e293b" stroke="#334155" stroke-width="1.5"/>
+      <text x="340" y="28" text-anchor="middle" font-size="12" font-weight="700" fill="white">fopen() / 流打开</text>
+      <text x="340" y="42" text-anchor="middle" font-size="10" fill="#94a3b8">初始化 _IO_FILE</text>
+
+      <line x1="340" y1="46" x2="340" y2="66" stroke="#1e293b" stroke-width="2" marker-end="url(#f1)"/>
+
+      <!-- isatty check -->
+      <polygon points="340,68 440,96 340,124 240,96" fill="#fef9c3" stroke="#ca8a04" stroke-width="2"/>
+      <text x="340" y="90" text-anchor="middle" font-size="11" font-weight="600" fill="#92400e">isatty(fd)</text>
+      <text x="340" y="107" text-anchor="middle" font-size="10" fill="#a16207">是终端？</text>
+
+      <!-- Yes: line buffered -->
+      <line x1="240" y1="96" x2="120" y2="96" stroke="#ca8a04" stroke-width="2" marker-end="url(#f3)"/>
+      <text x="180" y="88" text-anchor="middle" font-size="10" fill="#ca8a04">是（终端）</text>
+      <rect x="20" y="76" width="100" height="40" rx="6" fill="#fef3c7" stroke="#ca8a04" stroke-width="1.5"/>
+      <text x="70" y="94" text-anchor="middle" font-size="11" font-weight="600" fill="#92400e">行缓冲</text>
+      <text x="70" y="108" text-anchor="middle" font-size="10" fill="#ca8a04">_IOLBF</text>
+
+      <!-- No: full buffered -->
+      <line x1="440" y1="96" x2="560" y2="96" stroke="#2563eb" stroke-width="2" marker-end="url(#f4)"/>
+      <text x="500" y="88" text-anchor="middle" font-size="10" fill="#2563eb">否（文件/管道）</text>
+      <rect x="560" y="76" width="110" height="40" rx="6" fill="#dbeafe" stroke="#2563eb" stroke-width="1.5"/>
+      <text x="615" y="94" text-anchor="middle" font-size="11" font-weight="600" fill="#1d4ed8">全缓冲</text>
+      <text x="615" y="108" text-anchor="middle" font-size="10" fill="#2563eb">_IOFBF</text>
+
+      <!-- stderr special case -->
+      <line x1="340" y1="124" x2="340" y2="144" stroke="#dc2626" stroke-width="2" marker-end="url(#f2)"/>
+      <rect x="250" y="146" width="180" height="36" rx="6" fill="#fee2e2" stroke="#dc2626" stroke-width="1.5"/>
+      <text x="340" y="161" text-anchor="middle" font-size="11" font-weight="600" fill="#dc2626">stderr 特殊：</text>
+      <text x="340" y="175" text-anchor="middle" font-size="10" fill="#dc2626">始终无缓冲 _IONBF</text>
+
+      <!-- Summary table -->
+      <rect x="20" y="200" width="640" height="90" rx="10" fill="#f8fafc" stroke="#e2e8f0" stroke-width="1"/>
+      <text x="340" y="220" text-anchor="middle" font-size="11" font-weight="700" fill="#1e293b">标准流默认缓冲策略汇总</text>
+
+      <rect x="40" y="228" width="180" height="56" rx="6" fill="#fee2e2" stroke="#dc2626" stroke-width="1"/>
+      <text x="130" y="248" text-anchor="middle" font-size="11" font-weight="600" fill="#dc2626">stderr (fd=2)</text>
+      <text x="130" y="264" text-anchor="middle" font-size="10" fill="#dc2626">无缓冲 _IONBF</text>
+      <text x="130" y="278" text-anchor="middle" font-size="9" fill="#64748b">始终，无论是否终端</text>
+
+      <rect x="240" y="228" width="180" height="56" rx="6" fill="#fef3c7" stroke="#ca8a04" stroke-width="1"/>
+      <text x="330" y="248" text-anchor="middle" font-size="11" font-weight="600" fill="#92400e">stdout/stdin（终端）</text>
+      <text x="330" y="264" text-anchor="middle" font-size="10" fill="#ca8a04">行缓冲 _IOLBF</text>
+      <text x="330" y="278" text-anchor="middle" font-size="9" fill="#64748b">isatty() 返回 true</text>
+
+      <rect x="440" y="228" width="200" height="56" rx="6" fill="#dbeafe" stroke="#2563eb" stroke-width="1"/>
+      <text x="540" y="248" text-anchor="middle" font-size="11" font-weight="600" fill="#1d4ed8">stdout/stdin（重定向）</text>
+      <text x="540" y="264" text-anchor="middle" font-size="10" fill="#2563eb">全缓冲 _IOFBF</text>
+      <text x="540" y="278" text-anchor="middle" font-size="9" fill="#64748b">isatty() 返回 false</text>
+    </svg>
+    <figcaption>图10-1：glibc 默认缓冲策略决策流程</figcaption>
+  </div>
+
+  <h2>10.2 重定向时的行为变化</h2>
+
+  <pre><code><span class="cm">/* 以下两种运行方式，stdout 缓冲模式不同 */</span>
+
+<span class="cm">/* 方式1：连接终端 → 行缓冲 */</span>
+$ ./myprogram
+<span class="cm"># stdout 是行缓冲，每 \n 立即输出</span>
+
+<span class="cm">/* 方式2：重定向到文件 → 全缓冲 */</span>
+$ ./myprogram > output.txt
+<span class="cm"># stdout 变为全缓冲！输出可能不会立即写入 output.txt</span>
+<span class="cm"># 直到缓冲区满或程序退出（exit()）才刷新</span>
+
+<span class="cm">/* 解决方案1：每次输出后手动刷新 */</span>
+<span class="fn">printf</span>(<span class="str">"progress\n"</span>); <span class="fn">fflush</span>(stdout);
+
+<span class="cm">/* 解决方案2：强制行缓冲（不受重定向影响）*/</span>
+<span class="fn">setvbuf</span>(stdout, NULL, _IOLBF, <span class="num">0</span>);
+
+<span class="cm">/* 解决方案3：使用 stdbuf 工具（glibc 提供）*/</span>
+$ stdbuf -oL ./myprogram > output.txt</code></pre>
+
+  <div class="info-box warn">
+    <div class="title">经典陷阱：管道导致输出延迟</div>
+    <p><code>./prog | grep keyword</code> — prog 的 stdout 被管道连接，<code>isatty()</code> 返回 false，切换为全缓冲。若 prog 不主动 <code>fflush</code>，grep 可能长时间收不到数据。这是许多"实时日志"失效的根本原因。</p>
+  </div>
+
+  <div class="first-principle">
+    <div class="fp-label">第一性原理</div>
+    <h3>默认策略 = 对 I/O 目标物理特性的自动感知</h3>
+    <p><code>isatty()</code> 检测本质上是在问："我的输出目标是人类实时在看（终端），还是机器批量处理（文件/管道）？"这个问题的答案决定了最优缓冲策略。glibc 将这个感知自动化，使程序员无需显式指定即可获得合理的默认行为。</p>
+  </div>
+</section>
+
+<!-- ─────────── Chapter 11 ─────────── -->
+<section class="chapter" id="ch11">
+  <div class="chapter-badge">Chapter 11</div>
+  <h1 class="chapter-title">实践与调试</h1>
+  <p class="chapter-subtitle">常见问题、调试技巧与性能优化</p>
+
+  <h2>11.1 查询当前缓冲状态</h2>
+
+  <pre><code><span class="pp">#include</span> <span class="str">&lt;stdio.h&gt;</span>
+<span class="pp">#include</span> <span class="str">&lt;stdio_ext.h&gt;</span>
+
+<span class="kw">void</span> <span class="fn">print_buf_info</span>(FILE *fp, <span class="kw">const</span> <span class="kw">char</span> *name) {
+    <span class="fn">printf</span>(<span class="str">"=== %s 缓冲信息 ===\n"</span>, name);
+    <span class="fn">printf</span>(<span class="str">"  缓冲区大小: %zu 字节\n"</span>, <span class="fn">__fbufsize</span>(fp));
+    <span class="fn">printf</span>(<span class="str">"  待刷新字节: %zu\n"</span>, <span class="fn">__fpending</span>(fp));
+    <span class="fn">printf</span>(<span class="str">"  行缓冲模式: %s\n"</span>, <span class="fn">__flbf</span>(fp) ? <span class="str">"是"</span> : <span class="str">"否"</span>);
+}
+
+<span class="kw">int</span> <span class="fn">main</span>() {
+    <span class="cm">/* 执行一次 I/O 以触发缓冲区初始化 */</span>
+    <span class="fn">fputc</span>(<span class="str">'X'</span>, stdout);
+    <span class="fn">print_buf_info</span>(stdout, <span class="str">"stdout"</span>);
+    <span class="fn">print_buf_info</span>(stderr, <span class="str">"stderr"</span>);
+}</code></pre>
+
+  <h2>11.2 常见问题排查</h2>
+
+  <div class="svg-wrap">
+    <svg width="660" height="320" viewBox="0 0 660 320" xmlns="http://www.w3.org/2000/svg" style="max-width:100%">
+      <text x="330" y="20" text-anchor="middle" font-size="13" font-weight="700" fill="#1e293b">常见缓冲问题与解决方案</text>
+
+      <!-- Problem 1 -->
+      <rect x="10" y="30" width="300" height="90" rx="8" fill="#fef2f2" stroke="#dc2626" stroke-width="1.5"/>
+      <text x="160" y="50" text-anchor="middle" font-size="11" font-weight="700" fill="#dc2626">问题1：printf 输出不显示</text>
+      <text x="20" y="68" font-size="10" fill="#7f1d1d">原因：stdout 为行/全缓冲，</text>
+      <text x="20" y="82" font-size="10" fill="#7f1d1d">字符串末尾无 \n，缓冲未满</text>
+      <text x="20" y="100" font-size="10" font-weight="600" fill="#dc2626">解决：加 \n 或 fflush(stdout)</text>
+      <text x="20" y="114" font-size="10" fill="#dc2626">或 setvbuf(stdout, NULL, _IONBF, 0)</text>
+
+      <!-- Problem 2 -->
+      <rect x="350" y="30" width="300" height="90" rx="8" fill="#fff7ed" stroke="#ea580c" stroke-width="1.5"/>
+      <text x="500" y="50" text-anchor="middle" font-size="11" font-weight="700" fill="#ea580c">问题2：管道中程序输出延迟</text>
+      <text x="360" y="68" font-size="10" fill="#9a3412">原因：重定向使 stdout 变全缓冲</text>
+      <text x="360" y="82" font-size="10" fill="#9a3412">（isatty → false）</text>
+      <text x="360" y="100" font-size="10" font-weight="600" fill="#ea580c">解决：stdbuf -oL ./prog 或</text>
+      <text x="360" y="114" font-size="10" fill="#ea580c">setvbuf(stdout, NULL, _IOLBF, 0)</text>
+
+      <!-- Problem 3 -->
+      <rect x="10" y="140" width="300" height="90" rx="8" fill="#f3e8ff" stroke="#7c3aed" stroke-width="1.5"/>
+      <text x="160" y="160" text-anchor="middle" font-size="11" font-weight="700" fill="#7c3aed">问题3：stderr 与 stdout 顺序混乱</text>
+      <text x="20" y="178" font-size="10" fill="#4c1d95">原因：stderr 无缓冲立即输出，</text>
+      <text x="20" y="192" font-size="10" fill="#4c1d95">stdout 有缓冲延迟输出</text>
+      <text x="20" y="210" font-size="10" font-weight="600" fill="#7c3aed">解决：在关键处 fflush(stdout)</text>
+      <text x="20" y="224" font-size="10" fill="#7c3aed">保证顺序</text>
+
+      <!-- Problem 4 -->
+      <rect x="350" y="140" width="300" height="90" rx="8" fill="#f0fdf4" stroke="#16a34a" stroke-width="1.5"/>
+      <text x="500" y="160" text-anchor="middle" font-size="11" font-weight="700" fill="#16a34a">问题4：fork 后输出重复</text>
+      <text x="360" y="178" font-size="10" fill="#14532d">原因：fork 复制了父进程缓冲区，</text>
+      <text x="360" y="192" font-size="10" fill="#14532d">父子进程都会刷新相同内容</text>
+      <text x="360" y="210" font-size="10" font-weight="600" fill="#16a34a">解决：fork() 前 fflush(NULL)</text>
+      <text x="360" y="224" font-size="10" fill="#16a34a">清空所有缓冲区</text>
+
+      <!-- Problem 5 -->
+      <rect x="10" y="250" width="300" height="60" rx="8" fill="#e0f2fe" stroke="#0891b2" stroke-width="1.5"/>
+      <text x="160" y="270" text-anchor="middle" font-size="11" font-weight="700" fill="#0891b2">问题5：程序崩溃丢失输出</text>
+      <text x="20" y="290" font-size="10" fill="#155e75">原因：abort()/段错误不调用 exit()，</text>
+      <text x="20" y="304" font-size="10" fill="#155e75">缓冲区不自动刷新 → 解决：用 stderr</text>
+
+      <!-- Problem 6 -->
+      <rect x="350" y="250" width="300" height="60" rx="8" fill="#fef9c3" stroke="#ca8a04" stroke-width="1.5"/>
+      <text x="500" y="270" text-anchor="middle" font-size="11" font-weight="700" fill="#ca8a04">问题6：setvbuf 返回非0</text>
+      <text x="360" y="290" font-size="10" fill="#92400e">原因：已有 I/O 操作后才调用，</text>
+      <text x="360" y="304" font-size="10" fill="#92400e">或 mode 参数非法</text>
+    </svg>
+    <figcaption>图11-1：常见缓冲问题与解决方案</figcaption>
+  </div>
+
+  <h2>11.3 性能优化建议</h2>
+
+  <pre><code><span class="cm">/* 建议1：大文件 I/O 使用 fstat 获取最优缓冲大小 */</span>
+<span class="kw">struct</span> stat st;
+<span class="fn">fstat</span>(<span class="fn">fileno</span>(fp), &amp;st);
+<span class="fn">setvbuf</span>(fp, NULL, _IOFBF, st.st_blksize);  <span class="cm">/* 匹配文件系统块大小 */</span>
+
+<span class="cm">/* 建议2：批量写入优于多次小写入 */</span>
+<span class="cm">/* ❌ 低效：多次 fprintf */</span>
+<span class="kw">for</span> (<span class="kw">int</span> i = <span class="num">0</span>; i &lt; <span class="num">10000</span>; i++)
+    <span class="fn">fprintf</span>(fp, <span class="str">"%d\n"</span>, i);  <span class="cm">/* 每次都格式化 */</span>
+
+<span class="cm">/* ✅ 高效：先拼接到内存缓冲，再一次 fwrite */</span>
+<span class="kw">char</span> *mbuf = <span class="fn">malloc</span>(BIG_SIZE);
+<span class="kw">int</span> len = <span class="fn">snprintf</span>(mbuf, BIG_SIZE, ...);
+<span class="fn">fwrite</span>(mbuf, <span class="num">1</span>, len, fp);
+
+<span class="cm">/* 建议3：fork 前务必 fflush */</span>
+<span class="fn">fflush</span>(NULL);   <span class="cm">/* 清空所有输出缓冲区 */</span>
+<span class="kw">pid_t</span> pid = <span class="fn">fork</span>();</code></pre>
+
+  <h2>11.4 缓冲层级全景图</h2>
+
+  <div class="svg-wrap">
+    <svg width="660" height="280" viewBox="0 0 660 280" xmlns="http://www.w3.org/2000/svg" style="max-width:100%">
+      <text x="330" y="20" text-anchor="middle" font-size="13" font-weight="700" fill="#1e293b">Linux I/O 缓冲层级全景</text>
+
+      <!-- Layer 1: App -->
+      <rect x="10" y="30" width="640" height="40" rx="6" fill="#dbeafe" stroke="#2563eb" stroke-width="2"/>
+      <text x="330" y="47" text-anchor="middle" font-size="12" font-weight="700" fill="#1d4ed8">应用程序层</text>
+      <text x="330" y="62" text-anchor="middle" font-size="10" fill="#3b82f6">printf / fprintf / fwrite（用户态代码）</text>
+
+      <!-- Arrow -->
+      <line x1="330" y1="70" x2="330" y2="84" stroke="#64748b" stroke-width="2"/>
+      <polygon points="325,84 335,84 330,92" fill="#64748b"/>
+
+      <!-- Layer 2: glibc buffer -->
+      <rect x="10" y="92" width="640" height="44" rx="6" fill="#fef3c7" stroke="#ca8a04" stroke-width="2"/>
+      <text x="330" y="110" text-anchor="middle" font-size="12" font-weight="700" fill="#92400e">glibc stdio 缓冲层（本文重点）</text>
+      <text x="330" y="128" text-anchor="middle" font-size="10" fill="#a16207">_IO_FILE 用户态缓冲区（8KB 默认），无/行/全缓冲策略</text>
+
+      <!-- Arrow -->
+      <line x1="330" y1="136" x2="330" y2="150" stroke="#64748b" stroke-width="2"/>
+      <polygon points="325,150 335,150 330,158" fill="#64748b"/>
+
+      <!-- Layer 3: syscall -->
+      <rect x="10" y="158" width="640" height="36" rx="6" fill="#f1f5f9" stroke="#64748b" stroke-width="1.5"/>
+      <text x="330" y="175" text-anchor="middle" font-size="12" font-weight="600" fill="#475569">系统调用接口</text>
+      <text x="330" y="188" text-anchor="middle" font-size="10" fill="#64748b">write() / read() / pwrite() 等（用户态 → 内核态切换）</text>
+
+      <!-- Arrow -->
+      <line x1="330" y1="194" x2="330" y2="208" stroke="#64748b" stroke-width="2"/>
+      <polygon points="325,208 335,208 330,216" fill="#64748b"/>
+
+      <!-- Layer 4: page cache -->
+      <rect x="10" y="216" width="640" height="36" rx="6" fill="#f0fdf4" stroke="#16a34a" stroke-width="1.5"/>
+      <text x="330" y="233" text-anchor="middle" font-size="12" font-weight="600" fill="#15803d">内核页缓存（Page Cache）</text>
+      <text x="330" y="248" text-anchor="middle" font-size="10" fill="#16a34a">内核态缓冲，延迟写回磁盘；可用 fsync()/O_DIRECT 绕过</text>
+
+      <!-- Arrow -->
+      <line x1="330" y1="252" x2="330" y2="266" stroke="#64748b" stroke-width="2"/>
+      <polygon points="325,266 335,266 330,274" fill="#64748b"/>
+
+      <!-- Layer 5: disk -->
+      <rect x="10" y="260" width="640" height="18" rx="4" fill="#e2e8f0" stroke="#94a3b8" stroke-width="1"/>
+      <text x="330" y="273" text-anchor="middle" font-size="10" fill="#64748b">磁盘/SSD（硬件缓冲 + 持久化存储）</text>
+    </svg>
+    <figcaption>图11-2：Linux I/O 四层缓冲体系，glibc stdio 位于最上层用户态</figcaption>
+  </div>
+
+  <div class="first-principle">
+    <div class="fp-label">第一性原理</div>
+    <h3>调试缓冲问题的第一性原理思路</h3>
+    <p>遇到 I/O 行为异常，先问三个问题：<br>
+    ① <strong>这个流是什么缓冲模式？</strong>（用 <code>__flbf</code>/<code>__fbufsize</code> 查询）<br>
+    ② <strong>刷新条件是否满足？</strong>（缓冲区满？有换行？有 fflush？）<br>
+    ③ <strong>数据在哪一层"卡住"了？</strong>（glibc 缓冲？内核页缓存？硬件缓冲？）<br>
+    逐层排查，每层都有独立的刷新机制（<code>fflush</code>/<code>fsync</code>/<code>hdparm --flush</code>）。</p>
+  </div>
+
+  <div style="margin-top: 40px; padding: 24px; background: #f8fafc; border-radius: 12px; border: 1px solid var(--border);">
+    <h3 style="margin-bottom: 16px; color: var(--accent);">📚 参考资料与原文链接</h3>
+    <div style="display: flex; flex-wrap: wrap; gap: 8px;">
+      <a class="source-link" href="https://sourceware.org/glibc/manual/2.42/html_node/Stream-Buffering.html" target="_blank">🔗 GNU C Library §12.20 Stream Buffering</a>
+      <a class="source-link" href="https://sourceware.org/glibc/manual/2.42/html_node/Buffering-Concepts.html" target="_blank">🔗 §12.20.1 Buffering Concepts</a>
+      <a class="source-link" href="https://sourceware.org/glibc/manual/2.42/html_node/Flushing-Buffers.html" target="_blank">🔗 §12.20.2 Flushing Buffers</a>
+      <a class="source-link" href="https://sourceware.org/glibc/manual/2.42/html_node/Controlling-Buffering.html" target="_blank">🔗 §12.20.3 Controlling Buffering</a>
+      <a class="source-link" href="https://man7.org/linux/man-pages/man3/setbuf.3.html" target="_blank">🔗 setbuf(3) man7.org</a>
+      <a class="source-link" href="https://codebrowser.dev/glibc/glibc/libio/bits/types/struct_FILE.h.html" target="_blank">🔗 struct_FILE.h 源码</a>
+      <a class="source-link" href="https://codebrowser.dev/glibc/glibc/libio/oldfileops.c.html" target="_blank">🔗 oldfileops.c 源码</a>
+    </div>
+  </div>
+</section>
+
+</main>
+
+<div id="nav-hint">
+  <span class="kbd">←</span> <span class="kbd">→</span> 章节导航
+</div>
+
+<script>
+// ── Chapter data ──
+const chapters = ['ch1','ch2','ch3','ch4','ch5','ch6','ch7','ch8','ch9','ch10','ch11'];
+let currentChapter = 0;
+
+// ── Progress bar ──
+function updateProgress() {
+  const scrollTop = window.scrollY || document.documentElement.scrollTop;
+  const docHeight = document.documentElement.scrollHeight - window.innerHeight;
+  const pct = docHeight > 0 ? (scrollTop / docHeight) * 100 : 0;
+  document.getElementById('progress-bar').style.width = pct + '%';
+}
+
+// ── Active nav highlight ──
+function updateActiveNav() {
+  const scrollMid = window.scrollY + window.innerHeight * 0.4;
+  let activeId = chapters[0];
+  for (const id of chapters) {
+    const el = document.getElementById(id);
+    if (el && el.offsetTop <= scrollMid) activeId = id;
+  }
+  document.querySelectorAll('.nav-item').forEach((item, i) => {
+    item.classList.toggle('active', chapters[i] === activeId);
+  });
+  currentChapter = chapters.indexOf(activeId);
+}
+
+window.addEventListener('scroll', () => {
+  updateProgress();
+  updateActiveNav();
+}, { passive: true });
+
+// ── Navigation ──
+function goTo(id) {
+  const el = document.getElementById(id);
+  if (el) {
+    el.scrollIntoView({ behavior: 'smooth', block: 'start' });
+    closeSidebar();
+  }
+}
+
+// ── Keyboard nav ──
+document.addEventListener('keydown', e => {
+  if (e.key === 'ArrowRight' || e.key === 'ArrowDown') {
+    const next = Math.min(currentChapter + 1, chapters.length - 1);
+    goTo(chapters[next]);
+  } else if (e.key === 'ArrowLeft' || e.key === 'ArrowUp') {
+    const prev = Math.max(currentChapter - 1, 0);
+    goTo(chapters[prev]);
+  }
+});
+
+// ── Hamburger ──
+function toggleSidebar() {
+  const s = document.getElementById('sidebar');
+  const o = document.getElementById('overlay');
+  s.classList.toggle('open');
+  o.classList.toggle('show');
+}
+
+function closeSidebar() {
+  document.getElementById('sidebar').classList.remove('open');
+  document.getElementById('overlay').classList.remove('show');
+}
+
+// ── Init ──
+updateProgress();
+updateActiveNav();
+</script>
+</body>
+</html>

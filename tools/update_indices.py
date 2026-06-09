@@ -36,10 +36,10 @@ HTML_EXTS = {'.html', '.htm'}
 # 不参与索引/链接扫描的路径片段
 EXCLUDE_DIR_NAMES = {
     '__pycache__', 'node_modules', '.git', 'network_packet_loss_guide_src',
-    'assets', 'tmp', 'dist',
+    'assets', 'dist',
 }
 # 不在目录索引中列出的子目录（如仅含维护脚本）
-LISTING_SKIP_DIRS = {'tools'}
+LISTING_SKIP_DIRS = set()
 EXCLUDE_FILE_NAMES = {'.DS_Store'}
 
 TITLE_RE = re.compile(r'<title[^>]*>(.*?)</title>', re.IGNORECASE | re.DOTALL)
@@ -61,7 +61,20 @@ SKIP_URL_RE = re.compile(
 
 DIR_INTROS = {
     '': '嵌入式与网络协议技术笔记库：蓝牙、WiFi、TLS、网络协议、内核、文件系统、程序设计、总线、驱动、Buildroot、命令行工具等专题。',
+    'tmp': '临时文件与脚本目录。',
+    'tools': '站点维护与索引生成工具脚本。',
     'program': 'C 语言标准、编程规范、并发、设计模式、GCC 分析与 Linux 系统编程笔记。',
+    'program/standards': 'C89/C99/C11 标准与头文件安全分析。',
+    'program/spec': '编程规范框架：类型、字符串、错误处理与并发规范。',
+    'program/books': 'Linux / UNIX 系统编程经典书籍章节导读。',
+    'program/gcc': 'GCC 扩展、编译期检查与原子操作封装。',
+    'program/concurrency': 'pthread、mutex、定时器与 POSIX 并发机制。',
+    'program/patterns': 'FSM、设计模式与 GLib/libuv/内核设计思想借鉴。',
+    'program/kernel-userspace': 'Linux 内核机制（list、notifier、workqueue、kfifo）用户态移植。',
+    'program/memory': 'glibc 堆内存碎片分析与开发模式借鉴。',
+    'program/posix': 'POSIX.1 头文件与安全属性参考。',
+    'program/linux-sysprog': 'Linux 事件驱动（epoll）与进程间通信（IPC）。',
+    'program/third-party': '第三方库（libcurl 等）集成笔记。',
     'bt': '蓝牙 Core 规范导读、信令索引、抓包流程与深度专题。',
     'bt/overview': 'Bluetooth Core 6.0 各协议层规范概览（Vol 1 / Part A–H）。',
     'bt/misc': '经典蓝牙与 BLE 深度专题：配对演进、报文解析、基带/射频、L2CAP/ATT/SDP 等。',
@@ -85,6 +98,8 @@ DIR_INTROS = {
     'commands': 'Linux 命令行工具：Git、Shell 工具链、抓包、网络诊断、文件传输与性能分析等。',
     'kernel': 'Linux 内核专题：内存分析、进程地址空间、MIPS 启动与 SoC 内存生命周期。',
     'fs': '嵌入式文件系统：SquashFS、UBIFS 等只读/闪存文件系统概览。',
+    'mfi': 'iap2 认证流程',
+    'mips': 'mips架构，x2600 soc相关模块和知识。'
 }
 
 MODULE_GROUPS = {
@@ -100,48 +115,54 @@ MODULE_GROUPS = {
         ('命令行工具', 'Git、抓包、网络诊断、文件传输', ['commands/']),
         ('Linux 内核', '内存分析、MIPS 启动', ['kernel/']),
         ('文件系统', 'SquashFS、UBIFS', ['fs/']),
+        ('mfi认证', 'iap2协议', ['mfi/']),
+        ('mips架构', 'x2600、MIPS', ['mips/']),
     ],
     'program': [
-        ('C 语言标准与安全', 'C89/C99/C11 与头文件安全分析', [
-            'c_standards_guide.html', 'c_functions_safe_overview.html',
-            'c_header_safe_func_guide.html',
-        ]),
-        ('编程规范框架', '类型、字符串、错误处理、并发规范', [
-            'c-programming-specification-framework.html', 'c-type-guide.html',
-            'c-string-handling-comparison.html', 'c-error-handling-comparison-report.html',
-            'c-multi-threading-programming-specification.html',
-            'c-multi-threading-paradigm-guide.html', 'c-concurrency-guide.html',
-        ]),
-        ('系统编程导读', 'Linux 系统编程经典书籍笔记', [
-            'linux_system_programming_2nd_guide.html', 'system_program_with_linux_guide.html',
-        ]),
-        ('GCC 与静态分析', '扩展、编译期检查、原子操作封装', [
-            'gcc_extension_guide.html', 'gcc-static-analysis-guide.html',
-            'gcc-c99-static-analysis-guide.html', 'gcc-compile-time-checks.html',
-            'gcc-atomic-operations-wrapper.html',
-        ]),
-        ('并发与定时器', 'pthread、mutex、定时器实现', [
-            'pthread_guide.html', 'mutex-lock-tutorial.html',
-            'c-timer-implementation-and-analysis.html', 'min-heap-timer-implementation.html',
-        ]),
-        ('设计模式', 'FSM、GLib、libuv、内核设计模式', [
-            'fsm_guide.html', 'design_pattern_guide.html',
-            'glib-design-patterns-guide.html', 'libuv-design-patterns.html',
-            'linux-kernel-design-patterns.html',
-        ]),
-        ('内核机制用户态实现', 'list、notifier、workqueue、kfifo', [
-            'linux-kernel-list-implementation.html', 'linux-kernel-notifier-guide.html',
-            'user-space-workqueue.html', 'user-space-notification-chain.html',
-            'user-space-kfifo.html',
-        ]),
-        ('内存与 glibc', '碎片分析与 glibc 开发模式', [
-            'linux-memory-fragmentation-analysis-guide.html',
-            'memory-fragmentation-implementation-comparison.html',
-            'analyze-glibc-development-patterns.html',
-        ]),
-        ('POSIX 接口', '头文件与安全属性', [
-            'posix-header-guide.html', 'posix-safety-attributes*.html',
-        ]),
+        ('C 语言标准与安全', 'C89/C99/C11 与头文件安全分析', ['standards/']),
+        ('编程规范框架', '类型、字符串、错误处理、并发规范', ['spec/']),
+        ('系统编程导读', 'Linux / UNIX 经典书籍笔记', ['books/']),
+        ('GCC 与静态分析', '扩展、编译期检查、原子操作封装', ['gcc/']),
+        ('并发与定时器', 'pthread、mutex、定时器、POSIX 并发', ['concurrency/']),
+        ('设计模式', 'FSM、GLib、libuv、内核设计模式', ['patterns/']),
+        ('内核机制用户态实现', 'list、notifier、workqueue、kfifo', ['kernel-userspace/']),
+        ('内存与 glibc', '碎片分析与 glibc 开发模式', ['memory/']),
+        ('POSIX 接口', '头文件与安全属性', ['posix/']),
+        ('Linux 系统编程', 'epoll 事件驱动与 IPC', ['linux-sysprog/']),
+        ('第三方库', 'libcurl 等库集成', ['third-party/']),
+    ],
+    'program/standards': [
+        ('标准与安全', 'C 语言标准与头文件安全', ['*.html']),
+    ],
+    'program/spec': [
+        ('编程规范', 'C99 规范框架与工程化决策', ['*.html']),
+    ],
+    'program/books': [
+        ('书籍导读', '系统编程经典著作', ['*.html']),
+    ],
+    'program/gcc': [
+        ('GCC 专题', '扩展、静态分析、原子操作', ['*.html']),
+    ],
+    'program/concurrency': [
+        ('并发专题', '线程、锁、定时器', ['*.html']),
+    ],
+    'program/patterns': [
+        ('设计模式', '范式与开源项目设计借鉴', ['*.html']),
+    ],
+    'program/kernel-userspace': [
+        ('内核机制移植', '用户态实现与文档', ['*.html']),
+    ],
+    'program/memory': [
+        ('内存分析', '碎片诊断与 glibc 模式', ['*.html']),
+    ],
+    'program/posix': [
+        ('POSIX 参考', '头文件与安全属性', ['*.html']),
+    ],
+    'program/linux-sysprog': [
+        ('Linux 系统编程', '事件驱动与 IPC', ['*.html']),
+    ],
+    'program/third-party': [
+        ('第三方库', '库初始化与集成', ['*.html']),
     ],
     'bt': [
         ('规范概览', 'Core 6.0 各层协议导读', ['overview/']),

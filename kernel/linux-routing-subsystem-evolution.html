@@ -1,0 +1,1624 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Linux 路由子系统演化史</title>
+<style>
+  :root {
+    --bg: #0f1117;
+    --bg2: #1a1d27;
+    --bg3: #22263a;
+    --border: #2e3354;
+    --accent: #4f8ef7;
+    --accent2: #7c6af7;
+    --accent3: #3dd68c;
+    --accent4: #f7a24f;
+    --accent5: #f75f5f;
+    --text: #e2e8f0;
+    --text2: #94a3b8;
+    --text3: #64748b;
+    --nav-w: 280px;
+    --progress-h: 3px;
+  }
+  *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+  html { scroll-behavior: smooth; }
+  body {
+    font-family: 'PingFang SC', 'Hiragino Sans GB', 'Microsoft YaHei', 'Segoe UI', sans-serif;
+    background: var(--bg);
+    color: var(--text);
+    line-height: 1.75;
+    overflow-x: hidden;
+  }
+
+  /* Progress bar */
+  #progress-bar {
+    position: fixed; top: 0; left: 0; width: 0%; height: var(--progress-h);
+    background: linear-gradient(90deg, var(--accent), var(--accent2));
+    z-index: 1000;
+    transition: width 0.1s linear;
+    border-radius: 0 2px 2px 0;
+  }
+
+  /* Top nav (mobile) */
+  #top-bar {
+    display: none;
+    position: fixed; top: var(--progress-h); left: 0; right: 0;
+    height: 52px; background: var(--bg2);
+    border-bottom: 1px solid var(--border);
+    align-items: center; justify-content: space-between;
+    padding: 0 16px; z-index: 900;
+  }
+  #top-bar .logo { font-weight: 700; font-size: 14px; color: var(--accent); }
+  #hamburger {
+    background: none; border: none; cursor: pointer;
+    display: flex; flex-direction: column; gap: 5px; padding: 4px;
+  }
+  #hamburger span {
+    display: block; width: 22px; height: 2px;
+    background: var(--text); border-radius: 2px;
+    transition: all 0.3s;
+  }
+  #hamburger.open span:nth-child(1) { transform: rotate(45deg) translate(5px, 5px); }
+  #hamburger.open span:nth-child(2) { opacity: 0; }
+  #hamburger.open span:nth-child(3) { transform: rotate(-45deg) translate(5px, -5px); }
+
+  /* Sidebar */
+  #sidebar {
+    position: fixed; top: var(--progress-h); left: 0;
+    width: var(--nav-w); height: calc(100vh - var(--progress-h));
+    background: var(--bg2);
+    border-right: 1px solid var(--border);
+    overflow-y: auto; z-index: 800;
+    display: flex; flex-direction: column;
+    transition: transform 0.3s ease;
+  }
+  #sidebar::-webkit-scrollbar { width: 4px; }
+  #sidebar::-webkit-scrollbar-thumb { background: var(--border); border-radius: 2px; }
+  .sidebar-header {
+    padding: 24px 20px 16px;
+    border-bottom: 1px solid var(--border);
+    flex-shrink: 0;
+  }
+  .sidebar-header h1 {
+    font-size: 13px; font-weight: 700;
+    color: var(--accent); letter-spacing: 0.05em;
+    text-transform: uppercase;
+    line-height: 1.4;
+  }
+  .sidebar-header p {
+    font-size: 11px; color: var(--text3); margin-top: 6px;
+  }
+  nav { padding: 12px 0 24px; flex: 1; }
+  .nav-group-label {
+    padding: 12px 20px 4px;
+    font-size: 10px; font-weight: 700;
+    color: var(--text3); letter-spacing: 0.1em;
+    text-transform: uppercase;
+  }
+  .nav-item {
+    display: block; padding: 7px 20px 7px 28px;
+    font-size: 12.5px; color: var(--text2);
+    text-decoration: none; cursor: pointer;
+    border-left: 2px solid transparent;
+    transition: all 0.2s;
+    line-height: 1.4;
+    border: none; background: none; width: 100%; text-align: left;
+  }
+  .nav-item:hover { color: var(--text); background: var(--bg3); }
+  .nav-item.active {
+    color: var(--accent); background: rgba(79,142,247,0.08);
+    border-left: 2px solid var(--accent);
+  }
+  .nav-item .era-badge {
+    display: inline-block; font-size: 10px;
+    padding: 1px 6px; border-radius: 10px;
+    margin-left: 6px; vertical-align: middle;
+    background: var(--bg3); color: var(--text3);
+  }
+  .nav-item.active .era-badge { background: rgba(79,142,247,0.15); color: var(--accent); }
+
+  /* Main content */
+  #main {
+    margin-left: var(--nav-w);
+    min-height: 100vh;
+    padding: 48px 40px 80px;
+    max-width: calc(var(--nav-w) + 860px);
+  }
+
+  /* Sections */
+  .section { margin-bottom: 80px; }
+  .section-anchor { display: block; height: 80px; margin-top: -80px; visibility: hidden; }
+
+  /* Chapter header */
+  .ch-header {
+    display: flex; align-items: flex-start; gap: 16px;
+    margin-bottom: 28px;
+  }
+  .ch-num {
+    width: 44px; height: 44px; border-radius: 10px;
+    display: flex; align-items: center; justify-content: center;
+    font-size: 18px; font-weight: 800; flex-shrink: 0;
+    margin-top: 4px;
+  }
+  .ch-meta { flex: 1; }
+  .ch-era {
+    font-size: 11px; font-weight: 600; letter-spacing: 0.08em;
+    text-transform: uppercase; margin-bottom: 6px; opacity: 0.8;
+  }
+  .ch-title { font-size: 26px; font-weight: 800; line-height: 1.2; }
+  .ch-sub { font-size: 14px; color: var(--text2); margin-top: 6px; }
+
+  /* Colors per chapter */
+  .c1 { --cc: var(--accent); } .c2 { --cc: var(--accent2); }
+  .c3 { --cc: var(--accent3); } .c4 { --cc: var(--accent4); }
+  .c5 { --cc: var(--accent5); } .c6 { --cc: #e879f9; }
+  .c7 { --cc: #22d3ee; } .c8 { --cc: #a3e635; }
+
+  .ch-num { background: rgba(var(--cc-r,79),var(--cc-g,142),var(--cc-b,247),0.12); color: var(--cc); border: 1px solid rgba(var(--cc-r,79),var(--cc-g,142),var(--cc-b,247),0.2); }
+  .c1 .ch-num { background: rgba(79,142,247,0.12); color: #4f8ef7; border-color: rgba(79,142,247,0.2); }
+  .c2 .ch-num { background: rgba(124,106,247,0.12); color: #7c6af7; border-color: rgba(124,106,247,0.2); }
+  .c3 .ch-num { background: rgba(61,214,140,0.12); color: #3dd68c; border-color: rgba(61,214,140,0.2); }
+  .c4 .ch-num { background: rgba(247,162,79,0.12); color: #f7a24f; border-color: rgba(247,162,79,0.2); }
+  .c5 .ch-num { background: rgba(247,95,95,0.12); color: #f75f5f; border-color: rgba(247,95,95,0.2); }
+  .c6 .ch-num { background: rgba(232,121,249,0.12); color: #e879f9; border-color: rgba(232,121,249,0.2); }
+  .c7 .ch-num { background: rgba(34,211,238,0.12); color: #22d3ee; border-color: rgba(34,211,238,0.2); }
+  .c8 .ch-num { background: rgba(163,230,53,0.12); color: #a3e635; border-color: rgba(163,230,53,0.2); }
+
+  .c1 .ch-era { color: #4f8ef7; } .c2 .ch-era { color: #7c6af7; }
+  .c3 .ch-era { color: #3dd68c; } .c4 .ch-era { color: #f7a24f; }
+  .c5 .ch-era { color: #f75f5f; } .c6 .ch-era { color: #e879f9; }
+  .c7 .ch-era { color: #22d3ee; } .c8 .ch-era { color: #a3e635; }
+
+  /* Divider */
+  .ch-divider { height: 1px; background: var(--border); margin-bottom: 28px; }
+
+  /* Text */
+  p { margin-bottom: 16px; font-size: 15px; color: var(--text); }
+  p:last-child { margin-bottom: 0; }
+  strong { color: #fff; font-weight: 600; }
+
+  /* Info cards */
+  .info-card {
+    background: var(--bg2); border: 1px solid var(--border);
+    border-radius: 10px; padding: 20px 24px; margin-bottom: 20px;
+  }
+  .info-card h4 { font-size: 14px; font-weight: 700; margin-bottom: 12px; }
+
+  /* KV table */
+  .kv-table { width: 100%; border-collapse: collapse; margin-bottom: 20px; font-size: 13.5px; }
+  .kv-table th {
+    background: var(--bg3); color: var(--text2);
+    padding: 10px 14px; text-align: left; font-weight: 600;
+    font-size: 12px; text-transform: uppercase; letter-spacing: 0.05em;
+    border: 1px solid var(--border);
+  }
+  .kv-table td { padding: 10px 14px; border: 1px solid var(--border); vertical-align: top; }
+  .kv-table tr:hover td { background: rgba(255,255,255,0.02); }
+  .kv-table .field-name { font-family: monospace; color: var(--accent); font-size: 13px; }
+  .kv-table .tag {
+    display: inline-block; font-size: 10px; padding: 2px 7px;
+    border-radius: 4px; font-weight: 600; letter-spacing: 0.05em;
+  }
+  .tag-new { background: rgba(61,214,140,0.15); color: #3dd68c; }
+  .tag-key { background: rgba(79,142,247,0.15); color: #4f8ef7; }
+  .tag-val { background: rgba(247,162,79,0.15); color: #f7a24f; }
+
+  /* Callout */
+  .callout {
+    border-radius: 8px; padding: 16px 18px; margin-bottom: 20px;
+    border-left: 3px solid;
+    font-size: 14px;
+  }
+  .callout-blue { background: rgba(79,142,247,0.08); border-color: var(--accent); }
+  .callout-green { background: rgba(61,214,140,0.08); border-color: var(--accent3); }
+  .callout-orange { background: rgba(247,162,79,0.08); border-color: var(--accent4); }
+  .callout-purple { background: rgba(124,106,247,0.08); border-color: var(--accent2); }
+  .callout-red { background: rgba(247,95,95,0.08); border-color: var(--accent5); }
+  .callout .callout-title { font-weight: 700; margin-bottom: 6px; font-size: 13px; letter-spacing: 0.04em; }
+
+  /* Code */
+  code {
+    font-family: 'JetBrains Mono', 'Fira Code', 'Consolas', monospace;
+    font-size: 12.5px; background: var(--bg3);
+    color: #7dd3fc; padding: 1px 5px; border-radius: 4px;
+  }
+  pre {
+    background: var(--bg3); border: 1px solid var(--border);
+    border-radius: 8px; padding: 16px 18px; margin-bottom: 20px;
+    overflow-x: auto;
+    font-family: 'JetBrains Mono', 'Fira Code', 'Consolas', monospace;
+    font-size: 12.5px; line-height: 1.6; color: #94a3b8;
+  }
+  pre .kw { color: #c678dd; }
+  pre .str { color: #98c379; }
+  pre .cmt { color: #5c6370; font-style: italic; }
+  pre .num { color: #d19a66; }
+  pre .fn { color: #61afef; }
+  pre .type { color: #e5c07b; }
+
+  /* First principle box */
+  .fp-box {
+    background: linear-gradient(135deg, rgba(79,142,247,0.06), rgba(124,106,247,0.06));
+    border: 1px solid rgba(124,106,247,0.25);
+    border-radius: 12px; padding: 22px 24px; margin-top: 32px;
+  }
+  .fp-box .fp-title {
+    display: flex; align-items: center; gap: 8px;
+    font-size: 13px; font-weight: 700; color: var(--accent2);
+    margin-bottom: 12px; letter-spacing: 0.05em;
+    text-transform: uppercase;
+  }
+  .fp-box .fp-title::before {
+    content: '⊕'; font-size: 16px;
+  }
+  .fp-box p { font-size: 14px; color: var(--text2); margin-bottom: 10px; }
+  .fp-box p:last-child { margin-bottom: 0; }
+
+  /* Source reference */
+  .source-ref {
+    font-size: 12px; color: var(--text3); margin-top: 24px;
+    padding-top: 16px; border-top: 1px solid var(--border);
+  }
+  .source-ref a { color: var(--accent); text-decoration: none; }
+  .source-ref a:hover { text-decoration: underline; }
+
+  /* SVG diagrams */
+  .svg-wrap {
+    background: var(--bg2); border: 1px solid var(--border);
+    border-radius: 10px; padding: 24px; margin-bottom: 24px;
+    overflow-x: auto;
+  }
+  .svg-wrap svg { display: block; margin: 0 auto; max-width: 100%; height: auto; }
+  .svg-caption {
+    text-align: center; font-size: 12px; color: var(--text3);
+    margin-top: 10px;
+  }
+
+  /* Keyboard nav hint */
+  #key-hint {
+    position: fixed; bottom: 24px; right: 24px;
+    background: var(--bg2); border: 1px solid var(--border);
+    border-radius: 8px; padding: 10px 14px;
+    font-size: 12px; color: var(--text3);
+    display: flex; align-items: center; gap: 8px;
+    pointer-events: none; opacity: 0.7;
+  }
+  #key-hint kbd {
+    background: var(--bg3); border: 1px solid var(--border);
+    border-radius: 4px; padding: 2px 7px; font-size: 11px;
+    color: var(--text2); font-family: inherit;
+  }
+
+  /* Overlay for mobile */
+  #sidebar-overlay {
+    display: none; position: fixed; inset: 0; z-index: 750;
+    background: rgba(0,0,0,0.6);
+  }
+
+  /* Responsive */
+  @media (max-width: 768px) {
+    #top-bar { display: flex; }
+    #sidebar {
+      top: calc(var(--progress-h) + 52px);
+      height: calc(100vh - var(--progress-h) - 52px);
+      transform: translateX(-100%);
+    }
+    #sidebar.open { transform: translateX(0); }
+    #sidebar-overlay.open { display: block; }
+    #main { margin-left: 0; padding: 80px 16px 80px; max-width: 100%; }
+    .ch-title { font-size: 20px; }
+    #key-hint { display: none; }
+    .kv-table { font-size: 12px; }
+    .kv-table th, .kv-table td { padding: 8px 10px; }
+  }
+  @media (max-width: 480px) {
+    #main { padding: 70px 12px 60px; }
+    .ch-header { flex-direction: column; gap: 10px; }
+    .svg-wrap { padding: 12px; }
+  }
+
+  /* List styles */
+  ul.styled, ol.styled { padding-left: 20px; margin-bottom: 16px; }
+  ul.styled li, ol.styled li { margin-bottom: 8px; font-size: 15px; }
+  ul.styled li::marker { color: var(--accent); }
+
+  .two-col { display: grid; grid-template-columns: 1fr 1fr; gap: 16px; margin-bottom: 20px; }
+  @media (max-width: 600px) { .two-col { grid-template-columns: 1fr; } }
+</style>
+</head>
+<body>
+<div id="progress-bar"></div>
+
+<!-- Mobile top bar -->
+<div id="top-bar">
+  <span class="logo">Linux 路由子系统演化史</span>
+  <button id="hamburger" aria-label="菜单">
+    <span></span><span></span><span></span>
+  </button>
+</div>
+<div id="sidebar-overlay"></div>
+
+<!-- Sidebar -->
+<div id="sidebar">
+  <div class="sidebar-header">
+    <h1>Linux 路由子系统<br>演化史</h1>
+    <p>从简单 FIB 到多维度路由策略</p>
+  </div>
+  <nav id="nav">
+    <div class="nav-group-label">概述</div>
+    <button class="nav-item" data-target="s0">引言：为什么路由变复杂了</button>
+
+    <div class="nav-group-label">演化阶段</div>
+    <button class="nav-item" data-target="s1">① 最初的路由模型 <span class="era-badge">Linux 1.x</span></button>
+    <button class="nav-item" data-target="s2">② 路由缓存与 TOS/Realm <span class="era-badge">2.0–2.1</span></button>
+    <button class="nav-item" data-target="s3">③ 策略路由 RPDB <span class="era-badge">2.1–2.2</span></button>
+    <button class="nav-item" data-target="s4">④ 多路径路由 ECMP <span class="era-badge">2.1.68+</span></button>
+    <button class="nav-item" data-target="s5">⑤ Netfilter fwmark 集成 <span class="era-badge">2.4</span></button>
+    <button class="nav-item" data-target="s6">⑥ LPC-trie 与路由缓存移除 <span class="era-badge">2.6–3.6</span></button>
+    <button class="nav-item" data-target="s7">⑦ VRF / L3MDev <span class="era-badge">4.3–4.8</span></button>
+    <button class="nav-item" data-target="s8">⑧ Nexthop 对象独立化 <span class="era-badge">5.1–5.3</span></button>
+
+    <div class="nav-group-label">总结</div>
+    <button class="nav-item" data-target="s9">全景：Key/Value 演化图</button>
+    <button class="nav-item" data-target="s10">参考文献</button>
+  </nav>
+</div>
+
+<!-- Main -->
+<main id="main">
+
+<!-- Section 0: Intro -->
+<div class="section">
+  <span class="section-anchor" id="s0"></span>
+  <div class="ch-header c1">
+    <div class="ch-num">∞</div>
+    <div class="ch-meta">
+      <div class="ch-era">引言</div>
+      <div class="ch-title">为什么 Linux 路由子系统变得如此复杂？</div>
+      <div class="ch-sub">第一性原理：网络的本质需求驱动架构演化</div>
+    </div>
+  </div>
+  <div class="ch-divider"></div>
+
+  <p>路由的最原始使命，是回答一个问题：<strong>「这个数据包该往哪里发？」</strong>。在最朴素的模型里，答案只需查一张以目的 IP 为键的转发表，找到出口即可。</p>
+
+  <p>然而，互联网的真实世界远比这复杂。企业需要安全隔离、运营商需要 QoS 差异化、云平台需要多租户隔离、家庭宽带用户需要多线接入均衡负载——每一个新场景都向路由子系统提出新的维度要求。</p>
+
+  <div class="svg-wrap">
+    <svg viewBox="0 0 760 200" xmlns="http://www.w3.org/2000/svg" style="min-width:340px">
+      <defs>
+        <marker id="arr" markerWidth="8" markerHeight="8" refX="6" refY="3" orient="auto">
+          <path d="M0,0 L0,6 L8,3 z" fill="#4f8ef7"/>
+        </marker>
+      </defs>
+      <!-- Input evolution -->
+      <text x="20" y="22" fill="#94a3b8" font-size="12" font-weight="600">输入键（Key）演化</text>
+      <rect x="20" y="34" width="110" height="34" rx="6" fill="#1a1d27" stroke="#2e3354"/>
+      <text x="75" y="56" fill="#4f8ef7" font-size="11" text-anchor="middle">目的 IP</text>
+      <text x="138" y="55" fill="#4f8ef7" font-size="16" text-anchor="middle">→</text>
+      <rect x="158" y="34" width="140" height="34" rx="6" fill="#1a1d27" stroke="#2e3354"/>
+      <text x="228" y="50" fill="#4f8ef7" font-size="10" text-anchor="middle">目的 IP + 源 IP</text>
+      <text x="228" y="62" fill="#64748b" font-size="9" text-anchor="middle">+ TOS + 入接口</text>
+      <text x="308" y="55" fill="#4f8ef7" font-size="16" text-anchor="middle">→</text>
+      <rect x="328" y="24" width="180" height="54" rx="6" fill="#1a1d27" stroke="#7c6af7"/>
+      <text x="418" y="42" fill="#7c6af7" font-size="10" text-anchor="middle">目的 IP + 源 IP + 入接口</text>
+      <text x="418" y="55" fill="#7c6af7" font-size="10" text-anchor="middle">+ fwmark + TOS</text>
+      <text x="418" y="68" fill="#7c6af7" font-size="10" text-anchor="middle">+ VRF (l3mdev)</text>
+      <text x="520" y="55" fill="#7c6af7" font-size="16" text-anchor="middle">→</text>
+      <rect x="540" y="24" width="200" height="54" rx="6" fill="#1a1d27" stroke="#e879f9"/>
+      <text x="640" y="42" fill="#e879f9" font-size="10" text-anchor="middle">+ Nexthop ID</text>
+      <text x="640" y="55" fill="#e879f9" font-size="10" text-anchor="middle">+ L4 端口（hash）</text>
+      <text x="640" y="68" fill="#e879f9" font-size="10" text-anchor="middle">+ 网络命名空间</text>
+
+      <!-- Output evolution -->
+      <text x="20" y="120" fill="#94a3b8" font-size="12" font-weight="600">输出值（Value）演化</text>
+      <rect x="20" y="132" width="110" height="34" rx="6" fill="#1a1d27" stroke="#2e3354"/>
+      <text x="75" y="154" fill="#3dd68c" font-size="11" text-anchor="middle">出接口</text>
+      <text x="138" y="153" fill="#3dd68c" font-size="16" text-anchor="middle">→</text>
+      <rect x="158" y="132" width="140" height="34" rx="6" fill="#1a1d27" stroke="#2e3354"/>
+      <text x="228" y="148" fill="#3dd68c" font-size="10" text-anchor="middle">出接口 + 下一跳 IP</text>
+      <text x="228" y="160" fill="#64748b" font-size="9" text-anchor="middle">+ 首选源 IP</text>
+      <text x="308" y="153" fill="#3dd68c" font-size="16" text-anchor="middle">→</text>
+      <rect x="328" y="122" width="180" height="54" rx="6" fill="#1a1d27" stroke="#3dd68c"/>
+      <text x="418" y="140" fill="#3dd68c" font-size="10" text-anchor="middle">出接口 + 下一跳 + 源 IP</text>
+      <text x="418" y="153" fill="#3dd68c" font-size="10" text-anchor="middle">+ 动作类型 + 作用域</text>
+      <text x="418" y="166" fill="#3dd68c" font-size="10" text-anchor="middle">+ Realm + 协议标记</text>
+      <text x="520" y="153" fill="#3dd68c" font-size="16" text-anchor="middle">→</text>
+      <rect x="540" y="122" width="200" height="54" rx="6" fill="#1a1d27" stroke="#a3e635"/>
+      <text x="640" y="140" fill="#a3e635" font-size="10" text-anchor="middle">+ 多路径 nexthop 组</text>
+      <text x="640" y="153" fill="#a3e635" font-size="10" text-anchor="middle">+ 权重 + NHID 引用</text>
+      <text x="640" y="166" fill="#a3e635" font-size="10" text-anchor="middle">+ 链路参数 MTU/RTT</text>
+    </svg>
+    <div class="svg-caption">图 0-1：路由子系统 Key/Value 维度随内核版本演化示意</div>
+  </div>
+
+  <p>本文将沿着内核的真实演化轨迹，逐步拆解每一次「加字段」背后的工程动机，并在每章结尾用<strong>第一性原理</strong>提炼出本质。</p>
+
+  <div class="fp-box">
+    <div class="fp-title">第一性原理</div>
+    <p>路由的本质是一个<strong>映射函数</strong>：<code>f(包特征) → 转发决策</code>。复杂性不是设计失误，而是现实世界对「包特征」和「转发决策」两端维度扩展的自然响应。每一次内核演化，都是对某类新场景需求的精确回应。</p>
+  </div>
+</div>
+
+<!-- Section 1: Linux 1.x -->
+<div class="section">
+  <span class="section-anchor" id="s1"></span>
+  <div class="ch-header c1">
+    <div class="ch-num">①</div>
+    <div class="ch-meta">
+      <div class="ch-era">Linux 0.99 – 1.x · 约 1992–1994</div>
+      <div class="ch-title">最初的路由模型：一张表、一个键</div>
+      <div class="ch-sub">目的地址驱动的单一转发表</div>
+    </div>
+  </div>
+  <div class="ch-divider"></div>
+
+  <p>Linux 最早的路由实现直接继承自 BSD Unix 的思想：维护一张<strong>转发信息库（FIB，Forwarding Information Base）</strong>，以目的 IP 网段为键，查找时取最长匹配前缀（Longest Prefix Match）。</p>
+
+  <div class="callout callout-blue">
+    <div class="callout-title">📌 场景：单宿主小型网络</div>
+    一台 PC 连接一个局域网，通过单一出口路由器访问互联网。所有数据包只需问：「目的地在哪个网段？走哪个接口出去？」
+  </div>
+
+  <div class="svg-wrap">
+    <svg viewBox="0 0 680 220" xmlns="http://www.w3.org/2000/svg" style="min-width:320px">
+      <defs>
+        <marker id="arr2" markerWidth="8" markerHeight="8" refX="6" refY="3" orient="auto">
+          <path d="M0,0 L0,6 L8,3 z" fill="#4f8ef7"/>
+        </marker>
+        <marker id="arr3" markerWidth="8" markerHeight="8" refX="6" refY="3" orient="auto">
+          <path d="M0,0 L0,6 L8,3 z" fill="#3dd68c"/>
+        </marker>
+      </defs>
+      <!-- Packet -->
+      <rect x="20" y="80" width="120" height="60" rx="8" fill="#1a1d27" stroke="#4f8ef7"/>
+      <text x="80" y="104" fill="#4f8ef7" font-size="11" text-anchor="middle" font-weight="600">数据包</text>
+      <text x="80" y="118" fill="#94a3b8" font-size="10" text-anchor="middle">dst=8.8.8.8</text>
+      <text x="80" y="130" fill="#64748b" font-size="9" text-anchor="middle">（其余字段忽略）</text>
+      <!-- Arrow -->
+      <line x1="140" y1="110" x2="195" y2="110" stroke="#4f8ef7" stroke-width="1.5" marker-end="url(#arr2)"/>
+      <text x="167" y="104" fill="#64748b" font-size="10" text-anchor="middle">daddr</text>
+      <!-- FIB -->
+      <rect x="196" y="30" width="280" height="160" rx="8" fill="#1a1d27" stroke="#2e3354"/>
+      <text x="336" y="55" fill="#94a3b8" font-size="12" text-anchor="middle" font-weight="700">FIB（转发信息表）</text>
+      <text x="220" y="78" fill="#64748b" font-size="10">前缀（Key）</text>
+      <text x="390" y="78" fill="#64748b" font-size="10">出接口 + 网关（Value）</text>
+      <line x1="196" y1="84" x2="476" y2="84" stroke="#2e3354"/>
+      <text x="220" y="100" fill="#7dd3fc" font-size="11" font-family="monospace">10.0.0.0/8</text>
+      <text x="390" y="100" fill="#94a3b8" font-size="11" font-family="monospace">eth0</text>
+      <text x="220" y="118" fill="#7dd3fc" font-size="11" font-family="monospace">192.168.1.0/24</text>
+      <text x="390" y="118" fill="#94a3b8" font-size="11" font-family="monospace">eth1</text>
+      <rect x="207" y="128" width="258" height="22" rx="4" fill="rgba(79,142,247,0.1)" stroke="rgba(79,142,247,0.3)"/>
+      <text x="220" y="143" fill="#4f8ef7" font-size="11" font-family="monospace">0.0.0.0/0 (default)</text>
+      <text x="390" y="143" fill="#4f8ef7" font-size="11" font-family="monospace">eth0  gw 1.2.3.1</text>
+      <text x="220" y="164" fill="#7dd3fc" font-size="11" font-family="monospace">127.0.0.0/8</text>
+      <text x="390" y="164" fill="#94a3b8" font-size="11" font-family="monospace">lo  local</text>
+      <!-- Arrow out -->
+      <line x1="476" y1="110" x2="540" y2="110" stroke="#3dd68c" stroke-width="1.5" marker-end="url(#arr3)"/>
+      <rect x="541" y="80" width="120" height="60" rx="8" fill="#1a1d27" stroke="#3dd68c"/>
+      <text x="601" y="104" fill="#3dd68c" font-size="11" text-anchor="middle" font-weight="600">转发决策</text>
+      <text x="601" y="118" fill="#94a3b8" font-size="10" text-anchor="middle">dev=eth0</text>
+      <text x="601" y="130" fill="#94a3b8" font-size="10" text-anchor="middle">gw=1.2.3.1</text>
+    </svg>
+    <div class="svg-caption">图 1-1：Linux 1.x 路由模型 — 单张 FIB，纯目的地址匹配</div>
+  </div>
+
+  <p>这个阶段的路由表结构极为简洁，每条表项仅包含：</p>
+  <table class="kv-table">
+    <thead><tr><th>维度</th><th>字段</th><th>说明</th></tr></thead>
+    <tbody>
+      <tr><td><span class="tag tag-key">Key 输入</span></td><td class="field-name">dst (目的网段)</td><td>唯一匹配键，最长前缀匹配</td></tr>
+      <tr><td><span class="tag tag-val">Value 输出</span></td><td class="field-name">dev (出接口)</td><td>数据包从哪个网卡发出</td></tr>
+      <tr><td><span class="tag tag-val">Value 输出</span></td><td class="field-name">gateway (下一跳)</td><td>下一跳路由器 IP，可为空（直连）</td></tr>
+    </tbody>
+  </table>
+
+  <p>用户通过 <code>route add</code> 命令（来自 net-tools 包）管理路由，内核通过 <strong>ioctl</strong>（SIOCADDRT/SIOCDELRT）接收配置。数据结构在 <code>net/ipv4/route.c</code> 中以简单的哈希表或链表实现。</p>
+
+  <div class="fp-box">
+    <div class="fp-title">第一性原理</div>
+    <p>在网络只有「一张出口」的世界里，路由的全部信息量就是「目的地属于哪个网段」。单一 FIB + 最长前缀匹配，是在<strong>信息最小化</strong>前提下的最优解。复杂性出现的唯一理由，是「单一目的地址」不再能区分所有需要差异化处理的流量。</p>
+  </div>
+</div>
+
+<!-- Section 2: Routing Cache + TOS -->
+<div class="section">
+  <span class="section-anchor" id="s2"></span>
+  <div class="ch-header c2">
+    <div class="ch-num">②</div>
+    <div class="ch-meta">
+      <div class="ch-era">Linux 2.0 – 2.1 · 约 1996–1997</div>
+      <div class="ch-title">路由缓存、TOS 与 Realm</div>
+      <div class="ch-sub">性能优化与首个「附加字段」：服务类型匹配</div>
+    </div>
+  </div>
+  <div class="ch-divider"></div>
+
+  <p>随着 Linux 作为网关路由器的使用场景增多，性能瓶颈出现了：每个数据包都需要做最长前缀匹配的全表查找，开销较大。内核在 2.0 系列引入了<strong>路由缓存（Routing Cache）</strong>，并同时增加了对 IP 头部 <strong>TOS（Type of Service）</strong>字段的匹配能力。</p>
+
+  <div class="two-col">
+    <div class="info-card">
+      <h4 style="color:#7c6af7">🚀 路由缓存（dst_entry cache）</h4>
+      <p style="font-size:13px">以 <code>{src, dst, TOS, iif}</code> 为键缓存路由决策结果（<code>struct rtable</code>）。后续匹配相同流的包直接命中缓存，跳过全表查找，大幅提升吞吐量。</p>
+    </div>
+    <div class="info-card">
+      <h4 style="color:#7c6af7">🎯 TOS 字段匹配</h4>
+      <p style="font-size:13px">RFC 1349 定义的 IP 头 TOS 字节可表达优先级/延迟/吞吐等偏好。Linux 允许路由规则按 TOS 值差异化转发，为 QoS 打下基础。</p>
+    </div>
+  </div>
+
+  <div class="callout callout-purple">
+    <div class="callout-title">📌 场景：多媒体流量 QoS</div>
+    同一目的 IP（如视频服务器）的普通 HTTP 请求与实时视频流，TOS 不同，可以通过不同路径（带宽大 vs 延迟低）转发，实现初步的服务质量差异化。
+  </div>
+
+  <div class="svg-wrap">
+    <svg viewBox="0 0 700 240" xmlns="http://www.w3.org/2000/svg" style="min-width:340px">
+      <defs>
+        <marker id="arr4" markerWidth="8" markerHeight="8" refX="6" refY="3" orient="auto">
+          <path d="M0,0 L0,6 L8,3 z" fill="#7c6af7"/>
+        </marker>
+        <marker id="arr5" markerWidth="8" markerHeight="8" refX="6" refY="3" orient="auto">
+          <path d="M0,0 L0,6 L8,3 z" fill="#3dd68c"/>
+        </marker>
+      </defs>
+      <!-- Packet with TOS -->
+      <rect x="10" y="80" width="130" height="80" rx="8" fill="#1a1d27" stroke="#7c6af7"/>
+      <text x="75" y="104" fill="#7c6af7" font-size="11" text-anchor="middle" font-weight="600">数据包</text>
+      <text x="75" y="120" fill="#94a3b8" font-size="10" text-anchor="middle">src=192.168.1.5</text>
+      <text x="75" y="133" fill="#94a3b8" font-size="10" text-anchor="middle">dst=8.8.8.8</text>
+      <text x="75" y="146" fill="#e879f9" font-size="10" text-anchor="middle">TOS=0x10 (低延迟)</text>
+
+      <!-- Cache lookup -->
+      <line x1="140" y1="120" x2="185" y2="120" stroke="#7c6af7" stroke-width="1.5" marker-end="url(#arr4)"/>
+      <rect x="186" y="50" width="180" height="60" rx="8" fill="#1a1d27" stroke="#7c6af7" stroke-dasharray="4,3"/>
+      <text x="276" y="74" fill="#7c6af7" font-size="11" text-anchor="middle" font-weight="600">路由缓存</text>
+      <text x="276" y="90" fill="#94a3b8" font-size="10" text-anchor="middle">Key: {src,dst,TOS,iif}</text>
+      <text x="276" y="103" fill="#64748b" font-size="9" text-anchor="middle">命中 → 直接返回 rtable</text>
+
+      <!-- Cache miss → FIB -->
+      <line x1="276" y1="110" x2="276" y2="135" stroke="#f75f5f" stroke-width="1" stroke-dasharray="3,2"/>
+      <text x="285" y="130" fill="#f75f5f" font-size="9">miss</text>
+      <rect x="186" y="136" width="180" height="68" rx="8" fill="#1a1d27" stroke="#2e3354"/>
+      <text x="276" y="156" fill="#94a3b8" font-size="11" text-anchor="middle" font-weight="600">FIB 查找</text>
+      <text x="276" y="172" fill="#64748b" font-size="10" text-anchor="middle">最长前缀匹配 + TOS</text>
+      <text x="276" y="185" fill="#64748b" font-size="10" text-anchor="middle">匹配 Realm 聚合</text>
+      <text x="276" y="198" fill="#64748b" font-size="10" text-anchor="middle">存入缓存</text>
+
+      <!-- Result -->
+      <line x1="366" y1="120" x2="410" y2="120" stroke="#3dd68c" stroke-width="1.5" marker-end="url(#arr5)"/>
+      <rect x="411" y="70" width="260" height="100" rx="8" fill="#1a1d27" stroke="#3dd68c"/>
+      <text x="541" y="94" fill="#3dd68c" font-size="11" text-anchor="middle" font-weight="600">路由决策（rtable）</text>
+      <text x="541" y="110" fill="#94a3b8" font-size="10" text-anchor="middle">dev=eth0  gw=1.2.3.1</text>
+      <text x="541" y="124" fill="#94a3b8" font-size="10" text-anchor="middle">src=192.168.1.5</text>
+      <text x="541" y="138" fill="#e879f9" font-size="10" text-anchor="middle">realm=ISP_A（流量统计聚合）</text>
+      <text x="541" y="152" fill="#64748b" font-size="9" text-anchor="middle">附加到 skb，后续无需重查</text>
+    </svg>
+    <div class="svg-caption">图 2-1：引入路由缓存后的查找流程，TOS 作为额外匹配维度</div>
+  </div>
+
+  <p>同期还引入了 <strong>Realm（域）</strong> 的概念（<code>ip route add ... realms src/dst</code>）。Realm 是路由条目上的整数标签，用于流量聚合和统计（如 TC 子系统对不同 ISP 流量的计费统计），这是路由「输出值」字段的第一次真正扩展。</p>
+
+  <table class="kv-table">
+    <thead><tr><th>维度</th><th>新增字段</th><th>解决的问题</th></tr></thead>
+    <tbody>
+      <tr>
+        <td><span class="tag tag-key">Key 输入</span></td>
+        <td class="field-name">tos (服务类型)</td>
+        <td>同一目的地按流量类型差异化路由，支持初步 QoS</td>
+      </tr>
+      <tr>
+        <td><span class="tag tag-key">Key 输入</span></td>
+        <td class="field-name">src (源地址)</td>
+        <td>路由缓存以四元组为键，区分同一目的的不同源</td>
+      </tr>
+      <tr>
+        <td><span class="tag tag-val">Value 输出</span></td>
+        <td class="field-name">realm (域标签)</td>
+        <td>流量聚合统计，TC 子系统可按 realm 计费</td>
+      </tr>
+      <tr>
+        <td><span class="tag tag-val">Value 输出</span></td>
+        <td class="field-name">prefsrc (首选源 IP)</td>
+        <td>指定该路由下外发包的源 IP，解决多 IP 接口的源选择问题</td>
+      </tr>
+    </tbody>
+  </table>
+
+  <div class="fp-box">
+    <div class="fp-title">第一性原理</div>
+    <p><strong>性能与功能的矛盾</strong>是这个阶段的核心张力。路由缓存是一个经典的「以空间换时间」方案，但它必须用足够细粒度的键来保证缓存正确性——这迫使 Key 从纯 dst 扩展到 <code>{src, dst, TOS}</code>。TOS 的引入则揭示了一个规律：<strong>只要有两类流量需要「同目的，不同路径」，Key 就必须增加维度</strong>。</p>
+  </div>
+</div>
+
+<!-- Section 3: Policy Routing RPDB -->
+<div class="section">
+  <span class="section-anchor" id="s3"></span>
+  <div class="ch-header c3">
+    <div class="ch-num">③</div>
+    <div class="ch-meta">
+      <div class="ch-era">Linux 2.1 – 2.2 · 约 1997–1999</div>
+      <div class="ch-title">策略路由与路由策略数据库（RPDB）</div>
+      <div class="ch-sub">多路由表 + 规则引擎：将「目的地」决策权交给管理员</div>
+    </div>
+  </div>
+  <div class="ch-divider"></div>
+
+  <p>Linux 2.1 系列由 Alexey Kuznetsov（俄罗斯核物理研究所）主导实现了<strong>策略路由（Policy-Based Routing, PBR）</strong>，引入了革命性的<strong>路由策略数据库（RPDB, Routing Policy Database）</strong>。这是路由子系统最重要的架构变革之一。</p>
+
+  <div class="callout callout-green">
+    <div class="callout-title">📌 场景：多线接入 / ISP 选择</div>
+    企业接入两条 ISP 线路（ISP-A 和 ISP-B）。规定：来自 192.168.1.0/24 的流量走 ISP-A；来自 192.168.2.0/24 的流量走 ISP-B；管理流量（标记了 fwmark）始终走 ISP-A。单张路由表无法表达这种「谁发的决定走哪里」的语义。
+  </div>
+
+  <p>RPDB 的架构思路是：<strong>将路由决策分成两层</strong>——先用「规则（Rules）」选择路由表，再在选定的路由表内做最长前缀匹配。</p>
+
+  <div class="svg-wrap">
+    <svg viewBox="0 0 720 340" xmlns="http://www.w3.org/2000/svg" style="min-width:380px">
+      <defs>
+        <marker id="a6" markerWidth="8" markerHeight="8" refX="6" refY="3" orient="auto">
+          <path d="M0,0 L0,6 L8,3 z" fill="#3dd68c"/>
+        </marker>
+        <marker id="a7" markerWidth="8" markerHeight="8" refX="6" refY="3" orient="auto">
+          <path d="M0,0 L0,6 L8,3 z" fill="#f7a24f"/>
+        </marker>
+      </defs>
+      <!-- Packet -->
+      <rect x="10" y="130" width="110" height="80" rx="8" fill="#1a1d27" stroke="#3dd68c"/>
+      <text x="65" y="155" fill="#3dd68c" font-size="11" text-anchor="middle" font-weight="600">数据包</text>
+      <text x="65" y="170" fill="#94a3b8" font-size="9" text-anchor="middle">src=192.168.1.5</text>
+      <text x="65" y="182" fill="#94a3b8" font-size="9" text-anchor="middle">dst=8.8.8.8</text>
+      <text x="65" y="194" fill="#94a3b8" font-size="9" text-anchor="middle">iif=eth2, tos=0</text>
+      <text x="65" y="206" fill="#e879f9" font-size="9" text-anchor="middle">fwmark=2</text>
+
+      <!-- RPDB -->
+      <line x1="120" y1="170" x2="158" y2="170" stroke="#3dd68c" stroke-width="1.5" marker-end="url(#a6)"/>
+      <rect x="159" y="10" width="220" height="310" rx="10" fill="#1a1d27" stroke="#3dd68c"/>
+      <text x="269" y="34" fill="#3dd68c" font-size="12" text-anchor="middle" font-weight="700">RPDB（规则数据库）</text>
+      <text x="175" y="55" fill="#64748b" font-size="10">优先级  选择器  动作</text>
+      <line x1="159" y1="62" x2="379" y2="62" stroke="#2e3354"/>
+
+      <!-- Rule rows -->
+      <rect x="168" y="68" width="202" height="28" rx="4" fill="rgba(61,214,140,0.08)" stroke="rgba(61,214,140,0.2)"/>
+      <text x="175" y="87" fill="#94a3b8" font-size="10" font-family="monospace">0    all    lookup local</text>
+      <rect x="168" y="102" width="202" height="28" rx="4" fill="rgba(247,162,79,0.08)" stroke="rgba(247,162,79,0.2)"/>
+      <text x="175" y="121" fill="#f7a24f" font-size="10" font-family="monospace">100  fwmark 2  → isp_a</text>
+      <rect x="168" y="136" width="202" height="28" rx="4" fill="rgba(124,106,247,0.08)" stroke="rgba(124,106,247,0.2)"/>
+      <text x="175" y="155" fill="#c084fc" font-size="10" font-family="monospace">200  from 192.168.1/24</text>
+      <text x="245" y="168" fill="#c084fc" font-size="9" font-family="monospace">→ isp_a</text>
+      <rect x="168" y="172" width="202" height="28" rx="4" fill="rgba(124,106,247,0.08)" stroke="rgba(124,106,247,0.2)"/>
+      <text x="175" y="191" fill="#818cf8" font-size="10" font-family="monospace">201  from 192.168.2/24</text>
+      <text x="245" y="203" fill="#818cf8" font-size="9" font-family="monospace">→ isp_b</text>
+      <rect x="168" y="208" width="202" height="28" rx="4" fill="rgba(79,142,247,0.08)" stroke="rgba(79,142,247,0.2)"/>
+      <text x="175" y="228" fill="#94a3b8" font-size="10" font-family="monospace">32766 all  lookup main</text>
+      <rect x="168" y="242" width="202" height="28" rx="4" fill="#1e2130" stroke="#2e3354"/>
+      <text x="175" y="262" fill="#64748b" font-size="10" font-family="monospace">32767 all  lookup default</text>
+      <text x="269" y="300" fill="#64748b" font-size="10" text-anchor="middle">↓ 规则按优先级顺序评估</text>
+
+      <!-- Tables -->
+      <line x1="379" y1="110" x2="430" y2="80" stroke="#f7a24f" stroke-width="1.5" marker-end="url(#a7)" stroke-dasharray="4,2"/>
+      <line x1="379" y1="155" x2="430" y2="155" stroke="#c084fc" stroke-width="1.5" stroke-dasharray="4,2">
+        <animate attributeName="stroke-dashoffset" values="0;-8" dur="0.8s" repeatCount="indefinite"/>
+      </line>
+      <line x1="379" y1="190" x2="430" y2="250" stroke="#818cf8" stroke-width="1.5" stroke-dasharray="4,2"/>
+
+      <!-- Table boxes -->
+      <rect x="431" y="20" width="140" height="100" rx="8" fill="#1a1d27" stroke="#f7a24f"/>
+      <text x="501" y="44" fill="#f7a24f" font-size="11" text-anchor="middle" font-weight="600">table: isp_a</text>
+      <text x="444" y="62" fill="#64748b" font-size="9">default via 1.1.1.1 eth0</text>
+      <text x="444" y="76" fill="#64748b" font-size="9">10.0.0.0/8 via 1.1.1.2</text>
+
+      <rect x="431" y="130" width="140" height="80" rx="8" fill="#1a1d27" stroke="#7c6af7"/>
+      <text x="501" y="154" fill="#7c6af7" font-size="11" text-anchor="middle" font-weight="600">table: main</text>
+      <text x="444" y="172" fill="#64748b" font-size="9">default via 2.2.2.1 eth1</text>
+      <text x="444" y="186" fill="#64748b" font-size="9">192.168.0.0/16 dev eth2</text>
+
+      <rect x="431" y="220" width="140" height="80" rx="8" fill="#1a1d27" stroke="#818cf8"/>
+      <text x="501" y="244" fill="#818cf8" font-size="11" text-anchor="middle" font-weight="600">table: isp_b</text>
+      <text x="444" y="262" fill="#64748b" font-size="9">default via 3.3.3.1 eth2</text>
+      <text x="444" y="276" fill="#64748b" font-size="9">172.16.0.0/12 via ...</text>
+
+      <!-- match result -->
+      <line x1="571" y1="80" x2="620" y2="80" stroke="#f7a24f" stroke-width="1.5" marker-end="url(#a7)"/>
+      <rect x="621" y="50" width="90" height="60" rx="6" fill="#1a1d27" stroke="#3dd68c"/>
+      <text x="666" y="74" fill="#3dd68c" font-size="10" text-anchor="middle">dev=eth0</text>
+      <text x="666" y="88" fill="#3dd68c" font-size="10" text-anchor="middle">gw=1.1.1.1</text>
+      <text x="666" y="100" fill="#64748b" font-size="9" text-anchor="middle">（ISP-A）</text>
+    </svg>
+    <div class="svg-caption">图 3-1：RPDB 两级路由决策架构 — 规则选表 → 表内最长匹配</div>
+  </div>
+
+  <p>RPDB 在内核中由 <code>CONFIG_IP_MULTIPLE_TABLES</code> 选项控制。启用后，内核默认创建 <strong>3 张路由表</strong>（<code>local=255</code>、<code>main=254</code>、<code>default=253</code>），由 3 条默认规则依次查找，兼容原有行为。</p>
+
+  <pre><span class="cmt"># ip rule show（默认规则集）</span>
+<span class="num">0</span>:     from all lookup <span class="fn">local</span>    <span class="cmt"># 优先处理本地/广播地址</span>
+<span class="num">32766</span>: from all lookup <span class="fn">main</span>     <span class="cmt"># 普通路由表</span>
+<span class="num">32767</span>: from all lookup <span class="fn">default</span>  <span class="cmt"># 空表，历史保留</span></pre>
+
+  <p>规则的选择器（SELECTOR）可匹配以下字段——这是路由 Key 的重大扩展：</p>
+
+  <table class="kv-table">
+    <thead><tr><th>维度</th><th>新增字段</th><th>解决的问题</th></tr></thead>
+    <tbody>
+      <tr>
+        <td><span class="tag tag-key">Key 输入</span></td>
+        <td class="field-name">from (源地址)</td>
+        <td>按数据包来源 IP 段选择不同路由表，实现多宿主源路由</td>
+      </tr>
+      <tr>
+        <td><span class="tag tag-key">Key 输入</span></td>
+        <td class="field-name">to (目的地址)</td>
+        <td>规则层可再次按目的地址分流，与表内匹配叠加</td>
+      </tr>
+      <tr>
+        <td><span class="tag tag-key">Key 输入</span></td>
+        <td class="field-name">iif (入接口)</td>
+        <td>按流量从哪个接口进入选择路由表，实现接口级隔离</td>
+      </tr>
+      <tr>
+        <td><span class="tag tag-key">Key 输入</span></td>
+        <td class="field-name">tos (服务类型)</td>
+        <td>规则层按 TOS 选表，与表内 TOS 匹配叠加</td>
+      </tr>
+      <tr>
+        <td><span class="tag tag-val">Value 输出</span></td>
+        <td class="field-name">规则动作类型</td>
+        <td>unicast / blackhole / unreachable / prohibit / nat，路由决策不再只是「转发」</td>
+      </tr>
+      <tr>
+        <td><span class="tag tag-val">Value 输出</span></td>
+        <td class="field-name">scope (作用域)</td>
+        <td>host / link / global，精确描述下一跳可达性，影响 ARP/邻居子系统行为</td>
+      </tr>
+    </tbody>
+  </table>
+
+  <div class="callout callout-orange">
+    <div class="callout-title">📖 权威来源</div>
+    Linux 2.2.12 支持 255 张路由表、255 个聚合 Realm、2³²个规则优先级。— Matthew G. Marsh，《Policy Routing in Linux》，Dr.Dobb's Journal，约 1999 年（<a href="https://jacobfilipp.com/DrDobbs/articles/SA/v09/i01/a6.htm" style="color:var(--accent)">原文链接</a>）
+  </div>
+
+  <div class="fp-box">
+    <div class="fp-title">第一性原理</div>
+    <p>RPDB 揭示了一个深刻的设计原理：<strong>把「选择哪张表」和「表内查什么」分离</strong>，是 Policy/Mechanism 分离思想的体现。规则是策略层，路由表是机制层。这种分层使得系统可以在不改变查找算法的情况下，无限扩展选路策略的复杂度。RPDB 在架构上等价于在「路由函数」外再套一层「路由函数选择器」，实现了元路由（Meta-routing）能力。</p>
+  </div>
+</div>
+
+<!-- Section 4: ECMP Multipath -->
+<div class="section">
+  <span class="section-anchor" id="s4"></span>
+  <div class="ch-header c4">
+    <div class="ch-num">④</div>
+    <div class="ch-meta">
+      <div class="ch-era">Linux 2.1.68 · 1997 → 2.6 → 4.4</div>
+      <div class="ch-title">多路径路由（ECMP）</div>
+      <div class="ch-sub">Value 扩展：一个目的，多个等价下一跳</div>
+    </div>
+  </div>
+  <div class="ch-divider"></div>
+
+  <p>1997 年 11 月，Linux <strong>v2.1.68</strong> 首次引入多路径路由支持（IPv4），允许一条路由条目携带多个等价下一跳（ECMP, Equal-Cost Multipath），实现 L3 层的流量负载均衡。</p>
+
+  <div class="callout callout-orange">
+    <div class="callout-title">📌 场景：数据中心多上行链路负载均衡</div>
+    服务器接入两条 10G 上行链路，目的网段相同。希望流量按哈希分摊到两条链路，提升出口带宽利用率，同时实现链路故障时的自动切换。
+  </div>
+
+  <div class="svg-wrap">
+    <svg viewBox="0 0 680 240" xmlns="http://www.w3.org/2000/svg" style="min-width:340px">
+      <defs>
+        <marker id="a8" markerWidth="8" markerHeight="8" refX="6" refY="3" orient="auto">
+          <path d="M0,0 L0,6 L8,3 z" fill="#f7a24f"/>
+        </marker>
+      </defs>
+      <!-- Route entry -->
+      <rect x="10" y="60" width="300" height="120" rx="8" fill="#1a1d27" stroke="#f7a24f"/>
+      <text x="160" y="84" fill="#f7a24f" font-size="12" text-anchor="middle" font-weight="700">单条路由（fib_info）</text>
+      <text x="160" y="100" fill="#7dd3fc" font-size="11" text-anchor="middle" font-family="monospace">default via ...</text>
+      <line x1="10" y1="108" x2="310" y2="108" stroke="#2e3354"/>
+      <text x="25" y="126" fill="#94a3b8" font-size="10">nexthop[0]:</text>
+      <text x="100" y="126" fill="#3dd68c" font-size="10" font-family="monospace">via 10.0.1.1 dev eth0 weight 1</text>
+      <text x="25" y="144" fill="#94a3b8" font-size="10">nexthop[1]:</text>
+      <text x="100" y="144" fill="#3dd68c" font-size="10" font-family="monospace">via 10.0.2.1 dev eth1 weight 1</text>
+      <text x="25" y="162" fill="#94a3b8" font-size="10">nexthop[2]:</text>
+      <text x="100" y="162" fill="#3dd68c" font-size="10" font-family="monospace">via 10.0.3.1 dev eth2 weight 2</text>
+
+      <!-- Hash -->
+      <rect x="330" y="80" width="160" height="80" rx="8" fill="#1a1d27" stroke="#7c6af7"/>
+      <text x="410" y="105" fill="#7c6af7" font-size="11" text-anchor="middle" font-weight="600">哈希选路</text>
+      <text x="410" y="120" fill="#64748b" font-size="9" text-anchor="middle">v4.4前: 随机/轮询</text>
+      <text x="410" y="133" fill="#64748b" font-size="9" text-anchor="middle">v4.4+: L3 hash (src+dst)</text>
+      <text x="410" y="146" fill="#64748b" font-size="9" text-anchor="middle">v4.12+: L4 hash (含端口)</text>
+
+      <!-- Links -->
+      <line x1="310" y1="120" x2="330" y2="120" stroke="#f7a24f" stroke-width="1.5" marker-end="url(#a8)"/>
+      <line x1="490" y1="100" x2="550" y2="70" stroke="#3dd68c" stroke-width="1.5" marker-end="url(#a8)"/>
+      <line x1="490" y1="120" x2="550" y2="120" stroke="#3dd68c" stroke-width="1.5" marker-end="url(#a8)"/>
+      <line x1="490" y1="140" x2="550" y2="170" stroke="#3dd68c" stroke-width="1.5" marker-end="url(#a8)"/>
+      <text x="565" y="74" fill="#94a3b8" font-size="10">eth0 → ISP-A</text>
+      <text x="565" y="124" fill="#94a3b8" font-size="10">eth1 → ISP-B</text>
+      <text x="565" y="174" fill="#94a3b8" font-size="10">eth2 → ISP-C (2x)</text>
+
+      <!-- Timeline -->
+      <rect x="10" y="200" width="660" height="30" rx="4" fill="rgba(247,162,79,0.05)" stroke="rgba(247,162,79,0.15)"/>
+      <text x="20" y="218" fill="#f7a24f" font-size="10" font-weight="600">演化时间线：</text>
+      <text x="110" y="218" fill="#94a3b8" font-size="10">v2.1.68(1997)随机 →</text>
+      <text x="260" y="218" fill="#94a3b8" font-size="10">v3.8 IPv6支持 →</text>
+      <text x="370" y="218" fill="#94a3b8" font-size="10">v4.4 L3哈希 →</text>
+      <text x="450" y="218" fill="#94a3b8" font-size="10">v4.12 L4哈希 →</text>
+      <text x="545" y="218" fill="#a3e635" font-size="10">v5.3 nexthop对象</text>
+    </svg>
+    <div class="svg-caption">图 4-1：ECMP 多路径路由结构与哈希选路演化</div>
+  </div>
+
+  <p>内核数据结构 <code>struct fib_info</code> 持有一个 <code>fib_nh[]</code> 数组，每个元素代表一个下一跳。多路径路由的哈希策略经历了多次演化：</p>
+
+  <table class="kv-table">
+    <thead><tr><th>内核版本</th><th>ECMP 哈希策略</th><th>说明</th></tr></thead>
+    <tbody>
+      <tr><td>v2.1.68</td><td>随机（per-packet）</td><td>用 jiffies 作随机数，可能乱序</td></tr>
+      <tr><td>v2.6.12–2.6.22</td><td>基于目的地址</td><td>路由缓存保证同目的走同路径</td></tr>
+      <tr><td>v3.6</td><td>路由缓存移除，退化为近随机</td><td>缓存移除导致乱序风险重现</td></tr>
+      <tr><td><span class="tag tag-new">NEW</span> v4.4</td><td>L3 哈希（src+dst+proto）</td><td>commit 0e884c78，流级别一致性</td></tr>
+      <tr><td><span class="tag tag-new">NEW</span> v4.12</td><td>L4 哈希（含 src/dst port）</td><td><code>fib_multipath_hash_policy=1</code></td></tr>
+      <tr><td><span class="tag tag-new">NEW</span> v5.2+</td><td>自定义哈希字段</td><td><code>fib_multipath_hash_fields</code> sysctl</td></tr>
+    </tbody>
+  </table>
+
+  <table class="kv-table">
+    <thead><tr><th>维度</th><th>新增字段</th><th>解决的问题</th></tr></thead>
+    <tbody>
+      <tr>
+        <td><span class="tag tag-val">Value 输出</span></td>
+        <td class="field-name">fib_nh[] 数组（多下一跳）</td>
+        <td>单条路由条目表达多条等价路径，实现 L3 负载均衡</td>
+      </tr>
+      <tr>
+        <td><span class="tag tag-val">Value 输出</span></td>
+        <td class="field-name">nh_weight（权重）</td>
+        <td>加权 ECMP，按比例分配流量到不同带宽的链路</td>
+      </tr>
+      <tr>
+        <td><span class="tag tag-val">Value 输出</span></td>
+        <td class="field-name">fib_metrics（链路参数）</td>
+        <td>MTU / RTT / rttvar / cwnd 等 TCP 参数，路由级别的链路质量描述</td>
+      </tr>
+    </tbody>
+  </table>
+
+  <div class="fp-box">
+    <div class="fp-title">第一性原理</div>
+    <p>ECMP 的本质是将路由的「1 对 1 映射」泛化为「1 对 N 映射」。但 N 条路径的<strong>一致性哈希问题</strong>随即出现：同一连接的多个包必须走同一条路径，否则 TCP 收包乱序。这迫使哈希的粒度从「per-packet」演进到「per-flow」（L3 hash），再到「per-micro-flow」（L4 hash）。<strong>负载均衡粒度与有序性保证永远是一对矛盾</strong>，ECMP 的演化史就是在这对矛盾中寻找平衡的历史。</p>
+  </div>
+</div>
+
+<!-- Section 5: Netfilter fwmark -->
+<div class="section">
+  <span class="section-anchor" id="s5"></span>
+  <div class="ch-header c5">
+    <div class="ch-num">⑤</div>
+    <div class="ch-meta">
+      <div class="ch-era">Linux 2.4 · 约 2001</div>
+      <div class="ch-title">Netfilter 集成与 fwmark 路由</div>
+      <div class="ch-sub">防火墙标记成为路由键：将安全策略与转发决策融合</div>
+    </div>
+  </div>
+  <div class="ch-divider"></div>
+
+  <p>Linux 2.4 带来了 <strong>Netfilter</strong> 框架（取代了 2.2 的 ipchains），并通过 <code>iptables -j MARK</code>（及后来的 <code>nftables meta mark set</code>）为数据包打上任意 32 位整数标记 <strong>fwmark</strong>。</p>
+
+  <p>关键创新在于：RPDB 规则可以用 <code>fwmark</code> 作为匹配键，将防火墙的分类决策转化为路由决策。这彻底打通了 L3/L4 层信息与路由子系统之间的通道。</p>
+
+  <div class="callout callout-red">
+    <div class="callout-title">📌 场景：基于应用类型的策略路由</div>
+    企业需要将所有 HTTP(s) 流量（TCP:80/443）走代理出口，将 SSH 和管理流量走专用管理线路，将 VoIP 流量（UDP:5060）走低延迟线路。这些需求无法仅用 IP 地址区分，必须结合 L4 端口信息。
+  </div>
+
+  <div class="svg-wrap">
+    <svg viewBox="0 0 700 260" xmlns="http://www.w3.org/2000/svg" style="min-width:360px">
+      <defs>
+        <marker id="a9" markerWidth="8" markerHeight="8" refX="6" refY="3" orient="auto">
+          <path d="M0,0 L0,6 L8,3 z" fill="#f75f5f"/>
+        </marker>
+        <marker id="a10" markerWidth="8" markerHeight="8" refX="6" refY="3" orient="auto">
+          <path d="M0,0 L0,6 L8,3 z" fill="#3dd68c"/>
+        </marker>
+      </defs>
+      <!-- Incoming -->
+      <rect x="10" y="100" width="110" height="60" rx="8" fill="#1a1d27" stroke="#f75f5f"/>
+      <text x="65" y="124" fill="#f75f5f" font-size="11" text-anchor="middle">入站数据包</text>
+      <text x="65" y="140" fill="#94a3b8" font-size="9" text-anchor="middle">TCP dst:443</text>
+      <text x="65" y="152" fill="#94a3b8" font-size="9" text-anchor="middle">fwmark=0</text>
+
+      <!-- Netfilter mangle -->
+      <line x1="120" y1="130" x2="158" y2="130" stroke="#f75f5f" stroke-width="1.5" marker-end="url(#a9)"/>
+      <rect x="159" y="60" width="180" height="140" rx="8" fill="#1a1d27" stroke="#f75f5f"/>
+      <text x="249" y="84" fill="#f75f5f" font-size="11" text-anchor="middle" font-weight="600">iptables MANGLE</text>
+      <line x1="159" y1="92" x2="339" y2="92" stroke="#2e3354"/>
+      <text x="170" y="112" fill="#94a3b8" font-size="9">tcp dport 80,443</text>
+      <text x="250" y="112" fill="#f7a24f" font-size="9">MARK=1</text>
+      <text x="170" y="128" fill="#94a3b8" font-size="9">tcp dport 22</text>
+      <text x="250" y="128" fill="#f7a24f" font-size="9">MARK=2</text>
+      <text x="170" y="144" fill="#94a3b8" font-size="9">udp dport 5060</text>
+      <text x="250" y="144" fill="#f7a24f" font-size="9">MARK=3</text>
+      <text x="249" y="168" fill="#64748b" font-size="9" text-anchor="middle">skb→mark = fwmark</text>
+      <text x="249" y="181" fill="#64748b" font-size="9" text-anchor="middle">写入 sk_buff</text>
+
+      <!-- RPDB rules -->
+      <line x1="339" y1="130" x2="375" y2="130" stroke="#f7a24f" stroke-width="1.5" marker-end="url(#a9)"/>
+      <rect x="376" y="60" width="160" height="140" rx="8" fill="#1a1d27" stroke="#f7a24f"/>
+      <text x="456" y="84" fill="#f7a24f" font-size="11" text-anchor="middle" font-weight="600">RPDB 规则</text>
+      <line x1="376" y1="92" x2="536" y2="92" stroke="#2e3354"/>
+      <text x="386" y="112" fill="#c084fc" font-size="9" font-family="monospace">fwmark 1 → proxy_tbl</text>
+      <text x="386" y="128" fill="#818cf8" font-size="9" font-family="monospace">fwmark 2 → mgmt_tbl</text>
+      <text x="386" y="144" fill="#22d3ee" font-size="9" font-family="monospace">fwmark 3 → voip_tbl</text>
+      <text x="386" y="162" fill="#94a3b8" font-size="9" font-family="monospace">default → main</text>
+
+      <!-- Results -->
+      <line x1="536" y1="112" x2="590" y2="80" stroke="#3dd68c" stroke-width="1" marker-end="url(#a10)"/>
+      <line x1="536" y1="128" x2="590" y2="130" stroke="#3dd68c" stroke-width="1" marker-end="url(#a10)"/>
+      <line x1="536" y1="145" x2="590" y2="180" stroke="#3dd68c" stroke-width="1" marker-end="url(#a10)"/>
+      <text x="592" y="84" fill="#94a3b8" font-size="9">→ 代理出口</text>
+      <text x="592" y="134" fill="#94a3b8" font-size="9">→ 管理线路</text>
+      <text x="592" y="184" fill="#94a3b8" font-size="9">→ 低延迟链路</text>
+    </svg>
+    <div class="svg-caption">图 5-1：fwmark 打通 Netfilter 与路由子系统，实现应用感知路由</div>
+  </div>
+
+  <table class="kv-table">
+    <thead><tr><th>维度</th><th>新增字段</th><th>解决的问题</th></tr></thead>
+    <tbody>
+      <tr>
+        <td><span class="tag tag-key">Key 输入</span></td>
+        <td class="field-name">fwmark（防火墙标记）</td>
+        <td>将 L4~L7 信息（端口、协议、连接状态）映射为路由键，实现应用感知路由</td>
+      </tr>
+      <tr>
+        <td><span class="tag tag-val">Value 输出</span></td>
+        <td class="field-name">路由类型扩展</td>
+        <td>blackhole/unreachable/prohibit/throw，路由即安全策略执行点</td>
+      </tr>
+    </tbody>
+  </table>
+
+  <p><code>fwmark</code> 是路由子系统与安全子系统之间的<strong>解耦接口</strong>。它使两个子系统可以独立演化，同时通过一个 32 位整数共享决策信息，是 Linux 网络架构模块化思想的典范。</p>
+
+  <div class="fp-box">
+    <div class="fp-title">第一性原理</div>
+    <p>fwmark 体现了<strong>「关注点分离 + 抽象接口」</strong>的设计哲学。安全子系统（Netfilter）负责「分类」，路由子系统负责「转发」，两者通过一个整数标记解耦。这个设计允许任何能写 skb→mark 的子系统（Netfilter、eBPF、tc/BPF 等）影响路由决策，而无需修改路由子系统本身。路由 Key 维度的增加，本质上是「外部信息注入路由决策平面」能力的增加。</p>
+  </div>
+</div>
+
+<!-- Section 6: LPC-Trie + Cache Removal -->
+<div class="section">
+  <span class="section-anchor" id="s6"></span>
+  <div class="ch-header c6">
+    <div class="ch-num">⑥</div>
+    <div class="ch-meta">
+      <div class="ch-era">Linux 2.6.39 → 3.6 · 2011–2012</div>
+      <div class="ch-title">LPC-Trie 算法与路由缓存的移除</div>
+      <div class="ch-sub">查找算法革新：用更快的树换掉有安全隐患的缓存</div>
+    </div>
+  </div>
+  <div class="ch-divider"></div>
+
+  <p>路由缓存从 Linux 2.0 时代服务了十多年，但它有一个致命弱点：<strong>DoS 攻击</strong>。攻击者只需向随机目标 IP 发包，就能用海量伪流填满路由缓存，耗尽内存。同时，路由缓存以 <code>{src, dst, TOS}</code> 为键，粒度极细，缓存条目可能达到数百万个。</p>
+
+  <div class="callout callout-purple">
+    <div class="callout-title">📌 场景：路由缓存 DoS 与性能问题</div>
+    2010年前后，有研究者发现通过发送大量随机目的 IP 包，可以在数秒内让 Linux 路由器内存耗尽。随着 Internet 路由表条目突破 40 万条，传统哈希表查找的扩展性也开始成为瓶颈。
+  </div>
+
+  <p>解决方案分为两步：</p>
+
+  <div class="two-col">
+    <div class="info-card">
+      <h4 style="color:#e879f9">🌳 v2.6.39：LPC-Trie 成为默认</h4>
+      <p style="font-size:13px">引入 LC-Trie（Level Compressed Trie，也称 FIB Trie），取代旧有哈希表。LC-Trie 通过路径压缩和层压缩优化前缀树，在大型路由表（数十万条）中查找复杂度接近 O(1)，远优于哈希表的最坏情况。代码位于 <code>net/ipv4/fib_trie.c</code>。</p>
+    </div>
+    <div class="info-card">
+      <h4 style="color:#e879f9">🗑️ v3.6：移除路由缓存</h4>
+      <p style="font-size:13px">commit <code>89aef8921bfb</code>：正式删除全局路由缓存（dst_cache）。有了更快的 LPC-Trie，直接查 FIB 已足够高效。缓存改为<strong>每条路由条目级别的 nexthop 缓存</strong>（<code>fib_nh.nh_rth_output/input</code>），不再以流为粒度，彻底消除了 DoS 攻击面。</p>
+    </div>
+  </div>
+
+  <div class="svg-wrap">
+    <svg viewBox="0 0 700 260" xmlns="http://www.w3.org/2000/svg" style="min-width:340px">
+      <defs>
+        <marker id="a11" markerWidth="8" markerHeight="8" refX="6" refY="3" orient="auto">
+          <path d="M0,0 L0,6 L8,3 z" fill="#e879f9"/>
+        </marker>
+      </defs>
+      <!-- Old model -->
+      <text x="20" y="22" fill="#94a3b8" font-size="12" font-weight="600">旧模型（v3.6前）</text>
+      <rect x="20" y="30" width="140" height="50" rx="6" fill="#1a1d27" stroke="#f75f5f" stroke-dasharray="4,2"/>
+      <text x="90" y="59" fill="#f75f5f" font-size="10" text-anchor="middle">全局路由缓存</text>
+      <text x="90" y="72" fill="#64748b" font-size="9" text-anchor="middle">key={src,dst,tos} → rtable</text>
+      <text x="175" y="60" fill="#94a3b8" font-size="16">→</text>
+      <rect x="190" y="30" width="130" height="50" rx="6" fill="#1a1d27" stroke="#2e3354"/>
+      <text x="255" y="59" fill="#94a3b8" font-size="10" text-anchor="middle">FIB (hash table)</text>
+      <text x="255" y="72" fill="#64748b" font-size="9" text-anchor="middle">O(n) worst case</text>
+      <rect x="20" y="88" width="300" height="20" rx="4" fill="rgba(247,95,95,0.1)" stroke="rgba(247,95,95,0.2)"/>
+      <text x="170" y="102" fill="#f75f5f" font-size="9" text-anchor="middle">⚠ DoS: 随机 dst 包可填满缓存耗尽内存</text>
+
+      <!-- New model -->
+      <text x="20" y="135" fill="#94a3b8" font-size="12" font-weight="600">新模型（v3.6后）</text>
+      <rect x="20" y="143" width="200" height="60" rx="6" fill="#1a1d27" stroke="#e879f9"/>
+      <text x="120" y="165" fill="#e879f9" font-size="10" text-anchor="middle" font-weight="600">LPC-Trie FIB</text>
+      <text x="120" y="181" fill="#94a3b8" font-size="9" text-anchor="middle">LC-Trie 路径压缩 + 层压缩</text>
+      <text x="120" y="194" fill="#94a3b8" font-size="9" text-anchor="middle">40万条路由 O(log n)≈O(1)</text>
+      <line x1="220" y1="173" x2="255" y2="173" stroke="#e879f9" stroke-width="1.5" marker-end="url(#a11)"/>
+      <rect x="256" y="143" width="180" height="60" rx="6" fill="#1a1d27" stroke="#3dd68c"/>
+      <text x="346" y="165" fill="#3dd68c" font-size="10" text-anchor="middle" font-weight="600">nexthop 级缓存</text>
+      <text x="346" y="181" fill="#94a3b8" font-size="9" text-anchor="middle">每条 fib_nh 缓存一个 rtable</text>
+      <text x="346" y="194" fill="#94a3b8" font-size="9" text-anchor="middle">路由表条目级，非流级</text>
+      <rect x="20" y="212" width="416" height="20" rx="4" fill="rgba(61,214,140,0.08)" stroke="rgba(61,214,140,0.2)"/>
+      <text x="228" y="226" fill="#3dd68c" font-size="9" text-anchor="middle">✓ 无 DoS 风险，缓存大小 = 路由表条目数（有界）</text>
+
+      <!-- LPC-Trie diagram -->
+      <text x="460" y="22" fill="#94a3b8" font-size="11" font-weight="600">LPC-Trie 示意</text>
+      <text x="560" y="55" fill="#e879f9" font-size="11" text-anchor="middle">根</text>
+      <line x1="540" y1="62" x2="510" y2="90" stroke="#e879f9" stroke-width="1"/>
+      <line x1="580" y1="62" x2="610" y2="90" stroke="#e879f9" stroke-width="1"/>
+      <text x="510" y="100" fill="#94a3b8" font-size="10" text-anchor="middle">0.*</text>
+      <text x="610" y="100" fill="#94a3b8" font-size="10" text-anchor="middle">1.*</text>
+      <line x1="510" y1="105" x2="490" y2="130" stroke="#e879f9" stroke-width="1"/>
+      <line x1="510" y1="105" x2="530" y2="130" stroke="#e879f9" stroke-width="1"/>
+      <text x="490" y="140" fill="#7dd3fc" font-size="9" text-anchor="middle">10.x</text>
+      <text x="530" y="140" fill="#7dd3fc" font-size="9" text-anchor="middle">0.x</text>
+      <line x1="490" y1="145" x2="480" y2="165" stroke="#e879f9" stroke-width="1"/>
+      <text x="475" y="174" fill="#3dd68c" font-size="9" text-anchor="middle">10.0/24</text>
+      <text x="450" y="200" fill="#64748b" font-size="9">路径压缩跳过</text>
+      <text x="450" y="212" font-size="9" fill="#64748b">单子节点层级</text>
+    </svg>
+    <div class="svg-caption">图 6-1：路由缓存移除与 LPC-Trie 替换后的查找架构</div>
+  </div>
+
+  <p>这次变化对「Key/Value 维度」没有直接增加新字段，而是重塑了路由查找的<strong>性能基础设施</strong>，为后续更复杂的功能（VRF、nexthop 对象）奠定了基础。移除缓存后，路由子系统的行为更加<strong>确定性</strong>——每次查找结果完全由当前路由表决定，不再受历史缓存状态影响。</p>
+
+  <div class="source-ref">
+    📖 参考：<a href="https://thermalcircle.de/doku.php?id=blog:linux:routing_decisions_in_the_linux_kernel_1_lookup_packet_flow" target="_blank">Routing Decisions in the Linux Kernel（thermalcircle.de）</a> | LPC-Trie: kernel 2.6.39 commit 3630b7c050d9 | 路由缓存移除: kernel 3.6
+  </div>
+
+  <div class="fp-box">
+    <div class="fp-title">第一性原理</div>
+    <p>路由缓存的移除是一次「用算法换缓存」的经典工程权衡。当查找算法（LPC-Trie）快到一定程度时，缓存的边际收益（节省查找时间）小于其代价（内存占用、DoS 风险、一致性复杂度）。这揭示了一个普适原则：<strong>缓存是对慢速操作的补偿，当底层操作变快到足够程度，缓存的存在反而成为负担</strong>。安全性（DoS 免疫）往往是打破这个权衡的最终驱动力。</p>
+  </div>
+</div>
+
+<!-- Section 7: VRF / L3MDev -->
+<div class="section">
+  <span class="section-anchor" id="s7"></span>
+  <div class="ch-header c7">
+    <div class="ch-num">⑦</div>
+    <div class="ch-meta">
+      <div class="ch-era">Linux 4.3 → 4.8 · 2015–2016</div>
+      <div class="ch-title">VRF 与 L3MDev：路由隔离的原生支持</div>
+      <div class="ch-sub">Key 扩展：将「属于哪个 VRF」纳入路由决策</div>
+    </div>
+  </div>
+  <div class="ch-divider"></div>
+
+  <p>云计算和 SDN 的兴起带来了<strong>多租户路由隔离</strong>的强烈需求。同一台物理路由器（或 Linux 服务器）上，需要为不同客户维护完全独立的路由表，即使它们使用相同的 IP 地址段也互不干扰——这就是 <strong>VRF（Virtual Routing and Forwarding）</strong>的核心需求。</p>
+
+  <div class="callout callout-blue">
+    <div class="callout-title">📌 场景：多租户云路由器 / 企业多 VPN 并存</div>
+    同一台 Linux 服务器上运行 VPN 客户 A 和客户 B，两者均使用 10.0.0.0/8 网段，但路由完全隔离。客户 A 的 10.1.1.1 和客户 B 的 10.1.1.1 路由到不同的物理接口，彼此不可见。
+  </div>
+
+  <p>Linux 4.3 引入 <strong>l3mdev（Layer 3 Master Device）</strong>框架，4.8 引入统一的 <code>l3mdev-table</code> FIB 规则，使 VRF 实现更简洁：</p>
+
+  <div class="svg-wrap">
+    <svg viewBox="0 0 720 290" xmlns="http://www.w3.org/2000/svg" style="min-width:360px">
+      <defs>
+        <marker id="a12" markerWidth="8" markerHeight="8" refX="6" refY="3" orient="auto">
+          <path d="M0,0 L0,6 L8,3 z" fill="#22d3ee"/>
+        </marker>
+      </defs>
+      <!-- Physical interfaces -->
+      <text x="20" y="22" fill="#94a3b8" font-size="12" font-weight="600">物理层</text>
+      <rect x="20" y="30" width="80" height="36" rx="6" fill="#1a1d27" stroke="#2e3354"/>
+      <text x="60" y="53" fill="#94a3b8" font-size="10" text-anchor="middle">eth1</text>
+      <rect x="115" y="30" width="80" height="36" rx="6" fill="#1a1d27" stroke="#2e3354"/>
+      <text x="155" y="53" fill="#94a3b8" font-size="10" text-anchor="middle">eth2</text>
+      <rect x="210" y="30" width="80" height="36" rx="6" fill="#1a1d27" stroke="#2e3354"/>
+      <text x="250" y="53" fill="#94a3b8" font-size="10" text-anchor="middle">eth3</text>
+      <rect x="305" y="30" width="80" height="36" rx="6" fill="#1a1d27" stroke="#2e3354"/>
+      <text x="345" y="53" fill="#94a3b8" font-size="10" text-anchor="middle">eth4</text>
+
+      <!-- VRF devices -->
+      <text x="20" y="92" fill="#94a3b8" font-size="12" font-weight="600">VRF 设备层（l3mdev）</text>
+      <rect x="20" y="100" width="180" height="50" rx="8" fill="#1a1d27" stroke="#22d3ee"/>
+      <text x="110" y="122" fill="#22d3ee" font-size="11" text-anchor="middle" font-weight="600">vrf-blue (table 10)</text>
+      <text x="110" y="138" fill="#64748b" font-size="9" text-anchor="middle">master: eth1, eth2</text>
+      <rect x="215" y="100" width="180" height="50" rx="8" fill="#1a1d27" stroke="#f7a24f"/>
+      <text x="305" y="122" fill="#f7a24f" font-size="11" text-anchor="middle" font-weight="600">vrf-red (table 20)</text>
+      <text x="305" y="138" fill="#64748b" font-size="9" text-anchor="middle">master: eth3, eth4</text>
+
+      <!-- Slave lines -->
+      <line x1="60" y1="66" x2="80" y2="100" stroke="#22d3ee" stroke-width="1" stroke-dasharray="3,2"/>
+      <line x1="155" y1="66" x2="140" y2="100" stroke="#22d3ee" stroke-width="1" stroke-dasharray="3,2"/>
+      <line x1="250" y1="66" x2="270" y2="100" stroke="#f7a24f" stroke-width="1" stroke-dasharray="3,2"/>
+      <line x1="345" y1="66" x2="330" y2="100" stroke="#f7a24f" stroke-width="1" stroke-dasharray="3,2"/>
+
+      <!-- RPDB with l3mdev rule -->
+      <text x="20" y="172" fill="#94a3b8" font-size="12" font-weight="600">路由规则（ip rule）</text>
+      <rect x="20" y="180" width="380" height="90" rx="8" fill="#1a1d27" stroke="#2e3354"/>
+      <text x="30" y="200" fill="#64748b" font-size="10" font-family="monospace">0:     from all lookup local</text>
+      <rect x="22" y="206" width="376" height="22" rx="4" fill="rgba(34,211,238,0.1)" stroke="rgba(34,211,238,0.3)"/>
+      <text x="30" y="221" fill="#22d3ee" font-size="10" font-family="monospace">1000:  from all lookup [l3mdev-table]  ← v4.8 新增</text>
+      <text x="30" y="242" fill="#64748b" font-size="10" font-family="monospace">32766: from all lookup main</text>
+      <text x="30" y="258" fill="#64748b" font-size="10" font-family="monospace">32767: from all lookup default</text>
+
+      <!-- Separate tables -->
+      <rect x="420" y="100" width="130" height="80" rx="8" fill="#1a1d27" stroke="#22d3ee"/>
+      <text x="485" y="120" fill="#22d3ee" font-size="10" text-anchor="middle" font-weight="600">FIB table 10</text>
+      <text x="430" y="138" fill="#64748b" font-size="9">10.0.0.0/8 dev eth1</text>
+      <text x="430" y="152" fill="#64748b" font-size="9">unreach default</text>
+      <text x="430" y="166" fill="#64748b" font-size="9">（租户 A 私有表）</text>
+
+      <rect x="570" y="100" width="130" height="80" rx="8" fill="#1a1d27" stroke="#f7a24f"/>
+      <text x="635" y="120" fill="#f7a24f" font-size="10" text-anchor="middle" font-weight="600">FIB table 20</text>
+      <text x="580" y="138" fill="#64748b" font-size="9">10.0.0.0/8 dev eth3</text>
+      <text x="580" y="152" fill="#64748b" font-size="9">unreach default</text>
+      <text x="580" y="166" fill="#64748b" font-size="9">（租户 B 私有表）</text>
+
+      <line x1="110" y1="150" x2="420" y2="145" stroke="#22d3ee" stroke-width="1" stroke-dasharray="4,2" marker-end="url(#a12)"/>
+      <line x1="305" y1="150" x2="570" y2="145" stroke="#f7a24f" stroke-width="1" stroke-dasharray="4,2" marker-end="url(#a12)"/>
+    </svg>
+    <div class="svg-caption">图 7-1：VRF 设备与 l3mdev-table 规则实现路由域隔离</div>
+  </div>
+
+  <pre><span class="cmt"># 创建 VRF 设备并绑定路由表</span>
+ip link add vrf-blue <span class="kw">type</span> vrf <span class="kw">table</span> <span class="num">10</span>
+ip link set dev vrf-blue up
+ip link set dev eth1 master vrf-blue   <span class="cmt"># eth1 归属 vrf-blue</span>
+
+<span class="cmt"># v4.8+ 自动插入 l3mdev 规则（单条规则覆盖所有 VRF）</span>
+<span class="cmt"># ip rule show:</span>
+<span class="cmt">#  1000: from all lookup [l3mdev-table]</span>
+
+<span class="cmt"># VRF 内添加路由</span>
+ip route add <span class="kw">table</span> <span class="num">10</span> <span class="fn">10.0.0.0/8</span> dev eth1
+ip route add <span class="kw">table</span> <span class="num">10</span> unreachable default metric <span class="num">4278198272</span></pre>
+
+  <table class="kv-table">
+    <thead><tr><th>维度</th><th>新增字段</th><th>解决的问题</th></tr></thead>
+    <tbody>
+      <tr>
+        <td><span class="tag tag-key">Key 输入</span></td>
+        <td class="field-name">l3mdev / VRF 设备</td>
+        <td>数据包进入哪个 VRF 域决定查哪张路由表，实现租户级路由隔离</td>
+      </tr>
+      <tr>
+        <td><span class="tag tag-key">Key 输入</span></td>
+        <td class="field-name">网络命名空间（net ns）</td>
+        <td>每个 netns 拥有独立路由表集合，提供更强的隔离（进程级）</td>
+      </tr>
+      <tr>
+        <td><span class="tag tag-val">Value 输出</span></td>
+        <td class="field-name">l3mdev-table 查找</td>
+        <td>单条 RPDB 规则取代 N 个 VRF 各自的 iif/oif 规则，极大简化配置</td>
+      </tr>
+    </tbody>
+  </table>
+
+  <div class="source-ref">
+    📖 参考：<a href="https://www.kernel.org/doc/Documentation/networking/vrf.rst" target="_blank">kernel.org: VRF Documentation</a> | v4.3 l3mdev 引入 | v4.8 l3mdev-table 规则统一（"Prior to v4.8 iif and oif rules were needed for each VRF device"）
+  </div>
+
+  <div class="fp-box">
+    <div class="fp-title">第一性原理</div>
+    <p>VRF 的本质是将「路由域归属」提升为一个<strong>一等公民的 Key 维度</strong>。在此之前，隔离只能通过 网络命名空间（整个网络栈复制，重量级）或 policy rules（配置复杂、难以扩展）模拟。l3mdev 的设计选择了「最小侵入性」原则：只在 L3 层做隔离，L2 工具（LLDP 等）、TC 子系统对 VRF 透明。<strong>一个设计是否优雅，往往体现在它对相邻子系统的透明度</strong>——VRF 只影响路由，不影响其他层，是模块化的典范。</p>
+  </div>
+</div>
+
+<!-- Section 8: Nexthop Objects -->
+<div class="section">
+  <span class="section-anchor" id="s8"></span>
+  <div class="ch-header c8">
+    <div class="ch-num">⑧</div>
+    <div class="ch-meta">
+      <div class="ch-era">Linux 5.1 – 5.3 · 2019</div>
+      <div class="ch-title">Nexthop 对象独立化（RTA_NHID）</div>
+      <div class="ch-sub">Value 重构：下一跳从路由条目内联到独立对象，实现规模化管理</div>
+    </div>
+  </div>
+  <div class="ch-divider"></div>
+
+  <p>在 v5.3 之前，每条路由条目（<code>fib_info</code>）内嵌一个 <code>fib_nh[]</code> 数组表示下一跳。这在路由表规模达到数十万条、下一跳可能被大量路由共享时，造成严重的<strong>内存浪费和更新开销</strong>：修改一个下一跳（如链路变更）需要重新插入所有引用它的路由条目。</p>
+
+  <p>David Ahern 在 2019 年（最终合入 v5.3）引入了<strong>独立的 Nexthop 对象</strong>，通过属性 <code>RTA_NHID</code> 让路由条目引用外部 nexthop 对象，而非内嵌数据：</p>
+
+  <div class="svg-wrap">
+    <svg viewBox="0 0 700 300" xmlns="http://www.w3.org/2000/svg" style="min-width:360px">
+      <defs>
+        <marker id="a13" markerWidth="8" markerHeight="8" refX="6" refY="3" orient="auto">
+          <path d="M0,0 L0,6 L8,3 z" fill="#a3e635"/>
+        </marker>
+        <marker id="a14" markerWidth="8" markerHeight="8" refX="6" refY="3" orient="auto">
+          <path d="M0,0 L0,6 L8,3 z" fill="#f75f5f"/>
+        </marker>
+      </defs>
+      <!-- Old model -->
+      <text x="10" y="20" fill="#f75f5f" font-size="11" font-weight="600">旧模型（v5.2及前）：下一跳内嵌</text>
+      <rect x="10" y="28" width="170" height="70" rx="6" fill="#1a1d27" stroke="#2e3354"/>
+      <text x="95" y="46" fill="#94a3b8" font-size="10" text-anchor="middle">fib_info #1 (10.0.0.0/8)</text>
+      <text x="95" y="62" fill="#7dd3fc" font-size="9" text-anchor="middle">fib_nh[]: via gw1, via gw2</text>
+      <rect x="190" y="28" width="170" height="70" rx="6" fill="#1a1d27" stroke="#2e3354"/>
+      <text x="275" y="46" fill="#94a3b8" font-size="10" text-anchor="middle">fib_info #2 (172.16.0.0/12)</text>
+      <text x="275" y="62" fill="#7dd3fc" font-size="9" text-anchor="middle">fib_nh[]: via gw1, via gw2</text>
+      <text x="540" y="62" fill="#f75f5f" font-size="9">← 数据重复！</text>
+      <text x="540" y="76" fill="#64748b" font-size="9">gw1/gw2 配置</text>
+      <text x="540" y="90" fill="#64748b" font-size="9">在每条 fib_info</text>
+      <text x="540" y="104" fill="#64748b" font-size="9">中各存一份</text>
+      <rect x="10" y="105" width="350" height="20" rx="4" fill="rgba(247,95,95,0.08)" stroke="rgba(247,95,95,0.2)"/>
+      <text x="185" y="119" fill="#f75f5f" font-size="9" text-anchor="middle">⚠ 更新 gw1 需要修改所有引用它的路由条目（O(n) 操作）</text>
+
+      <!-- New model -->
+      <text x="10" y="148" fill="#a3e635" font-size="11" font-weight="600">新模型（v5.3+）：独立 Nexthop 对象</text>
+      <!-- Route entries -->
+      <rect x="10" y="156" width="160" height="50" rx="6" fill="#1a1d27" stroke="#a3e635"/>
+      <text x="90" y="175" fill="#94a3b8" font-size="10" text-anchor="middle">fib_info #1</text>
+      <text x="90" y="190" fill="#a3e635" font-size="9" text-anchor="middle">nhid=100 →</text>
+      <rect x="10" y="214" width="160" height="50" rx="6" fill="#1a1d27" stroke="#a3e635"/>
+      <text x="90" y="233" fill="#94a3b8" font-size="10" text-anchor="middle">fib_info #2</text>
+      <text x="90" y="248" fill="#a3e635" font-size="9" text-anchor="middle">nhid=100 →</text>
+      <rect x="10" y="272" width="160" height="22" rx="4" fill="#1a1d27" stroke="#a3e635"/>
+      <text x="90" y="287" fill="#94a3b8" font-size="9" text-anchor="middle">fib_info #N  nhid=101 →</text>
+
+      <!-- Lines to nexthop objects -->
+      <line x1="170" y1="178" x2="220" y2="178" stroke="#a3e635" stroke-width="1.5" marker-end="url(#a13)"/>
+      <line x1="170" y1="236" x2="220" y2="210" stroke="#a3e635" stroke-width="1.5" marker-end="url(#a13)"/>
+      <line x1="170" y1="283" x2="220" y2="270" stroke="#a3e635" stroke-width="1" stroke-dasharray="3,2" marker-end="url(#a13)"/>
+
+      <!-- Nexthop group object -->
+      <rect x="221" y="155" width="200" height="80" rx="8" fill="#1a1d27" stroke="#22d3ee"/>
+      <text x="321" y="175" fill="#22d3ee" font-size="10" text-anchor="middle" font-weight="600">nexthop 对象 #100</text>
+      <text x="321" y="193" fill="#94a3b8" font-size="9" text-anchor="middle">nh_grp: [nh#10 w1, nh#11 w1]</text>
+      <text x="321" y="208" fill="#94a3b8" font-size="9" text-anchor="middle">（ECMP 组，权重相等）</text>
+      <line x1="321" y1="225" x2="321" y2="245" stroke="#22d3ee" stroke-width="1" stroke-dasharray="2,2"/>
+      <rect x="221" y="248" width="200" height="36" rx="6" fill="#1a1d27" stroke="#7c6af7"/>
+      <text x="321" y="264" fill="#7c6af7" font-size="9" text-anchor="middle">nexthop #10: via 10.0.0.1 eth0</text>
+      <text x="321" y="277" fill="#7c6af7" font-size="9" text-anchor="middle">nexthop #11: via 10.0.0.2 eth1</text>
+
+      <!-- Update arrow -->
+      <rect x="440" y="165" width="240" height="70" rx="8" fill="rgba(163,230,53,0.06)" stroke="rgba(163,230,53,0.2)"/>
+      <text x="560" y="184" fill="#a3e635" font-size="10" text-anchor="middle" font-weight="600">原子更新 nexthop #100</text>
+      <text x="560" y="202" fill="#64748b" font-size="9" text-anchor="middle">↓</text>
+      <text x="560" y="217" fill="#94a3b8" font-size="9" text-anchor="middle">所有引用 nhid=100 的</text>
+      <text x="560" y="230" fill="#94a3b8" font-size="9" text-anchor="middle">路由条目同时生效</text>
+      <text x="440" y="255" fill="#a3e635" font-size="9">✓ O(1) 更新，不需遍历路由表</text>
+      <text x="440" y="268" fill="#a3e635" font-size="9">✓ 700k 条路由注入从 72s → 4.3s</text>
+    </svg>
+    <div class="svg-caption">图 8-1：Nexthop 对象独立化前后对比 — 引用替代内嵌</div>
+  </div>
+
+  <pre><span class="cmt"># 创建独立 nexthop 对象</span>
+ip nexthop add id <span class="num">10</span> via <span class="fn">10.0.0.1</span> dev eth0
+ip nexthop add id <span class="num">11</span> via <span class="fn">10.0.0.2</span> dev eth1
+ip nexthop add id <span class="num">100</span> group <span class="fn">10/11</span>   <span class="cmt"># ECMP 组</span>
+
+<span class="cmt"># 路由条目引用 nexthop 对象（而非内嵌）</span>
+ip route add <span class="fn">10.0.0.0/8</span>    nhid <span class="num">100</span>
+ip route add <span class="fn">172.16.0.0/12</span> nhid <span class="num">100</span>
+
+<span class="cmt"># 原子替换 nexthop（所有引用路由同时更新）</span>
+ip nexthop replace id <span class="num">100</span> group <span class="fn">10/12</span></pre>
+
+  <table class="kv-table">
+    <thead><tr><th>维度</th><th>新增字段</th><th>解决的问题</th></tr></thead>
+    <tbody>
+      <tr>
+        <td><span class="tag tag-val">Value 输出</span></td>
+        <td class="field-name">nhid（Nexthop 对象 ID）</td>
+        <td>路由条目通过 ID 引用外部 nexthop 对象，消除数据冗余</td>
+      </tr>
+      <tr>
+        <td><span class="tag tag-val">Value 输出</span></td>
+        <td class="field-name">nexthop 组（nh_grp）</td>
+        <td>一个 nexthop 对象可包含多个 leaf nexthop 并分配权重，ECMP 管理更灵活</td>
+      </tr>
+      <tr>
+        <td><span class="tag tag-val">Value 输出</span></td>
+        <td class="field-name">IPv6 nexthop for IPv4 route</td>
+        <td>支持 RFC 5549（IPv6 下一跳 for IPv4 路由），统一 IPv4/IPv6 nexthop 结构</td>
+      </tr>
+    </tbody>
+  </table>
+
+  <div class="source-ref">
+    📖 参考：<a href="https://lwn.net/Articles/790828/" target="_blank">LWN.net: net: Enable nexthop objects with IPv4 and IPv6 routes（David Ahern, 2019）</a> | 700k 路由从 72s 降到 4.3s 的性能数据来源于 David Ahern 提交说明
+  </div>
+
+  <div class="fp-box">
+    <div class="fp-title">第一性原理</div>
+    <p>Nexthop 对象独立化是一次<strong>数据规范化（Database Normalization）</strong>：将重复存储的 nexthop 信息提取为独立实体，用 ID 引用。这是数据库设计中消除冗余的基本原则在内核数据结构中的应用。规范化的代价是多一次间接引用（pointer dereference），但带来的好处是：<strong>原子性更新</strong>（改一个对象，所有引用生效）、<strong>内存节省</strong>（消除重复）、<strong>路由注入速度提升</strong>。这个演化表明，随着系统规模增长，数据组织方式本身也需要演化——性能瓶颈往往不在算法，而在数据结构的冗余。</p>
+  </div>
+</div>
+
+<!-- Section 9: Full panorama -->
+<div class="section">
+  <span class="section-anchor" id="s9"></span>
+  <div class="ch-header c1">
+    <div class="ch-num">∑</div>
+    <div class="ch-meta">
+      <div class="ch-era">综合视图</div>
+      <div class="ch-title">Key/Value 完整演化全景图</div>
+      <div class="ch-sub">从一维到多维：每次演化背后的驱动力</div>
+    </div>
+  </div>
+  <div class="ch-divider"></div>
+
+  <div class="svg-wrap">
+    <svg viewBox="0 0 760 520" xmlns="http://www.w3.org/2000/svg" style="min-width:400px">
+      <defs>
+        <marker id="ta" markerWidth="8" markerHeight="8" refX="6" refY="3" orient="auto">
+          <path d="M0,0 L0,6 L8,3 z" fill="#4f4f6a"/>
+        </marker>
+      </defs>
+      <!-- Timeline axis -->
+      <line x1="40" y1="50" x2="40" y2="500" stroke="#2e3354" stroke-width="2"/>
+      <text x="40" y="30" fill="#94a3b8" font-size="11" text-anchor="middle" font-weight="700">年代</text>
+
+      <!-- Chapters -->
+      <!-- Ch1 -->
+      <circle cx="40" cy="75" r="6" fill="#4f8ef7"/>
+      <text x="55" y="70" fill="#4f8ef7" font-size="10" font-weight="700">Linux 1.x (1992–94)</text>
+      <rect x="55" y="78" width="680" height="28" rx="4" fill="rgba(79,142,247,0.06)" stroke="rgba(79,142,247,0.15)"/>
+      <text x="64" y="91" fill="#7dd3fc" font-size="9" font-family="monospace">KEY: [dst]</text>
+      <text x="200" y="91" fill="#94a3b8" font-size="9">→</text>
+      <text x="215" y="91" fill="#3dd68c" font-size="9" font-family="monospace">VALUE: [dev, gateway]</text>
+      <text x="480" y="96" fill="#64748b" font-size="9">场景：单宿主 PC，简单 ISP 接入</text>
+
+      <!-- Ch2 -->
+      <circle cx="40" cy="130" r="6" fill="#7c6af7"/>
+      <text x="55" y="125" fill="#7c6af7" font-size="10" font-weight="700">Linux 2.0–2.1 (1996–97)</text>
+      <rect x="55" y="133" width="680" height="36" rx="4" fill="rgba(124,106,247,0.06)" stroke="rgba(124,106,247,0.15)"/>
+      <text x="64" y="146" fill="#7dd3fc" font-size="9" font-family="monospace">KEY: [dst, <tspan fill="#e879f9">src, TOS</tspan>]</text>
+      <text x="64" y="160" fill="#3dd68c" font-size="9" font-family="monospace">VALUE: [dev, gw, <tspan fill="#e879f9">prefsrc, realm</tspan>]</text>
+      <text x="480" y="152" fill="#64748b" font-size="9">场景：多 IP 接口，初步 QoS，流量统计</text>
+
+      <!-- Ch3 -->
+      <circle cx="40" cy="200" r="6" fill="#3dd68c"/>
+      <text x="55" y="195" fill="#3dd68c" font-size="10" font-weight="700">Linux 2.1–2.2 RPDB (1997–99)</text>
+      <rect x="55" y="203" width="680" height="36" rx="4" fill="rgba(61,214,140,0.06)" stroke="rgba(61,214,140,0.15)"/>
+      <text x="64" y="216" fill="#7dd3fc" font-size="9" font-family="monospace">KEY: [dst, src, TOS, <tspan fill="#3dd68c">iif, from, to</tspan>] → 选路由表</text>
+      <text x="64" y="230" fill="#3dd68c" font-size="9" font-family="monospace">VALUE: [dev, gw, prefsrc, <tspan fill="#3dd68c">scope, action-type</tspan>]</text>
+      <text x="480" y="222" fill="#64748b" font-size="9">场景：多线接入，源地址策略路由</text>
+
+      <!-- Ch4 -->
+      <circle cx="40" cy="263" r="6" fill="#f7a24f"/>
+      <text x="55" y="258" fill="#f7a24f" font-size="10" font-weight="700">Linux 2.1.68 ECMP (1997 → 4.4 → 4.12)</text>
+      <rect x="55" y="266" width="680" height="28" rx="4" fill="rgba(247,162,79,0.06)" stroke="rgba(247,162,79,0.15)"/>
+      <text x="64" y="280" fill="#94a3b8" font-size="9" font-family="monospace">KEY: 不变（哈希在 VALUE 内部）</text>
+      <text x="64" y="292" fill="#f7a24f" font-size="9" font-family="monospace">VALUE: [<tspan fill="#f7a24f">fib_nh[] 数组, weight</tspan>, fib_metrics(MTU/RTT)]</text>
+
+      <!-- Ch5 -->
+      <circle cx="40" cy="317" r="6" fill="#f75f5f"/>
+      <text x="55" y="312" fill="#f75f5f" font-size="10" font-weight="700">Linux 2.4 Netfilter/fwmark (2001)</text>
+      <rect x="55" y="320" width="680" height="28" rx="4" fill="rgba(247,95,95,0.06)" stroke="rgba(247,95,95,0.15)"/>
+      <text x="64" y="334" fill="#7dd3fc" font-size="9" font-family="monospace">KEY: [dst, src, TOS, iif, <tspan fill="#f75f5f">fwmark</tspan>]</text>
+      <text x="64" y="346" fill="#94a3b8" font-size="9" font-family="monospace">VALUE: 不变，动作类型扩展</text>
+      <text x="480" y="334" fill="#64748b" font-size="9">场景：L4 端口感知路由，安全策略路由</text>
+
+      <!-- Ch6 -->
+      <circle cx="40" cy="370" r="6" fill="#e879f9"/>
+      <text x="55" y="365" fill="#e879f9" font-size="10" font-weight="700">Linux 2.6.39 LPC-Trie / 3.6 缓存移除</text>
+      <rect x="55" y="373" width="680" height="28" rx="4" fill="rgba(232,121,249,0.06)" stroke="rgba(232,121,249,0.15)"/>
+      <text x="64" y="387" fill="#94a3b8" font-size="9" font-family="monospace">KEY/VALUE 维度不变，查找算法替换</text>
+      <text x="64" y="399" fill="#e879f9" font-size="9" font-family="monospace">FIB 查找: hash-table → LPC-Trie; 缓存粒度: flow → nexthop条目</text>
+
+      <!-- Ch7 -->
+      <circle cx="40" cy="423" r="6" fill="#22d3ee"/>
+      <text x="55" y="418" fill="#22d3ee" font-size="10" font-weight="700">Linux 4.3–4.8 VRF/L3MDev (2015–16)</text>
+      <rect x="55" y="426" width="680" height="28" rx="4" fill="rgba(34,211,238,0.06)" stroke="rgba(34,211,238,0.15)"/>
+      <text x="64" y="440" fill="#7dd3fc" font-size="9" font-family="monospace">KEY: [dst, src, TOS, iif, fwmark, <tspan fill="#22d3ee">l3mdev/VRF, net-ns</tspan>]</text>
+      <text x="64" y="452" fill="#94a3b8" font-size="9" font-family="monospace">VALUE: 不变，单条 l3mdev 规则取代 N 条 VRF 规则</text>
+
+      <!-- Ch8 -->
+      <circle cx="40" cy="483" r="6" fill="#a3e635"/>
+      <text x="55" y="478" fill="#a3e635" font-size="10" font-weight="700">Linux 5.3 Nexthop 对象 (2019)</text>
+      <rect x="55" y="486" width="680" height="22" rx="4" fill="rgba(163,230,53,0.06)" stroke="rgba(163,230,53,0.15)"/>
+      <text x="64" y="500" fill="#94a3b8" font-size="9" font-family="monospace">KEY: 不变  /  VALUE: [<tspan fill="#a3e635">nhid 引用</tspan>, nexthop-group, IPv6-nh-for-IPv4]</text>
+    </svg>
+    <div class="svg-caption">图 9-1：Linux 路由子系统 Key/Value 字段演化完整时间线</div>
+  </div>
+
+  <p>从全景视角看，路由子系统的演化遵循几个清晰的规律：</p>
+
+  <ul class="styled">
+    <li><strong>Key 维度扩展</strong>驱动因素：新的流量分类需求（TOS→安全→VRF），每次都是「某类流量需要差异化处理但原有 Key 无法区分」。</li>
+    <li><strong>Value 维度扩展</strong>驱动因素：转发语义丰富化（单路径→多路径→规范化引用），以及链路参数精细化（MTU、RTT 等）。</li>
+    <li><strong>架构层次演化</strong>：从单表→多表+规则→VRF+命名空间，每一层都是「隔离粒度」的增加。</li>
+    <li><strong>性能基础设施演化</strong>相对独立：LPC-Trie 和 nexthop 对象是「怎么存」的优化，不影响「存什么」（Key/Value 语义）。</li>
+  </ul>
+
+  <div class="fp-box">
+    <div class="fp-title">第一性原理：路由子系统演化的本质规律</div>
+    <p>路由子系统的复杂性遵循一个简洁的元模式：<strong>每当现实世界出现「同一组现有 Key 值，需要两种不同 Value」的场景时，就必须向 Key 增加新的维度</strong>；每当「多个路由条目需要表达同一个语义差异」的场景出现时，就需要向 Value 增加新的结构。</p>
+    <p>这不是软件腐化，而是对信息论的遵从：<strong>区分 N 种情况，最少需要 log₂N 位信息</strong>。现实世界的流量分类需求（QoS、安全、租户、ISP 选择……）不断增加分类维度，路由 Key 的位数必然随之增长。复杂性是需求的忠实镜像。</p>
+  </div>
+</div>
+
+<!-- Section 10: References -->
+<div class="section">
+  <span class="section-anchor" id="s10"></span>
+  <div class="ch-header c2">
+    <div class="ch-num">📚</div>
+    <div class="ch-meta">
+      <div class="ch-era">参考文献与原始资料</div>
+      <div class="ch-title">权威来源索引</div>
+    </div>
+  </div>
+  <div class="ch-divider"></div>
+
+  <table class="kv-table">
+    <thead><tr><th>类别</th><th>资料名称</th><th>链接 / 位置</th></tr></thead>
+    <tbody>
+      <tr>
+        <td>内核文档</td>
+        <td>VRF (Virtual Routing and Forwarding) 官方文档</td>
+        <td><a href="https://www.kernel.org/doc/Documentation/networking/vrf.rst" style="color:var(--accent)">kernel.org/doc/networking/vrf.rst</a></td>
+      </tr>
+      <tr>
+        <td>内核文档</td>
+        <td>ip-rule(8) Linux 手册页（RPDB 完整说明）</td>
+        <td><a href="https://man7.org/linux/man-pages/man8/ip-rule.8.html" style="color:var(--accent)">man7.org/linux/man-pages/man8/ip-rule.8</a></td>
+      </tr>
+      <tr>
+        <td>技术文章</td>
+        <td>Routing Decisions in the Linux Kernel（thermalcircle.de）</td>
+        <td><a href="https://thermalcircle.de/doku.php?id=blog:linux:routing_decisions_in_the_linux_kernel_1_lookup_packet_flow" style="color:var(--accent)">thermalcircle.de（2022）</a></td>
+      </tr>
+      <tr>
+        <td>技术文章</td>
+        <td>Multipath Routing in Linux Part 1 & 2（Jakub Sitnicki）</td>
+        <td><a href="https://codecave.cc/multipath-routing-in-linux-part-1.html" style="color:var(--accent)">codecave.cc（2017）</a></td>
+      </tr>
+      <tr>
+        <td>邮件列表</td>
+        <td>net: Improve route scalability via nexthop objects（David Ahern, 2019）</td>
+        <td><a href="https://lwn.net/Articles/790828/" style="color:var(--accent)">lwn.net/Articles/790828</a></td>
+      </tr>
+      <tr>
+        <td>历史文章</td>
+        <td>Policy Routing in Linux（Matthew G. Marsh, Dr.Dobb's Journal）</td>
+        <td><a href="https://jacobfilipp.com/DrDobbs/articles/SA/v09/i01/a6.htm" style="color:var(--accent)">jacobfilipp.com（约1999）</a></td>
+      </tr>
+      <tr>
+        <td>技术文章</td>
+        <td>Understanding modern Linux routing and wg-quick</td>
+        <td><a href="https://ro-che.info/articles/2021-02-27-linux-routing" style="color:var(--accent)">ro-che.info（2021）</a></td>
+      </tr>
+      <tr>
+        <td>社区文档</td>
+        <td>Virtual Routing and Forwarding (VRF) - Mellanox/mlxsw</td>
+        <td><a href="https://github.com/Mellanox/mlxsw/wiki/Virtual-Routing-and-Forwarding-(VRF)" style="color:var(--accent)">github.com/Mellanox/mlxsw</a></td>
+      </tr>
+      <tr>
+        <td>内核提交</td>
+        <td>LPC-Trie 成为默认算法（kernel 2.6.39）</td>
+        <td>commit <code>3630b7c050d9c356</code></td>
+      </tr>
+      <tr>
+        <td>内核提交</td>
+        <td>IPv4 L3 哈希多路径路由（kernel 4.4）</td>
+        <td>commit <code>0e884c78ee19</code></td>
+      </tr>
+      <tr>
+        <td>内核提交</td>
+        <td>IPv6 ECMP 支持（kernel 3.8）</td>
+        <td>commit <code>51ebd3181572</code></td>
+      </tr>
+      <tr>
+        <td>内核文档</td>
+        <td>FIB trie 实现说明</td>
+        <td><a href="https://www.kernel.org/doc/html/latest/networking/fib_trie.html" style="color:var(--accent)">kernel.org/doc/html/latest/networking/fib_trie.html</a></td>
+      </tr>
+    </tbody>
+  </table>
+
+  <div class="callout callout-blue">
+    <div class="callout-title">📝 关于本文</div>
+    本文内容严格来源于上述权威资料，所有内核版本号、提交 ID、性能数据均有原始出处支撑。引用的关键数据点：700k 路由注入从 72s→4.3s（David Ahern 提交说明）；Linux 2.2.12 支持 255 路由表（Matthew Marsh, Dr.Dobb's）；路由缓存于 v3.6 因 DoS 漏洞移除（commit 89aef8921bfb）；v4.8 起单条 l3mdev 规则取代 per-VRF iif/oif 规则（kernel.org VRF 文档）。
+  </div>
+</div>
+
+</main>
+
+<div id="key-hint">
+  <kbd>←</kbd> <kbd>→</kbd> 章节切换
+</div>
+
+<script>
+  // Sections list
+  const sections = ['s0','s1','s2','s3','s4','s5','s6','s7','s8','s9','s10'];
+  let currentSection = 0;
+
+  // Progress bar
+  const progressBar = document.getElementById('progress-bar');
+  function updateProgress() {
+    const scrollTop = window.scrollY || document.documentElement.scrollTop;
+    const docHeight = document.documentElement.scrollHeight - document.documentElement.clientHeight;
+    const progress = docHeight > 0 ? (scrollTop / docHeight) * 100 : 0;
+    progressBar.style.width = progress + '%';
+  }
+
+  // Active nav highlight
+  const navItems = document.querySelectorAll('.nav-item[data-target]');
+  const anchors = sections.map(id => document.getElementById(id));
+
+  function updateActiveNav() {
+    const scrollY = window.scrollY + 120;
+    let active = 0;
+    for (let i = 0; i < anchors.length; i++) {
+      if (anchors[i] && anchors[i].getBoundingClientRect().top + window.scrollY <= scrollY) {
+        active = i;
+      }
+    }
+    currentSection = active;
+    navItems.forEach((item, idx) => {
+      item.classList.toggle('active', idx === active);
+    });
+  }
+
+  window.addEventListener('scroll', () => {
+    updateProgress();
+    updateActiveNav();
+  }, { passive: true });
+
+  // Nav click
+  navItems.forEach((item) => {
+    item.addEventListener('click', () => {
+      const target = item.getAttribute('data-target');
+      const el = document.getElementById(target);
+      if (el) {
+        el.scrollIntoView({ behavior: 'smooth' });
+      }
+      // Close mobile sidebar
+      if (window.innerWidth <= 768) {
+        closeSidebar();
+      }
+    });
+  });
+
+  // Keyboard navigation
+  document.addEventListener('keydown', (e) => {
+    if (e.key === 'ArrowRight' || e.key === 'ArrowDown') {
+      e.preventDefault();
+      const next = Math.min(currentSection + 1, sections.length - 1);
+      document.getElementById(sections[next])?.scrollIntoView({ behavior: 'smooth' });
+    } else if (e.key === 'ArrowLeft' || e.key === 'ArrowUp') {
+      e.preventDefault();
+      const prev = Math.max(currentSection - 1, 0);
+      document.getElementById(sections[prev])?.scrollIntoView({ behavior: 'smooth' });
+    }
+  });
+
+  // Mobile hamburger
+  const hamburger = document.getElementById('hamburger');
+  const sidebar = document.getElementById('sidebar');
+  const overlay = document.getElementById('sidebar-overlay');
+
+  function closeSidebar() {
+    sidebar.classList.remove('open');
+    overlay.classList.remove('open');
+    hamburger.classList.remove('open');
+  }
+
+  hamburger.addEventListener('click', () => {
+    const isOpen = sidebar.classList.toggle('open');
+    overlay.classList.toggle('open', isOpen);
+    hamburger.classList.toggle('open', isOpen);
+  });
+
+  overlay.addEventListener('click', closeSidebar);
+
+  // Init
+  updateProgress();
+  updateActiveNav();
+</script>
+</body>
+</html>

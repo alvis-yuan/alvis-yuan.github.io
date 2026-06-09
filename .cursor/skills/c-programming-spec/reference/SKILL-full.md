@@ -1,6 +1,6 @@
 ---
 name: c-programming-spec
-description: Applies a self-contained C99 programming standard — file organization, naming, types, error handling, mandatory LogError on every abnormal return path, Chinese comments and English log messages, pointer parameter qualifiers (const/restrict per semantics), RAII resource cleanup (reference/raii.h), GCC atomics (reference/atomic.h), compile-time checks (reference/compile_checks.h), memory safety, and documentation. Use when writing or reviewing C code, managing resources with multiple exit paths, autofd/autofree/WITH_LOCK, or C programming standards.
+description: Applies a self-contained C99 programming standard — file organization, naming, types, local variable placement at block/function start, error handling, mandatory LogError on every abnormal return path, Chinese comments and English log messages, pointer parameter qualifiers (const/restrict per semantics), RAII resource cleanup (reference/raii.h), GCC atomics (reference/atomic.h), compile-time checks (reference/compile_checks.h), memory safety, and documentation. Use when writing or reviewing C code, managing resources with multiple exit paths, autofd/autofree/WITH_LOCK, or C programming standards.
 ---
 
 # C 语言编程规范 (C99)
@@ -16,6 +16,7 @@ description: Applies a self-contained C99 programming standard — file organiza
 5. **指针形参限定符（强制执行）**：编写或审查任何带指针形参的函数时，必须按 [第 8.5 章](reference/ch8.md#85-指针形参修饰符) 核对 `const`/`restrict`——只读输入加 `const`，独占无别名缓冲区加 `restrict`，输出缓冲区不得误加 `const`，且头文件与 `.c` 定义保持一致。
 6. **异常返回点日志（强制执行）**：函数内每个失败/异常的 `return` 或 `goto` 退出路径，必须在返回前调用 `LogError`（或项目统一的 `LOG_ERROR`）；`REQUIRE` 宏已内置日志；**日志 format 字符串使用英文**。详见 [第 10.4 章](reference/ch10.md#104-异常返回点日志)。
 7. **注释与日志语言（强制执行）**：源码注释与 Doxygen 使用**中文**；`LogError`/`LogInfo`/`LOG_*` 等运行期日志使用**英文**。详见 [第 20.4 章](reference/ch20.md#204-注释与日志语言)。
+8. **函数声明与定义格式（强制执行）**：存储类、返回类型、函数名必须在**同一行**（K&R 风格）；左花括号 `{` 另起一行；`.h` 与 `.c` 一致。详见 [第 3.2 章](reference/ch3.md#32-大括号与函数格式)、[第 8.2 章](reference/ch8.md#82-函数声明规范)。
 
 ## 规范级别
 
@@ -63,7 +64,8 @@ description: Applies a self-contained C99 programming standard — file organiza
 - [ ] 文件名、头文件守卫、include 顺序符合第 1、12 章
 - [ ] 命名带模块前缀，使用 snake_case（第 2 章）
 - [ ] 数据类型选用 stdint/size_t，并参考第 5 章决策树与速查表（5.3–5.18）
-- [ ] 变量声明即初始化，结构体成员按对齐降序（第 4、6 章）
+- [ ] 变量声明即初始化；整函数变量在函数首、块变量在块首、定义与语句不混放（第 4 章 4.1 节）；结构体成员按对齐降序（第 6 章）
+- [ ] 函数声明/定义：存储类 + 返回类型 + 函数名同一行，`{` 另起一行（第 3 章 3.2 节、第 8 章 8.2 节）
 - [ ] 指针形参按语义加 `const`/`restrict`；声明与定义限定符一致（第 4、8 章 8.5 节）
 - [ ] 每个异常返回点（错误码/NULL/失败 goto）在返回前有 `LogError`（**英文**）及足够上下文（第 10 章 10.4 节）
 - [ ] 公共 API 有参数校验与明确返回值语义（第 8、9、10 章）

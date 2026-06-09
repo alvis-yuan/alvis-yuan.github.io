@@ -1,0 +1,2625 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>BusyBox Init 启动分析 — 以 Buildroot 为平台</title>
+<style>
+  :root {
+    --primary: #1a56db;
+    --primary-dark: #1e429f;
+    --accent: #0e9f6e;
+    --bg: #f9fafb;
+    --sidebar-bg: #1e2a3a;
+    --sidebar-text: #cbd5e1;
+    --sidebar-active: #38bdf8;
+    --sidebar-hover: #334155;
+    --card-bg: #ffffff;
+    --border: #e5e7eb;
+    --text: #1f2937;
+    --text-muted: #6b7280;
+    --code-bg: #1e293b;
+    --code-text: #e2e8f0;
+    --warning-bg: #fffbeb;
+    --warning-border: #f59e0b;
+    --info-bg: #eff6ff;
+    --info-border: #3b82f6;
+    --success-bg: #f0fdf4;
+    --success-border: #22c55e;
+    --sidebar-width: 280px;
+    --topbar-height: 48px;
+  }
+
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+
+  body {
+    font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', 'PingFang SC', 'Microsoft YaHei', sans-serif;
+    background: var(--bg);
+    color: var(--text);
+    line-height: 1.7;
+    overflow-x: hidden;
+  }
+
+  /* ── TOP PROGRESS BAR ── */
+  #progress-bar {
+    position: fixed;
+    top: 0; left: 0;
+    height: 3px;
+    background: linear-gradient(90deg, #38bdf8, #0e9f6e);
+    z-index: 9999;
+    transition: width 0.15s ease;
+    width: 0%;
+  }
+
+  /* ── TOP NAV (mobile) ── */
+  #topbar {
+    display: none;
+    position: fixed;
+    top: 3px; left: 0; right: 0;
+    height: var(--topbar-height);
+    background: var(--sidebar-bg);
+    z-index: 200;
+    align-items: center;
+    padding: 0 1rem;
+    gap: 1rem;
+  }
+  #hamburger {
+    background: none;
+    border: none;
+    cursor: pointer;
+    padding: 6px;
+    display: flex;
+    flex-direction: column;
+    gap: 5px;
+  }
+  #hamburger span {
+    display: block;
+    width: 22px;
+    height: 2px;
+    background: #cbd5e1;
+    transition: all 0.3s;
+  }
+  #topbar-title {
+    color: #e2e8f0;
+    font-size: 0.9rem;
+    font-weight: 600;
+    flex: 1;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+  }
+
+  /* ── SIDEBAR OVERLAY ── */
+  #sidebar-overlay {
+    display: none;
+    position: fixed;
+    inset: 0;
+    background: rgba(0,0,0,0.5);
+    z-index: 150;
+  }
+
+  /* ── SIDEBAR ── */
+  #sidebar {
+    position: fixed;
+    top: 3px;
+    left: 0;
+    bottom: 0;
+    width: var(--sidebar-width);
+    background: var(--sidebar-bg);
+    overflow-y: auto;
+    z-index: 100;
+    transition: transform 0.3s ease;
+    scrollbar-width: thin;
+    scrollbar-color: #334155 transparent;
+  }
+  #sidebar::-webkit-scrollbar { width: 4px; }
+  #sidebar::-webkit-scrollbar-thumb { background: #334155; border-radius: 2px; }
+
+  .sidebar-logo {
+    padding: 1.25rem 1.25rem 1rem;
+    border-bottom: 1px solid #334155;
+  }
+  .sidebar-logo h1 {
+    color: #f1f5f9;
+    font-size: 1rem;
+    font-weight: 700;
+    line-height: 1.4;
+  }
+  .sidebar-logo p {
+    color: #64748b;
+    font-size: 0.72rem;
+    margin-top: 0.25rem;
+  }
+
+  .nav-group {
+    padding: 0.75rem 0 0.25rem;
+  }
+  .nav-group-title {
+    padding: 0.25rem 1.25rem;
+    font-size: 0.65rem;
+    font-weight: 700;
+    text-transform: uppercase;
+    letter-spacing: 0.1em;
+    color: #475569;
+  }
+  .nav-item {
+    display: flex;
+    align-items: center;
+    gap: 0.5rem;
+    padding: 0.45rem 1.25rem;
+    color: var(--sidebar-text);
+    font-size: 0.82rem;
+    cursor: pointer;
+    border-left: 3px solid transparent;
+    transition: all 0.2s;
+    text-decoration: none;
+  }
+  .nav-item:hover {
+    background: var(--sidebar-hover);
+    color: #e2e8f0;
+  }
+  .nav-item.active {
+    background: rgba(56, 189, 248, 0.1);
+    border-left-color: var(--sidebar-active);
+    color: var(--sidebar-active);
+    font-weight: 600;
+  }
+  .nav-item .num {
+    font-size: 0.7rem;
+    color: #475569;
+    min-width: 1.4rem;
+    font-weight: 700;
+  }
+  .nav-item.active .num { color: #7dd3fc; }
+
+  /* ── MAIN CONTENT ── */
+  #main {
+    margin-left: var(--sidebar-width);
+    min-height: 100vh;
+    padding: 2.5rem 2rem 4rem;
+    max-width: 920px;
+  }
+
+  /* ── SECTIONS ── */
+  .section {
+    display: none;
+    animation: fadeIn 0.3s ease;
+  }
+  .section.active { display: block; }
+  @keyframes fadeIn { from { opacity: 0; transform: translateY(8px); } to { opacity: 1; transform: translateY(0); } }
+
+  .section-header {
+    margin-bottom: 2rem;
+    padding-bottom: 1rem;
+    border-bottom: 2px solid var(--border);
+  }
+  .section-tag {
+    display: inline-block;
+    background: var(--primary);
+    color: white;
+    font-size: 0.7rem;
+    font-weight: 700;
+    padding: 0.2rem 0.6rem;
+    border-radius: 999px;
+    margin-bottom: 0.6rem;
+    text-transform: uppercase;
+    letter-spacing: 0.05em;
+  }
+  .section-header h2 {
+    font-size: 1.75rem;
+    font-weight: 800;
+    color: #111827;
+    line-height: 1.3;
+  }
+  .section-header p {
+    margin-top: 0.5rem;
+    color: var(--text-muted);
+    font-size: 0.95rem;
+  }
+
+  h3 {
+    font-size: 1.15rem;
+    font-weight: 700;
+    color: #1e293b;
+    margin: 1.8rem 0 0.7rem;
+    display: flex;
+    align-items: center;
+    gap: 0.5rem;
+  }
+  h3::before {
+    content: '';
+    display: inline-block;
+    width: 4px;
+    height: 1.1em;
+    background: var(--primary);
+    border-radius: 2px;
+  }
+  h4 {
+    font-size: 1rem;
+    font-weight: 600;
+    color: #374151;
+    margin: 1.2rem 0 0.4rem;
+  }
+
+  p { margin: 0.6rem 0; }
+
+  /* ── CODE BLOCKS ── */
+  .code-block {
+    background: var(--code-bg);
+    border-radius: 10px;
+    overflow: hidden;
+    margin: 1rem 0;
+    box-shadow: 0 4px 16px rgba(0,0,0,0.12);
+    max-width: 100%;
+  }
+  .code-header {
+    background: #0f172a;
+    padding: 0.5rem 1rem;
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 0.5rem;
+  }
+  .code-lang {
+    font-size: 0.7rem;
+    color: #64748b;
+    font-weight: 700;
+    text-transform: uppercase;
+    letter-spacing: 0.05em;
+  }
+  .code-file {
+    font-size: 0.72rem;
+    color: #38bdf8;
+    font-family: 'Fira Code', monospace;
+  }
+  .code-block pre {
+    padding: 1rem 1.25rem;
+    overflow-x: auto;
+    font-family: 'Fira Code', 'Cascadia Code', 'Consolas', monospace;
+    font-size: 0.82rem;
+    line-height: 1.65;
+    color: var(--code-text);
+    white-space: pre;
+  }
+  .code-block pre::-webkit-scrollbar { height: 4px; }
+  .code-block pre::-webkit-scrollbar-thumb { background: #334155; }
+
+  /* syntax highlight helpers */
+  .kw { color: #c792ea; }
+  .fn { color: #82aaff; }
+  .str { color: #c3e88d; }
+  .cm { color: #546e7a; font-style: italic; }
+  .num { color: #f78c6c; }
+  .pp { color: #89ddff; }
+
+  /* ── CALLOUTS ── */
+  .callout {
+    border-radius: 8px;
+    padding: 0.9rem 1.1rem;
+    margin: 1rem 0;
+    display: flex;
+    gap: 0.75rem;
+    font-size: 0.88rem;
+  }
+  .callout-icon { font-size: 1.1rem; flex-shrink: 0; margin-top: 0.05rem; }
+  .callout.info { background: var(--info-bg); border-left: 4px solid var(--info-border); }
+  .callout.warning { background: var(--warning-bg); border-left: 4px solid var(--warning-border); }
+  .callout.success { background: var(--success-bg); border-left: 4px solid var(--success-border); }
+  .callout.tip { background: #fdf4ff; border-left: 4px solid #a855f7; }
+
+  /* ── PRINCIPLE BOX ── */
+  .principle-box {
+    background: linear-gradient(135deg, #1e2a3a 0%, #1e3a5f 100%);
+    border-radius: 12px;
+    padding: 1.5rem;
+    margin: 2rem 0 0.5rem;
+    border: 1px solid #2d4a6e;
+  }
+  .principle-box .principle-title {
+    color: #38bdf8;
+    font-weight: 700;
+    font-size: 0.85rem;
+    text-transform: uppercase;
+    letter-spacing: 0.08em;
+    margin-bottom: 0.6rem;
+    display: flex;
+    align-items: center;
+    gap: 0.5rem;
+  }
+  .principle-box p {
+    color: #cbd5e1;
+    font-size: 0.9rem;
+    line-height: 1.7;
+    margin: 0;
+  }
+
+  /* ── TABLES ── */
+  .table-wrap { overflow-x: auto; margin: 1rem 0; }
+  table {
+    width: 100%;
+    border-collapse: collapse;
+    font-size: 0.85rem;
+  }
+  thead { background: #f1f5f9; }
+  th {
+    padding: 0.65rem 0.9rem;
+    text-align: left;
+    font-weight: 700;
+    color: #374151;
+    border-bottom: 2px solid var(--border);
+    white-space: nowrap;
+  }
+  td {
+    padding: 0.6rem 0.9rem;
+    border-bottom: 1px solid var(--border);
+    vertical-align: top;
+  }
+  tr:last-child td { border-bottom: none; }
+  tr:hover td { background: #f8fafc; }
+  code {
+    font-family: 'Fira Code', 'Cascadia Code', monospace;
+    font-size: 0.82em;
+    background: #f1f5f9;
+    color: #0369a1;
+    padding: 0.1em 0.4em;
+    border-radius: 4px;
+  }
+
+  /* ── STEP LIST ── */
+  .steps { display: flex; flex-direction: column; gap: 0; margin: 1rem 0; }
+  .step {
+    display: flex;
+    gap: 1rem;
+    position: relative;
+  }
+  .step::before {
+    content: '';
+    position: absolute;
+    left: 1.15rem;
+    top: 2.5rem;
+    bottom: -0.5rem;
+    width: 2px;
+    background: #e2e8f0;
+  }
+  .step:last-child::before { display: none; }
+  .step-num {
+    width: 2.3rem;
+    height: 2.3rem;
+    border-radius: 50%;
+    background: var(--primary);
+    color: white;
+    font-weight: 800;
+    font-size: 0.85rem;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    flex-shrink: 0;
+    margin-top: 0.15rem;
+    z-index: 1;
+  }
+  .step-body {
+    padding-bottom: 1.25rem;
+    flex: 1;
+    min-width: 0;
+  }
+  .step-body h4 { margin-top: 0.2rem; }
+
+  /* ── NAV BUTTONS ── */
+  .nav-buttons {
+    display: flex;
+    justify-content: space-between;
+    gap: 1rem;
+    margin-top: 3rem;
+    padding-top: 1.5rem;
+    border-top: 1px solid var(--border);
+    flex-wrap: wrap;
+  }
+  .nav-btn {
+    display: flex;
+    align-items: center;
+    gap: 0.5rem;
+    padding: 0.65rem 1.25rem;
+    border-radius: 8px;
+    font-size: 0.85rem;
+    font-weight: 600;
+    cursor: pointer;
+    border: 2px solid var(--border);
+    background: white;
+    color: var(--text);
+    transition: all 0.2s;
+    text-decoration: none;
+  }
+  .nav-btn:hover { border-color: var(--primary); color: var(--primary); }
+  .nav-btn.primary { background: var(--primary); color: white; border-color: var(--primary); }
+  .nav-btn.primary:hover { background: var(--primary-dark); border-color: var(--primary-dark); }
+  .nav-btn:disabled { opacity: 0.4; cursor: not-allowed; }
+
+  /* ── SVG DIAGRAMS ── */
+  .diagram-wrap {
+    background: white;
+    border: 1px solid var(--border);
+    border-radius: 12px;
+    padding: 1.25rem;
+    margin: 1.25rem 0;
+    overflow-x: auto;
+  }
+  .diagram-wrap figcaption {
+    text-align: center;
+    font-size: 0.78rem;
+    color: var(--text-muted);
+    margin-top: 0.75rem;
+    font-style: italic;
+  }
+  svg text { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif; }
+
+  /* ── SOURCE LINK ── */
+  .source-link {
+    display: inline-flex;
+    align-items: center;
+    gap: 0.3rem;
+    font-size: 0.75rem;
+    color: var(--primary);
+    text-decoration: none;
+    border: 1px solid #bfdbfe;
+    padding: 0.15rem 0.5rem;
+    border-radius: 4px;
+    margin-left: 0.5rem;
+    background: var(--info-bg);
+  }
+  .source-link:hover { background: #dbeafe; }
+
+  /* ── RESPONSIVE ── */
+  @media (max-width: 768px) {
+    #topbar { display: flex; }
+    #sidebar {
+      transform: translateX(-100%);
+      top: calc(3px + var(--topbar-height));
+    }
+    #sidebar.open { transform: translateX(0); }
+    #sidebar-overlay.open { display: block; }
+    #main {
+      margin-left: 0;
+      padding: 1.25rem 1rem 3rem;
+      margin-top: calc(var(--topbar-height) + 3px);
+    }
+    .section-header h2 { font-size: 1.35rem; }
+    h3 { font-size: 1.05rem; }
+    .nav-buttons { flex-direction: column; }
+    .nav-btn { justify-content: center; }
+  }
+
+  /* ── BADGE ── */
+  .badge {
+    display: inline-block;
+    font-size: 0.68rem;
+    font-weight: 700;
+    padding: 0.15rem 0.5rem;
+    border-radius: 999px;
+    text-transform: uppercase;
+    letter-spacing: 0.04em;
+  }
+  .badge-blue { background: #dbeafe; color: #1d4ed8; }
+  .badge-green { background: #dcfce7; color: #15803d; }
+  .badge-orange { background: #ffedd5; color: #c2410c; }
+  .badge-purple { background: #f3e8ff; color: #7e22ce; }
+
+  /* ── HIGHLIGHT ROW ── */
+  .highlight-row td:first-child { font-weight: 700; color: var(--primary); }
+
+  ul, ol { padding-left: 1.5rem; }
+  li { margin: 0.3rem 0; }
+  strong { color: #111827; }
+</style>
+</head>
+<body>
+
+<div id="progress-bar"></div>
+
+<!-- Mobile TopBar -->
+<div id="topbar">
+  <button id="hamburger" onclick="toggleSidebar()" aria-label="菜单">
+    <span></span><span></span><span></span>
+  </button>
+  <span id="topbar-title">BusyBox Init 启动分析</span>
+</div>
+<div id="sidebar-overlay" onclick="closeSidebar()"></div>
+
+<!-- Sidebar -->
+<nav id="sidebar">
+  <div class="sidebar-logo">
+    <h1>BusyBox Init 启动分析</h1>
+    <p>以 Buildroot 嵌入式平台为视角</p>
+  </div>
+
+  <div class="nav-group">
+    <div class="nav-group-title">引言</div>
+    <a class="nav-item active" onclick="showSection(0)" href="#">
+      <span class="num">00</span> 概述与背景
+    </a>
+  </div>
+
+  <div class="nav-group">
+    <div class="nav-group-title">内核到用户态</div>
+    <a class="nav-item" onclick="showSection(1)" href="#">
+      <span class="num">01</span> 内核移交控制权
+    </a>
+    <a class="nav-item" onclick="showSection(2)" href="#">
+      <span class="num">02</span> init_main() 初始化
+    </a>
+  </div>
+
+  <div class="nav-group">
+    <div class="nav-group-title">inittab 与动作序列</div>
+    <a class="nav-item" onclick="showSection(3)" href="#">
+      <span class="num">03</span> /etc/inittab 解析
+    </a>
+    <a class="nav-item" onclick="showSection(4)" href="#">
+      <span class="num">04</span> sysinit 阶段详解
+    </a>
+    <a class="nav-item" onclick="showSection(5)" href="#">
+      <span class="num">05</span> 文件系统挂载
+    </a>
+  </div>
+
+  <div class="nav-group">
+    <div class="nav-group-title">设备与服务</div>
+    <a class="nav-item" onclick="showSection(6)" href="#">
+      <span class="num">06</span> mdev 设备管理
+    </a>
+    <a class="nav-item" onclick="showSection(7)" href="#">
+      <span class="num">07</span> rcS 与 S?? 脚本
+    </a>
+    <a class="nav-item" onclick="showSection(8)" href="#">
+      <span class="num">08</span> respawn 与 getty
+    </a>
+  </div>
+
+  <div class="nav-group">
+    <div class="nav-group-title">关机与信号</div>
+    <a class="nav-item" onclick="showSection(9)" href="#">
+      <span class="num">09</span> 信号处理机制
+    </a>
+    <a class="nav-item" onclick="showSection(10)" href="#">
+      <span class="num">10</span> 关机与 rcK 脚本
+    </a>
+  </div>
+
+  <div class="nav-group">
+    <div class="nav-group-title">总结</div>
+    <a class="nav-item" onclick="showSection(11)" href="#">
+      <span class="num">11</span> 全流程总览
+    </a>
+  </div>
+</nav>
+
+<!-- Main Content -->
+<main id="main">
+
+  <!-- ══════════════ SECTION 0 ══════════════ -->
+  <section class="section active" id="sec-0">
+    <div class="section-header">
+      <span class="section-tag">概述</span>
+      <h2>BusyBox init 与 Buildroot 平台</h2>
+      <p>嵌入式 Linux 用户态第一个进程是如何将一台"裸机"引导成完整可用系统的</p>
+    </div>
+
+    <h3>什么是 BusyBox init？</h3>
+    <p>BusyBox 是嵌入式 Linux 领域最常用的"多合一"工具集，将数百个常见 Unix 命令整合进单一二进制文件。其中的 <code>init</code> 子程序扮演着用户态 <strong>PID 1</strong> 的角色——它是 Linux 内核在完成内核初始化后，第一个启动的用户空间程序。</p>
+
+    <div class="callout info">
+      <span class="callout-icon">ℹ️</span>
+      <div><strong>官方来源：</strong> BusyBox init 的行为完整定义在源码 <code>init/init.c</code> 中，inittab 示例位于 <a href="https://git.busybox.net/busybox/tree/examples/inittab" target="_blank" style="color:var(--primary)">git.busybox.net/busybox/tree/examples/inittab</a>。Buildroot 的默认 inittab 位于 <code>package/busybox/inittab</code>，可在 <a href="https://github.com/buildroot/buildroot/blob/master/package/busybox/inittab" target="_blank" style="color:var(--primary)">github.com/buildroot/buildroot</a> 查阅。</div>
+    </div>
+
+    <h3>Buildroot 中的 init 选择</h3>
+    <p>Buildroot 支持三种 init 系统，可在 <code>System configuration → Init system</code> 中选择：</p>
+
+    <div class="table-wrap">
+      <table>
+        <thead>
+          <tr><th>Init 系统</th><th>配置项</th><th>适用场景</th><th>复杂度</th></tr>
+        </thead>
+        <tbody>
+          <tr class="highlight-row">
+            <td>BusyBox init</td>
+            <td><code>BR2_INIT_BUSYBOX</code></td>
+            <td>大多数嵌入式系统（默认）</td>
+            <td><span class="badge badge-green">轻量</span></td>
+          </tr>
+          <tr>
+            <td>sysvinit</td>
+            <td><code>BR2_INIT_SYSV</code></td>
+            <td>需要运行级别的传统系统</td>
+            <td><span class="badge badge-blue">中等</span></td>
+          </tr>
+          <tr>
+            <td>systemd</td>
+            <td><code>BR2_INIT_SYSTEMD</code></td>
+            <td>复杂嵌入式系统（D-Bus、socket 激活等）</td>
+            <td><span class="badge badge-orange">重量</span></td>
+          </tr>
+        </tbody>
+      </table>
+    </div>
+
+    <div class="callout success">
+      <span class="callout-icon">✅</span>
+      <div>Buildroot 官方文档明确指出："<em>The solution recommended by Buildroot developers is to use the BusyBox init as it is sufficient for most embedded systems.</em>"（推荐使用 BusyBox init，对大多数嵌入式系统已足够）。</div>
+    </div>
+
+    <h3>启动流程全景</h3>
+    <div class="diagram-wrap">
+      <figure>
+        <svg viewBox="0 0 700 120" xmlns="http://www.w3.org/2000/svg" style="width:100%;min-width:480px;">
+          <defs>
+            <marker id="arr" markerWidth="8" markerHeight="8" refX="6" refY="3" orient="auto">
+              <path d="M0,0 L0,6 L8,3 z" fill="#64748b"/>
+            </marker>
+          </defs>
+          <!-- boxes -->
+          <rect x="5" y="35" width="100" height="46" rx="8" fill="#dbeafe" stroke="#3b82f6" stroke-width="1.5"/>
+          <text x="55" y="56" text-anchor="middle" font-size="11" font-weight="700" fill="#1d4ed8">Bootloader</text>
+          <text x="55" y="71" text-anchor="middle" font-size="9" fill="#3b82f6">(U-Boot/GRUB)</text>
+
+          <rect x="135" y="35" width="100" height="46" rx="8" fill="#dcfce7" stroke="#22c55e" stroke-width="1.5"/>
+          <text x="185" y="56" text-anchor="middle" font-size="11" font-weight="700" fill="#15803d">Linux Kernel</text>
+          <text x="185" y="71" text-anchor="middle" font-size="9" fill="#15803d">kernel_init()</text>
+
+          <rect x="265" y="35" width="110" height="46" rx="8" fill="#fef9c3" stroke="#ca8a04" stroke-width="1.5"/>
+          <text x="320" y="56" text-anchor="middle" font-size="11" font-weight="700" fill="#92400e">BusyBox init</text>
+          <text x="320" y="71" text-anchor="middle" font-size="9" fill="#92400e">PID 1 / init_main()</text>
+
+          <rect x="405" y="35" width="105" height="46" rx="8" fill="#f3e8ff" stroke="#a855f7" stroke-width="1.5"/>
+          <text x="457" y="56" text-anchor="middle" font-size="11" font-weight="700" fill="#7e22ce">inittab 解析</text>
+          <text x="457" y="71" text-anchor="middle" font-size="9" fill="#7e22ce">sysinit/wait/once</text>
+
+          <rect x="540" y="35" width="155" height="46" rx="8" fill="#ffe4e6" stroke="#f43f5e" stroke-width="1.5"/>
+          <text x="617" y="56" text-anchor="middle" font-size="11" font-weight="700" fill="#be123c">服务运行</text>
+          <text x="617" y="71" text-anchor="middle" font-size="9" fill="#be123c">rcS / mdev / getty ...</text>
+
+          <!-- arrows -->
+          <line x1="105" y1="58" x2="133" y2="58" stroke="#64748b" stroke-width="1.5" marker-end="url(#arr)"/>
+          <line x1="235" y1="58" x2="263" y2="58" stroke="#64748b" stroke-width="1.5" marker-end="url(#arr)"/>
+          <line x1="375" y1="58" x2="403" y2="58" stroke="#64748b" stroke-width="1.5" marker-end="url(#arr)"/>
+          <line x1="510" y1="58" x2="538" y2="58" stroke="#64748b" stroke-width="1.5" marker-end="url(#arr)"/>
+
+          <!-- labels below -->
+          <text x="119" y="95" text-anchor="middle" font-size="9" fill="#94a3b8">加载内核</text>
+          <text x="249" y="95" text-anchor="middle" font-size="9" fill="#94a3b8">execve(init)</text>
+          <text x="390" y="95" text-anchor="middle" font-size="9" fill="#94a3b8">parse_inittab()</text>
+          <text x="524" y="95" text-anchor="middle" font-size="9" fill="#94a3b8">run_actions()</text>
+        </svg>
+        <figcaption>图 0-1：从 Bootloader 到用户服务的完整启动链路</figcaption>
+      </figure>
+    </div>
+
+    <h3>文档结构说明</h3>
+    <p>本文档将按照 <strong>时间顺序</strong> 逐层拆解 BusyBox init 在 Buildroot 平台上的启动流程，每个章节均附：</p>
+    <ul>
+      <li>官方源代码/配置文件原文（附来源链接）</li>
+      <li>SVG 图表辅助理解</li>
+      <li>第一性原理解释</li>
+    </ul>
+
+    <div class="principle-box">
+      <div class="principle-title">🔭 第一性原理</div>
+      <p>系统启动的本质问题是：<strong>如何从一段冷启动代码，逐步构建出一个能运行任意程序的完整运行环境？</strong> BusyBox init 的答案是：从最小可信根出发（内核 + 单一二进制），通过读取配置文件、顺序执行命令，逐步将资源（文件系统、设备节点、网络、服务）一层一层地添加到系统中，最终达到用户期望的稳定状态。</p>
+    </div>
+
+    <div class="nav-buttons">
+      <span></span>
+      <button class="nav-btn primary" onclick="showSection(1)">下一章：内核移交控制权 →</button>
+    </div>
+  </section>
+
+  <!-- ══════════════ SECTION 1 ══════════════ -->
+  <section class="section" id="sec-1">
+    <div class="section-header">
+      <span class="section-tag">第 01 章</span>
+      <h2>内核移交控制权</h2>
+      <p>Linux 内核如何将执行权交给用户态第一个进程</p>
+    </div>
+
+    <h3>内核初始化的最后一步</h3>
+    <p>当 Linux 内核完成所有内部初始化（内存管理、驱动注册、VFS 初始化等）后，在 <code>init/main.c</code> 的 <code>kernel_init()</code> 函数中，通过以下顺序尝试启动用户态 init 进程：</p>
+
+    <div class="code-block">
+      <div class="code-header">
+        <span class="code-lang">C</span>
+        <span class="code-file">init/main.c — kernel_init() 关键片段</span>
+      </div>
+      <pre><span class="cm">/* 1. 优先使用 initramfs 中的 /init */</span>
+<span class="kw">if</span> (ramdisk_execute_command) {
+    ret = run_init_process(ramdisk_execute_command);
+    <span class="cm">/* ramdisk_execute_command 默认为 "/init" */</span>
+}
+
+<span class="cm">/* 2. 若上面失败，尝试命令行指定的 init= 参数 */</span>
+<span class="kw">if</span> (execute_command) {
+    ret = run_init_process(execute_command);
+}
+
+<span class="cm">/* 3. 最后依次尝试标准路径 */</span>
+<span class="kw">if</span> (!try_to_run_init_process(<span class="str">"/sbin/init"</span>) ||
+    !try_to_run_init_process(<span class="str">"/etc/init"</span>)  ||
+    !try_to_run_init_process(<span class="str">"/bin/init"</span>)  ||
+    !try_to_run_init_process(<span class="str">"/bin/sh"</span>))
+    <span class="kw">return</span> <span class="num">0</span>;</pre>
+    </div>
+
+    <div class="callout info">
+      <span class="callout-icon">🔗</span>
+      <div>来源参考：<a href="https://blog.colindou.ch/posts/userspace-the-init-process/" target="_blank" style="color:var(--primary)">Booting to User Space: The Init Process</a>，以及 Linux 内核源码 <code>init/main.c</code></div>
+    </div>
+
+    <h3>run_init_process 的实现</h3>
+    <p><code>run_init_process()</code> 调用 <code>kernel_execve()</code>，将内核线程原地替换为指定的用户态程序，完成从内核空间到用户空间的跨越：</p>
+
+    <div class="code-block">
+      <div class="code-header">
+        <span class="code-lang">C</span>
+        <span class="code-file">init/main.c — run_init_process()</span>
+      </div>
+      <pre><span class="kw">static int</span> <span class="fn">run_init_process</span>(<span class="kw">const char</span> *init_filename)
+{
+    argv_init[<span class="num">0</span>] = init_filename;
+    pr_info(<span class="str">"Run %s as init process\n"</span>, init_filename);
+    <span class="kw">return</span> <span class="fn">kernel_execve</span>(init_filename, argv_init, envp_init);
+    <span class="cm">/* execve 成功则永不返回，内核线程被替换为用户进程 */</span>
+}</pre>
+    </div>
+
+    <h3>Buildroot 中 /sbin/init 的真实身份</h3>
+    <p>在 Buildroot 生成的根文件系统中，<code>/sbin/init</code> 是一个指向 <code>/bin/busybox</code> 的软链接。BusyBox 通过检查 <code>argv[0]</code> 来决定运行哪个子程序：当 argv[0] 为 <code>init</code> 时，执行 init 逻辑。</p>
+
+    <div class="diagram-wrap">
+      <figure>
+        <svg viewBox="0 0 660 200" xmlns="http://www.w3.org/2000/svg" style="width:100%;min-width:420px;">
+          <defs>
+            <marker id="arr2" markerWidth="8" markerHeight="8" refX="6" refY="3" orient="auto">
+              <path d="M0,0 L0,6 L8,3 z" fill="#64748b"/>
+            </marker>
+          </defs>
+
+          <!-- Kernel box -->
+          <rect x="10" y="20" width="150" height="60" rx="8" fill="#dcfce7" stroke="#22c55e" stroke-width="1.5"/>
+          <text x="85" y="45" text-anchor="middle" font-size="12" font-weight="700" fill="#15803d">Linux Kernel</text>
+          <text x="85" y="62" text-anchor="middle" font-size="10" fill="#15803d">kernel_execve(</text>
+          <text x="85" y="74" text-anchor="middle" font-size="10" fill="#15803d">"/sbin/init")</text>
+
+          <!-- arrow -->
+          <line x1="160" y1="50" x2="210" y2="50" stroke="#64748b" stroke-width="1.5" marker-end="url(#arr2)"/>
+          <text x="185" y="44" text-anchor="middle" font-size="9" fill="#94a3b8">execve</text>
+
+          <!-- symlink -->
+          <rect x="212" y="20" width="150" height="60" rx="8" fill="#fef9c3" stroke="#ca8a04" stroke-width="1.5"/>
+          <text x="287" y="42" text-anchor="middle" font-size="11" font-weight="700" fill="#92400e">/sbin/init</text>
+          <text x="287" y="58" text-anchor="middle" font-size="9" fill="#92400e">symlink →</text>
+          <text x="287" y="70" text-anchor="middle" font-size="9" fill="#92400e">/bin/busybox</text>
+
+          <!-- arrow -->
+          <line x1="362" y1="50" x2="410" y2="50" stroke="#64748b" stroke-width="1.5" marker-end="url(#arr2)"/>
+          <text x="386" y="44" text-anchor="middle" font-size="9" fill="#94a3b8">argv[0]="init"</text>
+
+          <!-- busybox -->
+          <rect x="412" y="10" width="230" height="80" rx="8" fill="#dbeafe" stroke="#3b82f6" stroke-width="1.5"/>
+          <text x="527" y="33" text-anchor="middle" font-size="12" font-weight="700" fill="#1d4ed8">/bin/busybox</text>
+          <text x="527" y="50" text-anchor="middle" font-size="10" fill="#1d4ed8">检查 argv[0] == "init"</text>
+          <text x="527" y="65" text-anchor="middle" font-size="10" fill="#1d4ed8">→ 执行 init_main()</text>
+          <text x="527" y="80" text-anchor="middle" font-size="9" fill="#3b82f6">PID = 1，永不退出</text>
+
+          <!-- /etc/inittab -->
+          <rect x="100" y="130" width="460" height="50" rx="8" fill="#f3e8ff" stroke="#a855f7" stroke-width="1.5"/>
+          <text x="330" y="152" text-anchor="middle" font-size="11" font-weight="700" fill="#7e22ce">init_main() 读取 /etc/inittab</text>
+          <text x="330" y="170" text-anchor="middle" font-size="10" fill="#7e22ce">由 Buildroot 安装自 package/busybox/inittab</text>
+
+          <!-- arrow down -->
+          <line x1="527" y1="90" x2="527" y2="128" stroke="#64748b" stroke-width="1.5" marker-end="url(#arr2)"/>
+          <line x1="330" y1="105" x2="330" y2="128" stroke="transparent"/>
+        </svg>
+        <figcaption>图 1-1：内核通过 execve 启动 BusyBox init (PID=1) 的调用链</figcaption>
+      </figure>
+    </div>
+
+    <h3>PID 1 的特殊地位</h3>
+    <p>PID 1 在 Linux 系统中具有特殊地位：</p>
+    <ul>
+      <li>内核对 PID 1 发送任何信号的默认动作是<strong>忽略</strong>（包括 SIGKILL），必须显式安装信号处理器才能响应</li>
+      <li>所有孤儿进程（父进程已退出的进程）都会被<strong>重新挂靠</strong>到 PID 1 下</li>
+      <li>PID 1 若退出，内核将触发 <strong>kernel panic</strong></li>
+      <li>因此 BusyBox init 进入主循环后永远不会主动退出</li>
+    </ul>
+
+    <div class="principle-box">
+      <div class="principle-title">🔭 第一性原理</div>
+      <p>内核移交控制权的本质是：<strong>通过 execve 系统调用，用一段用户空间程序替换掉当前内核线程的地址空间</strong>。这个操作不创建新进程，而是原地替换——进程号保持为 1，但代码、数据段全部换成了 BusyBox init 的映像。这是内核与用户空间之间唯一的"边界穿越"时刻：之后所有操作都必须通过系统调用请求内核服务。</p>
+    </div>
+
+    <div class="nav-buttons">
+      <button class="nav-btn" onclick="showSection(0)">← 上一章</button>
+      <button class="nav-btn primary" onclick="showSection(2)">下一章：init_main() 初始化 →</button>
+    </div>
+  </section>
+
+  <!-- ══════════════ SECTION 2 ══════════════ -->
+  <section class="section" id="sec-2">
+    <div class="section-header">
+      <span class="section-tag">第 02 章</span>
+      <h2>init_main() 初始化</h2>
+      <p>BusyBox init 进程启动后的第一批关键操作</p>
+    </div>
+
+    <h3>init_main() 执行序列</h3>
+    <p>BusyBox init 进入 <code>init_main()</code> 后，在解析 inittab 之前，依次完成以下自我初始化工作（源自 <code>init/init.c</code>）：</p>
+
+    <div class="steps">
+      <div class="step">
+        <div class="step-num">1</div>
+        <div class="step-body">
+          <h4>PID 检验</h4>
+          <p>确认自身 PID 为 1，否则报错退出（<code>getpid() != 1</code>）。</p>
+        </div>
+      </div>
+      <div class="step">
+        <div class="step-num">2</div>
+        <div class="step-body">
+          <h4>禁用 Ctrl-Alt-Del 硬重启</h4>
+          <p>调用 <code>reboot(RB_DISABLE_CAD)</code>，接管 Ctrl-Alt-Del，改由 init 自己优雅处理（发送 SIGINT）。</p>
+        </div>
+      </div>
+      <div class="step">
+        <div class="step-num">3</div>
+        <div class="step-body">
+          <h4>设置信号屏蔽集</h4>
+          <p>将 SIGINT、SIGQUIT、SIGTERM、SIGUSR1/2、SIGHUP、SIGCHLD 等关键信号加入 <code>delayed_sigset</code>，使用 <code>sigtimedwait()</code> 在主循环中集中处理。</p>
+        </div>
+      </div>
+      <div class="step">
+        <div class="step-num">4</div>
+        <div class="step-body">
+          <h4>控制台初始化 console_init()</h4>
+          <p>探测并打开默认控制台设备（通常为 <code>/dev/console</code>），设置合理的终端参数（<code>set_sane_term()</code>），将 stdin/stdout/stderr 绑定到控制台。</p>
+        </div>
+      </div>
+      <div class="step">
+        <div class="step-num">5</div>
+        <div class="step-body">
+          <h4>切换工作目录 & 创建新会话</h4>
+          <p><code>xchdir("/")</code> 确保工作目录在根目录；<code>setsid()</code> 创建新会话，使 init 成为会话组长，脱离任何控制终端。</p>
+        </div>
+      </div>
+      <div class="step">
+        <div class="step-num">6</div>
+        <div class="step-body">
+          <h4>设置基本环境变量</h4>
+          <p>设置 <code>PATH</code>、<code>SHELL=/bin/sh</code>、<code>USER=root</code> 等基本环境，为后续子进程提供运行环境。</p>
+        </div>
+      </div>
+      <div class="step">
+        <div class="step-num">7</div>
+        <div class="step-body">
+          <h4>检查单用户模式</h4>
+          <p>检查内核命令行参数是否包含 <code>single</code>/<code>-s</code>/<code>1</code>，若是则仅启动一个 shell，跳过完整 inittab 解析。</p>
+        </div>
+      </div>
+    </div>
+
+    <h3>源码关键片段</h3>
+    <div class="code-block">
+      <div class="code-header">
+        <span class="code-lang">C</span>
+        <span class="code-file">init/init.c — init_main() 核心逻辑</span>
+      </div>
+      <pre><span class="cm">/* 验证 PID */</span>
+<span class="kw">if</span> (<span class="fn">getpid</span>() != <span class="num">1</span>)
+    bb_simple_error_msg_and_die(<span class="str">"must be run as PID 1"</span>);
+
+<span class="cm">/* 禁用硬件 Ctrl-Alt-Del */</span>
+<span class="fn">reboot</span>(RB_DISABLE_CAD);
+
+<span class="cm">/* 设置延迟信号集 */</span>
+<span class="fn">sigaddset</span>(&G.delayed_sigset, SIGINT);   <span class="cm">/* Ctrl-Alt-Del */</span>
+<span class="fn">sigaddset</span>(&G.delayed_sigset, SIGQUIT);  <span class="cm">/* re-exec another init */</span>
+<span class="fn">sigaddset</span>(&G.delayed_sigset, SIGUSR1);  <span class="cm">/* halt */</span>
+<span class="fn">sigaddset</span>(&G.delayed_sigset, SIGTERM);  <span class="cm">/* reboot */</span>
+<span class="fn">sigaddset</span>(&G.delayed_sigset, SIGUSR2);  <span class="cm">/* poweroff */</span>
+<span class="fn">sigaddset</span>(&G.delayed_sigset, SIGHUP);   <span class="cm">/* reread /etc/inittab */</span>
+<span class="fn">sigaddset</span>(&G.delayed_sigset, SIGCHLD);  <span class="cm">/* child 退出通知 */</span>
+<span class="fn">sigprocmask</span>(SIG_BLOCK, &G.delayed_sigset, NULL);
+
+<span class="cm">/* 初始化控制台 */</span>
+<span class="fn">console_init</span>();
+<span class="fn">set_sane_term</span>();
+<span class="fn">xchdir</span>(<span class="str">"/"</span>);
+<span class="fn">setsid</span>();
+
+<span class="cm">/* 设置基本环境 */</span>
+<span class="fn">putenv</span>((<span class="kw">char</span> *) bb_PATH_root_path);
+<span class="fn">putenv</span>((<span class="kw">char</span> *) <span class="str">"SHELL=/bin/sh"</span>);
+<span class="fn">putenv</span>((<span class="kw">char</span> *) <span class="str">"USER=root"</span>);
+
+<span class="cm">/* 检查单用户模式 */</span>
+<span class="kw">if</span> (argv && (<span class="fn">strcmp</span>(argv, <span class="str">"single"</span>) == <span class="num">0</span> || ...)) {
+    new_init_action(RESPAWN, bb_default_login_shell, <span class="str">""</span>);
+} <span class="kw">else</span> {
+    <span class="cm">/* 正常启动：解析 inittab */</span>
+    <span class="fn">parse_inittab</span>();
+}
+
+<span class="cm">/* 执行动作序列 */</span>
+<span class="fn">run_actions</span>(SYSINIT);  <span class="cm">/* 等待完成 */</span>
+<span class="fn">run_actions</span>(WAIT);     <span class="cm">/* 等待完成 */</span>
+<span class="fn">run_actions</span>(ONCE);     <span class="cm">/* 不等待 */</span>
+
+<span class="cm">/* 进入无限主循环 */</span>
+<span class="kw">while</span> (<span class="num">1</span>) {
+    <span class="fn">run_actions</span>(RESPAWN);    <span class="cm">/* 重生进程 */</span>
+    <span class="fn">run_actions</span>(ASKFIRST);   <span class="cm">/* 按键激活终端 */</span>
+    <span class="cm">/* 等待信号或子进程退出 */</span>
+}</pre>
+    </div>
+
+    <h3>动作类型说明</h3>
+    <div class="table-wrap">
+      <table>
+        <thead>
+          <tr><th>action 类型</th><th>等待完成</th><th>含义</th></tr>
+        </thead>
+        <tbody>
+          <tr><td><code>sysinit</code></td><td>✅ 是</td><td>系统初始化，最优先执行，必须等待每条命令完成</td></tr>
+          <tr><td><code>wait</code></td><td>✅ 是</td><td>sysinit 之后执行，同样等待完成</td></tr>
+          <tr><td><code>once</code></td><td>❌ 否</td><td>执行一次，不等待，不重启</td></tr>
+          <tr><td><code>respawn</code></td><td>❌ 否</td><td>在主循环中执行；进程退出后自动重启</td></tr>
+          <tr><td><code>askfirst</code></td><td>❌ 否</td><td>同 respawn，但等待用户按 Enter 再启动</td></tr>
+          <tr><td><code>ctrlaltdel</code></td><td>✅ 是</td><td>收到 SIGINT（Ctrl-Alt-Del）时执行</td></tr>
+          <tr><td><code>shutdown</code></td><td>✅ 是</td><td>系统关机/重启时执行</td></tr>
+          <tr><td><code>restart</code></td><td>—</td><td>收到 SIGQUIT 时 exec 替换 init 自身</td></tr>
+        </tbody>
+      </table>
+    </div>
+
+    <div class="principle-box">
+      <div class="principle-title">🔭 第一性原理</div>
+      <p>init_main() 的初始化阶段解决了一个根本问题：<strong>如何在没有任何运行环境的前提下，建立最基本的运行环境</strong>？控制台需要先打开（否则无法输出错误），信号需要先屏蔽（否则意外信号会干扰初始化），工作目录需要固定为根（保证相对路径可预测）。这些操作的顺序是经过精心设计的，缺少任何一步都会导致后续操作失败。</p>
+    </div>
+
+    <div class="nav-buttons">
+      <button class="nav-btn" onclick="showSection(1)">← 上一章</button>
+      <button class="nav-btn primary" onclick="showSection(3)">下一章：/etc/inittab 解析 →</button>
+    </div>
+  </section>
+
+  <!-- ══════════════ SECTION 3 ══════════════ -->
+  <section class="section" id="sec-3">
+    <div class="section-header">
+      <span class="section-tag">第 03 章</span>
+      <h2>/etc/inittab 解析</h2>
+      <p>Buildroot 默认 inittab 的格式、内容与解析机制</p>
+    </div>
+
+    <h3>inittab 格式</h3>
+    <p>BusyBox inittab 的格式与 sysvinit 不同，每行格式为：</p>
+
+    <div class="code-block">
+      <div class="code-header"><span class="code-lang">格式</span><span class="code-file">/etc/inittab</span></div>
+      <pre><span class="cm"># &lt;id&gt;:&lt;runlevels&gt;:&lt;action&gt;:&lt;process&gt;</span>
+<span class="cm">#</span>
+<span class="cm"># id        == 控制 tty（附加到 /dev/ 后面），空表示 /dev/console</span>
+<span class="cm"># runlevels == BusyBox init 完全忽略此字段</span>
+<span class="cm"># action    == 动作类型（见下表）</span>
+<span class="cm"># process   == 要执行的命令</span></pre>
+    </div>
+
+    <div class="callout warning">
+      <span class="callout-icon">⚠️</span>
+      <div><strong>重要提示：</strong>BusyBox inittab 与 sysvinit 的 inittab 语法<strong>不兼容</strong>！BusyBox 官方明确警告"do not use a random inittab documentation from the Internet to learn about BusyBox inittab"。</div>
+    </div>
+
+    <h3>Buildroot 默认 inittab</h3>
+    <p>当启用 <code>BR2_INIT_BUSYBOX=y</code> 时，Buildroot 会将 <code>package/busybox/inittab</code> 安装到目标系统的 <code>/etc/inittab</code>。以下为其完整内容：</p>
+
+    <div class="code-block">
+      <div class="code-header">
+        <span class="code-lang">inittab</span>
+        <span class="code-file">package/busybox/inittab
+          <a href="https://github.com/buildroot/buildroot/blob/master/package/busybox/inittab" target="_blank" style="color:#38bdf8;text-decoration:none">↗ 原文</a>
+        </span>
+      </div>
+      <pre><span class="cm"># /etc/inittab
+# Copyright (C) 2001 Erik Andersen &lt;andersen@codepoet.org&gt;
+#
+# Note: BusyBox init doesn't support runlevels.  The runlevels field is
+# completely ignored by BusyBox init. If you want runlevels, use sysvinit.</span>
+
+<span class="cm"># Format: &lt;id&gt;:&lt;runlevels&gt;:&lt;action&gt;:&lt;process&gt;</span>
+
+<span class="cm"># ── Startup the system ──────────────────────────</span>
+<span class="kw">::sysinit:</span><span class="fn">/bin/mount -t proc proc /proc</span>
+<span class="kw">::sysinit:</span><span class="fn">/bin/mount -o remount,rw /</span>
+<span class="kw">::sysinit:</span><span class="fn">/bin/mkdir -p /dev/pts /dev/shm</span>
+<span class="kw">::sysinit:</span><span class="fn">/bin/mount -a</span>
+<span class="kw">::sysinit:</span><span class="fn">/bin/mkdir -p /run/lock/subsys</span>
+<span class="kw">::sysinit:</span><span class="fn">/sbin/swapon -a</span>
+<span class="kw">null::sysinit:</span><span class="fn">/bin/ln -sf /proc/self/fd /dev/fd</span>
+<span class="kw">null::sysinit:</span><span class="fn">/bin/ln -sf /proc/self/fd/0 /dev/stdin</span>
+<span class="kw">null::sysinit:</span><span class="fn">/bin/ln -sf /proc/self/fd/1 /dev/stdout</span>
+<span class="kw">null::sysinit:</span><span class="fn">/bin/ln -sf /proc/self/fd/2 /dev/stderr</span>
+<span class="kw">::sysinit:</span><span class="fn">/bin/hostname -F /etc/hostname</span>
+<span class="cm"># now run any rc scripts</span>
+<span class="kw">::sysinit:</span><span class="fn">/etc/init.d/rcS</span>
+
+<span class="cm"># ── Serial console getty (按需取消注释) ─────────</span>
+<span class="cm">#ttyS0::respawn:/sbin/getty -L ttyS0 115200 vt100 # GENERIC_SERIAL</span>
+
+<span class="cm"># ── Ctrl-Alt-Del ────────────────────────────────</span>
+<span class="cm">#::ctrlaltdel:/sbin/reboot</span>
+
+<span class="cm"># ── Shutdown ────────────────────────────────────</span>
+<span class="kw">::shutdown:</span><span class="fn">/etc/init.d/rcK</span>
+<span class="kw">::shutdown:</span><span class="fn">/sbin/swapoff -a</span>
+<span class="kw">::shutdown:</span><span class="fn">/bin/umount -a -r</span></pre>
+    </div>
+
+    <h3>parse_inittab() 工作原理</h3>
+    <p>BusyBox init 使用 <code>parse_inittab()</code> 函数读取并解析 <code>/etc/inittab</code>，构建一个动作链表（<code>init_action_list</code>）：</p>
+
+    <div class="code-block">
+      <div class="code-header">
+        <span class="code-lang">C</span>
+        <span class="code-file">init/init.c — parse_inittab() 简化版</span>
+      </div>
+      <pre><span class="kw">static void</span> <span class="fn">parse_inittab</span>(<span class="kw">void</span>)
+{
+    <span class="pp">#if ENABLE_FEATURE_USE_INITTAB</span>
+    parser_t *parser = <span class="fn">config_open2</span>(<span class="str">"/etc/inittab"</span>, fopen_for_read);
+
+    <span class="kw">if</span> (parser == NULL)  <span class="cm">/* inittab 不存在 → 使用内置默认值 */</span>
+    <span class="pp">#endif</span>
+    {
+        <span class="fn">new_init_action</span>(SYSINIT,    INIT_SCRIPT,  <span class="str">""</span>);
+        <span class="fn">new_init_action</span>(ASKFIRST,   bb_default_login_shell, <span class="str">""</span>);
+        <span class="fn">new_init_action</span>(CTRLALTDEL, <span class="str">"reboot"</span>,   <span class="str">""</span>);
+        <span class="fn">new_init_action</span>(SHUTDOWN,   <span class="str">"umount -a -r"</span>, <span class="str">""</span>);
+        <span class="fn">new_init_action</span>(SHUTDOWN,   <span class="str">"swapoff -a"</span>,   <span class="str">""</span>);
+        <span class="fn">new_init_action</span>(RESTART,    <span class="str">"init"</span>,         <span class="str">""</span>);
+        <span class="kw">return</span>;
+    }
+
+    <span class="cm">/* 逐行解析：tty:runlevel:action:command */</span>
+    <span class="kw">while</span> (<span class="fn">config_read</span>(parser, token, <span class="num">4</span>, <span class="num">0</span>, <span class="str">"#:"</span>, ...)) {
+        action = <span class="fn">index_in_strings</span>(actions, token[<span class="num">2</span>]);
+        tty    = <span class="fn">concat_path_file</span>(<span class="str">"/dev/"</span>, skip_dev_pfx(token[<span class="num">0</span>]));
+        <span class="fn">new_init_action</span>(<span class="num">1</span> &lt;&lt; action, token[<span class="num">3</span>], tty);
+    }
+}</pre>
+    </div>
+
+    <h3>有无 inittab 的行为对比</h3>
+    <div class="table-wrap">
+      <table>
+        <thead>
+          <tr><th>情形</th><th>行为</th></tr>
+        </thead>
+        <tbody>
+          <tr>
+            <td>有 <code>/etc/inittab</code>（Buildroot 默认）</td>
+            <td>按文件定义的动作列表执行，灵活可配置</td>
+          </tr>
+          <tr>
+            <td>无 <code>/etc/inittab</code></td>
+            <td>使用内置默认值：执行 <code>/etc/init.d/rcS</code>，然后在 4 个虚拟控制台上启动 askfirst shell</td>
+          </tr>
+        </tbody>
+      </table>
+    </div>
+
+    <div class="diagram-wrap">
+      <figure>
+        <svg viewBox="0 0 660 230" xmlns="http://www.w3.org/2000/svg" style="width:100%;min-width:420px;">
+          <defs>
+            <marker id="arr3" markerWidth="8" markerHeight="8" refX="6" refY="3" orient="auto">
+              <path d="M0,0 L0,6 L8,3 z" fill="#64748b"/>
+            </marker>
+          </defs>
+
+          <!-- parse_inittab -->
+          <rect x="220" y="10" width="160" height="40" rx="8" fill="#fef9c3" stroke="#ca8a04" stroke-width="1.5"/>
+          <text x="300" y="28" text-anchor="middle" font-size="12" font-weight="700" fill="#92400e">parse_inittab()</text>
+          <text x="300" y="43" text-anchor="middle" font-size="9" fill="#92400e">打开 /etc/inittab</text>
+
+          <!-- decision -->
+          <polygon points="300,70 360,95 300,120 240,95" fill="#e0e7ff" stroke="#6366f1" stroke-width="1.5"/>
+          <text x="300" y="91" text-anchor="middle" font-size="10" font-weight="600" fill="#4338ca">文件存在?</text>
+          <text x="300" y="105" text-anchor="middle" font-size="9" fill="#4338ca">exists?</text>
+
+          <!-- Yes → parse -->
+          <line x1="360" y1="95" x2="500" y2="95" stroke="#22c55e" stroke-width="1.5" marker-end="url(#arr3)"/>
+          <text x="430" y="88" text-anchor="middle" font-size="9" fill="#15803d">Yes</text>
+          <rect x="502" y="75" width="145" height="40" rx="8" fill="#dcfce7" stroke="#22c55e" stroke-width="1.5"/>
+          <text x="575" y="93" text-anchor="middle" font-size="10" font-weight="700" fill="#15803d">逐行解析</text>
+          <text x="575" y="107" text-anchor="middle" font-size="9" fill="#15803d">构建 init_action_list</text>
+
+          <!-- No → default -->
+          <line x1="300" y1="120" x2="300" y2="150" stroke="#f43f5e" stroke-width="1.5" marker-end="url(#arr3)"/>
+          <text x="314" y="138" font-size="9" fill="#be123c">No</text>
+          <rect x="150" y="152" width="300" height="55" rx="8" fill="#ffe4e6" stroke="#f43f5e" stroke-width="1.5"/>
+          <text x="300" y="172" text-anchor="middle" font-size="10" font-weight="700" fill="#be123c">内置默认行为</text>
+          <text x="300" y="187" text-anchor="middle" font-size="9" fill="#be123c">SYSINIT: /etc/init.d/rcS</text>
+          <text x="300" y="200" text-anchor="middle" font-size="9" fill="#be123c">ASKFIRST: /bin/sh (tty1-4)</text>
+
+          <!-- connection arrow from parse_inittab to decision -->
+          <line x1="300" y1="50" x2="300" y2="68" stroke="#64748b" stroke-width="1.5" marker-end="url(#arr3)"/>
+
+          <!-- result -->
+          <rect x="100" y="220" width="460" height="0" rx="8"/>
+        </svg>
+        <figcaption>图 3-1：parse_inittab() 的决策流程</figcaption>
+      </figure>
+    </div>
+
+    <div class="principle-box">
+      <div class="principle-title">🔭 第一性原理</div>
+      <p>inittab 解决的核心问题是：<strong>如何将"要做什么"与"怎么做"分离</strong>？init 程序本身只负责解析配置、调度执行，而具体操作（挂载文件系统、加载设备管理器等）被描述在配置文件中。这种"策略与机制分离"的设计使 init 保持简单，同时让系统行为完全可配置——更改 inittab 即可改变启动行为，无需重新编译 init。</p>
+    </div>
+
+    <div class="nav-buttons">
+      <button class="nav-btn" onclick="showSection(2)">← 上一章</button>
+      <button class="nav-btn primary" onclick="showSection(4)">下一章：sysinit 阶段详解 →</button>
+    </div>
+  </section>
+
+  <!-- ══════════════ SECTION 4 ══════════════ -->
+  <section class="section" id="sec-4">
+    <div class="section-header">
+      <span class="section-tag">第 04 章</span>
+      <h2>sysinit 阶段详解</h2>
+      <p>run_actions(SYSINIT) 的逐步执行过程</p>
+    </div>
+
+    <h3>sysinit 阶段的特性</h3>
+    <p>解析完 inittab 后，init 首先调用 <code>run_actions(SYSINIT)</code>。sysinit 动作有以下特性：</p>
+    <ul>
+      <li><strong>顺序执行</strong>：按照 inittab 中出现的顺序，一条一条执行</li>
+      <li><strong>同步等待</strong>：每条命令必须执行完成（<code>waitpid()</code>）才执行下一条</li>
+      <li><strong>执行一次</strong>：完成后该动作从链表中删除，不再重复</li>
+    </ul>
+
+    <h3>run_actions() 实现</h3>
+    <div class="code-block">
+      <div class="code-header">
+        <span class="code-lang">C</span>
+        <span class="code-file">init/init.c — run_actions() 核心逻辑</span>
+      </div>
+      <pre><span class="kw">static void</span> <span class="fn">run_actions</span>(<span class="kw">int</span> action)
+{
+    <span class="kw">struct</span> init_action *a, *tmp;
+    <span class="kw">for</span> (a = init_action_list; a; a = tmp) {
+        tmp = a->next;
+        <span class="kw">if</span> (a->action_type & action) {
+            <span class="kw">if</span> (a->action_type & (SYSINIT | WAIT | CTRLALTDEL | SHUTDOWN | RESTART)) {
+                <span class="fn">waitfor</span>(a);            <span class="cm">/* fork + waitpid，同步等待 */</span>
+                <span class="fn">delete_init_action</span>(a); <span class="cm">/* 从链表中删除 */</span>
+            } <span class="kw">else if</span> (a->action_type & ONCE) {
+                <span class="fn">run</span>(a);               <span class="cm">/* fork，不等待 */</span>
+                <span class="fn">delete_init_action</span>(a);
+            } <span class="kw">else if</span> (a->action_type & (RESPAWN | ASKFIRST)) {
+                <span class="cm">/* 只启动 pid==0 的（尚未运行的）动作 */</span>
+                <span class="kw">if</span> (a->pid == <span class="num">0</span>)
+                    a->pid = <span class="fn">run</span>(a);
+            }
+        }
+    }
+}</pre>
+    </div>
+
+    <h3>Buildroot sysinit 步骤逐条解析</h3>
+
+    <div class="steps">
+      <div class="step">
+        <div class="step-num">1</div>
+        <div class="step-body">
+          <h4><code>/bin/mount -t proc proc /proc</code></h4>
+          <p>挂载 <strong>procfs</strong> 伪文件系统到 <code>/proc</code>。procfs 是内核向用户空间暴露进程信息、系统状态的接口。许多后续命令（如读取内核参数、查看进程列表）都依赖此挂载点。</p>
+          <div class="callout info" style="margin-top:0.5rem"><span class="callout-icon">💡</span><div>procfs 不使用真实磁盘，数据在读取时由内核动态生成。</div></div>
+        </div>
+      </div>
+      <div class="step">
+        <div class="step-num">2</div>
+        <div class="step-body">
+          <h4><code>/bin/mount -o remount,rw /</code></h4>
+          <p>将根文件系统从<strong>只读</strong>重新挂载为<strong>读写</strong>。内核启动时根文件系统通常以只读方式挂载（用于 fsck 安全检查），此步骤允许后续写入操作。</p>
+        </div>
+      </div>
+      <div class="step">
+        <div class="step-num">3</div>
+        <div class="step-body">
+          <h4><code>/bin/mkdir -p /dev/pts /dev/shm</code></h4>
+          <p>创建 <code>/dev/pts</code>（伪终端从设备目录）和 <code>/dev/shm</code>（POSIX 共享内存）目录，为后续挂载 devpts 和 tmpfs 做准备。</p>
+        </div>
+      </div>
+      <div class="step">
+        <div class="step-num">4</div>
+        <div class="step-body">
+          <h4><code>/bin/mount -a</code></h4>
+          <p>读取 <code>/etc/fstab</code> 并挂载其中所有标记为自动挂载（没有 <code>noauto</code> 选项）的文件系统。通常包括 sysfs、devpts、tmpfs 等。</p>
+        </div>
+      </div>
+      <div class="step">
+        <div class="step-num">5</div>
+        <div class="step-body">
+          <h4><code>/bin/mkdir -p /run/lock/subsys</code></h4>
+          <p>创建运行时数据目录结构，<code>/run</code> 通常挂载为 tmpfs，用于存储守护进程的 PID 文件、套接字等临时数据。</p>
+        </div>
+      </div>
+      <div class="step">
+        <div class="step-num">6</div>
+        <div class="step-body">
+          <h4><code>/sbin/swapon -a</code></h4>
+          <p>激活 <code>/etc/fstab</code> 中定义的所有交换分区/文件。对于内存受限的嵌入式系统尤为重要。</p>
+        </div>
+      </div>
+      <div class="step">
+        <div class="step-num">7</div>
+        <div class="step-body">
+          <h4>创建标准 fd 软链接</h4>
+          <p>将 <code>/dev/fd</code>、<code>/dev/stdin</code>、<code>/dev/stdout</code>、<code>/dev/stderr</code> 链接到 <code>/proc/self/fd</code> 对应条目，使脚本中的标准 I/O 重定向正常工作。</p>
+        </div>
+      </div>
+      <div class="step">
+        <div class="step-num">8</div>
+        <div class="step-body">
+          <h4><code>/bin/hostname -F /etc/hostname</code></h4>
+          <p>从 <code>/etc/hostname</code> 文件读取主机名并设置系统主机名，影响提示符显示和网络标识。</p>
+        </div>
+      </div>
+      <div class="step">
+        <div class="step-num">9</div>
+        <div class="step-body">
+          <h4><code>/etc/init.d/rcS</code></h4>
+          <p>执行 rc 脚本总入口，按数字顺序调用 <code>/etc/init.d/S??*</code> 脚本，完成设备管理、网络配置、服务启动等全部用户态初始化。<strong>详见第 07 章。</strong></p>
+        </div>
+      </div>
+    </div>
+
+    <div class="diagram-wrap">
+      <figure>
+        <svg viewBox="0 0 660 320" xmlns="http://www.w3.org/2000/svg" style="width:100%;min-width:420px;">
+          <defs>
+            <marker id="arr4" markerWidth="8" markerHeight="8" refX="6" refY="3" orient="auto">
+              <path d="M0,0 L0,6 L8,3 z" fill="#64748b"/>
+            </marker>
+          </defs>
+
+          <text x="330" y="18" text-anchor="middle" font-size="13" font-weight="700" fill="#1e293b">run_actions(SYSINIT) — 顺序执行流</text>
+
+          <!-- Steps -->
+          <!-- 1 -->
+          <rect x="40" y="30" width="580" height="30" rx="6" fill="#dbeafe" stroke="#3b82f6"/>
+          <text x="55" y="50" font-size="10" font-weight="700" fill="#1d4ed8">①</text>
+          <text x="75" y="50" font-size="10" fill="#1e3a5f">mount -t proc proc /proc</text>
+          <text x="430" y="50" font-size="9" fill="#3b82f6">→ 挂载 procfs，暴露内核进程信息接口</text>
+
+          <line x1="330" y1="60" x2="330" y2="68" stroke="#94a3b8" stroke-width="1" marker-end="url(#arr4)"/>
+
+          <rect x="40" y="70" width="580" height="30" rx="6" fill="#dcfce7" stroke="#22c55e"/>
+          <text x="55" y="90" font-size="10" font-weight="700" fill="#15803d">②</text>
+          <text x="75" y="90" font-size="10" fill="#14532d">mount -o remount,rw /</text>
+          <text x="430" y="90" font-size="9" fill="#15803d">→ 根文件系统从只读改为读写</text>
+
+          <line x1="330" y1="100" x2="330" y2="108" stroke="#94a3b8" stroke-width="1" marker-end="url(#arr4)"/>
+
+          <rect x="40" y="110" width="580" height="30" rx="6" fill="#fef9c3" stroke="#ca8a04"/>
+          <text x="55" y="130" font-size="10" font-weight="700" fill="#92400e">③</text>
+          <text x="75" y="130" font-size="10" fill="#78350f">mkdir -p /dev/pts /dev/shm</text>
+          <text x="430" y="130" font-size="9" fill="#92400e">→ 创建伪终端和共享内存目录</text>
+
+          <line x1="330" y1="140" x2="330" y2="148" stroke="#94a3b8" stroke-width="1" marker-end="url(#arr4)"/>
+
+          <rect x="40" y="150" width="580" height="30" rx="6" fill="#f3e8ff" stroke="#a855f7"/>
+          <text x="55" y="170" font-size="10" font-weight="700" fill="#7e22ce">④</text>
+          <text x="75" y="170" font-size="10" fill="#581c87">mount -a</text>
+          <text x="430" y="170" font-size="9" fill="#7e22ce">→ 挂载 /etc/fstab 所有条目（sysfs、devpts 等）</text>
+
+          <line x1="330" y1="180" x2="330" y2="188" stroke="#94a3b8" stroke-width="1" marker-end="url(#arr4)"/>
+
+          <rect x="40" y="190" width="580" height="30" rx="6" fill="#ffe4e6" stroke="#f43f5e"/>
+          <text x="55" y="210" font-size="10" font-weight="700" fill="#be123c">⑤⑥</text>
+          <text x="80" y="210" font-size="10" fill="#881337">mkdir /run/lock/subsys  &amp;  swapon -a</text>
+          <text x="430" y="210" font-size="9" fill="#be123c">→ 运行时目录 + 激活交换空间</text>
+
+          <line x1="330" y1="220" x2="330" y2="228" stroke="#94a3b8" stroke-width="1" marker-end="url(#arr4)"/>
+
+          <rect x="40" y="230" width="580" height="30" rx="6" fill="#ecfdf5" stroke="#10b981"/>
+          <text x="55" y="250" font-size="10" font-weight="700" fill="#065f46">⑦</text>
+          <text x="75" y="250" font-size="10" fill="#064e3b">ln -sf /proc/self/fd/{0,1,2} /dev/{stdin,stdout,stderr}</text>
+          <text x="430" y="250" font-size="9" fill="#10b981">→ 标准 I/O 软链接</text>
+
+          <line x1="330" y1="260" x2="330" y2="268" stroke="#94a3b8" stroke-width="1" marker-end="url(#arr4)"/>
+
+          <rect x="40" y="270" width="580" height="30" rx="6" fill="#fff7ed" stroke="#f97316"/>
+          <text x="55" y="290" font-size="10" font-weight="700" fill="#c2410c">⑧</text>
+          <text x="75" y="290" font-size="10" fill="#7c2d12">hostname -F /etc/hostname</text>
+          <text x="430" y="290" font-size="9" fill="#f97316">→ 设置系统主机名</text>
+
+          <line x1="330" y1="300" x2="330" y2="308" stroke="#94a3b8" stroke-width="1" marker-end="url(#arr4)"/>
+
+          <rect x="40" y="308" width="580" height="10" rx="3" fill="#1d4ed8" opacity="0.3"/>
+          <text x="330" y="315" text-anchor="middle" font-size="8" fill="#1d4ed8">↓ /etc/init.d/rcS（见第 07 章）</text>
+        </svg>
+        <figcaption>图 4-1：sysinit 阶段的顺序执行流，每一步等待完成后才执行下一步</figcaption>
+      </figure>
+    </div>
+
+    <div class="principle-box">
+      <div class="principle-title">🔭 第一性原理</div>
+      <p>sysinit 阶段的设计体现了<strong>依赖排序</strong>原则：每一步操作都依赖前一步的结果。procfs 必须先挂载（后续命令需要读取 <code>/proc</code>）；根文件系统必须先变成读写（后续 mkdir 需要写权限）；<code>/dev/pts</code> 目录必须先创建（mount -a 挂载 devpts 时才有目标）。这种严格的顺序依赖不允许并行化，因此使用同步的 <code>waitpid()</code>——这是嵌入式启动速度慢的根本原因，也是 systemd 引入并行化的动机。</p>
+    </div>
+
+    <div class="nav-buttons">
+      <button class="nav-btn" onclick="showSection(3)">← 上一章</button>
+      <button class="nav-btn primary" onclick="showSection(5)">下一章：文件系统挂载 →</button>
+    </div>
+  </section>
+
+  <!-- ══════════════ SECTION 5 ══════════════ -->
+  <section class="section" id="sec-5">
+    <div class="section-header">
+      <span class="section-tag">第 05 章</span>
+      <h2>文件系统挂载体系</h2>
+      <p>/etc/fstab 与虚拟文件系统的挂载机制</p>
+    </div>
+
+    <h3>虚拟文件系统概述</h3>
+    <p>Linux 嵌入式系统在启动过程中需要挂载多个虚拟文件系统（VFS），这些文件系统不对应真实磁盘，而是内核提供的接口：</p>
+
+    <div class="table-wrap">
+      <table>
+        <thead>
+          <tr><th>文件系统</th><th>挂载点</th><th>类型</th><th>作用</th></tr>
+        </thead>
+        <tbody>
+          <tr><td><strong>procfs</strong></td><td><code>/proc</code></td><td>虚拟</td><td>进程信息、内核参数（/proc/sys）、设备信息</td></tr>
+          <tr><td><strong>sysfs</strong></td><td><code>/sys</code></td><td>虚拟</td><td>设备/驱动拓扑结构，mdev/udev 依赖此文件系统</td></tr>
+          <tr><td><strong>devtmpfs</strong></td><td><code>/dev</code></td><td>虚拟</td><td>设备节点，内核自动创建基本设备节点</td></tr>
+          <tr><td><strong>devpts</strong></td><td><code>/dev/pts</code></td><td>虚拟</td><td>伪终端从端（ssh、screen 等依赖）</td></tr>
+          <tr><td><strong>tmpfs</strong></td><td><code>/dev/shm</code></td><td>内存</td><td>POSIX 共享内存</td></tr>
+          <tr><td><strong>tmpfs</strong></td><td><code>/run</code></td><td>内存</td><td>运行时数据（PID 文件、套接字）</td></tr>
+        </tbody>
+      </table>
+    </div>
+
+    <h3>Buildroot 默认 /etc/fstab</h3>
+    <p>Buildroot 的根文件系统骨架（<code>system/skeleton/etc/fstab</code>）提供如下默认内容：</p>
+
+    <div class="code-block">
+      <div class="code-header">
+        <span class="code-lang">fstab</span>
+        <span class="code-file">/etc/fstab（Buildroot 默认骨架）</span>
+      </div>
+      <pre><span class="cm"># &lt;file system&gt; &lt;mount pt&gt;  &lt;type&gt;   &lt;options&gt;          &lt;dump&gt; &lt;pass&gt;</span>
+/dev/root       /           ext2     rw,noauto          0      1
+proc            /proc       proc     defaults            0      0
+devpts          /dev/pts    devpts   defaults,gid=5,mode=620  0  0
+tmpfs           /dev/shm    tmpfs    mode=0777           0      0
+tmpfs           /tmp        tmpfs    mode=1777           0      0
+tmpfs           /run        tmpfs    mode=0755,nosuid,nodev 0   0
+sysfs           /sys        sysfs    defaults            0      0</pre>
+    </div>
+
+    <h3>挂载顺序与依赖关系</h3>
+    <div class="diagram-wrap">
+      <figure>
+        <svg viewBox="0 0 660 260" xmlns="http://www.w3.org/2000/svg" style="width:100%;min-width:420px;">
+          <defs>
+            <marker id="arr5" markerWidth="8" markerHeight="8" refX="6" refY="3" orient="auto">
+              <path d="M0,0 L0,6 L8,3 z" fill="#64748b"/>
+            </marker>
+          </defs>
+
+          <!-- Layer 0: Kernel -->
+          <rect x="10" y="10" width="640" height="35" rx="6" fill="#1e293b"/>
+          <text x="330" y="32" text-anchor="middle" font-size="11" font-weight="700" fill="#94a3b8">Linux Kernel（内核空间）</text>
+
+          <!-- Layer 1: inittab sysinit -->
+          <text x="10" y="70" font-size="9" fill="#64748b" font-weight="700">inittab sysinit</text>
+
+          <rect x="10" y="75" width="185" height="35" rx="6" fill="#dbeafe" stroke="#3b82f6"/>
+          <text x="102" y="90" text-anchor="middle" font-size="10" font-weight="700" fill="#1d4ed8">① mount -t proc</text>
+          <text x="102" y="103" text-anchor="middle" font-size="9" fill="#3b82f6">/proc (procfs)</text>
+
+          <rect x="205" y="75" width="185" height="35" rx="6" fill="#dcfce7" stroke="#22c55e"/>
+          <text x="297" y="90" text-anchor="middle" font-size="10" font-weight="700" fill="#15803d">② mount -o remount,rw</text>
+          <text x="297" y="103" text-anchor="middle" font-size="9" fill="#15803d">/ (rootfs 读写)</text>
+
+          <rect x="400" y="75" width="250" height="35" rx="6" fill="#fef9c3" stroke="#ca8a04"/>
+          <text x="525" y="90" text-anchor="middle" font-size="10" font-weight="700" fill="#92400e">③ mkdir /dev/pts /dev/shm</text>
+          <text x="525" y="103" text-anchor="middle" font-size="9" fill="#92400e">创建挂载点目录</text>
+
+          <!-- Arrow -->
+          <text x="10" y="130" font-size="9" fill="#64748b" font-weight="700">mount -a (/etc/fstab)</text>
+
+          <rect x="10" y="135" width="140" height="35" rx="6" fill="#f3e8ff" stroke="#a855f7"/>
+          <text x="80" y="150" text-anchor="middle" font-size="10" font-weight="700" fill="#7e22ce">sysfs → /sys</text>
+          <text x="80" y="163" text-anchor="middle" font-size="9" fill="#7e22ce">驱动/设备拓扑</text>
+
+          <rect x="160" y="135" width="140" height="35" rx="6" fill="#ffe4e6" stroke="#f43f5e"/>
+          <text x="230" y="150" text-anchor="middle" font-size="10" font-weight="700" fill="#be123c">devpts→/dev/pts</text>
+          <text x="230" y="163" text-anchor="middle" font-size="9" fill="#be123c">伪终端从端</text>
+
+          <rect x="310" y="135" width="140" height="35" rx="6" fill="#fff7ed" stroke="#f97316"/>
+          <text x="380" y="150" text-anchor="middle" font-size="10" font-weight="700" fill="#c2410c">tmpfs→/dev/shm</text>
+          <text x="380" y="163" text-anchor="middle" font-size="9" fill="#c2410c">共享内存</text>
+
+          <rect x="460" y="135" width="190" height="35" rx="6" fill="#ecfdf5" stroke="#10b981"/>
+          <text x="555" y="150" text-anchor="middle" font-size="10" font-weight="700" fill="#065f46">tmpfs→/run, /tmp</text>
+          <text x="555" y="163" text-anchor="middle" font-size="9" fill="#065f46">运行时数据</text>
+
+          <!-- rcS -->
+          <rect x="10" y="195" width="640" height="40" rx="6" fill="#1e3a5f" stroke="#3b82f6" stroke-width="1.5"/>
+          <text x="330" y="212" text-anchor="middle" font-size="11" font-weight="700" fill="#93c5fd">/etc/init.d/rcS → S10mdev（mdev -s 填充 /dev 设备节点）</text>
+          <text x="330" y="228" text-anchor="middle" font-size="9" fill="#64748b">依赖 /sys 已挂载，扫描 sysfs 创建 /dev 下所有设备节点</text>
+        </svg>
+        <figcaption>图 5-1：文件系统挂载的依赖层次：下层挂载是上层操作的前提</figcaption>
+      </figure>
+    </div>
+
+    <h3>devtmpfs 与 mdev 的关系</h3>
+    <p>Buildroot 支持多种 <code>/dev</code> 管理策略（在 <code>System configuration → /dev management</code> 中选择）：</p>
+
+    <div class="table-wrap">
+      <table>
+        <thead>
+          <tr><th>策略</th><th>配置项</th><th>机制</th></tr>
+        </thead>
+        <tbody>
+          <tr>
+            <td>静态设备表</td>
+            <td><code>BR2_ROOTFS_DEVICE_CREATION_STATIC</code></td>
+            <td>构建时预先创建设备节点，不支持热插拔</td>
+          </tr>
+          <tr class="highlight-row">
+            <td>devtmpfs + mdev</td>
+            <td><code>BR2_ROOTFS_DEVICE_CREATION_DYNAMIC_MDEV</code></td>
+            <td>内核自动创建基本设备节点；mdev 处理热插拔（推荐）</td>
+          </tr>
+          <tr>
+            <td>devtmpfs + eudev</td>
+            <td><code>BR2_ROOTFS_DEVICE_CREATION_DYNAMIC_EUDEV</code></td>
+            <td>功能更强的 udev 替代，适合需要复杂规则的场景</td>
+          </tr>
+        </tbody>
+      </table>
+    </div>
+
+    <div class="callout tip">
+      <span class="callout-icon">💡</span>
+      <div>Buildroot 官方推荐从 <strong>devtmpfs only</strong> 开始，当需要热插拔通知或固件加载时，升级到 <strong>devtmpfs + mdev</strong>。</div>
+    </div>
+
+    <div class="principle-box">
+      <div class="principle-title">🔭 第一性原理</div>
+      <p>文件系统挂载的本质是：<strong>将内核的数据结构"映射"到用户可见的路径空间中</strong>。procfs/sysfs 不是真实的磁盘，而是内核以文件形式暴露的 API。没有这些挂载点，用户空间程序就无法与内核通信——mdev 不能扫描设备（需要 /sys），hostname 命令无法读取内核参数（需要 /proc）。因此文件系统挂载是用户态建立内核通信通道的核心操作，是一切后续活动的基础。</p>
+    </div>
+
+    <div class="nav-buttons">
+      <button class="nav-btn" onclick="showSection(4)">← 上一章</button>
+      <button class="nav-btn primary" onclick="showSection(6)">下一章：mdev 设备管理 →</button>
+    </div>
+  </section>
+
+  <!-- ══════════════ SECTION 6 ══════════════ -->
+  <section class="section" id="sec-6">
+    <div class="section-header">
+      <span class="section-tag">第 06 章</span>
+      <h2>mdev 设备管理</h2>
+      <p>BusyBox mdev 如何填充 /dev 目录并处理热插拔</p>
+    </div>
+
+    <h3>S10mdev 脚本</h3>
+    <p>当 Buildroot 选择 <code>BR2_ROOTFS_DEVICE_CREATION_DYNAMIC_MDEV=y</code> 时，会安装 <code>package/busybox/S10mdev</code> 到目标系统的 <code>/etc/init.d/S10mdev</code>。它由 <code>rcS</code> 调用，是 <code>init.d</code> 中最先执行的脚本之一：</p>
+
+    <div class="code-block">
+      <div class="code-header">
+        <span class="code-lang">Shell</span>
+        <span class="code-file">package/busybox/S10mdev
+          <a href="https://github.com/buildroot/buildroot/blob/master/package/busybox/S10mdev" target="_blank" style="color:#38bdf8;text-decoration:none">↗ 原文</a>
+        </span>
+      </div>
+      <pre><span class="pp">#!/bin/sh</span>
+
+DAEMON=<span class="str">"mdev"</span>
+
+<span class="fn">start</span>() {
+    <span class="cm"># 注册 mdev 为内核热插拔处理器</span>
+    echo <span class="str">"/sbin/mdev"</span> > /proc/sys/kernel/hotplug
+
+    <span class="cm"># 扫描 /sys 目录，为当前所有设备创建 /dev 节点</span>
+    <span class="fn">mdev</span> -s
+}
+
+<span class="fn">stop</span>() {
+    <span class="cm"># 取消热插拔注册</span>
+    echo <span class="str">""</span> > /proc/sys/kernel/hotplug
+}
+
+<span class="kw">case</span> <span class="str">"$1"</span> <span class="kw">in</span>
+    start)   <span class="fn">start</span>;;
+    stop)    <span class="fn">stop</span>;;
+    restart) <span class="fn">stop</span>; <span class="fn">start</span>;;
+    *)       echo <span class="str">"Usage: $0 {start|stop|restart}"</span>; exit 1;;
+<span class="kw">esac</span></pre>
+    </div>
+
+    <h3>mdev 的两个工作阶段</h3>
+
+    <div class="steps">
+      <div class="step">
+        <div class="step-num">1</div>
+        <div class="step-body">
+          <h4>静态扫描阶段：<code>mdev -s</code></h4>
+          <p>递归扫描 <code>/sys</code> 中的所有 <code>dev</code> 文件（包含设备主次设备号），在 <code>/dev</code> 下创建对应的设备节点。这确保系统启动时所有已探测的设备都有对应的 <code>/dev</code> 节点。</p>
+          <div class="code-block" style="margin-top:0.5rem">
+            <div class="code-header"><span class="code-lang">示例</span><span class="code-file">mdev -s 效果</span></div>
+            <pre><span class="cm"># 读取 /sys/class/tty/ttyS0/dev → "4:64"</span>
+<span class="cm"># 创建 /dev/ttyS0，主设备号 4，次设备号 64</span>
+mknod /dev/ttyS0 c 4 64</pre>
+          </div>
+        </div>
+      </div>
+      <div class="step">
+        <div class="step-num">2</div>
+        <div class="step-body">
+          <h4>动态热插拔阶段：注册为内核 hotplug 处理器</h4>
+          <p>将 <code>/sbin/mdev</code> 写入 <code>/proc/sys/kernel/hotplug</code>，此后内核每次检测到设备插入/拔出事件时，都会调用 mdev，并传入相关环境变量（ACTION、DEVPATH 等），mdev 根据 <code>/etc/mdev.conf</code> 的规则创建或删除设备节点。</p>
+        </div>
+      </div>
+    </div>
+
+    <h3>mdev.conf 规则示例</h3>
+    <div class="code-block">
+      <div class="code-header">
+        <span class="code-lang">conf</span>
+        <span class="code-file">/etc/mdev.conf（Buildroot 默认）</span>
+      </div>
+      <pre><span class="cm"># 格式: &lt;设备名正则&gt; &lt;uid&gt;:&lt;gid&gt; &lt;权限&gt; [=别名] [@|$|!命令]</span>
+
+<span class="cm"># 所有用户可读写的空设备</span>
+null             0:0 666
+
+<span class="cm"># 控制台</span>
+console          0:5 600
+
+<span class="cm"># 随机数设备</span>
+random           0:0 444
+urandom          0:0 444
+
+<span class="cm"># 串口</span>
+ttyS[0-9]*       0:20 660
+
+<span class="cm"># 块设备</span>
+sd[a-z][0-9]*    0:6 660
+
+<span class="cm"># 驱动自动加载（通过 MODALIAS）</span>
+<span class="cm"># $MODALIAS: 内核热插拔时传递的模块别名</span>
+<span class="cm"># @modprobe $MODALIAS: 在设备创建前自动加载对应驱动</span></pre>
+    </div>
+
+    <h3>mdev 工作流程图</h3>
+    <div class="diagram-wrap">
+      <figure>
+        <svg viewBox="0 0 660 230" xmlns="http://www.w3.org/2000/svg" style="width:100%;min-width:420px;">
+          <defs>
+            <marker id="arr6" markerWidth="8" markerHeight="8" refX="6" refY="3" orient="auto">
+              <path d="M0,0 L0,6 L8,3 z" fill="#64748b"/>
+            </marker>
+          </defs>
+
+          <!-- /sys -->
+          <rect x="10" y="80" width="110" height="60" rx="8" fill="#f3e8ff" stroke="#a855f7" stroke-width="1.5"/>
+          <text x="65" y="107" text-anchor="middle" font-size="11" font-weight="700" fill="#7e22ce">/sys</text>
+          <text x="65" y="121" text-anchor="middle" font-size="9" fill="#7e22ce">设备/驱动拓扑</text>
+          <text x="65" y="133" text-anchor="middle" font-size="9" fill="#7e22ce">（sysfs）</text>
+
+          <!-- mdev -s -->
+          <rect x="200" y="60" width="130" height="40" rx="8" fill="#fef9c3" stroke="#ca8a04" stroke-width="1.5"/>
+          <text x="265" y="78" text-anchor="middle" font-size="11" font-weight="700" fill="#92400e">mdev -s</text>
+          <text x="265" y="92" text-anchor="middle" font-size="9" fill="#92400e">静态扫描 /sys</text>
+
+          <!-- arrow /sys → mdev -s -->
+          <line x1="120" y1="105" x2="198" y2="85" stroke="#64748b" stroke-width="1.5" marker-end="url(#arr6)"/>
+          <text x="157" y="88" font-size="9" fill="#94a3b8">读取 dev 文件</text>
+
+          <!-- /dev -->
+          <rect x="410" y="60" width="110" height="60" rx="8" fill="#dcfce7" stroke="#22c55e" stroke-width="1.5"/>
+          <text x="465" y="87" text-anchor="middle" font-size="11" font-weight="700" fill="#15803d">/dev</text>
+          <text x="465" y="101" text-anchor="middle" font-size="9" fill="#15803d">设备节点</text>
+          <text x="465" y="113" text-anchor="middle" font-size="9" fill="#15803d">（mknod）</text>
+
+          <!-- arrow mdev -s → /dev -->
+          <line x1="330" y1="80" x2="408" y2="85" stroke="#64748b" stroke-width="1.5" marker-end="url(#arr6)"/>
+          <text x="369" y="74" font-size="9" fill="#94a3b8">创建节点</text>
+
+          <!-- Kernel hotplug -->
+          <rect x="10" y="165" width="170" height="50" rx="8" fill="#dbeafe" stroke="#3b82f6" stroke-width="1.5"/>
+          <text x="95" y="185" text-anchor="middle" font-size="10" font-weight="700" fill="#1d4ed8">内核热插拔事件</text>
+          <text x="95" y="200" text-anchor="middle" font-size="9" fill="#3b82f6">设备插入/拔出</text>
+          <text x="95" y="212" text-anchor="middle" font-size="9" fill="#3b82f6">/proc/sys/kernel/hotplug</text>
+
+          <!-- mdev daemon -->
+          <rect x="250" y="155" width="140" height="60" rx="8" fill="#fff7ed" stroke="#f97316" stroke-width="1.5"/>
+          <text x="320" y="178" text-anchor="middle" font-size="10" font-weight="700" fill="#c2410c">mdev（热插拔）</text>
+          <text x="320" y="193" text-anchor="middle" font-size="9" fill="#f97316">读取 /etc/mdev.conf</text>
+          <text x="320" y="207" text-anchor="middle" font-size="9" fill="#f97316">执行规则</text>
+
+          <!-- arrow kernel → mdev -->
+          <line x1="180" y1="190" x2="248" y2="185" stroke="#64748b" stroke-width="1.5" marker-end="url(#arr6)"/>
+
+          <!-- arrow mdev → /dev -->
+          <line x1="390" y1="185" x2="408" y2="112" stroke="#64748b" stroke-width="1.5" marker-end="url(#arr6)"/>
+
+          <!-- modprobe -->
+          <rect x="465" y="155" width="185" height="60" rx="8" fill="#ffe4e6" stroke="#f43f5e" stroke-width="1.5"/>
+          <text x="557" y="178" text-anchor="middle" font-size="10" font-weight="700" fill="#be123c">modprobe $MODALIAS</text>
+          <text x="557" y="193" text-anchor="middle" font-size="9" fill="#be123c">按需加载内核驱动模块</text>
+          <text x="557" y="207" text-anchor="middle" font-size="9" fill="#be123c">（通过 mdev.conf 规则）</text>
+
+          <!-- arrow mdev → modprobe -->
+          <line x1="390" y1="195" x2="463" y2="185" stroke="#64748b" stroke-width="1.5" marker-end="url(#arr6)"/>
+        </svg>
+        <figcaption>图 6-1：mdev 的两阶段工作：启动时静态扫描 + 运行时热插拔响应</figcaption>
+      </figure>
+    </div>
+
+    <h3>驱动模块自动加载</h3>
+    <p>mdev 支持通过 <code>MODALIAS</code> 环境变量自动加载内核模块：当内核热插拔一个新设备时，会在环境变量中携带 <code>MODALIAS</code>（设备的模块别名），mdev 的规则文件可配置在设备节点创建前/后执行 <code>modprobe $MODALIAS</code>，从而实现<strong>驱动按需加载</strong>。</p>
+
+    <div class="callout info">
+      <span class="callout-icon">ℹ️</span>
+      <div>模块文件通常位于 <code>/lib/modules/$(uname -r)/</code>，由 Buildroot 构建内核时生成并安装到目标系统。<code>modprobe</code> 会读取 <code>modules.dep</code> 处理依赖关系。</div>
+    </div>
+
+    <div class="principle-box">
+      <div class="principle-title">🔭 第一性原理</div>
+      <p>设备管理的根本问题是：<strong>如何将内核中的设备对象映射为用户空间可访问的文件</strong>？Linux 的"一切皆文件"哲学要求所有设备必须通过 <code>/dev</code> 下的特殊文件访问。mdev 通过读取 sysfs（内核设备拓扑的投影）并调用 mknod 系统调用，完成这个映射。热插拔机制则进一步让这个映射在设备生命周期内保持同步——设备插入时创建节点，拔出时删除节点。这是用户空间对内核硬件抽象层的"实例化"过程。</p>
+    </div>
+
+    <div class="nav-buttons">
+      <button class="nav-btn" onclick="showSection(5)">← 上一章</button>
+      <button class="nav-btn primary" onclick="showSection(7)">下一章：rcS 与 S?? 脚本 →</button>
+    </div>
+  </section>
+
+  <!-- ══════════════ SECTION 7 ══════════════ -->
+  <section class="section" id="sec-7">
+    <div class="section-header">
+      <span class="section-tag">第 07 章</span>
+      <h2>rcS 与 S?? 初始化脚本</h2>
+      <p>Buildroot 的 SysV 风格服务启动框架</p>
+    </div>
+
+    <h3>rcS 脚本：服务启动总调度器</h3>
+    <p>inittab 中最后一条 sysinit 动作是 <code>/etc/init.d/rcS</code>。这是整个用户态服务初始化的<strong>调度中心</strong>：</p>
+
+    <div class="code-block">
+      <div class="code-header">
+        <span class="code-lang">Shell</span>
+        <span class="code-file">package/initscripts/init.d/rcS
+          <a href="https://github.com/buildroot/buildroot/blob/master/package/initscripts/init.d/rcS" target="_blank" style="color:#38bdf8;text-decoration:none">↗ 原文</a>
+        </span>
+      </div>
+      <pre><span class="pp">#!/bin/sh</span>
+<span class="cm">#
+# Start all init scripts in /etc/init.d
+# executing them in numerical order.
+#</span>
+
+<span class="kw">for</span> i <span class="kw">in</span> /etc/init.d/S??* ; <span class="kw">do</span>
+
+    <span class="cm"># 忽略悬空的软链接</span>
+    [ ! -f <span class="str">"$i"</span> ] && <span class="kw">continue</span>
+
+    <span class="kw">case</span> <span class="str">"$i"</span> <span class="kw">in</span>
+        *.sh)
+            <span class="cm"># .sh 脚本：在子 shell 中 source（更快，避免 fork/exec）</span>
+            (
+                trap - INT QUIT TSTP
+                set start
+                . <span class="str">$i</span>
+            )
+            ;;
+        *)
+            <span class="cm"># 无 .sh 后缀：fork 子进程执行，传入 start 参数</span>
+            <span class="str">$i</span> start
+            ;;
+    <span class="kw">esac</span>
+<span class="kw">done</span></pre>
+    </div>
+
+    <div class="callout info">
+      <span class="callout-icon">ℹ️</span>
+      <div><code>S??*</code> 是 shell glob 模式，匹配以大写 S 开头、后跟两位数字的文件名。Shell 对文件名排序是<strong>字典序</strong>，因此 S10 在 S20 之前，S09 在 S10 之前。</div>
+    </div>
+
+    <h3>Buildroot 默认 init.d 脚本</h3>
+    <p>Buildroot 的 <code>package/initscripts/</code> 提供以下默认脚本，加上 busybox 包的 S10mdev：</p>
+
+    <div class="table-wrap">
+      <table>
+        <thead>
+          <tr><th>脚本</th><th>来源包</th><th>功能</th></tr>
+        </thead>
+        <tbody>
+          <tr class="highlight-row">
+            <td><code>S10mdev</code></td>
+            <td>package/busybox</td>
+            <td>启动 mdev 设备管理器，填充 /dev 节点，注册热插拔处理器</td>
+          </tr>
+          <tr>
+            <td><code>S20urandom</code></td>
+            <td>package/initscripts</td>
+            <td>从上次保存的种子恢复随机数熵池（/dev/urandom），保存新种子</td>
+          </tr>
+          <tr>
+            <td><code>S40network</code></td>
+            <td>package/initscripts</td>
+            <td>读取 /etc/network/interfaces，调用 ifup -a 配置网络接口</td>
+          </tr>
+          <tr>
+            <td><code>S??syslog</code></td>
+            <td>busybox/syslogd</td>
+            <td>启动 syslogd/klogd 系统日志守护进程</td>
+          </tr>
+          <tr>
+            <td>用户自定义</td>
+            <td>BR2_ROOTFS_OVERLAY</td>
+            <td>用户通过 overlay 或 post-build 脚本添加的自定义服务脚本</td>
+          </tr>
+        </tbody>
+      </table>
+    </div>
+
+    <h3>S20urandom 详解</h3>
+    <div class="code-block">
+      <div class="code-header">
+        <span class="code-lang">Shell</span>
+        <span class="code-file">package/initscripts/init.d/S20urandom（关键部分）</span>
+      </div>
+      <pre><span class="fn">start</span>() {
+    <span class="cm"># 将上次保存的随机种子输入内核熵池</span>
+    <span class="kw">if</span> [ -f /etc/random-seed ]; <span class="kw">then</span>
+        cat /etc/random-seed > /dev/urandom
+        rm -f /etc/random-seed
+    <span class="kw">fi</span>
+    <span class="cm"># 立即保存新种子供下次启动使用</span>
+    umask <span class="num">077</span>
+    dd <span class="kw">if</span>=/dev/urandom <span class="kw">of</span>=/etc/random-seed count=<span class="num">1</span> > /dev/null <span class="num">2</span>&amp;<span class="num">1</span>
+    umask <span class="num">022</span>
+}
+
+<span class="fn">stop</span>() {
+    <span class="cm"># 关机时保存当前熵池状态</span>
+    umask <span class="num">077</span>
+    dd <span class="kw">if</span>=/dev/urandom <span class="kw">of</span>=/etc/random-seed count=<span class="num">1</span> > /dev/null <span class="num">2</span>&amp;<span class="num">1</span>
+}</pre>
+    </div>
+
+    <h3>自定义服务脚本模板</h3>
+    <p>在 Buildroot 中添加自定义服务，遵循以下模板（数字越大越晚启动）：</p>
+
+    <div class="code-block">
+      <div class="code-header">
+        <span class="code-lang">Shell</span>
+        <span class="code-file">/etc/init.d/S50myservice（模板）</span>
+      </div>
+      <pre><span class="pp">#!/bin/sh</span>
+
+DAEMON=<span class="str">"myservice"</span>
+DAEMON_PATH=<span class="str">"/usr/bin/myservice"</span>
+PIDFILE=<span class="str">"/run/myservice.pid"</span>
+
+<span class="fn">start</span>() {
+    printf <span class="str">"Starting %s... "</span> <span class="str">"$DAEMON"</span>
+    start-stop-daemon -S -b -p <span class="str">"$PIDFILE"</span> -x <span class="str">"$DAEMON_PATH"</span>
+    echo <span class="str">"OK"</span>
+}
+
+<span class="fn">stop</span>() {
+    printf <span class="str">"Stopping %s... "</span> <span class="str">"$DAEMON"</span>
+    start-stop-daemon -K -p <span class="str">"$PIDFILE"</span>
+    echo <span class="str">"OK"</span>
+}
+
+<span class="kw">case</span> <span class="str">"$1"</span> <span class="kw">in</span>
+    start)   <span class="fn">start</span>;;
+    stop)    <span class="fn">stop</span>;;
+    restart) <span class="fn">stop</span>; <span class="fn">start</span>;;
+    *)       echo <span class="str">"Usage: $0 {start|stop|restart}"</span>; exit 1;;
+<span class="kw">esac</span></pre>
+    </div>
+
+    <div class="diagram-wrap">
+      <figure>
+        <svg viewBox="0 0 660 200" xmlns="http://www.w3.org/2000/svg" style="width:100%;min-width:420px;">
+          <defs>
+            <marker id="arr7" markerWidth="8" markerHeight="8" refX="6" refY="3" orient="auto">
+              <path d="M0,0 L0,6 L8,3 z" fill="#64748b"/>
+            </marker>
+          </defs>
+          <!-- rcS -->
+          <rect x="10" y="80" width="100" height="40" rx="8" fill="#1e293b" stroke="#3b82f6" stroke-width="1.5"/>
+          <text x="60" y="97" text-anchor="middle" font-size="11" font-weight="700" fill="#93c5fd">/etc/init.d</text>
+          <text x="60" y="111" text-anchor="middle" font-size="9" fill="#64748b">/rcS</text>
+
+          <!-- arrow -->
+          <line x1="110" y1="100" x2="145" y2="100" stroke="#64748b" stroke-width="1.5" marker-end="url(#arr7)"/>
+
+          <!-- S scripts -->
+          <rect x="147" y="10" width="100" height="35" rx="6" fill="#ffe4e6" stroke="#f43f5e"/>
+          <text x="197" y="25" text-anchor="middle" font-size="10" font-weight="700" fill="#be123c">S10mdev</text>
+          <text x="197" y="38" text-anchor="middle" font-size="8" fill="#be123c">设备管理</text>
+
+          <rect x="147" y="55" width="100" height="35" rx="6" fill="#fef9c3" stroke="#ca8a04"/>
+          <text x="197" y="70" text-anchor="middle" font-size="10" font-weight="700" fill="#92400e">S20urandom</text>
+          <text x="197" y="83" text-anchor="middle" font-size="8" fill="#92400e">熵池初始化</text>
+
+          <rect x="147" y="100" width="100" height="35" rx="6" fill="#dcfce7" stroke="#22c55e"/>
+          <text x="197" y="115" text-anchor="middle" font-size="10" font-weight="700" fill="#15803d">S40network</text>
+          <text x="197" y="128" text-anchor="middle" font-size="8" fill="#15803d">网络配置</text>
+
+          <rect x="147" y="145" width="100" height="35" rx="6" fill="#dbeafe" stroke="#3b82f6"/>
+          <text x="197" y="160" text-anchor="middle" font-size="10" font-weight="700" fill="#1d4ed8">S??...</text>
+          <text x="197" y="173" text-anchor="middle" font-size="8" fill="#3b82f6">自定义服务</text>
+
+          <!-- vertical line from rcS -->
+          <line x1="145" y1="28" x2="145" y2="163" stroke="#94a3b8" stroke-width="1" stroke-dasharray="4,2"/>
+
+          <!-- Effects -->
+          <rect x="270" y="10" width="380" height="175" rx="8" fill="#f8fafc" stroke="#e2e8f0"/>
+          <text x="460" y="30" text-anchor="middle" font-size="10" font-weight="700" fill="#374151">执行效果</text>
+
+          <text x="285" y="52" font-size="9" fill="#1d4ed8">• mdev -s → /dev/sda, /dev/ttyS0, /dev/i2c-0 ...</text>
+          <text x="285" y="67" font-size="9" fill="#1d4ed8">• 写 /proc/sys/kernel/hotplug = /sbin/mdev</text>
+          <text x="285" y="90" font-size="9" fill="#92400e">• cat /etc/random-seed → /dev/urandom</text>
+          <text x="285" y="105" font-size="9" fill="#92400e">• 为下次启动保存新种子</text>
+          <text x="285" y="128" font-size="9" fill="#15803d">• ifup eth0 → 配置 IP/Gateway/DNS</text>
+          <text x="285" y="143" font-size="9" fill="#15803d">• 或 udhcpc 获取动态地址</text>
+          <text x="285" y="166" font-size="9" fill="#3b82f6">• 用户自定义守护进程...</text>
+        </svg>
+        <figcaption>图 7-1：rcS 顺序调用 S?? 脚本，每个脚本负责一类初始化任务</figcaption>
+      </figure>
+    </div>
+
+    <div class="principle-box">
+      <div class="principle-title">🔭 第一性原理</div>
+      <p>rcS + S?? 框架体现了<strong>分层解耦</strong>的设计思想：init 只负责触发 rcS，rcS 只负责按顺序调用 S?? 脚本，每个 S?? 脚本只负责一类服务的启停逻辑。这种"职责单一原则"使得：添加新服务只需添加新脚本（无需修改 init 或 rcS），删除服务只需删除脚本，调整顺序只需改变文件名前缀数字。代价是严格的顺序执行——每个脚本必须等待前一个完成，这正是 systemd 并行化要解决的核心问题。</p>
+    </div>
+
+    <div class="nav-buttons">
+      <button class="nav-btn" onclick="showSection(6)">← 上一章</button>
+      <button class="nav-btn primary" onclick="showSection(8)">下一章：respawn 与 getty →</button>
+    </div>
+  </section>
+
+  <!-- ══════════════ SECTION 8 ══════════════ -->
+  <section class="section" id="sec-8">
+    <div class="section-header">
+      <span class="section-tag">第 08 章</span>
+      <h2>respawn 与 getty：登录终端</h2>
+      <p>sysinit 完成后的主循环与终端守护</p>
+    </div>
+
+    <h3>sysinit 完成后的主循环</h3>
+    <p>当所有 sysinit 动作执行完毕（包括 rcS），init 进入 <strong>主循环</strong>（main loop），轮流处理 <code>RESPAWN</code> 和 <code>ASKFIRST</code> 类型的动作：</p>
+
+    <div class="code-block">
+      <div class="code-header">
+        <span class="code-lang">C</span>
+        <span class="code-file">init/init.c — main loop</span>
+      </div>
+      <pre><span class="cm">/* 进入无限循环，永不退出 */</span>
+<span class="kw">while</span> (<span class="num">1</span>) {
+    <span class="cm">/* 1. 重启所有已退出的 respawn/askfirst 进程 */</span>
+    <span class="fn">run_actions</span>(RESPAWN);
+    <span class="fn">run_actions</span>(ASKFIRST);
+
+    <span class="cm">/* 2. 使用 sigtimedwait() 等待信号或子进程退出
+     *    最多等待 ~2 秒（避免 busy-loop）*/</span>
+    sig = <span class="fn">sigtimedwait</span>(&G.delayed_sigset, &info, &G.delay);
+
+    <span class="cm">/* 3. 处理信号（SIGCHLD → 标记已退出进程；
+     *    SIGHUP → 重新读 inittab；等） */</span>
+    <span class="kw">if</span> (sig > <span class="num">0</span>)
+        <span class="fn">process_signals</span>(sig);
+}</pre>
+    </div>
+
+    <h3>getty：提供登录提示符</h3>
+    <p><code>getty</code>（Get TTY）是提供登录终端的程序。在 Buildroot 的 inittab 中，串口 getty 通常以 <code>respawn</code> 方式运行：</p>
+
+    <div class="code-block">
+      <div class="code-header">
+        <span class="code-lang">inittab</span>
+        <span class="code-file">/etc/inittab — getty 配置</span>
+      </div>
+      <pre><span class="cm"># 串口控制台 getty（由 Buildroot 根据配置自动取消注释）</span>
+<span class="cm"># 格式: tty::respawn:/sbin/getty -L &lt;port&gt; &lt;baudrate&gt; &lt;termtype&gt;</span>
+ttyS0::respawn:/sbin/getty -L ttyS0 115200 vt100
+
+<span class="cm"># askfirst 方式（需按 Enter 激活，避免无人值守时的串口噪音）</span>
+<span class="cm"># ::askfirst:-/bin/sh</span></pre>
+    </div>
+
+    <h3>getty 工作流程</h3>
+    <div class="steps">
+      <div class="step">
+        <div class="step-num">1</div>
+        <div class="step-body">
+          <h4>init fork → getty 进程</h4>
+          <p>init 通过 <code>run(action)</code> fork 出 getty 子进程，记录其 PID。</p>
+        </div>
+      </div>
+      <div class="step">
+        <div class="step-num">2</div>
+        <div class="step-body">
+          <h4>getty 打开终端设备</h4>
+          <p>getty 打开对应的 tty 设备（如 <code>/dev/ttyS0</code>），设置波特率、终端参数，输出登录提示符 <code>login:</code>。</p>
+        </div>
+      </div>
+      <div class="step">
+        <div class="step-num">3</div>
+        <div class="step-body">
+          <h4>用户输入 → execve(login)</h4>
+          <p>用户输入用户名后，getty <code>exec</code> 替换为 <code>/bin/login</code>（或直接替换为 <code>/bin/sh</code>），完成认证。</p>
+        </div>
+      </div>
+      <div class="step">
+        <div class="step-num">4</div>
+        <div class="step-body">
+          <h4>login 退出 → init 重启 getty</h4>
+          <p>用户注销后，login 退出，init 的 SIGCHLD 处理器收到通知，在下一轮主循环中自动重启 getty（因为是 <code>respawn</code>），恢复登录提示符。</p>
+        </div>
+      </div>
+    </div>
+
+    <div class="diagram-wrap">
+      <figure>
+        <svg viewBox="0 0 660 190" xmlns="http://www.w3.org/2000/svg" style="width:100%;min-width:420px;">
+          <defs>
+            <marker id="arr8" markerWidth="8" markerHeight="8" refX="6" refY="3" orient="auto">
+              <path d="M0,0 L0,6 L8,3 z" fill="#64748b"/>
+            </marker>
+            <marker id="arr8r" markerWidth="8" markerHeight="8" refX="2" refY="3" orient="auto">
+              <path d="M8,0 L8,6 L0,3 z" fill="#f43f5e"/>
+            </marker>
+          </defs>
+
+          <!-- init -->
+          <rect x="10" y="75" width="110" height="50" rx="8" fill="#1e293b" stroke="#3b82f6" stroke-width="2"/>
+          <text x="65" y="97" text-anchor="middle" font-size="12" font-weight="700" fill="#93c5fd">init</text>
+          <text x="65" y="113" text-anchor="middle" font-size="9" fill="#64748b">PID=1 主循环</text>
+
+          <!-- arrow: fork -->
+          <line x1="120" y1="95" x2="200" y2="95" stroke="#22c55e" stroke-width="1.5" marker-end="url(#arr8)"/>
+          <text x="160" y="88" text-anchor="middle" font-size="9" fill="#15803d">fork()</text>
+
+          <!-- getty -->
+          <rect x="202" y="60" width="120" height="50" rx="8" fill="#dcfce7" stroke="#22c55e" stroke-width="1.5"/>
+          <text x="262" y="82" text-anchor="middle" font-size="11" font-weight="700" fill="#15803d">getty</text>
+          <text x="262" y="98" text-anchor="middle" font-size="9" fill="#15803d">显示 login: 提示</text>
+          <text x="262" y="110" text-anchor="middle" font-size="9" fill="#15803d">等待用户输入</text>
+
+          <!-- arrow: exec login -->
+          <line x1="322" y1="85" x2="400" y2="85" stroke="#f97316" stroke-width="1.5" marker-end="url(#arr8)"/>
+          <text x="361" y="78" text-anchor="middle" font-size="9" fill="#c2410c">execve(login)</text>
+
+          <!-- login/shell -->
+          <rect x="402" y="60" width="115" height="50" rx="8" fill="#fff7ed" stroke="#f97316" stroke-width="1.5"/>
+          <text x="459" y="82" text-anchor="middle" font-size="11" font-weight="700" fill="#c2410c">login/shell</text>
+          <text x="459" y="98" text-anchor="middle" font-size="9" fill="#f97316">用户会话</text>
+          <text x="459" y="110" text-anchor="middle" font-size="9" fill="#f97316">exec /bin/sh</text>
+
+          <!-- arrow: user logout / shell exit -->
+          <line x1="517" y1="85" x2="580" y2="85" stroke="#64748b" stroke-width="1.5" marker-end="url(#arr8)"/>
+          <text x="548" y="78" text-anchor="middle" font-size="9" fill="#64748b">exit()</text>
+
+          <!-- exit -->
+          <rect x="582" y="60" width="70" height="50" rx="8" fill="#ffe4e6" stroke="#f43f5e" stroke-width="1.5"/>
+          <text x="617" y="88" text-anchor="middle" font-size="10" font-weight="700" fill="#be123c">进程</text>
+          <text x="617" y="103" text-anchor="middle" font-size="9" fill="#be123c">退出</text>
+
+          <!-- SIGCHLD back to init -->
+          <path d="M617,110 Q617,165 65,165 Q65,130 65,126" stroke="#f43f5e" stroke-width="1.5" fill="none" marker-end="url(#arr8)"/>
+          <text x="345" y="178" text-anchor="middle" font-size="9" fill="#be123c">SIGCHLD → init 检测到子进程退出 → 下次主循环重启 getty</text>
+        </svg>
+        <figcaption>图 8-1：respawn 机制：getty 退出后 init 自动重新启动，形成闭环</figcaption>
+      </figure>
+    </div>
+
+    <h3>Buildroot 中自动配置 getty</h3>
+    <p>Buildroot 在 <code>System configuration → Run a getty (login prompt) after boot</code> 中提供图形化配置，自动修改 inittab 中的 getty 行：</p>
+    <ul>
+      <li><code>BR2_TARGET_GENERIC_GETTY=y</code></li>
+      <li><code>BR2_TARGET_GENERIC_GETTY_PORT</code>（如 <code>ttyS0</code>）</li>
+      <li><code>BR2_TARGET_GENERIC_GETTY_BAUDRATE</code>（如 <code>115200</code>）</li>
+    </ul>
+
+    <div class="principle-box">
+      <div class="principle-title">🔭 第一性原理</div>
+      <p>respawn 机制体现了"<strong>故障自愈</strong>"原则：init 不假定任何子进程会永久存活，而是将"进程退出后重启"作为首要策略。这对于嵌入式系统至关重要——若 getty 因某种原因崩溃，系统不会失去控制台访问能力。这是一种简单但有效的可靠性设计：不试图预防故障，而是确保快速恢复。</p>
+    </div>
+
+    <div class="nav-buttons">
+      <button class="nav-btn" onclick="showSection(7)">← 上一章</button>
+      <button class="nav-btn primary" onclick="showSection(9)">下一章：信号处理机制 →</button>
+    </div>
+  </section>
+
+  <!-- ══════════════ SECTION 9 ══════════════ -->
+  <section class="section" id="sec-9">
+    <div class="section-header">
+      <span class="section-tag">第 09 章</span>
+      <h2>信号处理机制</h2>
+      <p>init 如何响应系统事件与外部控制信号</p>
+    </div>
+
+    <h3>PID 1 的信号特殊性</h3>
+    <p>对于 PID 1，Linux 内核在启动时将所有信号的默认动作设置为"忽略"（而不是 kill）。这意味着：除非 init 主动安装信号处理器，否则任何信号（包括 SIGKILL！）都不会终止 init 进程。</p>
+
+    <div class="callout warning">
+      <span class="callout-icon">⚠️</span>
+      <div>从 Linux 3.9 起，在命名空间（namespace）容器中，SIGKILL 和 SIGSTOP 对 PID 1 的行为有所不同，但在宿主机上 PID 1 对 SIGKILL 仍然免疫（除非进程主动处理）。</div>
+    </div>
+
+    <h3>BusyBox init 的信号表</h3>
+    <div class="table-wrap">
+      <table>
+        <thead>
+          <tr><th>信号</th><th>触发方式</th><th>init 的响应</th><th>处理方式</th></tr>
+        </thead>
+        <tbody>
+          <tr>
+            <td><code>SIGCHLD</code></td>
+            <td>子进程退出</td>
+            <td>调用 waitpid() 回收，标记 respawn 进程以便重启</td>
+            <td>延迟（主循环）</td>
+          </tr>
+          <tr>
+            <td><code>SIGHUP</code></td>
+            <td><code>kill -HUP 1</code></td>
+            <td>重新读取 <code>/etc/inittab</code>，更新动作列表</td>
+            <td>延迟（主循环）</td>
+          </tr>
+          <tr>
+            <td><code>SIGINT</code></td>
+            <td>Ctrl-Alt-Del（CAD）</td>
+            <td>执行 inittab 中的 <code>ctrlaltdel</code> 动作（通常为 reboot）</td>
+            <td>延迟（主循环）</td>
+          </tr>
+          <tr>
+            <td><code>SIGTERM</code></td>
+            <td><code>kill -TERM 1</code></td>
+            <td>执行 shutdown + reboot 序列（RB_AUTOBOOT）</td>
+            <td>立即</td>
+          </tr>
+          <tr>
+            <td><code>SIGUSR1</code></td>
+            <td><code>kill -USR1 1</code></td>
+            <td>halt（停机，不关电）</td>
+            <td>立即</td>
+          </tr>
+          <tr>
+            <td><code>SIGUSR2</code></td>
+            <td><code>kill -USR2 1</code></td>
+            <td>poweroff（关电）</td>
+            <td>立即</td>
+          </tr>
+          <tr>
+            <td><code>SIGQUIT</code></td>
+            <td><code>kill -QUIT 1</code></td>
+            <td>执行 <code>restart</code> 动作（re-exec init 自身）</td>
+            <td>延迟（主循环）</td>
+          </tr>
+          <tr>
+            <td><code>SIGTSTP</code></td>
+            <td><code>kill -TSTP 1</code></td>
+            <td>暂停重生（停止 respawn），等待 SIGCONT</td>
+            <td>立即</td>
+          </tr>
+        </tbody>
+      </table>
+    </div>
+
+    <h3>两类信号处理器</h3>
+    <p>BusyBox init 将信号处理器分为两类：</p>
+
+    <div class="diagram-wrap">
+      <figure>
+        <svg viewBox="0 0 660 160" xmlns="http://www.w3.org/2000/svg" style="width:100%;min-width:420px;">
+          <!-- Immediate -->
+          <rect x="10" y="20" width="300" height="120" rx="8" fill="#ffe4e6" stroke="#f43f5e" stroke-width="1.5"/>
+          <text x="160" y="45" text-anchor="middle" font-size="12" font-weight="700" fill="#be123c">立即处理器（Immediate）</text>
+          <text x="160" y="62" text-anchor="middle" font-size="9" fill="#be123c">信号到达时立即执行，即使在 sysinit 过程中</text>
+          <text x="25" y="83" font-size="10" fill="#881337">• SIGTERM  → reboot</text>
+          <text x="25" y="98" font-size="10" fill="#881337">• SIGUSR1  → halt</text>
+          <text x="25" y="113" font-size="10" fill="#881337">• SIGUSR2  → poweroff</text>
+          <text x="25" y="128" font-size="10" fill="#881337">• SIGTSTP/SIGSTOP → 暂停 respawn</text>
+
+          <!-- Delayed -->
+          <rect x="350" y="20" width="300" height="120" rx="8" fill="#dbeafe" stroke="#3b82f6" stroke-width="1.5"/>
+          <text x="500" y="45" text-anchor="middle" font-size="12" font-weight="700" fill="#1d4ed8">延迟处理器（Delayed）</text>
+          <text x="500" y="62" text-anchor="middle" font-size="9" fill="#1d4ed8">设置标志位，在主循环中统一处理</text>
+          <text x="365" y="83" font-size="10" fill="#1e3a5f">• SIGCHLD  → 标记已退出进程</text>
+          <text x="365" y="98" font-size="10" fill="#1e3a5f">• SIGHUP   → 重读 inittab</text>
+          <text x="365" y="113" font-size="10" fill="#1e3a5f">• SIGINT   → ctrlaltdel 动作</text>
+          <text x="365" y="128" font-size="10" fill="#1e3a5f">• SIGQUIT  → restart 动作</text>
+        </svg>
+        <figcaption>图 9-1：BusyBox init 信号处理器的两种类型</figcaption>
+      </figure>
+    </div>
+
+    <h3>SIGHUP 重读 inittab</h3>
+    <p>发送 <code>SIGHUP</code> 给 init 进程（<code>kill -HUP 1</code>）会触发 <code>parse_inittab()</code> 重新执行，允许在不重启系统的情况下修改运行服务。但需注意：</p>
+    <ul>
+      <li>新增的 sysinit/wait/once 动作<strong>不会</strong>重新执行（它们已被从链表中删除）</li>
+      <li>新增的 respawn/askfirst 动作会在下次主循环中启动</li>
+      <li>删除的 respawn 动作在当前周期进程退出后不再重启</li>
+    </ul>
+
+    <div class="principle-box">
+      <div class="principle-title">🔭 第一性原理</div>
+      <p>信号处理机制解决的是 init 作为系统协调者的<strong>控制接口</strong>问题：外部如何安全地向 init 传达意图（重启、关机、重读配置）？将信号分为"立即"和"延迟"两类，是在"响应及时性"和"操作安全性"之间的权衡——shutdown 信号必须立即处理（不能等到 sysinit 完成），而修改动作链表的操作（SIGHUP）必须延迟到主循环中安全执行（避免在遍历链表时修改链表导致数据竞争）。这是一个经典的"中断安全"设计模式。</p>
+    </div>
+
+    <div class="nav-buttons">
+      <button class="nav-btn" onclick="showSection(8)">← 上一章</button>
+      <button class="nav-btn primary" onclick="showSection(10)">下一章：关机与 rcK 脚本 →</button>
+    </div>
+  </section>
+
+  <!-- ══════════════ SECTION 10 ══════════════ -->
+  <section class="section" id="sec-10">
+    <div class="section-header">
+      <span class="section-tag">第 10 章</span>
+      <h2>关机流程与 rcK 脚本</h2>
+      <p>系统优雅关机的完整序列</p>
+    </div>
+
+    <h3>关机触发方式</h3>
+    <p>BusyBox init 的关机可由以下方式触发：</p>
+    <ul>
+      <li><code>reboot</code> 命令 → 向 init 发送 <code>SIGTERM</code></li>
+      <li><code>halt</code> 命令 → 向 init 发送 <code>SIGUSR1</code></li>
+      <li><code>poweroff</code> 命令 → 向 init 发送 <code>SIGUSR2</code></li>
+      <li>Ctrl-Alt-Del → 内核转换为 <code>SIGINT</code> 发给 init</li>
+    </ul>
+
+    <h3>run_shutdown_and_kill_processes()</h3>
+    <div class="code-block">
+      <div class="code-header">
+        <span class="code-lang">C</span>
+        <span class="code-file">init/init.c — 关机序列</span>
+      </div>
+      <pre><span class="kw">static void</span> <span class="fn">run_shutdown_and_kill_processes</span>(<span class="kw">void</span>)
+{
+    <span class="cm">/* 1. 先执行 inittab 中的 shutdown 动作（rcK、swapoff、umount）*/</span>
+    <span class="fn">run_actions</span>(SHUTDOWN);
+
+    <span class="cm">/* 2. 广播 SIGTERM，给所有进程机会优雅退出 */</span>
+    message(L_CONSOLE | L_LOG, <span class="str">"The system is going down NOW!"</span>);
+    <span class="fn">kill</span>(-<span class="num">1</span>, SIGTERM);
+    message(L_CONSOLE | L_LOG, <span class="str">"Sent SIG%s to all processes"</span>, <span class="str">"TERM"</span>);
+    <span class="fn">sync</span>();     <span class="cm">/* 刷新所有文件系统缓冲区 */</span>
+    <span class="fn">sleep</span>(<span class="num">1</span>);   <span class="cm">/* 等待 1 秒让进程响应 */</span>
+
+    <span class="cm">/* 3. 强制杀死所有剩余进程 */</span>
+    <span class="fn">kill</span>(-<span class="num">1</span>, SIGKILL);
+    message(L_CONSOLE, <span class="str">"Sent SIG%s to all processes"</span>, <span class="str">"KILL"</span>);
+    <span class="fn">sync</span>();
+}
+
+<span class="cm">/* 4. 调用 reboot(RB_AUTOBOOT/RB_HALT_SYSTEM/RB_POWER_OFF) */</span></pre>
+    </div>
+
+    <h3>rcK 脚本：服务优雅停止</h3>
+    <p><code>/etc/init.d/rcK</code> 是关机时执行的脚本，负责按<strong>逆序</strong>停止所有服务（K 代表 Kill/Stop）：</p>
+
+    <div class="code-block">
+      <div class="code-header">
+        <span class="code-lang">Shell</span>
+        <span class="code-file">package/initscripts/init.d/rcK
+          <a href="https://github.com/buildroot/buildroot/blob/master/package/initscripts/init.d/rcK" target="_blank" style="color:#38bdf8;text-decoration:none">↗ 原文</a>
+        </span>
+      </div>
+      <pre><span class="pp">#!/bin/sh</span>
+<span class="cm">#
+# Stop all init scripts in /etc/init.d
+# executing them in REVERSE numerical order.
+#</span>
+
+<span class="kw">for</span> i <span class="kw">in</span> $(ls -r /etc/init.d/S??*) ; <span class="kw">do</span>
+    [ ! -f <span class="str">"$i"</span> ] && <span class="kw">continue</span>
+
+    <span class="kw">case</span> <span class="str">"$i"</span> <span class="kw">in</span>
+        *.sh)
+            (
+                trap - INT QUIT TSTP
+                set stop
+                . <span class="str">$i</span>
+            )
+            ;;
+        *)
+            <span class="str">$i</span> stop
+            ;;
+    <span class="kw">esac</span>
+<span class="kw">done</span></pre>
+    </div>
+
+    <div class="callout info">
+      <span class="callout-icon">ℹ️</span>
+      <div>rcK 使用 <code>ls -r</code>（逆序）遍历 S?? 脚本，这与 rcS 的正序形成镜像：先启动的服务最后停止（如 S40network 先于 S10mdev 停止）。</div>
+    </div>
+
+    <h3>完整关机序列图</h3>
+    <div class="diagram-wrap">
+      <figure>
+        <svg viewBox="0 0 660 300" xmlns="http://www.w3.org/2000/svg" style="width:100%;min-width:420px;">
+          <defs>
+            <marker id="arr10" markerWidth="8" markerHeight="8" refX="6" refY="3" orient="auto">
+              <path d="M0,0 L0,6 L8,3 z" fill="#64748b"/>
+            </marker>
+          </defs>
+
+          <text x="330" y="18" text-anchor="middle" font-size="13" font-weight="700" fill="#1e293b">关机信号处理流</text>
+
+          <!-- trigger -->
+          <rect x="200" y="25" width="260" height="35" rx="6" fill="#fef9c3" stroke="#ca8a04"/>
+          <text x="330" y="40" text-anchor="middle" font-size="10" font-weight="700" fill="#92400e">触发：SIGTERM / SIGUSR1 / SIGUSR2</text>
+          <text x="330" y="54" text-anchor="middle" font-size="9" fill="#92400e">(reboot / halt / poweroff 命令)</text>
+
+          <line x1="330" y1="60" x2="330" y2="75" stroke="#64748b" stroke-width="1.5" marker-end="url(#arr10)"/>
+
+          <!-- run shutdown actions -->
+          <rect x="80" y="77" width="500" height="35" rx="6" fill="#dbeafe" stroke="#3b82f6"/>
+          <text x="330" y="92" text-anchor="middle" font-size="10" font-weight="700" fill="#1d4ed8">run_actions(SHUTDOWN)</text>
+          <text x="330" y="107" text-anchor="middle" font-size="9" fill="#3b82f6">执行 inittab 中 ::shutdown: 动作（按顺序等待完成）</text>
+
+          <line x1="330" y1="112" x2="330" y2="127" stroke="#64748b" stroke-width="1.5" marker-end="url(#arr10)"/>
+
+          <!-- rcK -->
+          <rect x="150" y="129" width="360" height="35" rx="6" fill="#f3e8ff" stroke="#a855f7"/>
+          <text x="330" y="144" text-anchor="middle" font-size="10" font-weight="700" fill="#7e22ce">/etc/init.d/rcK（逆序停止所有 S?? 服务）</text>
+          <text x="330" y="159" text-anchor="middle" font-size="9" fill="#7e22ce">S40network stop → S20urandom stop → S10mdev stop</text>
+
+          <line x1="330" y1="164" x2="330" y2="179" stroke="#64748b" stroke-width="1.5" marker-end="url(#arr10)"/>
+
+          <!-- swapoff + umount -->
+          <rect x="150" y="181" width="360" height="35" rx="6" fill="#dcfce7" stroke="#22c55e"/>
+          <text x="330" y="196" text-anchor="middle" font-size="10" font-weight="700" fill="#15803d">swapoff -a</text>
+          <text x="330" y="211" text-anchor="middle" font-size="9" fill="#15803d">停用所有交换空间</text>
+
+          <line x1="330" y1="216" x2="330" y2="231" stroke="#64748b" stroke-width="1.5" marker-end="url(#arr10)"/>
+
+          <!-- umount -->
+          <rect x="150" y="233" width="360" height="35" rx="6" fill="#ffe4e6" stroke="#f43f5e"/>
+          <text x="330" y="248" text-anchor="middle" font-size="10" font-weight="700" fill="#be123c">umount -a -r</text>
+          <text x="330" y="263" text-anchor="middle" font-size="9" fill="#be123c">卸载所有文件系统（失败则只读重挂）</text>
+
+          <line x1="330" y1="268" x2="330" y2="283" stroke="#64748b" stroke-width="1.5" marker-end="url(#arr10)"/>
+
+          <!-- kernel reboot -->
+          <rect x="230" y="285" width="200" height="12" rx="6" fill="#1e293b"/>
+          <text x="330" y="295" text-anchor="middle" font-size="9" font-weight="700" fill="#93c5fd">reboot(RB_AUTOBOOT) → 内核重启</text>
+        </svg>
+        <figcaption>图 10-1：完整关机序列：先优雅停止服务，再卸载文件系统，最后通知内核</figcaption>
+      </figure>
+    </div>
+
+    <h3>inittab 中的 shutdown 动作</h3>
+    <div class="code-block">
+      <div class="code-header"><span class="code-lang">inittab</span><span class="code-file">Buildroot /etc/inittab — shutdown 部分</span></div>
+      <pre><span class="cm"># 关机时执行（顺序执行，等待完成）</span>
+<span class="kw">::shutdown:</span>/etc/init.d/rcK   <span class="cm"># 停止所有用户服务</span>
+<span class="kw">::shutdown:</span>/sbin/swapoff -a   <span class="cm"># 停用交换空间</span>
+<span class="kw">::shutdown:</span>/bin/umount -a -r  <span class="cm"># 卸载文件系统（-r：失败则只读）</span></pre>
+    </div>
+
+    <div class="principle-box">
+      <div class="principle-title">🔭 第一性原理</div>
+      <p>优雅关机的核心原则是：<strong>以正确的逆序撤销所有已完成的操作</strong>。启动时先挂载文件系统再启动服务，因此关机时必须先停止服务再卸载文件系统——违反此顺序会导致数据丢失或文件系统损坏。SIGTERM → sync() → sleep(1) → SIGKILL 的序列，则体现了"先礼后兵"原则：给进程机会优雅退出（刷新缓冲区、释放资源），超时后才强制终止。</p>
+    </div>
+
+    <div class="nav-buttons">
+      <button class="nav-btn" onclick="showSection(9)">← 上一章</button>
+      <button class="nav-btn primary" onclick="showSection(11)">下一章：全流程总览 →</button>
+    </div>
+  </section>
+
+  <!-- ══════════════ SECTION 11 ══════════════ -->
+  <section class="section" id="sec-11">
+    <div class="section-header">
+      <span class="section-tag">第 11 章</span>
+      <h2>全流程总览</h2>
+      <p>从内核到登录提示符的完整时序图与核心要点</p>
+    </div>
+
+    <h3>完整启动时序图</h3>
+    <div class="diagram-wrap">
+      <figure>
+        <svg viewBox="0 0 700 580" xmlns="http://www.w3.org/2000/svg" style="width:100%;min-width:520px;">
+          <defs>
+            <marker id="arr11" markerWidth="8" markerHeight="8" refX="6" refY="3" orient="auto">
+              <path d="M0,0 L0,6 L8,3 z" fill="#64748b"/>
+            </marker>
+          </defs>
+
+          <!-- Timeline axis -->
+          <line x1="60" y1="30" x2="60" y2="560" stroke="#94a3b8" stroke-width="2"/>
+
+          <!-- Time labels -->
+          <text x="10" y="25" font-size="8" fill="#94a3b8" font-weight="700">时间</text>
+          <text x="10" y="42" font-size="7" fill="#94a3b8">t=0</text>
+          <text x="10" y="112" font-size="7" fill="#94a3b8">t=1</text>
+          <text x="10" y="202" font-size="7" fill="#94a3b8">t=2</text>
+          <text x="10" y="282" font-size="7" fill="#94a3b8">t=3</text>
+          <text x="10" y="362" font-size="7" fill="#94a3b8">t=4</text>
+          <text x="10" y="452" font-size="7" fill="#94a3b8">t=5</text>
+          <text x="10" y="532" font-size="7" fill="#94a3b8">t=∞</text>
+
+          <!-- === PHASE 0: Kernel → init === -->
+          <rect x="65" y="30" width="620" height="65" rx="6" fill="#0f172a" stroke="#3b82f6" stroke-width="1.5"/>
+          <text x="375" y="52" text-anchor="middle" font-size="11" font-weight="700" fill="#93c5fd">① Linux Kernel — kernel_init()</text>
+          <text x="375" y="67" text-anchor="middle" font-size="9" fill="#64748b">完成所有驱动初始化 → try_to_run_init_process("/sbin/init")</text>
+          <text x="375" y="82" text-anchor="middle" font-size="9" fill="#64748b">kernel_execve("/bin/busybox") — PID=1 诞生</text>
+
+          <line x1="375" y1="95" x2="375" y2="108" stroke="#64748b" stroke-width="1.5" marker-end="url(#arr11)"/>
+
+          <!-- === PHASE 1: init_main init === -->
+          <rect x="65" y="110" width="620" height="75" rx="6" fill="#1e2a3a" stroke="#6366f1" stroke-width="1.5"/>
+          <text x="375" y="130" text-anchor="middle" font-size="11" font-weight="700" fill="#a5b4fc">② init_main() — 自身初始化</text>
+          <text x="80" y="148" font-size="9" fill="#94a3b8">• getpid()==1 检验</text>
+          <text x="80" y="162" font-size="9" fill="#94a3b8">• console_init() / set_sane_term() / setsid()</text>
+          <text x="300" y="148" font-size="9" fill="#94a3b8">• reboot(RB_DISABLE_CAD)</text>
+          <text x="300" y="162" font-size="9" fill="#94a3b8">• sigprocmask(信号屏蔽集)</text>
+          <text x="520" y="148" font-size="9" fill="#94a3b8">• putenv(PATH/SHELL)</text>
+          <text x="520" y="162" font-size="9" fill="#94a3b8">• parse_inittab()</text>
+
+          <line x1="375" y1="185" x2="375" y2="198" stroke="#64748b" stroke-width="1.5" marker-end="url(#arr11)"/>
+
+          <!-- === PHASE 2: sysinit === -->
+          <rect x="65" y="200" width="620" height="70" rx="6" fill="#1e3a5f" stroke="#0ea5e9" stroke-width="1.5"/>
+          <text x="375" y="220" text-anchor="middle" font-size="11" font-weight="700" fill="#7dd3fc">③ run_actions(SYSINIT) — 顺序同步执行</text>
+          <text x="80" y="238" font-size="9" fill="#94a3b8">mount proc → remount rw → mkdir /dev/pts /dev/shm</text>
+          <text x="80" y="252" font-size="9" fill="#94a3b8">mount -a（fstab）→ mkdir /run/lock → swapon -a</text>
+          <text x="430" y="238" font-size="9" fill="#94a3b8">ln -sf /proc/self/fd/* /dev/std*</text>
+          <text x="430" y="252" font-size="9" fill="#94a3b8">hostname → <span style="fill:#38bdf8">/etc/init.d/rcS ↓</span></text>
+
+          <line x1="375" y1="270" x2="375" y2="278" stroke="#64748b" stroke-width="1.5" marker-end="url(#arr11)"/>
+
+          <!-- === PHASE 3: rcS === -->
+          <rect x="65" y="280" width="620" height="65" rx="6" fill="#1a3a2a" stroke="#22c55e" stroke-width="1.5"/>
+          <text x="375" y="298" text-anchor="middle" font-size="11" font-weight="700" fill="#86efac">④ /etc/init.d/rcS — 按序调用 S?? 脚本</text>
+          <text x="80" y="316" font-size="9" fill="#94a3b8">S10mdev: mdev -s（创建/dev节点）+ hotplug注册</text>
+          <text x="80" y="330" font-size="9" fill="#94a3b8">S20urandom: 恢复熵池种子</text>
+          <text x="380" y="316" font-size="9" fill="#94a3b8">S40network: ifup -a（配置网络）</text>
+          <text x="380" y="330" font-size="9" fill="#94a3b8">S??...: 用户自定义守护进程</text>
+
+          <line x1="375" y1="345" x2="375" y2="358" stroke="#64748b" stroke-width="1.5" marker-end="url(#arr11)"/>
+
+          <!-- === PHASE 4: WAIT/ONCE === -->
+          <rect x="65" y="360" width="620" height="50" rx="6" fill="#2a1a3a" stroke="#a855f7" stroke-width="1.5"/>
+          <text x="375" y="379" text-anchor="middle" font-size="11" font-weight="700" fill="#d8b4fe">⑤ run_actions(WAIT) + run_actions(ONCE)</text>
+          <text x="375" y="397" text-anchor="middle" font-size="9" fill="#94a3b8">WAIT: 同步执行一次性任务；ONCE: 异步执行一次性任务</text>
+
+          <line x1="375" y1="410" x2="375" y2="448" stroke="#64748b" stroke-width="1.5" marker-end="url(#arr11)"/>
+
+          <!-- === PHASE 5: Main Loop === -->
+          <rect x="65" y="450" width="620" height="100" rx="6" fill="#1a1a2a" stroke="#f97316" stroke-width="2"/>
+          <text x="375" y="470" text-anchor="middle" font-size="11" font-weight="700" fill="#fb923c">⑥ 主循环（无限循环，永不退出）</text>
+          <!-- loop arrows -->
+          <rect x="80" y="478" width="270" height="35" rx="5" fill="#1e2a0a" stroke="#84cc16"/>
+          <text x="215" y="493" text-anchor="middle" font-size="9" font-weight="700" fill="#bef264">run_actions(RESPAWN)</text>
+          <text x="215" y="506" text-anchor="middle" font-size="9" fill="#84cc16">getty/shell: 退出后自动重启</text>
+
+          <rect x="380" y="478" width="290" height="35" rx="5" fill="#2a1a0a" stroke="#f97316"/>
+          <text x="525" y="493" text-anchor="middle" font-size="9" font-weight="700" fill="#fb923c">sigtimedwait() 等待信号</text>
+          <text x="525" y="506" text-anchor="middle" font-size="9" fill="#f97316">SIGCHLD/SIGHUP/SIGTERM...</text>
+
+          <text x="375" y="540" text-anchor="middle" font-size="9" fill="#64748b">↑ 系统稳定运行期间持续循环，直到关机信号到来</text>
+        </svg>
+        <figcaption>图 11-1：BusyBox init 在 Buildroot 系统上的完整启动时序（从 PID=1 到登录提示符）</figcaption>
+      </figure>
+    </div>
+
+    <h3>核心知识要点汇总</h3>
+    <div class="table-wrap">
+      <table>
+        <thead>
+          <tr><th>阶段</th><th>关键文件/函数</th><th>Buildroot 相关配置</th><th>官方来源</th></tr>
+        </thead>
+        <tbody>
+          <tr>
+            <td>内核启动 init</td>
+            <td><code>kernel_init()</code> → <code>run_init_process()</code></td>
+            <td>内核 <code>init=</code> 命令行参数</td>
+            <td>init/main.c</td>
+          </tr>
+          <tr>
+            <td>init 自身初始化</td>
+            <td><code>init_main()</code> — init/init.c</td>
+            <td><code>BR2_INIT_BUSYBOX=y</code></td>
+            <td><a href="https://github.com/buildroot/buildroot/blob/master/package/busybox/busybox.mk" target="_blank" style="color:var(--primary)">busybox.mk</a></td>
+          </tr>
+          <tr>
+            <td>inittab 解析</td>
+            <td><code>parse_inittab()</code></td>
+            <td><code>package/busybox/inittab</code></td>
+            <td><a href="https://github.com/buildroot/buildroot/blob/master/package/busybox/inittab" target="_blank" style="color:var(--primary)">inittab</a></td>
+          </tr>
+          <tr>
+            <td>文件系统挂载</td>
+            <td><code>mount</code>（sysinit 动作）</td>
+            <td><code>system/skeleton/etc/fstab</code></td>
+            <td>Buildroot skeleton</td>
+          </tr>
+          <tr>
+            <td>设备管理</td>
+            <td><code>mdev -s</code> / hotplug</td>
+            <td><code>BR2_ROOTFS_DEVICE_CREATION_DYNAMIC_MDEV</code></td>
+            <td><a href="https://github.com/buildroot/buildroot/blob/master/package/busybox/S10mdev" target="_blank" style="color:var(--primary)">S10mdev</a></td>
+          </tr>
+          <tr>
+            <td>rc 服务脚本</td>
+            <td><code>rcS</code> / <code>S??*</code></td>
+            <td><code>package/initscripts/</code></td>
+            <td><a href="https://github.com/buildroot/buildroot/tree/master/package/initscripts" target="_blank" style="color:var(--primary)">initscripts</a></td>
+          </tr>
+          <tr>
+            <td>登录终端</td>
+            <td><code>getty</code>（respawn）</td>
+            <td><code>BR2_TARGET_GENERIC_GETTY</code></td>
+            <td>inittab GENERIC_SERIAL</td>
+          </tr>
+          <tr>
+            <td>关机流程</td>
+            <td><code>run_shutdown_and_kill_processes()</code></td>
+            <td><code>rcK</code> / <code>swapoff</code> / <code>umount</code></td>
+            <td><a href="https://github.com/buildroot/buildroot/blob/master/package/initscripts/init.d/rcK" target="_blank" style="color:var(--primary)">rcK</a></td>
+          </tr>
+        </tbody>
+      </table>
+    </div>
+
+    <h3>参考来源</h3>
+    <ul style="line-height:2">
+      <li>BusyBox init 源码：<a href="https://git.busybox.net/busybox/tree/init/init.c" target="_blank" style="color:var(--primary)">git.busybox.net/busybox/tree/init/init.c</a></li>
+      <li>BusyBox inittab 示例：<a href="https://git.busybox.net/busybox/tree/examples/inittab" target="_blank" style="color:var(--primary)">git.busybox.net/busybox/tree/examples/inittab</a></li>
+      <li>Buildroot 默认 inittab：<a href="https://github.com/buildroot/buildroot/blob/master/package/busybox/inittab" target="_blank" style="color:var(--primary)">github.com/buildroot/buildroot — package/busybox/inittab</a></li>
+      <li>Buildroot busybox.mk：<a href="https://github.com/buildroot/buildroot/blob/master/package/busybox/busybox.mk" target="_blank" style="color:var(--primary)">github.com/buildroot/buildroot — package/busybox/busybox.mk</a></li>
+      <li>Buildroot initscripts：<a href="https://github.com/buildroot/buildroot/tree/master/package/initscripts" target="_blank" style="color:var(--primary)">github.com/buildroot/buildroot — package/initscripts/</a></li>
+      <li>Buildroot 官方文档（init system 章节）：<a href="http://underpop.online.fr/b/buildroot/en/_init_system.htm.gz" target="_blank" style="color:var(--primary)">Buildroot init system documentation</a></li>
+      <li>Linux 内核启动 init 分析：<a href="https://blog.colindou.ch/posts/userspace-the-init-process/" target="_blank" style="color:var(--primary)">Booting to User Space: The Init Process</a></li>
+    </ul>
+
+    <div class="principle-box">
+      <div class="principle-title">🔭 最终第一性原理总结</div>
+      <p>BusyBox init 解决的根本问题是：<strong>如何用最小的代码，在最少的假设下，将一个裸的 Linux 内核引导成一个完整可用的系统？</strong></p>
+      <p style="margin-top:0.75rem">它的答案体现了几个核心原则：</p>
+      <p style="margin-top:0.5rem"><strong>① 最小可信根</strong>：init 本身只是一个几 KB 的程序，但它能启动任意复杂的系统，因为它通过配置文件（inittab）和 shell 脚本（rcS/S??）将工作委托出去。</p>
+      <p style="margin-top:0.5rem"><strong>② 依赖驱动的顺序</strong>：每一步操作都在其依赖满足后才执行——这不是任意约定，而是对底层物理约束（文件系统必须先挂载才能访问、设备节点必须先创建才能打开）的直接映射。</p>
+      <p style="margin-top:0.5rem"><strong>③ 故障容忍</strong>：respawn 机制确保关键服务（getty）崩溃后自动恢复；PID 1 永不退出确保孤儿进程有人收割；shutdown 序列确保数据完整性。</p>
+      <p style="margin-top:0.5rem"><strong>④ 策略与机制分离</strong>：init 是"机制"（如何执行动作），inittab 是"策略"（执行什么动作）。这种分离使同一个 init 二进制可以驱动无数不同配置的嵌入式系统。</p>
+    </div>
+
+    <div class="nav-buttons">
+      <button class="nav-btn" onclick="showSection(10)">← 上一章</button>
+      <button class="nav-btn primary" onclick="showSection(0)">↑ 回到概述</button>
+    </div>
+  </section>
+
+</main>
+
+<script>
+  // ── State ──
+  let currentSection = 0;
+  const TOTAL = 12;
+
+  // ── DOM refs ──
+  const sections = Array.from(document.querySelectorAll('.section'));
+  const navItems = Array.from(document.querySelectorAll('.nav-item'));
+  const progressBar = document.getElementById('progress-bar');
+  const topbarTitle = document.getElementById('topbar-title');
+
+  const sectionTitles = [
+    '概述与背景',
+    '内核移交控制权',
+    'init_main() 初始化',
+    '/etc/inittab 解析',
+    'sysinit 阶段详解',
+    '文件系统挂载',
+    'mdev 设备管理',
+    'rcS 与 S?? 脚本',
+    'respawn 与 getty',
+    '信号处理机制',
+    '关机与 rcK 脚本',
+    '全流程总览'
+  ];
+
+  function showSection(idx) {
+    if (idx < 0 || idx >= TOTAL) return;
+
+    // Deactivate current
+    sections[currentSection].classList.remove('active');
+    navItems[currentSection].classList.remove('active');
+
+    // Activate new
+    currentSection = idx;
+    sections[currentSection].classList.add('active');
+    navItems[currentSection].classList.add('active');
+
+    // Scroll to top of main
+    document.getElementById('main').scrollTop = 0;
+    window.scrollTo(0, 0);
+
+    // Update progress bar
+    const progress = ((idx + 1) / TOTAL) * 100;
+    progressBar.style.width = progress + '%';
+
+    // Update topbar title
+    topbarTitle.textContent = sectionTitles[idx] || 'BusyBox Init 启动分析';
+
+    // Scroll nav item into view
+    navItems[currentSection].scrollIntoView({ block: 'nearest' });
+
+    // Close sidebar on mobile
+    closeSidebar();
+
+    // Prevent default for anchor clicks
+    return false;
+  }
+
+  // ── Keyboard navigation ──
+  document.addEventListener('keydown', (e) => {
+    if (e.target.tagName === 'INPUT' || e.target.tagName === 'TEXTAREA') return;
+    if (e.key === 'ArrowRight' || e.key === 'ArrowDown') {
+      e.preventDefault();
+      showSection(currentSection + 1);
+    } else if (e.key === 'ArrowLeft' || e.key === 'ArrowUp') {
+      e.preventDefault();
+      showSection(currentSection - 1);
+    }
+  });
+
+  // ── Prevent anchor href default ──
+  navItems.forEach(item => {
+    item.addEventListener('click', (e) => e.preventDefault());
+  });
+
+  // ── Sidebar mobile toggle ──
+  function toggleSidebar() {
+    document.getElementById('sidebar').classList.toggle('open');
+    document.getElementById('sidebar-overlay').classList.toggle('open');
+  }
+
+  function closeSidebar() {
+    document.getElementById('sidebar').classList.remove('open');
+    document.getElementById('sidebar-overlay').classList.remove('open');
+  }
+
+  // ── Scroll progress update on scroll ──
+  window.addEventListener('scroll', () => {
+    const scrollTop = window.scrollY || document.documentElement.scrollTop;
+    const docHeight = document.documentElement.scrollHeight - window.innerHeight;
+    if (docHeight > 0) {
+      // Blend section progress with scroll progress
+      const baseProgress = (currentSection / TOTAL) * 100;
+      const stepSize = 100 / TOTAL;
+      const scrollFraction = docHeight > 0 ? Math.min(scrollTop / docHeight, 1) : 0;
+      progressBar.style.width = (baseProgress + stepSize * scrollFraction) + '%';
+    }
+  });
+
+  // ── Init ──
+  showSection(0);
+</script>
+</body>
+</html>

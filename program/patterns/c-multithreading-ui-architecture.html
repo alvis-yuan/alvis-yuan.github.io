@@ -1,0 +1,656 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>C语言多线程与UI通信架构设计指南</title>
+<style>
+  :root {
+    --primary: #1e40af;
+    --primary-light: #3b82f6;
+    --primary-dark: #1e3a8a;
+    --accent: #f59e0b;
+    --accent2: #10b981;
+    --bg: #f8fafc;
+    --sidebar-bg: #1e293b;
+    --sidebar-text: #cbd5e1;
+    --sidebar-active: #3b82f6;
+    --sidebar-hover: #334155;
+    --text: #1e293b;
+    --text-light: #64748b;
+    --card-bg: #ffffff;
+    --border: #e2e8f0;
+    --code-bg: #0f172a;
+    --code-text: #e2e8f0;
+    --sidebar-width: 280px;
+    --header-h: 56px;
+  }
+
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+
+  body {
+    font-family: 'PingFang SC', 'Microsoft YaHei', 'Segoe UI', system-ui, sans-serif;
+    background: var(--bg);
+    color: var(--text);
+    line-height: 1.75;
+    overflow-x: hidden;
+  }
+
+  #progress-bar {
+    position: fixed;
+    top: 0; left: 0;
+    height: 3px;
+    background: linear-gradient(90deg, var(--primary-light), var(--accent));
+    width: 0%;
+    z-index: 9999;
+    transition: width 0.1s ease;
+  }
+
+  header {
+    position: fixed;
+    top: 0; left: 0; right: 0;
+    height: var(--header-h);
+    background: var(--sidebar-bg);
+    display: flex;
+    align-items: center;
+    padding: 0 1.25rem;
+    z-index: 100;
+    gap: 1rem;
+    border-bottom: 1px solid #334155;
+  }
+
+  .hamburger {
+    display: none;
+    flex-direction: column;
+    gap: 5px;
+    cursor: pointer;
+    padding: 4px;
+    border-radius: 4px;
+  }
+  .hamburger span {
+    display: block;
+    width: 22px; height: 2px;
+    background: #fff;
+    transition: all 0.3s;
+  }
+  .hamburger.open span:nth-child(1) { transform: rotate(45deg) translate(5px, 5px); }
+  .hamburger.open span:nth-child(2) { opacity: 0; }
+  .hamburger.open span:nth-child(3) { transform: rotate(-45deg) translate(5px, -5px); }
+
+  header h1 {
+    font-size: 1rem;
+    color: #f1f5f9;
+    font-weight: 600;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+  }
+
+  .header-nav {
+    margin-left: auto;
+    display: flex;
+    gap: 0.5rem;
+    align-items: center;
+  }
+
+  .nav-btn {
+    background: #334155;
+    color: #94a3b8;
+    border: none;
+    padding: 0.3rem 0.75rem;
+    border-radius: 6px;
+    cursor: pointer;
+    font-size: 0.8rem;
+    transition: all 0.2s;
+    white-space: nowrap;
+  }
+  .nav-btn:hover { background: var(--primary); color: #fff; }
+
+  .layout {
+    display: flex;
+    padding-top: var(--header-h);
+    min-height: 100vh;
+  }
+
+  aside {
+    width: var(--sidebar-width);
+    background: var(--sidebar-bg);
+    position: fixed;
+    top: var(--header-h);
+    left: 0;
+    bottom: 0;
+    overflow-y: auto;
+    z-index: 90;
+    transition: transform 0.3s ease;
+    scrollbar-width: thin;
+    scrollbar-color: #334155 transparent;
+  }
+  aside::-webkit-scrollbar { width: 4px; }
+  aside::-webkit-scrollbar-thumb { background: #334155; border-radius: 2px; }
+
+  .sidebar-section { padding: 1rem 0 0.5rem; }
+  .sidebar-section-title {
+    font-size: 0.65rem; font-weight: 700; letter-spacing: 0.08em;
+    text-transform: uppercase; color: #475569; padding: 0 1.25rem 0.4rem;
+  }
+
+  .sidebar-item {
+    display: flex; align-items: center; gap: 0.5rem;
+    padding: 0.5rem 1.25rem; color: var(--sidebar-text);
+    cursor: pointer; font-size: 0.82rem; border-left: 3px solid transparent;
+    transition: all 0.2s; text-decoration: none;
+  }
+  .sidebar-item:hover { background: var(--sidebar-hover); color: #fff; }
+  .sidebar-item.active {
+    background: rgba(59,130,246,0.15); border-left-color: var(--sidebar-active); color: #93c5fd;
+  }
+  .sidebar-item .badge {
+    margin-left: auto; font-size: 0.65rem; background: #334155;
+    color: #64748b; padding: 1px 6px; border-radius: 10px;
+  }
+  .sidebar-item.active .badge { background: rgba(59,130,246,0.25); color: #93c5fd; }
+
+  main {
+    margin-left: var(--sidebar-width); flex: 1; padding: 2rem 2rem 4rem;
+    max-width: 900px; min-width: 0;
+  }
+
+  #overlay { display: none; position: fixed; inset: 0; background: rgba(0,0,0,0.5); z-index: 89; }
+
+  .section { display: none; }
+  .section.active { display: block; animation: fadeIn 0.3s ease; }
+  @keyframes fadeIn {
+    from { opacity: 0; transform: translateY(8px); }
+    to { opacity: 1; transform: translateY(0); }
+  }
+
+  .section-hero {
+    background: linear-gradient(135deg, #1e3a8a 0%, #1e40af 50%, #1d4ed8 100%);
+    border-radius: 16px; padding: 2.5rem 2rem; margin-bottom: 2rem;
+    color: white; position: relative; overflow: hidden;
+  }
+  .section-hero::before {
+    content: ''; position: absolute; top: -50%; right: -10%;
+    width: 300px; height: 300px; background: rgba(255,255,255,0.05); border-radius: 50%;
+  }
+  .section-hero h2 { font-size: 1.6rem; font-weight: 700; margin-bottom: 0.5rem; }
+  .section-hero p { opacity: 0.85; font-size: 0.95rem; max-width: 600px; }
+  .section-hero .tags { margin-top: 1rem; display: flex; flex-wrap: wrap; gap: 0.5rem; }
+  .tag { background: rgba(255,255,255,0.15); padding: 3px 12px; border-radius: 20px; font-size: 0.75rem; color: rgba(255,255,255,0.9); }
+
+  h2 { font-size: 1.4rem; font-weight: 700; color: var(--primary-dark); margin: 2rem 0 1rem; padding-bottom: 0.5rem; border-bottom: 2px solid var(--border); display: flex; align-items: center; gap: 0.5rem; }
+  h2:first-of-type { margin-top: 0; }
+  h3 { font-size: 1.05rem; font-weight: 600; color: var(--text); margin: 1.5rem 0 0.5rem; }
+  p { margin-bottom: 0.8rem; font-size: 0.92rem; color: #374151; }
+
+  .card {
+    background: var(--card-bg); border: 1px solid var(--border); border-radius: 12px;
+    padding: 1.5rem; margin-bottom: 1.25rem; box-shadow: 0 1px 3px rgba(0,0,0,0.06); transition: box-shadow 0.2s;
+  }
+  .card:hover { box-shadow: 0 4px 12px rgba(0,0,0,0.1); }
+  .card-header { display: flex; align-items: center; gap: 0.75rem; margin-bottom: 1rem; }
+  .card-icon {
+    width: 40px; height: 40px; border-radius: 10px; display: flex;
+    align-items: center; justify-content: center; font-size: 1.2rem; flex-shrink: 0;
+  }
+  .card-icon.blue { background: #eff6ff; }
+  .card-icon.green { background: #f0fdf4; }
+  .card-icon.orange { background: #fff7ed; }
+  .card-icon.purple { background: #faf5ff; }
+  .card-icon.red { background: #fef2f2; }
+  
+  .card-title { font-weight: 700; font-size: 1rem; color: var(--text); }
+  .card-subtitle { font-size: 0.75rem; color: var(--text-light); }
+
+  .info-box {
+    border-radius: 10px; padding: 1rem 1.25rem; margin: 1rem 0; font-size: 0.88rem; display: flex; gap: 0.75rem;
+  }
+  .info-box.blue { background: #eff6ff; border-left: 4px solid #3b82f6; }
+  .info-box.green { background: #f0fdf4; border-left: 4px solid #10b981; }
+  .info-box.amber { background: #fffbeb; border-left: 4px solid #f59e0b; }
+  .info-box.purple { background: #faf5ff; border-left: 4px solid #8b5cf6; }
+  .info-box.red { background: #fef2f2; border-left: 4px solid #ef4444; }
+  .info-box-icon { font-size: 1.1rem; flex-shrink: 0; line-height: 1.6; }
+  .info-box-content strong { display: block; margin-bottom: 0.2rem; }
+
+  .code-block {
+    background: var(--code-bg); border-radius: 10px; padding: 1.25rem; overflow-x: auto; margin: 0.75rem 0; position: relative;
+  }
+  .code-block pre {
+    color: var(--code-text); font-family: 'Cascadia Code', 'Fira Code', 'JetBrains Mono', monospace; font-size: 0.8rem; line-height: 1.7; white-space: pre;
+  }
+
+  .grid-2 { display: grid; grid-template-columns: 1fr 1fr; gap: 1rem; margin: 1rem 0; }
+  .grid-3 { display: grid; grid-template-columns: repeat(3, 1fr); gap: 1rem; margin: 1rem 0; }
+
+  .svg-container {
+    background: white; border: 1px solid var(--border); border-radius: 12px;
+    padding: 1.25rem; margin: 1rem 0; overflow-x: auto; text-align: center;
+  }
+  .svg-container svg { max-width: 100%; height: auto; }
+  .svg-title { font-size: 0.8rem; color: var(--text-light); text-align: center; margin-top: 0.5rem; }
+
+  ul, ol { padding-left: 1.5rem; margin: 0.5rem 0 0.8rem; }
+  li { font-size: 0.88rem; margin-bottom: 0.3rem; color: #374151; }
+  li strong { color: var(--text); }
+
+  .decision-flow {
+    background: #f8fafc; border: 1px solid var(--border); border-radius: 12px;
+    padding: 1.5rem; margin: 1rem 0; font-family: monospace; font-size: 0.85rem;
+    white-space: pre; overflow-x: auto;
+  }
+
+  @media (max-width: 768px) {
+    :root { --sidebar-width: 260px; }
+    aside { transform: translateX(-100%); }
+    aside.open { transform: translateX(0); }
+    #overlay.show { display: block; }
+    .hamburger { display: flex; }
+    main { margin-left: 0; padding: 1.25rem 1rem 3rem; max-width: 100%; }
+    .grid-2, .grid-3 { grid-template-columns: 1fr; }
+    .nav-btn { display: none; }
+  }
+</style>
+</head>
+<body>
+
+<div id="progress-bar"></div>
+
+<header>
+  <button class="hamburger" id="hamburger" aria-label="菜单">
+    <span></span><span></span><span></span>
+  </button>
+  <h1>⚙️ 多线程与UI通信架构</h1>
+  <div class="header-nav">
+    <button class="nav-btn" id="prev-btn">← 上一节</button>
+    <button class="nav-btn" id="next-btn">下一节 →</button>
+  </div>
+</header>
+<div id="overlay"></div>
+
+<div class="layout">
+  <aside id="sidebar">
+    <div class="sidebar-section">
+      <div class="sidebar-section-title">核心方法论</div>
+      <a class="sidebar-item active" data-section="overview">
+        <span>🏠</span> 三层决策模型
+      </a>
+    </div>
+    <div class="sidebar-section">
+      <div class="sidebar-section-title">架构设计路径</div>
+      <a class="sidebar-item" data-section="paradigm">
+        <span>🏗️</span> 第一层：范式选型
+      </a>
+      <a class="sidebar-item" data-section="data-flow">
+        <span>🌊</span> 第二层：数据与所有权流
+      </a>
+      <a class="sidebar-item" data-section="communication">
+        <span>📡</span> 第三层：跨线程唤醒通信
+      </a>
+      <a class="sidebar-item" data-section="decision-tree">
+        <span>🌳</span> 方案决策树
+      </a>
+    </div>
+  </aside>
+
+  <main id="main-content">
+    
+    <!-- OVERVIEW -->
+    <div class="section active" id="sec-overview">
+      <div class="section-hero">
+        <h2>应用层多线程与 UI 通信设计指南</h2>
+        <p>在 C/C++ 等系统级和应用层编程中，处理多线程架构有一个标准且不可跳步的“三层决策方法论”。不要一上来就陷入“用互斥锁锁住全局变量”的陷阱。</p>
+        <div class="tags">
+          <span class="tag">Reactor 模式</span>
+          <span class="tag">所有权转移</span>
+          <span class="tag">EventFD唤醒</span>
+        </div>
+      </div>
+
+      <div class="info-box blue">
+        <div class="info-box-icon">💡</div>
+        <div class="info-box-content">
+          <strong>核心设计哲学：</strong> 
+          先选范式消灭不必要的共享 → 再用工程流转驯服不可避免的同步 → 最后使用系统级原语 (epoll/pipe) 进行跨线程信令。
+        </div>
+      </div>
+      
+      <h2>三层决策递进模型</h2>
+      <div class="grid-3">
+        <div class="card" style="border-top: 4px solid #3b82f6;">
+          <div class="card-icon blue" style="margin-bottom:0.5rem">1️⃣</div>
+          <div class="card-title" style="margin-bottom:0.3rem">范式选型（架构层）</div>
+          <p style="font-size:0.82rem">怎么分发任务？主次线程各自的角色是什么？明确UI事件循环与后台业务工作池的边界。</p>
+        </div>
+        <div class="card" style="border-top: 4px solid #10b981;">
+          <div class="card-icon green" style="margin-bottom:0.5rem">2️⃣</div>
+          <div class="card-title" style="margin-bottom:0.3rem">工程递进（数据层）</div>
+          <p style="font-size:0.82rem">数据如何在线程间流动？能不用锁就不用锁，优先采取【所有权转移】与【SPSC 无锁流转】。</p>
+        </div>
+        <div class="card" style="border-top: 4px solid #f59e0b;">
+          <div class="card-icon orange" style="margin-bottom:0.5rem">3️⃣</div>
+          <div class="card-title" style="margin-bottom:0.3rem">编码合规（原语层）</div>
+          <p style="font-size:0.82rem">子线程如何非阻塞地惊醒处于 Wait 挂起状态的 UI 循环？使用 eventfd 或 socketpair。</p>
+        </div>
+      </div>
+    </div>
+
+    <!-- PARADIGM -->
+    <div class="section" id="sec-paradigm">
+      <h2>1. 范式选型：Reactor + Worker 模式</h2>
+      <p>UI 程序本质上是一个<strong>事件循环（Event Loop / Reactor）</strong>，其核心法则是：<strong>主线程绝对禁止阻塞</strong>。耗时逻辑必须 Offload（外包）给子线程工作池。</p>
+
+      <div class="svg-container">
+        <svg viewBox="0 0 800 350" xmlns="http://www.w3.org/2000/svg">
+          <defs>
+            <marker id="arrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="6" markerHeight="6" orient="auto-start-reverse">
+              <path d="M 0 0 L 10 5 L 0 10 z" fill="#64748b"/>
+            </marker>
+          </defs>
+          <rect x="50" y="50" width="220" height="250" rx="10" fill="#eff6ff" stroke="#3b82f6" stroke-width="2"/>
+          <text x="160" y="80" text-anchor="middle" font-weight="bold" fill="#1e40af">主线程 (UI / Reactor)</text>
+          <rect x="70" y="100" width="180" height="40" rx="5" fill="#ffffff" stroke="#93c5fd" stroke-width="1"/>
+          <text x="160" y="125" text-anchor="middle" font-size="14" fill="#334155">处理用户输入输入/重绘</text>
+          
+          <rect x="70" y="160" width="180" height="40" rx="5" fill="#ffffff" stroke="#93c5fd" stroke-width="1"/>
+          <text x="160" y="185" text-anchor="middle" font-size="14" fill="#334155">epoll_wait() / GetMessage()</text>
+
+          <rect x="70" y="220" width="180" height="40" rx="5" fill="#f0fdf4" stroke="#10b981" stroke-width="1"/>
+          <text x="160" y="245" text-anchor="middle" font-size="14" fill="#065f46">接收完成唤醒信号</text>
+
+          <!-- Queues -->
+          <rect x="340" y="100" width="120" height="40" rx="5" fill="#fff7ed" stroke="#f59e0b" stroke-width="1" stroke-dasharray="4"/>
+          <text x="400" y="125" text-anchor="middle" font-size="14" fill="#9a3412">派发任务队列</text>
+
+          <rect x="340" y="220" width="120" height="40" rx="5" fill="#f8fafc" stroke="#cbd5e1" stroke-width="1" stroke-dasharray="4"/>
+          <text x="400" y="245" text-anchor="middle" font-size="14" fill="#475569">完成结果队列</text>
+
+          <!-- Workers -->
+          <rect x="530" y="50" width="220" height="250" rx="10" fill="#faf5ff" stroke="#8b5cf6" stroke-width="2"/>
+          <text x="640" y="80" text-anchor="middle" font-weight="bold" fill="#5b21b6">工作线程池 (Worker Pool)</text>
+
+          <rect x="550" y="100" width="180" height="40" rx="5" fill="#ffffff" stroke="#c4b5fd" stroke-width="1"/>
+          <text x="640" y="125" text-anchor="middle" font-size="14" fill="#334155">Worker 1</text>
+          
+          <rect x="550" y="160" width="180" height="40" rx="5" fill="#ffffff" stroke="#c4b5fd" stroke-width="1"/>
+          <text x="640" y="185" text-anchor="middle" font-size="14" fill="#334155">Worker 2 (I/O, CPU)</text>
+
+          <rect x="550" y="220" width="180" height="40" rx="5" fill="#ffffff" stroke="#c4b5fd" stroke-width="1"/>
+          <text x="640" y="245" text-anchor="middle" font-size="14" fill="#334155">Worker 3</text>
+
+          <!-- Arrows -->
+          <path d="M 250 120 L 330 120" stroke="#64748b" stroke-width="2" marker-end="url(#arrow)"/>
+          <path d="M 460 120 L 540 120" stroke="#64748b" stroke-width="2" marker-end="url(#arrow)"/>
+          
+          <path d="M 540 240 L 470 240" stroke="#64748b" stroke-width="2" marker-end="url(#arrow)"/>
+          <path d="M 340 240 L 260 240" stroke="#64748b" stroke-width="2" marker-end="url(#arrow)"/>
+        </svg>
+        <div class="svg-title">图 1: Reactor 与后台任务池的架构隔离边界</div>
+      </div>
+      
+      <div class="info-box amber">
+        <div class="info-box-icon">⚠️</div>
+        <div class="info-box-content">
+          <strong>禁忌：</strong> 绝对不要为每一个任务 `pthread_create` 一个新线程。线程建立与销毁成本高且在万级任务下极易失控。请使用常驻线程池处理任务投递。
+        </div>
+      </div>
+    </div>
+
+    <!-- DATA FLOW -->
+    <div class="section" id="sec-data-flow">
+      <h2>2. 数据流与所有权 (Ownership Transfer)</h2>
+      <p>为了最高限度避免锁竞争（尤其是死锁），最佳实践是：<strong>所有权转移（Ownership Transfer）</strong>。即内存对象在任意时刻只属于单方（要么主线程，要么队列，要么工作线程），一旦移交，对方不再能访问指针。</p>
+
+      <div class="svg-container">
+        <svg viewBox="0 0 800 200" xmlns="http://www.w3.org/2000/svg">
+          <defs>
+            <marker id="arr2" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="6" markerHeight="6" orient="auto-start-reverse">
+              <path d="M 0 0 L 10 5 L 0 10 z" fill="#1e40af"/>
+            </marker>
+          </defs>
+          <g transform="translate(30, 80)">
+            <circle cx="20" cy="20" r="20" fill="#3b82f6" />
+            <text x="20" y="25" text-anchor="middle" fill="#fff" font-weight="bold">1</text>
+            <text x="20" y="-10" text-anchor="middle" font-size="13" fill="#1e293b">UI 构造参数</text>
+            <text x="20" y="60" text-anchor="middle" font-size="12" fill="#64748b" font-family="monospace">malloc(req)</text>
+          </g>
+
+          <path d="M 80 100 L 160 100" stroke="#1e40af" stroke-width="2" marker-end="url(#arr2)"/>
+
+          <g transform="translate(180, 80)">
+            <circle cx="20" cy="20" r="20" fill="#f59e0b" />
+            <text x="20" y="25" text-anchor="middle" fill="#fff" font-weight="bold">2</text>
+            <text x="20" y="-10" text-anchor="middle" font-size="13" fill="#1e293b">入队并遗忘</text>
+            <text x="20" y="60" text-anchor="middle" font-size="12" fill="#64748b" font-family="monospace">enqueue & Forget</text>
+          </g>
+
+          <path d="M 230 100 L 320 100" stroke="#1e40af" stroke-width="2" marker-end="url(#arr2)"/>
+
+          <g transform="translate(340, 80)">
+            <circle cx="20" cy="20" r="20" fill="#8b5cf6" />
+            <text x="20" y="25" text-anchor="middle" fill="#fff" font-weight="bold">3</text>
+            <text x="20" y="-10" text-anchor="middle" font-size="13" fill="#1e293b">Worker 取出</text>
+            <text x="20" y="60" text-anchor="middle" font-size="12" fill="#64748b" font-family="monospace">无锁处理重型业务</text>
+          </g>
+
+          <path d="M 390 100 L 480 100" stroke="#1e40af" stroke-width="2" marker-end="url(#arr2)"/>
+
+          <g transform="translate(500, 80)">
+            <circle cx="20" cy="20" r="20" fill="#f59e0b" />
+            <text x="20" y="25" text-anchor="middle" fill="#fff" font-weight="bold">4</text>
+            <text x="20" y="-10" text-anchor="middle" font-size="13" fill="#1e293b">结果入完成队</text>
+            <text x="20" y="60" text-anchor="middle" font-size="12" fill="#64748b" font-family="monospace">malloc(res), free(req)</text>
+          </g>
+
+          <path d="M 550 100 L 650 100" stroke="#1e40af" stroke-width="2" marker-end="url(#arr2)"/>
+
+          <g transform="translate(670, 80)">
+            <circle cx="20" cy="20" r="20" fill="#10b981" />
+            <text x="20" y="25" text-anchor="middle" fill="#fff" font-weight="bold">5</text>
+            <text x="20" y="-10" text-anchor="middle" font-size="13" fill="#1e293b">UI 消费并销毁</text>
+            <text x="20" y="60" text-anchor="middle" font-size="12" fill="#64748b" font-family="monospace">取出 -> 绘图 -> free()</text>
+          </g>
+        </svg>
+        <div class="svg-title">图 2: 单向的数据所有权流动（除了队列挂载，全程无锁）</div>
+      </div>
+
+      <div class="info-box green">
+        <div class="info-box-icon">✅</div>
+        <div class="info-box-content">
+          <strong>所有权转移的核心益处：</strong> 
+          在业务运算过程中（步骤 3），由于 Worker 独占分配参数所在的内存堆区域，完全不涉及全局锁竞争，极度提升多核并发性能。
+        </div>
+      </div>
+    </div>
+
+    <!-- COMMUNICATION -->
+    <div class="section" id="sec-communication">
+      <h2>3. 跨系统唤醒机制 (EventFD / Pipe)</h2>
+      <p>这是纯C/C++ UI 编程最需要掌握的难点：普通的 <code>pthread_cond_signal</code> 不能唤醒在系统调用上休眠的 UI 线程。<br/>必须诉诸于 <code>eventfd</code> 或 <code>pipe</code>/<code>socketpair</code>，将其包装成 UI 等待的文件描述符。</p>
+
+      <div class="svg-container">
+        <svg viewBox="0 0 800 240" xmlns="http://www.w3.org/2000/svg">
+          <defs>
+            <marker id="arr-sig" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="6" markerHeight="6" orient="auto-start-reverse">
+              <path d="M 0 0 L 10 5 L 0 10 z" fill="#ef4444"/>
+            </marker>
+          </defs>
+          <rect x="50" y="40" width="260" height="150" rx="8" fill="#f8fafc" stroke="#cbd5e1" stroke-width="1"/>
+          <text x="180" y="70" text-anchor="middle" font-weight="bold" fill="#1e293b">主事件循环 (UI Thread)</text>
+          <rect x="70" y="90" width="220" height="30" rx="4" fill="#eff6ff" stroke="#3b82f6"/>
+          <text x="180" y="110" text-anchor="middle" font-family="monospace" font-size="12">epoll_wait({ui_fd_1, ui_fd_2, event_fd})</text>
+          <text x="180" y="145" text-anchor="middle" font-size="12" fill="#64748b">(阻塞等待状态...)</text>
+
+          <!-- Middle Pipe -->
+          <path d="M 500 105 L 305 105" stroke="#ef4444" stroke-width="3" marker-end="url(#arr-sig)"/>
+          <text x="400" y="95" text-anchor="middle" fill="#ef4444" font-weight="bold" font-size="12">write(eventfd, 8 bytes)</text>
+          <text x="400" y="125" text-anchor="middle" fill="#5b21b6" font-size="12">惊醒 epoll_wait!</text>
+
+          <rect x="510" y="40" width="240" height="150" rx="8" fill="#f8fafc" stroke="#cbd5e1" stroke-width="1"/>
+          <text x="630" y="70" text-anchor="middle" font-weight="bold" fill="#1e293b">后台业务子线程</text>
+          <rect x="530" y="90" width="200" height="30" rx="4" fill="#faf5ff" stroke="#8b5cf6"/>
+          <text x="630" y="110" text-anchor="middle" font-family="monospace" font-size="12">业务完工，结果推入队列</text>
+          
+          <rect x="530" y="130" width="200" height="30" rx="4" fill="#fff7ed" stroke="#f59e0b"/>
+          <text x="630" y="150" text-anchor="middle" font-family="monospace" font-size="12">write(wakeup_fd, &msg, 8)</text>
+        </svg>
+        <div class="svg-title">图 3: 使用 fd 进行跨线程同步事件传递（类似库封装机制 uv_async_send）</div>
+      </div>
+
+      <h3>伪代码演示</h3>
+      <div class="code-block">
+        <span class="code-label">c</span>
+        <pre>
+<span class="cm">// 后台 Worker 线程完成工作后的发送方：</span>
+<span class="ty">void</span> <span class="fn">on_worker_thread_finish</span>(<span class="ty">struct</span> business_task *task) {
+    <span class="ty">struct</span> ui_result *res = <span class="fn">do_heavy_work</span>(task); 
+    
+    <span class="cm">// 加短促锁，所有权移交内存指针到完成队列</span>
+    <span class="fn">pthread_mutex_lock</span>(&amp;rq.lock);
+    <span class="fn">list_push</span>(&amp;rq.head, res);
+    <span class="fn">pthread_mutex_unlock</span>(&amp;rq.lock);
+    
+    <span class="cm">// 向 eventfd 系统调用写入信息，非阻塞唤醒主干循环</span>
+    <span class="ty">uint64_t</span> msg = 1;
+    <span class="fn">write</span>(rq.wakeup_fd, &amp;msg, <span class="kw">sizeof</span>(msg));
+}
+
+<span class="cm">// UI 主事件线程在被 event_fd 惊醒时的通用回调：</span>
+<span class="ty">void</span> <span class="fn">on_main_thread_wakeup</span>() {
+    <span class="ty">uint64_t</span> msg;
+    <span class="fn">read</span>(rq.wakeup_fd, &amp;msg, <span class="kw">sizeof</span>(msg)); <span class="cm">// consume signal</span>
+    
+    <span class="cm">// 加锁挂载下当前所有的计算结果（极短临界区）</span>
+    <span class="fn">pthread_mutex_lock</span>(&amp;rq.lock);
+    <span class="ty">struct</span> list_item *results = rq.head;
+    rq.head = NULL;
+    <span class="fn">pthread_mutex_unlock</span>(&amp;rq.lock);
+    
+    <span class="cm">// 无锁单线程更新 UI 树并且清理堆内存</span>
+    <span class="kw">while</span> (results) {
+        <span class="fn">update_ui_with_data</span>(results-&gt;data);
+        <span class="fn">free</span>(results);  <span class="cm">// 生命周期在此终结</span>
+        results = results-&gt;next;
+    }
+}
+        </pre>
+      </div>
+    </div>
+
+    <!-- DECISION TREE -->
+    <div class="section" id="sec-decision-tree">
+      <h2>4. 方法论架构决策树</h2>
+      <p>当你需要引入新的多线程应用跨线模块时，按顺序遵循以下的逻辑流程来选择技术栈：</p>
+      <div class="decision-flow">
+Q1: 任务类型是什么？
+├─ UI操作 / DOM修改  ──&gt; 强制投递到主线程事件循环 (Main Thread) 
+└─ 文件I/O / 网络 / CPU密集 ──&gt; 投递给子线程工作池 (Worker Pool)
+
+Q2: 主子线程交互时，内存数据如何流转？(工程递进)
+├─ 双方只需单向传递处理结果？
+│   └─ 采用【所有权转移】：分配 -&gt; 入队并丢弃主权 -&gt; 处理 -&gt; 传出机制。
+│
+├─ 需要非常高频地 1对1 传递流数据？
+│   └─ 采用【SPSC 无锁环形缓冲区 / Disruptor】架构。
+│
+└─ 多个线程必须反复读写同一个状态池？
+    └─ 把只读字段和读写字段拆开。读写字段与互斥锁放入同一个 struct 收敛保护。
+
+Q3: 子线程计算完毕，如何告知阻塞在主事件循环的 UI 程序？
+├─ 使用了成熟 UI/事件库 (Qt/GTK/libuv/ASIO)？
+│   └─ 直接调用框架的跨线程安全投递接口 (如 uv_async_send, g_idle_add)。
+│
+└─ 从零手写低层裸 C/C++ 程序？
+    └─ 创建【安全队列 + eventfd/pipe】。主线程 epoll_wait 监听通过 write 唤醒。
+
+Q4: 如果在框架内部必须使用 Lock，如何防死锁？
+├─ 锁住的时候能调外部第三方未知函数或请求 I/O 吗？
+│   └─ 绝对禁止。临界区必须极短，拷贝出数据后立刻解锁。
+│
+└─ 复杂场景有好几把锁需要拿？
+    └─ 必须建立【全局锁级序号规范】，永远严格按 ID 从低到高加锁，不准逆序操作。
+      </div>
+    </div>
+
+  </main>
+</div>
+
+<script>
+  const sections = ['overview', 'paradigm', 'data-flow', 'communication', 'decision-tree'];
+  let currentIndex = 0;
+
+  function showSection(id) {
+    document.querySelectorAll('.section').forEach(s => s.classList.remove('active'));
+    document.querySelectorAll('.sidebar-item').forEach(a => a.classList.remove('active'));
+    
+    const sec = document.getElementById('sec-' + id);
+    if (sec) {
+      sec.classList.add('active');
+      currentIndex = sections.indexOf(id);
+    }
+    
+    const item = document.querySelector(`.sidebar-item[data-section="${id}"]`);
+    if (item) {
+      item.classList.add('active');
+      item.scrollIntoView({ block: 'nearest', behavior: 'smooth' });
+    }
+    
+    document.getElementById('main-content').scrollTop = 0;
+    window.scrollTo(0, 0);
+    updateProgress();
+    closeSidebar();
+  }
+
+  document.querySelectorAll('.sidebar-item').forEach(item => {
+    item.addEventListener('click', () => { showSection(item.dataset.section); });
+  });
+
+  document.getElementById('prev-btn').addEventListener('click', () => {
+    if (currentIndex > 0) showSection(sections[currentIndex - 1]);
+  });
+  document.getElementById('next-btn').addEventListener('click', () => {
+    if (currentIndex < sections.length - 1) showSection(sections[currentIndex + 1]);
+  });
+
+  document.addEventListener('keydown', (e) => {
+    if (e.key === 'ArrowLeft' && currentIndex > 0) showSection(sections[currentIndex - 1]);
+    if (e.key === 'ArrowRight' && currentIndex < sections.length - 1) showSection(sections[currentIndex + 1]);
+  });
+
+  function updateProgress() {
+    const pct = sections.length > 1 ? (currentIndex / (sections.length - 1)) * 100 : 0;
+    document.getElementById('progress-bar').style.width = pct + '%';
+  }
+
+  const hamburger = document.getElementById('hamburger');
+  const sidebar = document.getElementById('sidebar');
+  const overlay = document.getElementById('overlay');
+
+  hamburger.addEventListener('click', () => {
+    const isOpen = sidebar.classList.contains('open');
+    if (isOpen) closeSidebar(); else openSidebar();
+  });
+
+  overlay.addEventListener('click', closeSidebar);
+
+  function openSidebar() {
+    sidebar.classList.add('open'); overlay.classList.add('show'); hamburger.classList.add('open');
+  }
+  function closeSidebar() {
+    sidebar.classList.remove('open'); overlay.classList.remove('show'); hamburger.classList.remove('open');
+  }
+
+  window.addEventListener('scroll', () => {
+    const scrollTop = window.pageYOffset || document.documentElement.scrollTop;
+    const docHeight = document.documentElement.scrollHeight - document.documentElement.clientHeight;
+    const scrollPct = docHeight > 0 ? (scrollTop / docHeight) * 100 : 0;
+    const sectionBase = sections.length > 1 ? (currentIndex / (sections.length - 1)) * 100 : 0;
+    const sectionRange = sections.length > 1 ? 100 / (sections.length - 1) : 100;
+    const mixed = sectionBase + (scrollPct / 100) * sectionRange;
+    document.getElementById('progress-bar').style.width = Math.min(mixed, 100) + '%';
+  });
+
+  updateProgress();
+</script>
+</body>
+</html>

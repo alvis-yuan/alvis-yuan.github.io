@@ -1,0 +1,1111 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>进程 A 向进程 B 发送信号的内核处理全流程</title>
+  <style>
+    :root {
+      --bg: #0f1117;
+      --bg2: #161b22;
+      --bg3: #1e2530;
+      --border: #30363d;
+      --accent: #0a84ff;
+      --accent2: #30d158;
+      --accent3: #ff453a;
+      --accent4: #bf5af2;
+      --warn: #ffa657;
+      --text: #e6edf3;
+      --text2: #8b949e;
+      --nav-w: 292px;
+      --header-h: 48px;
+      --radius: 8px;
+    }
+    * { box-sizing: border-box; }
+    html { scroll-behavior: smooth; }
+    body { margin: 0; font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', 'PingFang SC', 'Microsoft YaHei', sans-serif; background: var(--bg); color: var(--text); line-height: 1.75; overflow-x: hidden; }
+    a { color: #79c0ff; text-decoration-thickness: 1px; text-underline-offset: 3px; }
+    .progress { position: fixed; top: 0; left: 0; width: 100%; height: 3px; z-index: 1000; background: rgba(10,132,255,.12); }
+    .progress span { display: block; width: 0%; height: 100%; background: linear-gradient(90deg, var(--accent), var(--accent2)); transition: width 120ms linear; }
+    .topbar { position: fixed; top: 3px; left: 0; right: 0; height: var(--header-h); background: rgba(15,17,23,.95); backdrop-filter: blur(10px); border-bottom: 1px solid var(--border); display: flex; align-items: center; padding: 0 1rem; gap: .75rem; z-index: 900; }
+    .topbar h1 { font-size: .95rem; font-weight: 700; color: var(--accent); margin: 0; }
+    .topbar .meta { margin-left: auto; font-size: .75rem; color: var(--text2); }
+    .topbar a { color: var(--text2); text-decoration: none; font-size: .8rem; }
+    .topbar a:hover { color: var(--accent); }
+    .hamburger { width: 2.25rem; height: 2.25rem; border: 1px solid var(--border); background: transparent; color: var(--text); border-radius: var(--radius); cursor: pointer; font: inherit; }
+    nav { position: fixed; top: calc(var(--header-h) + 3px); left: 0; bottom: 0; width: var(--nav-w); background: var(--bg2); color: var(--text); border-right: 1px solid var(--border); padding: 1rem .5rem; z-index: 800; overflow: auto; }
+    .brand { border-bottom: 1px solid var(--border); padding: .35rem .75rem .9rem; margin-bottom: .5rem; }
+    .brand strong { display: block; color: var(--accent); font-size: .92rem; }
+    .brand small { display: block; color: var(--text2); font-size: .76rem; line-height: 1.55; margin-top: .3rem; }
+    details { border-bottom: 1px solid var(--border); padding: .25rem 0; }
+    summary { cursor: pointer; color: var(--text); font-size: .82rem; font-weight: 700; padding: .45rem .75rem; }
+    .nav-list { list-style: none; padding: 0 0 .35rem; margin: 0; }
+    .nav-list a { display: block; color: var(--text2); text-decoration: none; border-left: 3px solid transparent; border-radius: .4rem; font-size: .82rem; padding: .4rem .75rem .4rem 1.1rem; line-height: 1.35; }
+    .nav-list a:hover { background: var(--bg3); color: var(--text); }
+    .nav-list a.active { color: var(--accent); border-left-color: var(--accent); background: rgba(10,132,255,.08); }
+    main { margin: calc(var(--header-h) + 3px) 0 0 var(--nav-w); max-width: 1040px; padding: 2rem 2.5rem 4rem; width: auto; }
+    header.hero { border-bottom: 1px solid var(--border); margin-bottom: 3rem; padding-bottom: 1.2rem; }
+    .eyebrow { display: inline-block; color: var(--accent); font-size: .7rem; font-weight: 700; letter-spacing: .04em; padding: .2rem .55rem; border-radius: 99px; margin-bottom: .75rem; background: rgba(10,132,255,.15); border: 1px solid rgba(10,132,255,.35); }
+    h1, h2, h3 { line-height: 1.22; letter-spacing: 0; }
+    h1 { font-size: 1.8rem; margin: 0 0 .75rem; color: var(--text); }
+    h2 { font-size: 1.35rem; margin: 0 0 1rem; padding-bottom: .5rem; border-bottom: 1px solid var(--border); color: var(--text); }
+    h3 { font-size: 1.05rem; margin: 1.25rem 0 .75rem; color: var(--accent); }
+    .lead { font-size: 1.05rem; color: var(--text2); margin-bottom: 0; }
+    p, li { color: var(--text); font-size: .95rem; }
+    p { margin: 0 0 .75rem; }
+    section { margin-bottom: 3rem; scroll-margin-top: calc(var(--header-h) + 16px); }
+    code, .mono { font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; }
+    code { color: #79c0ff; }
+    pre { background: #0b0d12; color: #c9d1d9; border: 1px solid var(--border); border-radius: var(--radius); padding: 1rem; overflow-x: auto; font-size: .8rem; line-height: 1.5; margin: 1rem 0; }
+    table { width: 100%; border-collapse: collapse; margin: 1rem 0; font-size: .85rem; background: transparent; }
+    th, td { border: 1px solid var(--border); padding: .55rem .65rem; vertical-align: top; }
+    th { background: var(--bg3); color: var(--accent); font-weight: 600; text-align: left; }
+    td { color: var(--text); }
+    .panel { background: rgba(48,213,88,.08); border: 1px solid rgba(48,213,88,.25); border-radius: var(--radius); padding: 1rem; margin: 1rem 0; }
+    .quote { border-left: 4px solid var(--accent2); background: rgba(48,213,88,.08); color: var(--text); border-radius: 0 .6rem .6rem 0; padding: .8rem 1rem; margin: 1rem 0; }
+    .grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 1rem; margin: 1rem 0; }
+    .concept { border: 1px solid var(--border); background: var(--bg2); border-radius: var(--radius); padding: 1rem; }
+    .concept h3 { margin-top: 0; }
+    .tag { display: inline-block; color: var(--accent); background: rgba(10,132,255,.15); border: 1px solid rgba(10,132,255,.35); border-radius: 99px; font-size: .72rem; padding: .1rem .55rem; margin-right: .35rem; white-space: nowrap; }
+    .svg-wrap { background: var(--bg2); border: 1px solid var(--border); border-radius: .75rem; padding: 1rem; margin: 1.25rem 0; overflow-x: auto; }
+    svg { display: block; max-width: 100%; height: auto; margin: 0 auto; font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', 'PingFang SC', 'Microsoft YaHei', sans-serif; }
+    .box { fill: var(--bg3); stroke: var(--border); stroke-width: 1.4; rx: 8; }
+    .box-accent { fill: rgba(10,132,255,.14); stroke: var(--accent); }
+    .box-good { fill: rgba(48,213,88,.10); stroke: var(--accent2); }
+    .box-warn { fill: rgba(255,166,87,.10); stroke: var(--warn); }
+    .box-danger { fill: rgba(255,69,58,.08); stroke: var(--accent3); }
+    .box-purple { fill: rgba(191,90,242,.12); stroke: var(--accent4); }
+    .wire { stroke: var(--text2); stroke-width: 2; fill: none; marker-end: url(#arrow); }
+    .wire-blue { stroke: var(--accent); stroke-width: 2; fill: none; marker-end: url(#arrowBlue); }
+    .wire-green { stroke: var(--accent2); stroke-width: 2; fill: none; marker-end: url(#arrowGreen); }
+    .wire-warn { stroke: var(--warn); stroke-width: 2; fill: none; marker-end: url(#arrowWarn); }
+    .svg-title { font-size: 16px; font-weight: 800; fill: var(--text); }
+    .svg-text { font-size: 13px; fill: var(--text); }
+    .svg-small { font-size: 11px; fill: var(--text2); }
+    .fig-cap { font-size: .8rem; color: var(--text2); text-align: center; margin-top: .5rem; }
+    .chapter-nav { display: flex; gap: .75rem; justify-content: space-between; margin-top: 3rem; padding-top: 1rem; border-top: 1px solid var(--border); }
+    .chapter-nav a { display: inline-flex; align-items: center; justify-content: center; min-height: 2.4rem; padding: .45rem .85rem; border: 1px solid var(--border); border-radius: var(--radius); background: var(--bg2); text-decoration: none; color: var(--text); }
+    @media (max-width: 900px) { .topbar .meta, .topbar a { display: none; } nav { transform: translateX(-100%); transition: transform 180ms ease; width: min(86vw, 20rem); } body.nav-open nav { transform: translateX(0); } main { margin-left: 0; padding: 1.25rem; } .grid { grid-template-columns: 1fr; } table { display: block; overflow-x: auto; } }
+    @media (min-width: 901px) { .topbar .hamburger { display: none; } }
+  </style>
+</head>
+<body>
+  <div class="progress" aria-hidden="true"><span id="progressBar"></span></div>
+  <header class="topbar">
+    <button class="hamburger" id="menuButton" aria-label="打开或关闭导航">☰</button>
+    <h1>signal 发送 / 递送 / signalfd</h1>
+    <a href="index.html">文档索引</a>
+    <span class="meta">独立 HTML · 内联 SVG · 无外部资源依赖</span>
+  </header>
+  <nav id="sideNav" aria-label="章节导航">
+    <div class="brand"><strong>进程 A 到进程 B 的信号路径</strong><small>按当前 x2600kernel 源码解释发送、内核处理、handler 与 signalfd 消费</small></div>
+    <details open><summary>一、依据与总览</summary><ul class="nav-list"><li><a href="#intro">范围说明</a></li><li><a href="#official">官方依据</a></li><li><a href="#overview">MSC 总览</a></li><li><a href="#data-model">数据模型</a></li></ul></details>
+    <details open><summary>二、发送与入队</summary><ul class="nav-list"><li><a href="#sys-kill">kill 系统调用</a></li><li><a href="#permission">权限检查</a></li><li><a href="#route">PID 解析</a></li><li><a href="#enqueue">pending 入队</a></li><li><a href="#wake">选择响应线程</a></li></ul></details>
+    <details open><summary>三、进程 B 响应</summary><ul class="nav-list"><li><a href="#return-user">返回用户态检查</a></li><li><a href="#get-signal">取出信号</a></li><li><a href="#default-action">默认动作</a></li><li><a href="#handler-frame">回调栈帧</a></li><li><a href="#sigreturn">sigreturn 恢复</a></li></ul></details>
+    <details open><summary>四、signalfd</summary><ul class="nav-list"><li><a href="#signalfd-create">创建 fd</a></li><li><a href="#signalfd-read">read 消费</a></li><li><a href="#signalfd-poll">poll/epoll</a></li><li><a href="#compare">两种响应方式对比</a></li><li><a href="#summary">总结</a></li></ul></details>
+  </nav>
+  <main>
+    <header class="hero" id="intro">
+      <div class="eyebrow">kernel/signal.c · arch/mips/kernel/signal.c · fs/signalfd.c · CONFIG_SIGNALFD=1</div>
+      <h1>进程 A 向进程 B 发送信号，内核到底做了什么</h1>
+      <p class="lead">本文只按当前仓库源码解释：A 通过 <code>kill(pid, sig)</code> 发给 B，内核完成权限检查、目标解析、pending 队列标记和唤醒；B 在返回用户态时可能执行用户态信号回调，也可能由 <code>signalfd</code> 的 <code>read()</code> 同步取走信号。</p>
+    </header>
+
+    <section id="official">
+      <h2>官方依据</h2>
+      <p>已先通过网络获取 Linux man-pages 官方页面。下面列出的外部链接是原文链接；本页面不会加载它们。</p>
+      <table><thead><tr><th>主题</th><th>官方原文链接</th><th>使用到的事实</th></tr></thead><tbody>
+        <tr><td>信号总览</td><td><a href="https://man7.org/linux/man-pages/man7/signal.7.html">signal(7)</a></td><td>信号 disposition、pending/blocking、进程定向与线程定向、返回用户态时递送 handler、标准信号不排队、实时信号可排队。</td></tr>
+        <tr><td>kill</td><td><a href="https://man7.org/linux/man-pages/man2/kill.2.html">kill(2)</a></td><td><code>pid&gt;0</code> 发给指定进程，<code>pid=0</code> 发给当前进程组，<code>pid=-1</code> 发给有权限的进程，<code>sig=0</code> 只做存在性和权限检查。</td></tr>
+        <tr><td>sigaction</td><td><a href="https://man7.org/linux/man-pages/man2/sigaction.2.html">sigaction(2)</a></td><td>handler、<code>SA_SIGINFO</code>、<code>SA_ONSTACK</code>、<code>SA_RESTART</code>、<code>SA_NODEFER</code>、<code>sa_mask</code> 等语义。</td></tr>
+        <tr><td>signalfd</td><td><a href="https://man7.org/linux/man-pages/man2/signalfd.2.html">signalfd(2)</a></td><td><code>signalfd</code> 用 fd 同步接收信号，通常要先 block 对应信号；<code>read()</code> 会消费 pending 信号，<code>SIGKILL/SIGSTOP</code> 不能通过 signalfd 接收。</td></tr>
+      </tbody></table>
+      <p>本地参考链接：<a href="mips-o32-syscall-flow.html">mips-o32-syscall-flow.html</a> 解释 MIPS O32 系统调用入口和返回路径，<a href="entry-return-path.html">entry-return-path.html</a> 解释返回用户态前的 work pending 检查，<a href="thread_creation_flow.html">thread_creation_flow.html</a> 可辅助理解线程组和 <code>task_struct</code> 背景，<a href="index.html">index.html</a> 是文档索引。</p>
+      <div class="panel"><strong>第一性原理概述：</strong>信号不是一次“函数远程调用”，而是内核在目标任务状态里设置一个待处理事实。目标任务何时响应该事实，取决于它的屏蔽字、调度状态、返回用户态边界，或是否主动通过同步接口读取。</div>
+    </section>
+
+    <section id="overview">
+      <h2>MSC 总览</h2>
+      <div class="svg-wrap"><svg viewBox="0 0 980 560" role="img" aria-label="进程 A 发送信号给进程 B 的 MSC 总览">
+        <defs><marker id="arrow" markerWidth="8" markerHeight="8" refX="7" refY="3" orient="auto"><path d="M0,0 L7,3 L0,6 Z" fill="#8b949e"/></marker><marker id="arrowBlue" markerWidth="8" markerHeight="8" refX="7" refY="3" orient="auto"><path d="M0,0 L7,3 L0,6 Z" fill="#0a84ff"/></marker><marker id="arrowGreen" markerWidth="8" markerHeight="8" refX="7" refY="3" orient="auto"><path d="M0,0 L7,3 L0,6 Z" fill="#30d158"/></marker><marker id="arrowWarn" markerWidth="8" markerHeight="8" refX="7" refY="3" orient="auto"><path d="M0,0 L7,3 L0,6 Z" fill="#ffa657"/></marker></defs>
+        <text x="24" y="30" class="svg-title">Message Sequence Chart：kill 到 handler / signalfd</text>
+        <line x1="120" y1="70" x2="120" y2="520" stroke="#30363d"/><line x1="335" y1="70" x2="335" y2="520" stroke="#30363d"/><line x1="560" y1="70" x2="560" y2="520" stroke="#30363d"/><line x1="805" y1="70" x2="805" y2="520" stroke="#30363d"/>
+        <rect x="50" y="55" width="140" height="36" class="box-accent"/><text x="75" y="78" class="svg-text">进程 A</text><rect x="250" y="55" width="170" height="36" class="box"/><text x="272" y="78" class="svg-text">kernel/signal.c</text><rect x="470" y="55" width="180" height="36" class="box-good"/><text x="492" y="78" class="svg-text">进程 B task/signal</text><rect x="710" y="55" width="190" height="36" class="box-purple"/><text x="730" y="78" class="svg-text">B 用户态 / signalfd</text>
+        <path d="M120 125 H335" class="wire-blue"/><text x="150" y="116" class="svg-small">kill(pid, sig)</text>
+        <path d="M335 170 H560" class="wire-blue"/><text x="360" y="161" class="svg-small">find_vpid + permission</text>
+        <path d="M335 215 H560" class="wire-green"/><text x="365" y="206" class="svg-small">__send_signal: pending bit + sigqueue</text>
+        <path d="M560 260 H335" class="wire-warn"/><text x="388" y="251" class="svg-small">complete_signal 选可响应线程</text>
+        <path d="M335 305 H560" class="wire-warn"/><text x="370" y="296" class="svg-small">signal_wake_up / TIF_SIGPENDING</text>
+        <path d="M560 350 H805" class="wire-green"/><text x="590" y="341" class="svg-small">返回用户态：get_signal</text>
+        <path d="M805 395 H560" class="wire"/><text x="610" y="386" class="svg-small">handler 返回 -> rt_sigreturn</text>
+        <path d="M805 450 H560" class="wire-blue"/><text x="620" y="441" class="svg-small">或 read(signalfd) -> dequeue_signal</text>
+        <rect x="695" y="472" width="230" height="46" class="box-warn"/><text x="715" y="498" class="svg-small">handler 与 signalfd 竞争同一 pending 事实；read 会消费它。</text>
+      </svg><div class="fig-cap">图中 handler 分支由返回用户态触发，signalfd 分支由 B 主动 read/poll 触发。</div></div>
+      <div class="panel"><strong>第一性原理概述：</strong>内核把“事件发生”与“用户态处理方式”解耦。发送方只负责制造事件；接收方在安全边界上决定是被异步改写用户态执行流，还是通过 fd 同步拉取。</div>
+    </section>
+
+    <section id="data-model">
+      <h2>数据模型：位图、队列、处理表</h2>
+      <pre><code>/* include/linux/signal_types.h */
+struct sigqueue {
+	struct list_head list;
+	int flags;
+	kernel_siginfo_t info;
+	struct user_struct *user;
+};
+
+struct sigpending {
+	struct list_head list;
+	sigset_t signal;
+};
+
+/* include/linux/sched/signal.h */
+struct sighand_struct {
+	spinlock_t		siglock;
+	refcount_t		count;
+	wait_queue_head_t	signalfd_wqh;
+	struct k_sigaction	action[_NSIG];
+};
+
+struct signal_struct {
+	refcount_t		sigcnt;
+	atomic_t		live;
+	int			nr_threads;
+	struct list_head	thread_head;
+	struct sigpending	shared_pending;
+	struct task_struct	*curr_target;
+	int			group_exit_code;
+	unsigned int		flags;
+};
+
+/* include/linux/sched.h */
+struct task_struct {
+	...
+	struct signal_struct		*signal;
+	struct sighand_struct __rcu	*sighand;
+	sigset_t			blocked;
+	struct sigpending		pending;
+	...
+};</code></pre>
+      <p><code>sigpending.signal</code> 是“这个信号号是否 pending”的位图，<code>sigpending.list</code> 保存对应 <code>siginfo</code>。标准信号只需要知道“至少有一个”，实时信号和带数据的场景需要队列保存更多信息。<code>task_struct.pending</code> 是线程私有 pending，<code>signal_struct.shared_pending</code> 是线程组共享 pending；<code>sighand_struct.action[]</code> 是进程级 disposition 表。</p>
+      <p>这种设计解决两个问题：一是快速判断是否存在未屏蔽信号，只需位运算；二是只有需要用户可见细节时才走 <code>sigqueue</code> 列表。<code>siglock</code> 作为 <code>sighand</code> 的锁，也覆盖共享的 <code>signal_struct</code> 信号状态，避免发送、读取、默认动作之间互相踩踏。</p>
+      <div class="panel"><strong>第一性原理概述：</strong>信号系统的最小状态是“号、来源信息、目标范围、屏蔽关系、处理策略”。位图负责快，链表负责准，锁负责让多个 CPU 对同一事实达成一致。</div>
+    </section>
+
+    <section id="sys-kill">
+      <h2>发送入口：kill 系统调用</h2>
+      <pre><code>/* kernel/signal.c */
+static inline void prepare_kill_siginfo(int sig, struct kernel_siginfo *info)
+{
+	clear_siginfo(info);
+	info-&gt;si_signo = sig;
+	info-&gt;si_errno = 0;
+	info-&gt;si_code = SI_USER;
+	info-&gt;si_pid = task_tgid_vnr(current);
+	info-&gt;si_uid = from_kuid_munged(current_user_ns(), current_uid());
+}
+
+SYSCALL_DEFINE2(kill, pid_t, pid, int, sig)
+{
+	struct kernel_siginfo info;
+
+	prepare_kill_siginfo(sig, &amp;info);
+
+	return kill_something_info(sig, &amp;info, pid);
+}</code></pre>
+      <p><code>kill()</code> 入口首先把用户态传入的 <code>sig</code> 转成内核内部的 <code>kernel_siginfo</code>。<code>SI_USER</code> 表示这是普通用户发送路径，<code>si_pid</code> 和 <code>si_uid</code> 记录发送者身份。官方 <a href="https://man7.org/linux/man-pages/man2/kill.2.html">kill(2)</a> 也说明，<code>sig=0</code> 不实际发送信号，但仍会做存在性和权限检查；当前源码后面通过 <code>if (!ret &amp;&amp; sig)</code> 保留这个语义。</p>
+      <p>设计上，入口不立刻改目标进程，而是先构造一份不可歧义的事件描述。这样权限检查、命名空间转换、队列入队和用户态 <code>siginfo_t</code> 暴露都能沿同一份信息传播。</p>
+      <div class="panel"><strong>第一性原理概述：</strong>发送信号的第一步不是“打断 B”，而是把 A 的意图转成内核可验证、可审计、可复制的事件记录。</div>
+    </section>
+
+    <section id="permission">
+      <h2>权限检查：谁可以给谁发</h2>
+      <pre><code>/* kernel/signal.c */
+static bool kill_ok_by_cred(struct task_struct *t)
+{
+	const struct cred *cred = current_cred();
+	const struct cred *tcred = __task_cred(t);
+
+	return uid_eq(cred-&gt;euid, tcred-&gt;suid) ||
+	       uid_eq(cred-&gt;euid, tcred-&gt;uid) ||
+	       uid_eq(cred-&gt;uid, tcred-&gt;suid) ||
+	       uid_eq(cred-&gt;uid, tcred-&gt;uid) ||
+	       ns_capable(tcred-&gt;user_ns, CAP_KILL);
+}
+
+static int check_kill_permission(int sig, struct kernel_siginfo *info,
+				 struct task_struct *t)
+{
+	struct pid *sid;
+	int error;
+
+	if (!valid_signal(sig))
+		return -EINVAL;
+
+	if (!si_fromuser(info))
+		return 0;
+
+	error = audit_signal_info(sig, t);
+	if (error)
+		return error;
+
+	if (!same_thread_group(current, t) &amp;&amp;
+	    !kill_ok_by_cred(t)) {
+		switch (sig) {
+		case SIGCONT:
+			sid = task_session(t);
+			if (!sid || sid == task_session(current))
+				break;
+			fallthrough;
+		default:
+			return -EPERM;
+		}
+	}
+
+	return security_task_kill(t, info, sig, NULL);
+}</code></pre>
+      <p>这里对应 <a href="https://man7.org/linux/man-pages/man2/kill.2.html">kill(2)</a> 的权限语义：发送方需要匹配目标的真实/保存 UID，或具备目标 user namespace 中的 <code>CAP_KILL</code>；<code>SIGCONT</code> 有同 session 的例外。源码还把 audit 和 LSM 钩子纳入路径，说明信号发送不仅是调度事件，也是安全边界。</p>
+      <p><code>si_fromuser()</code> 用来区分用户来源与内核特权来源。内核内部强制信号不受普通用户权限规则限制，因为它们通常来自页错误、非法指令、OOM、退出等内核事实。</p>
+      <div class="panel"><strong>第一性原理概述：</strong>信号能改变目标进程控制流甚至终止它，所以它必须按“谁有权影响谁”的身份关系先筛选，再进入调度和递送逻辑。</div>
+    </section>
+
+    <section id="route">
+      <h2>目标解析：pid 的几种语义</h2>
+      <pre><code>/* kernel/signal.c */
+static int kill_something_info(int sig, struct kernel_siginfo *info, pid_t pid)
+{
+	int ret;
+
+	if (pid &gt; 0)
+		return kill_proc_info(sig, info, pid);
+
+	if (pid == INT_MIN)
+		return -ESRCH;
+
+	read_lock(&amp;tasklist_lock);
+	if (pid != -1) {
+		ret = __kill_pgrp_info(sig, info,
+				pid ? find_vpid(-pid) : task_pgrp(current));
+	} else {
+		int retval = 0, count = 0;
+		struct task_struct * p;
+
+		for_each_process(p) {
+			if (task_pid_vnr(p) &gt; 1 &amp;&amp;
+					!same_thread_group(p, current)) {
+				int err = group_send_sig_info(sig, info, p,
+							      PIDTYPE_MAX);
+				++count;
+				if (err != -EPERM)
+					retval = err;
+			}
+		}
+		ret = count ? retval : -ESRCH;
+	}
+	read_unlock(&amp;tasklist_lock);
+
+	return ret;
+}
+
+int kill_pid_info(int sig, struct kernel_siginfo *info, struct pid *pid)
+{
+	int error = -ESRCH;
+	struct task_struct *p;
+
+	for (;;) {
+		rcu_read_lock();
+		p = pid_task(pid, PIDTYPE_PID);
+		if (p)
+			error = group_send_sig_info(sig, info, p, PIDTYPE_TGID);
+		rcu_read_unlock();
+		if (likely(!p || error != -ESRCH))
+			return error;
+	}
+}</code></pre>
+      <p>官方 <code>kill(2)</code> 对 <code>pid</code> 的语义在这里直接落地：正数找单个进程，0 找当前进程组，负数找指定进程组，-1 遍历可发送的进程。当前源码还跳过 PID 1 和当前线程组，避免 <code>kill(-1, sig)</code> 把自己和 init 也纳入。</p>
+      <p><code>kill_pid_info()</code> 用 RCU 查 <code>pid_task()</code>，如果遇到任务正在退出或 <code>de_thread()</code> 竞争，就重试。这个循环解决的是 PID 到 task 的生命周期问题：PID 号可能仍在，但 task 指针的领导线程身份可能正在切换。</p>
+      <div class="panel"><strong>第一性原理概述：</strong>用户给的是数字 PID，内核要把它映射成受生命周期保护的 <code>task_struct</code>。只有目标对象稳定，后续加锁和入队才有意义。</div>
+    </section>
+
+    <section id="enqueue">
+      <h2>入队：pending 位图与 siginfo 队列</h2>
+      <pre><code>/* kernel/signal.c */
+int group_send_sig_info(int sig, struct kernel_siginfo *info,
+			struct task_struct *p, enum pid_type type)
+{
+	int ret;
+
+	rcu_read_lock();
+	ret = check_kill_permission(sig, info, p);
+	rcu_read_unlock();
+
+	if (!ret &amp;&amp; sig)
+		ret = do_send_sig_info(sig, info, p, type);
+
+	return ret;
+}
+
+int do_send_sig_info(int sig, struct kernel_siginfo *info, struct task_struct *p,
+			enum pid_type type)
+{
+	unsigned long flags;
+	int ret = -ESRCH;
+
+	if (lock_task_sighand(p, &amp;flags)) {
+		ret = send_signal(sig, info, p, type);
+		unlock_task_sighand(p, &amp;flags);
+	}
+
+	return ret;
+}</code></pre>
+      <p>外层先权限检查，再在 <code>sig != 0</code> 时真正发送。<code>do_send_sig_info()</code> 锁住目标 <code>sighand-&gt;siglock</code>，因为它马上要同时查看 action、pending、shared_pending 和线程组状态。这个锁是信号状态的一致性边界。</p>
+      <pre><code>/* kernel/signal.c */
+static int __send_signal(int sig, struct kernel_siginfo *info, struct task_struct *t,
+			enum pid_type type, bool force)
+{
+	struct sigpending *pending;
+	struct sigqueue *q;
+	int override_rlimit;
+	int ret = 0, result;
+
+	assert_spin_locked(&amp;t-&gt;sighand-&gt;siglock);
+
+	result = TRACE_SIGNAL_IGNORED;
+	if (!prepare_signal(sig, t, force))
+		goto ret;
+
+	pending = (type != PIDTYPE_PID) ? &amp;t-&gt;signal-&gt;shared_pending : &amp;t-&gt;pending;
+	result = TRACE_SIGNAL_ALREADY_PENDING;
+	if (legacy_queue(pending, sig))
+		goto ret;
+
+	result = TRACE_SIGNAL_DELIVERED;
+	if ((sig == SIGKILL) || (t-&gt;flags &amp; PF_KTHREAD))
+		goto out_set;
+
+	if (sig &lt; SIGRTMIN)
+		override_rlimit = (is_si_special(info) || info-&gt;si_code &gt;= 0);
+	else
+		override_rlimit = 0;
+
+	q = __sigqueue_alloc(sig, t, GFP_ATOMIC, override_rlimit);
+	if (q) {
+		list_add_tail(&amp;q-&gt;list, &amp;pending-&gt;list);
+		switch ((unsigned long) info) {
+		case (unsigned long) SEND_SIG_NOINFO:
+			clear_siginfo(&amp;q-&gt;info);
+			q-&gt;info.si_signo = sig;
+			q-&gt;info.si_errno = 0;
+			q-&gt;info.si_code = SI_USER;
+			q-&gt;info.si_pid = task_tgid_nr_ns(current,
+							task_active_pid_ns(t));
+			q-&gt;info.si_uid = from_kuid_munged(task_cred_xxx(t, user_ns),
+							 current_uid());
+			break;
+		case (unsigned long) SEND_SIG_PRIV:
+			clear_siginfo(&amp;q-&gt;info);
+			q-&gt;info.si_signo = sig;
+			q-&gt;info.si_errno = 0;
+			q-&gt;info.si_code = SI_KERNEL;
+			q-&gt;info.si_pid = 0;
+			q-&gt;info.si_uid = 0;
+			break;
+		default:
+			copy_siginfo(&amp;q-&gt;info, info);
+			break;
+		}
+	} else if (!is_si_special(info) &amp;&amp;
+		   sig &gt;= SIGRTMIN &amp;&amp; info-&gt;si_code != SI_USER) {
+		result = TRACE_SIGNAL_OVERFLOW_FAIL;
+		ret = -EAGAIN;
+		goto ret;
+	} else {
+		result = TRACE_SIGNAL_LOSE_INFO;
+	}
+
+out_set:
+	signalfd_notify(t, sig);
+	sigaddset(&amp;pending-&gt;signal, sig);
+	complete_signal(sig, t, type);
+ret:
+	trace_signal_generate(sig, info, t, type != PIDTYPE_PID, result);
+	return ret;
+}</code></pre>
+      <p><code>pending</code> 的选择体现“进程定向”和“线程定向”的区别：<code>PIDTYPE_PID</code> 放到线程私有 <code>t-&gt;pending</code>，否则放到线程组共享 <code>signal-&gt;shared_pending</code>。这正对应 <a href="https://man7.org/linux/man-pages/man7/signal.7.html">signal(7)</a> 对 process-directed 与 thread-directed signal 的说明。</p>
+      <p><code>legacy_queue()</code> 使标准信号在同一个 pending 集里只保留一个实例；实时信号则尽量分配 <code>sigqueue</code> 保存多个实例和附加数据。即使 <code>sigqueue</code> 分配失败，普通 <code>kill()</code> 路径也尽量保留 pending 位，只是丢失详细 <code>siginfo</code>，这是“至少递送事件”和“尽量保留原因”的折中。</p>
+      <div class="panel"><strong>第一性原理概述：</strong>入队的本质是把事件写进目标状态：位图回答“有没有”，链表回答“为什么”。标准信号偏事件合并，实时信号偏消息队列。</div>
+    </section>
+
+    <section id="wake">
+      <h2>唤醒：选择哪个线程来响应</h2>
+      <pre><code>/* kernel/signal.c */
+static inline bool wants_signal(int sig, struct task_struct *p)
+{
+	if (sigismember(&amp;p-&gt;blocked, sig))
+		return false;
+
+	if (p-&gt;flags &amp; PF_EXITING)
+		return false;
+
+	if (sig == SIGKILL)
+		return true;
+
+	if (task_is_stopped_or_traced(p))
+		return false;
+
+	return task_curr(p) || !task_sigpending(p);
+}
+
+static void complete_signal(int sig, struct task_struct *p, enum pid_type type)
+{
+	struct signal_struct *signal = p-&gt;signal;
+	struct task_struct *t;
+
+	if (wants_signal(sig, p))
+		t = p;
+	else if ((type == PIDTYPE_PID) || thread_group_empty(p))
+		return;
+	else {
+		t = signal-&gt;curr_target;
+		while (!wants_signal(sig, t)) {
+			t = next_thread(t);
+			if (t == signal-&gt;curr_target)
+				return;
+		}
+		signal-&gt;curr_target = t;
+	}
+
+	if (sig_fatal(p, sig) &amp;&amp;
+	    !(signal-&gt;flags &amp; SIGNAL_GROUP_EXIT) &amp;&amp;
+	    !sigismember(&amp;t-&gt;real_blocked, sig) &amp;&amp;
+	    (sig == SIGKILL || !p-&gt;ptrace)) {
+		if (!sig_kernel_coredump(sig)) {
+			signal-&gt;flags = SIGNAL_GROUP_EXIT;
+			signal-&gt;group_exit_code = sig;
+			signal-&gt;group_stop_count = 0;
+			t = p;
+			do {
+				task_clear_jobctl_pending(t, JOBCTL_PENDING_MASK);
+				sigaddset(&amp;t-&gt;pending.signal, SIGKILL);
+				signal_wake_up(t, 1);
+			} while_each_thread(p, t);
+			return;
+		}
+	}
+
+	signal_wake_up(t, sig == SIGKILL);
+}</code></pre>
+      <p>对于进程定向信号，Linux 可以把它递送给任一未屏蔽该信号的线程。<code>wants_signal()</code> 排除 blocked、退出中、停止/被 ptrace 的线程；<code>complete_signal()</code> 先看主线程，再轮询线程组的 <code>curr_target</code>。这避免所有信号总打到同一线程，也避免唤醒一个无法处理它的线程。</p>
+      <p>如果信号默认动作是致命且无需 core dump，当前源码会直接设置 <code>SIGNAL_GROUP_EXIT</code> 并给所有线程加 <code>SIGKILL</code> pending。这解决“一个线程已收到 fatal signal，其他线程还继续破坏共享进程状态”的问题。</p>
+      <div class="panel"><strong>第一性原理概述：</strong>信号响应需要一个执行载体。多线程进程里，事件属于进程，但最终必须落到某个线程的返回用户态路径或等待路径上。</div>
+    </section>
+
+    <section id="return-user">
+      <h2>返回用户态检查：MIPS do_notify_resume</h2>
+      <pre><code>/* arch/mips/kernel/signal.c */
+asmlinkage void do_notify_resume(struct pt_regs *regs, void *unused,
+		__u32 thread_info_flags)
+{
+	local_irq_enable();
+
+	user_exit();
+
+	if (thread_info_flags &amp; _TIF_UPROBE)
+		uprobe_notify_resume(regs);
+
+	/* deal with pending signal delivery */
+	if (thread_info_flags &amp; (_TIF_SIGPENDING | _TIF_NOTIFY_SIGNAL))
+		do_signal(regs);
+
+	if (thread_info_flags &amp; _TIF_NOTIFY_RESUME) {
+		tracehook_notify_resume(regs);
+		rseq_handle_notify_resume(NULL, regs);
+	}
+
+	user_enter();
+}
+
+static void do_signal(struct pt_regs *regs)
+{
+	struct ksignal ksig;
+
+	if (get_signal(&amp;ksig)) {
+		handle_signal(&amp;ksig, regs);
+		return;
+	}
+
+	if (regs-&gt;regs[0]) {
+		switch (regs-&gt;regs[2]) {
+		case ERESTARTNOHAND:
+		case ERESTARTSYS:
+		case ERESTARTNOINTR:
+			regs-&gt;regs[2] = regs-&gt;regs[0];
+			regs-&gt;regs[7] = regs-&gt;regs[26];
+			regs-&gt;cp0_epc -= 4;
+			break;
+		case ERESTART_RESTARTBLOCK:
+			regs-&gt;regs[2] = current-&gt;thread.abi-&gt;restart;
+			regs-&gt;regs[7] = regs-&gt;regs[26];
+			regs-&gt;cp0_epc -= 4;
+			break;
+		}
+		regs-&gt;regs[0] = 0;
+	}
+
+	restore_saved_sigmask();
+}</code></pre>
+      <p>发送方完成入队后，B 不一定立刻运行 handler。真正检查发生在 MIPS 返回用户态前的 <code>do_notify_resume()</code>：只要线程标志带 <code>_TIF_SIGPENDING</code> 或 <code>_TIF_NOTIFY_SIGNAL</code>，就进入 <code>do_signal()</code>。这和 <a href="https://man7.org/linux/man-pages/man7/signal.7.html">signal(7)</a> 的描述一致：内核在从 kernel-mode 返回 user-mode 时检查 pending unblocked signal。</p>
+      <p><code>regs</code> 是保存的用户态寄存器。若没有可递送信号，代码会处理被中断系统调用的 restart 语义；若有可递送信号，则进入 <code>handle_signal()</code> 改写用户态返回现场。</p>
+      <div class="panel"><strong>第一性原理概述：</strong>异步信号不能在任意内核临界区里直接跳进用户 handler；它必须等到“准备回用户态”这个可控边界，才能安全改写用户态 PC、SP 和寄存器。</div>
+    </section>
+
+    <section id="get-signal">
+      <h2>取出信号：get_signal 与 dequeue_signal</h2>
+      <pre><code>/* kernel/signal.c */
+int dequeue_signal(struct task_struct *tsk, sigset_t *mask, kernel_siginfo_t *info)
+{
+	bool resched_timer = false;
+	int signr;
+
+	signr = __dequeue_signal(&amp;tsk-&gt;pending, mask, info, &amp;resched_timer);
+	if (!signr) {
+		signr = __dequeue_signal(&amp;tsk-&gt;signal-&gt;shared_pending,
+					 mask, info, &amp;resched_timer);
+	}
+
+	recalc_sigpending();
+	if (!signr)
+		return 0;
+
+	if (unlikely(sig_kernel_stop(signr)))
+		current-&gt;jobctl |= JOBCTL_STOP_DEQUEUED;
+
+	return signr;
+}
+
+bool get_signal(struct ksignal *ksig)
+{
+	struct sighand_struct *sighand = current-&gt;sighand;
+	struct signal_struct *signal = current-&gt;signal;
+	int signr;
+
+	if (unlikely(current-&gt;task_works))
+		task_work_run();
+
+	if (!IS_ENABLED(CONFIG_GENERIC_ENTRY)) {
+		if (test_thread_flag(TIF_NOTIFY_SIGNAL))
+			tracehook_notify_signal();
+		if (!task_sigpending(current))
+			return false;
+	}
+
+	try_to_freeze();
+
+relock:
+	spin_lock_irq(&amp;sighand-&gt;siglock);
+
+	if (signal_group_exit(signal)) {
+		ksig-&gt;info.si_signo = signr = SIGKILL;
+		sigdelset(&amp;current-&gt;pending.signal, SIGKILL);
+		recalc_sigpending();
+		goto fatal;
+	}
+
+	for (;;) {
+		struct k_sigaction *ka;
+
+		signr = dequeue_synchronous_signal(&amp;ksig-&gt;info);
+		if (!signr)
+			signr = dequeue_signal(current, &amp;current-&gt;blocked, &amp;ksig-&gt;info);
+
+		if (!signr)
+			break;
+
+		ka = &amp;sighand-&gt;action[signr-1];
+
+		if (ka-&gt;sa.sa_handler == SIG_IGN)
+			continue;
+		if (ka-&gt;sa.sa_handler != SIG_DFL) {
+			ksig-&gt;ka = *ka;
+			if (ka-&gt;sa.sa_flags &amp; SA_ONESHOT)
+				ka-&gt;sa.sa_handler = SIG_DFL;
+			break;
+		}
+
+		if (sig_kernel_ignore(signr))
+			continue;
+
+		if (sig_kernel_stop(signr)) {
+			if (likely(do_signal_stop(ksig-&gt;info.si_signo)))
+				goto relock;
+			continue;
+		}
+
+fatal:
+		spin_unlock_irq(&amp;sighand-&gt;siglock);
+		do_group_exit(ksig-&gt;info.si_signo);
+	}
+	spin_unlock_irq(&amp;sighand-&gt;siglock);
+	ksig-&gt;sig = signr;
+	return ksig-&gt;sig &gt; 0;
+}</code></pre>
+      <p><code>dequeue_signal()</code> 先取线程私有 pending，再取线程组共享 pending。传入的 <code>mask</code> 是当前 blocked 集，<code>next_signal()</code> 会找“pending 但未被 mask 屏蔽”的信号。同步硬件异常类信号优先于普通 pending 信号，因为 handler 的栈帧必须指向触发异常的那条指令现场。</p>
+      <p><code>get_signal()</code> 处理四类结果：忽略则继续找下一个；有用户 handler 则填充 <code>ksig</code> 返回给体系结构代码；默认忽略也继续；默认停止或默认致命则执行 job control 或进程退出。这里完成“pending 事实”到“用户可见动作”的选择。</p>
+      <div class="panel"><strong>第一性原理概述：</strong>响应信号就是在锁保护下从候选事件中选出一个未屏蔽事件，再按 disposition 转换成 ignore、stop、terminate、core dump 或用户 handler。</div>
+    </section>
+
+    <section id="default-action">
+      <h2>默认动作：忽略、停止、终止</h2>
+      <div class="svg-wrap"><svg viewBox="0 0 920 360" role="img" aria-label="get_signal 默认动作决策图">
+        <defs><marker id="arrow2" markerWidth="8" markerHeight="8" refX="7" refY="3" orient="auto"><path d="M0,0 L7,3 L0,6 Z" fill="#8b949e"/></marker></defs>
+        <text x="20" y="30" class="svg-title">get_signal 决策：同一 pending 信号的不同命运</text>
+        <rect x="40" y="70" width="160" height="58" class="box-accent"/><text x="60" y="104" class="svg-text">取出 signr</text>
+        <rect x="255" y="70" width="170" height="58" class="box"/><text x="275" y="104" class="svg-text">查 action[signr-1]</text>
+        <rect x="500" y="35" width="170" height="58" class="box-good"/><text x="520" y="69" class="svg-text">SIG_IGN: 丢弃</text>
+        <rect x="500" y="115" width="170" height="58" class="box-purple"/><text x="520" y="149" class="svg-text">handler: 返回 ksig</text>
+        <rect x="500" y="195" width="170" height="58" class="box-warn"/><text x="520" y="229" class="svg-text">默认 stop</text>
+        <rect x="500" y="275" width="170" height="58" class="box-danger"/><text x="520" y="309" class="svg-text">默认 fatal</text>
+        <path d="M200 99 H255" class="wire" style="marker-end:url(#arrow2)"/><path d="M425 99 C455 99 455 64 500 64" class="wire" style="marker-end:url(#arrow2)"/><path d="M425 99 C455 99 455 144 500 144" class="wire" style="marker-end:url(#arrow2)"/><path d="M425 99 C455 99 455 224 500 224" class="wire" style="marker-end:url(#arrow2)"/><path d="M425 99 C455 99 455 304 500 304" class="wire" style="marker-end:url(#arrow2)"/>
+        <rect x="720" y="115" width="160" height="58" class="box-accent"/><text x="740" y="149" class="svg-text">MIPS 建栈帧</text><path d="M670 144 H720" class="wire" style="marker-end:url(#arrow2)"/>
+      </svg></div>
+      <p>官方 <a href="https://man7.org/linux/man-pages/man7/signal.7.html">signal(7)</a> 把默认动作分为 Term、Ign、Core、Stop、Cont。当前源码里这些动作被封装为 <code>sig_kernel_ignore()</code>、<code>sig_kernel_stop()</code>、<code>sig_kernel_coredump()</code>、<code>sig_fatal()</code> 等判断。<code>SIGKILL</code> 和 <code>SIGSTOP</code> 不能被 catch、block 或 ignore，这一点也在官方文档中明确。</p>
+      <p>为什么默认动作在取信号阶段执行，而不是发送阶段执行？因为发送阶段并不知道目标线程什么时候能安全停止或退出，也不知道信号到达时 action 是否被 <code>sigaction()</code> 改过。递送阶段拿着 <code>siglock</code> 和当前线程现场，才能做最终决定。</p>
+      <div class="panel"><strong>第一性原理概述：</strong>默认动作是接收方策略，不是发送方策略。发送只制造事实，响应时才用接收方当时的 disposition 把事实转成行为。</div>
+    </section>
+
+    <section id="handler-frame">
+      <h2>用户回调：MIPS 构造 rt signal frame</h2>
+      <pre><code>/* arch/mips/kernel/signal.c */
+static void handle_signal(struct ksignal *ksig, struct pt_regs *regs)
+{
+	sigset_t *oldset = sigmask_to_save();
+	int ret;
+	struct mips_abi *abi = current-&gt;thread.abi;
+	void *vdso = current-&gt;mm-&gt;context.vdso;
+
+	dsemul_thread_rollback(regs);
+
+	if (regs-&gt;regs[0]) {
+		switch(regs-&gt;regs[2]) {
+		case ERESTART_RESTARTBLOCK:
+		case ERESTARTNOHAND:
+			regs-&gt;regs[2] = EINTR;
+			break;
+		case ERESTARTSYS:
+			if (!(ksig-&gt;ka.sa.sa_flags &amp; SA_RESTART)) {
+				regs-&gt;regs[2] = EINTR;
+				break;
+			}
+			fallthrough;
+		case ERESTARTNOINTR:
+			regs-&gt;regs[7] = regs-&gt;regs[26];
+			regs-&gt;regs[2] = regs-&gt;regs[0];
+			regs-&gt;cp0_epc -= 4;
+		}
+		regs-&gt;regs[0] = 0;
+	}
+
+	rseq_signal_deliver(ksig, regs);
+
+	if (sig_uses_siginfo(&amp;ksig-&gt;ka, abi))
+		ret = abi-&gt;setup_rt_frame(vdso + abi-&gt;vdso-&gt;off_rt_sigreturn,
+					  ksig, regs, oldset);
+	else
+		ret = abi-&gt;setup_frame(vdso + abi-&gt;vdso-&gt;off_sigreturn,
+				       ksig, regs, oldset);
+
+	signal_setup_done(ret, ksig, 0);
+}
+
+static int setup_rt_frame(void *sig_return, struct ksignal *ksig,
+			  struct pt_regs *regs, sigset_t *set)
+{
+	struct rt_sigframe __user *frame;
+	int err = 0;
+
+	frame = get_sigframe(ksig, regs, sizeof(*frame));
+	if (!access_ok(frame, sizeof (*frame)))
+		return -EFAULT;
+
+	err |= copy_siginfo_to_user(&amp;frame-&gt;rs_info, &amp;ksig-&gt;info);
+	err |= __put_user(0, &amp;frame-&gt;rs_uc.uc_flags);
+	err |= __put_user(NULL, &amp;frame-&gt;rs_uc.uc_link);
+	err |= __save_altstack(&amp;frame-&gt;rs_uc.uc_stack, regs-&gt;regs[29]);
+	err |= setup_sigcontext(regs, &amp;frame-&gt;rs_uc.uc_mcontext);
+	err |= __copy_to_user(&amp;frame-&gt;rs_uc.uc_sigmask, set, sizeof(*set));
+
+	if (err)
+		return -EFAULT;
+
+	regs-&gt;regs[ 4] = ksig-&gt;sig;
+	regs-&gt;regs[ 5] = (unsigned long) &amp;frame-&gt;rs_info;
+	regs-&gt;regs[ 6] = (unsigned long) &amp;frame-&gt;rs_uc;
+	regs-&gt;regs[29] = (unsigned long) frame;
+	regs-&gt;regs[31] = (unsigned long) sig_return;
+	regs-&gt;cp0_epc = regs-&gt;regs[25] = (unsigned long) ksig-&gt;ka.sa.sa_handler;
+
+	return 0;
+}</code></pre>
+      <p>当 B 安装了 handler，MIPS 不是在内核里调用那个函数，而是修改将要返回的用户态寄存器：<code>a0</code> 放信号号，<code>a1</code> 放 <code>siginfo</code>，<code>a2</code> 放 <code>ucontext</code>，<code>sp</code> 指向新建的 <code>rt_sigframe</code>，<code>ra</code> 指向 vDSO 的 <code>rt_sigreturn</code> trampoline，<code>cp0_epc</code> 指向 handler。这样 <code>eret</code> 回用户态后，B 看起来就像自然调用了 handler。</p>
+      <p><code>signal_setup_done()</code> 成功后调用 <code>signal_delivered()</code>，把 <code>sa_mask</code> 和当前信号加入 blocked 集，除非设置 <code>SA_NODEFER</code>。这对应 <a href="https://man7.org/linux/man-pages/man2/sigaction.2.html">sigaction(2)</a>：handler 执行期间会临时屏蔽指定信号，避免默认重入。</p>
+      <pre><code>/* kernel/signal.c */
+static void signal_delivered(struct ksignal *ksig, int stepping)
+{
+	sigset_t blocked;
+
+	clear_restore_sigmask();
+
+	sigorsets(&amp;blocked, &amp;current-&gt;blocked, &amp;ksig-&gt;ka.sa.sa_mask);
+	if (!(ksig-&gt;ka.sa.sa_flags &amp; SA_NODEFER))
+		sigaddset(&amp;blocked, ksig-&gt;sig);
+	set_current_blocked(&amp;blocked);
+	tracehook_signal_handler(stepping);
+}</code></pre>
+      <div class="panel"><strong>第一性原理概述：</strong>handler 不是内核回调用户函数，而是内核重写用户态返回现场。保存旧现场、跳到 handler、再通过 trampoline 恢复，是异步控制流能继续原程序的根本机制。</div>
+    </section>
+
+    <section id="sigreturn">
+      <h2>handler 返回：rt_sigreturn 恢复现场</h2>
+      <pre><code>/* arch/mips/kernel/signal.c */
+asmlinkage void sys_rt_sigreturn(void)
+{
+	struct rt_sigframe __user *frame;
+	struct pt_regs *regs;
+	sigset_t set;
+	int sig;
+
+	regs = current_pt_regs();
+	frame = (struct rt_sigframe __user *)regs-&gt;regs[29];
+	if (!access_ok(frame, sizeof(*frame)))
+		goto badframe;
+	if (__copy_from_user(&amp;set, &amp;frame-&gt;rs_uc.uc_sigmask, sizeof(set)))
+		goto badframe;
+
+	set_current_blocked(&amp;set);
+
+	sig = restore_sigcontext(regs, &amp;frame-&gt;rs_uc.uc_mcontext);
+	if (sig &lt; 0)
+		goto badframe;
+	else if (sig)
+		force_sig(sig);
+
+	if (restore_altstack(&amp;frame-&gt;rs_uc.uc_stack))
+		goto badframe;
+
+	__asm__ __volatile__(
+		"move\t$29, %0\n\t"
+		"j\tsyscall_exit"
+		: /* no outputs */
+		: "r" (regs));
+
+badframe:
+	force_sig(SIGSEGV);
+}
+
+int restore_sigcontext(struct pt_regs *regs, struct sigcontext __user *sc)
+{
+	unsigned long treg;
+	int err = 0;
+	int i;
+
+	current-&gt;restart_block.fn = do_no_restart_syscall;
+
+	err |= __get_user(regs-&gt;cp0_epc, &amp;sc-&gt;sc_pc);
+	err |= __get_user(regs-&gt;hi, &amp;sc-&gt;sc_mdhi);
+	err |= __get_user(regs-&gt;lo, &amp;sc-&gt;sc_mdlo);
+
+	for (i = 1; i &lt; 32; i++)
+		err |= __get_user(regs-&gt;regs[i], &amp;sc-&gt;sc_regs[i]);
+
+	return err ?: protected_restore_fp_context(sc);
+}</code></pre>
+      <p>handler 普通返回后会跳到 <code>regs[31]</code> 指定的 vDSO trampoline，trampoline 发起 <code>rt_sigreturn</code> 系统调用。这里内核从用户栈上的 <code>rt_sigframe</code> 读回保存的信号屏蔽字、通用寄存器、PC、FPU 上下文和 altstack 状态。</p>
+      <p>如果用户栈帧损坏，代码进入 <code>badframe</code> 强制 <code>SIGSEGV</code>。这不是惩罚，而是保护：内核不能相信用户态给出的任意恢复现场，否则用户程序可以伪造不受约束的内核返回状态。</p>
+      <div class="panel"><strong>第一性原理概述：</strong>异步 handler 要能回到被打断处，就必须把旧世界压到用户栈，再由一个受内核校验的系统调用恢复它。恢复失败说明控制流完整性已经丢失，只能转为故障信号。</div>
+    </section>
+
+    <section id="signalfd-create">
+      <h2>signalfd 创建：把信号变成可读 fd</h2>
+      <pre><code>/* fs/signalfd.c */
+struct signalfd_ctx {
+	sigset_t sigmask;
+};
+
+static int do_signalfd4(int ufd, sigset_t *mask, int flags)
+{
+	struct signalfd_ctx *ctx;
+
+	BUILD_BUG_ON(SFD_CLOEXEC != O_CLOEXEC);
+	BUILD_BUG_ON(SFD_NONBLOCK != O_NONBLOCK);
+
+	if (flags &amp; ~(SFD_CLOEXEC | SFD_NONBLOCK))
+		return -EINVAL;
+
+	sigdelsetmask(mask, sigmask(SIGKILL) | sigmask(SIGSTOP));
+	signotset(mask);
+
+	if (ufd == -1) {
+		ctx = kmalloc(sizeof(*ctx), GFP_KERNEL);
+		if (!ctx)
+			return -ENOMEM;
+
+		ctx-&gt;sigmask = *mask;
+
+		ufd = anon_inode_getfd("[signalfd]", &amp;signalfd_fops, ctx,
+				       O_RDWR | (flags &amp; (O_CLOEXEC | O_NONBLOCK)));
+		if (ufd &lt; 0)
+			kfree(ctx);
+	} else {
+		struct fd f = fdget(ufd);
+		if (!f.file)
+			return -EBADF;
+		ctx = f.file-&gt;private_data;
+		if (f.file-&gt;f_op != &amp;signalfd_fops) {
+			fdput(f);
+			return -EINVAL;
+		}
+		spin_lock_irq(&amp;current-&gt;sighand-&gt;siglock);
+		ctx-&gt;sigmask = *mask;
+		spin_unlock_irq(&amp;current-&gt;sighand-&gt;siglock);
+
+		wake_up(&amp;current-&gt;sighand-&gt;signalfd_wqh);
+		fdput(f);
+	}
+
+	return ufd;
+}</code></pre>
+      <p><a href="https://man7.org/linux/man-pages/man2/signalfd.2.html">signalfd(2)</a> 说 <code>SIGKILL</code> 和 <code>SIGSTOP</code> 不能通过 signalfd 接收；源码用 <code>sigdelsetmask()</code> 删除它们。随后 <code>signotset(mask)</code> 转成内核内部 <code>dequeue_signal()</code> 使用的 mask 形式。</p>
+      <p><code>anon_inode_getfd()</code> 说明 signalfd 不对应磁盘 inode，而是匿名文件对象。它的核心状态只有一个 <code>sigmask</code>：这个 fd 愿意同步接收哪些信号。官方建议通常先用 <code>sigprocmask()</code> block 这些信号，否则它们可能按默认动作或 handler 被处理，而不是留给 fd 读取。</p>
+      <div class="panel"><strong>第一性原理概述：</strong>signalfd 没有创造第二套信号系统；它只是给同一 pending 集合提供了一个 fd 视角，让事件循环能用 read/poll/epoll 管理信号。</div>
+    </section>
+
+    <section id="signalfd-read">
+      <h2>signalfd read：同步消费 pending 信号</h2>
+      <pre><code>/* fs/signalfd.c */
+static ssize_t signalfd_dequeue(struct signalfd_ctx *ctx, kernel_siginfo_t *info,
+				int nonblock)
+{
+	ssize_t ret;
+	DECLARE_WAITQUEUE(wait, current);
+
+	spin_lock_irq(&amp;current-&gt;sighand-&gt;siglock);
+	ret = dequeue_signal(current, &amp;ctx-&gt;sigmask, info);
+	switch (ret) {
+	case 0:
+		if (!nonblock)
+			break;
+		ret = -EAGAIN;
+		fallthrough;
+	default:
+		spin_unlock_irq(&amp;current-&gt;sighand-&gt;siglock);
+		return ret;
+	}
+
+	add_wait_queue(&amp;current-&gt;sighand-&gt;signalfd_wqh, &amp;wait);
+	for (;;) {
+		set_current_state(TASK_INTERRUPTIBLE);
+		ret = dequeue_signal(current, &amp;ctx-&gt;sigmask, info);
+		if (ret != 0)
+			break;
+		if (signal_pending(current)) {
+			ret = -ERESTARTSYS;
+			break;
+		}
+		spin_unlock_irq(&amp;current-&gt;sighand-&gt;siglock);
+		schedule();
+		spin_lock_irq(&amp;current-&gt;sighand-&gt;siglock);
+	}
+	spin_unlock_irq(&amp;current-&gt;sighand-&gt;siglock);
+
+	remove_wait_queue(&amp;current-&gt;sighand-&gt;signalfd_wqh, &amp;wait);
+	__set_current_state(TASK_RUNNING);
+
+	return ret;
+}
+
+static ssize_t signalfd_read(struct file *file, char __user *buf, size_t count,
+			     loff_t *ppos)
+{
+	struct signalfd_ctx *ctx = file-&gt;private_data;
+	struct signalfd_siginfo __user *siginfo;
+	int nonblock = file-&gt;f_flags &amp; O_NONBLOCK;
+	ssize_t ret, total = 0;
+	kernel_siginfo_t info;
+
+	count /= sizeof(struct signalfd_siginfo);
+	if (!count)
+		return -EINVAL;
+
+	siginfo = (struct signalfd_siginfo __user *) buf;
+	do {
+		ret = signalfd_dequeue(ctx, &amp;info, nonblock);
+		if (unlikely(ret &lt;= 0))
+			break;
+		ret = signalfd_copyinfo(siginfo, &amp;info);
+		if (ret &lt; 0)
+			break;
+		siginfo++;
+		total += ret;
+		nonblock = 1;
+	} while (--count);
+
+	return total ? total: ret;
+}</code></pre>
+      <p><code>signalfd_read()</code> 与 handler 路径共享 <code>dequeue_signal()</code>，所以它会真正消费 pending 信号。官方 <a href="https://man7.org/linux/man-pages/man2/signalfd.2.html">signalfd(2)</a> 明确说，read 的结果是这些信号不再 pending，也不会再被 handler 捕获或被 <code>sigwaitinfo()</code> 接收。</p>
+      <p>如果没有匹配信号，阻塞 fd 会把当前任务挂到 <code>sighand-&gt;signalfd_wqh</code>，等待发送路径的 <code>signalfd_notify()</code> 唤醒；非阻塞 fd 返回 <code>-EAGAIN</code>。循环读取允许一次 read 返回多个 <code>struct signalfd_siginfo</code>。</p>
+      <pre><code>/* fs/signalfd.c */
+static int signalfd_copyinfo(struct signalfd_siginfo __user *uinfo,
+			     kernel_siginfo_t const *kinfo)
+{
+	struct signalfd_siginfo new;
+
+	BUILD_BUG_ON(sizeof(struct signalfd_siginfo) != 128);
+	memset(&amp;new, 0, sizeof(new));
+
+	new.ssi_signo = kinfo-&gt;si_signo;
+	new.ssi_errno = kinfo-&gt;si_errno;
+	new.ssi_code  = kinfo-&gt;si_code;
+	switch (siginfo_layout(kinfo-&gt;si_signo, kinfo-&gt;si_code)) {
+	case SIL_KILL:
+		new.ssi_pid = kinfo-&gt;si_pid;
+		new.ssi_uid = kinfo-&gt;si_uid;
+		break;
+	case SIL_RT:
+		new.ssi_pid = kinfo-&gt;si_pid;
+		new.ssi_uid = kinfo-&gt;si_uid;
+		new.ssi_ptr = (long) kinfo-&gt;si_ptr;
+		new.ssi_int = kinfo-&gt;si_int;
+		break;
+	case SIL_CHLD:
+		new.ssi_pid    = kinfo-&gt;si_pid;
+		new.ssi_uid    = kinfo-&gt;si_uid;
+		new.ssi_status = kinfo-&gt;si_status;
+		new.ssi_utime  = kinfo-&gt;si_utime;
+		new.ssi_stime  = kinfo-&gt;si_stime;
+		break;
+	default:
+		break;
+	}
+
+	if (copy_to_user(uinfo, &amp;new, sizeof(struct signalfd_siginfo)))
+		return -EFAULT;
+
+	return sizeof(*uinfo);
+}</code></pre>
+      <p><code>signalfd_copyinfo()</code> 把内核 <code>kernel_siginfo_t</code> 转成固定 128 字节的用户 ABI 结构。不同 <code>si_code</code> 布局只填充有意义字段，避免把无关联合字段暴露给用户态。</p>
+      <div class="panel"><strong>第一性原理概述：</strong>signalfd 的 read 是“拉模型”：用户态在自己选择的时刻，把 pending 事件从内核状态中取出并转成普通字节流。</div>
+    </section>
+
+    <section id="signalfd-poll">
+      <h2>signalfd poll/epoll：事件循环如何感知信号</h2>
+      <pre><code>/* fs/signalfd.c */
+static __poll_t signalfd_poll(struct file *file, poll_table *wait)
+{
+	struct signalfd_ctx *ctx = file-&gt;private_data;
+	__poll_t events = 0;
+
+	poll_wait(file, &amp;current-&gt;sighand-&gt;signalfd_wqh, wait);
+
+	spin_lock_irq(&amp;current-&gt;sighand-&gt;siglock);
+	if (next_signal(&amp;current-&gt;pending, &amp;ctx-&gt;sigmask) ||
+	    next_signal(&amp;current-&gt;signal-&gt;shared_pending,
+			&amp;ctx-&gt;sigmask))
+		events |= EPOLLIN;
+	spin_unlock_irq(&amp;current-&gt;sighand-&gt;siglock);
+
+	return events;
+}</code></pre>
+      <p><code>poll_wait()</code> 把当前任务注册到 <code>signalfd_wqh</code>，随后在锁内检查私有 pending 和共享 pending 中是否存在与 fd mask 匹配的信号。若存在就返回 <code>EPOLLIN</code>。这就是官方文档所说“signalfd fd 可被 select/poll/epoll 监控”的内核实现。</p>
+      <p>它只检查当前线程可读的信号：线程私有 pending 加线程组共享 pending。官方 <a href="https://man7.org/linux/man-pages/man2/signalfd.2.html">signalfd(2)</a> 也说明，多线程程序中，一个线程不能通过 signalfd 读到定向给其他线程的信号。</p>
+      <div class="panel"><strong>第一性原理概述：</strong>poll 不消费事件，只回答“现在 read 会不会有东西”。消费仍由 read 完成，这让事件循环可以先统一调度，再决定处理顺序。</div>
+    </section>
+
+    <section id="compare">
+      <h2>handler 与 signalfd 对比</h2>
+      <table><thead><tr><th>维度</th><th>signal handler</th><th>signalfd</th></tr></thead><tbody>
+        <tr><td>触发时机</td><td>目标线程返回用户态时，内核改写用户态 PC/SP/寄存器。</td><td>目标线程调用 <code>read()</code> 或通过 <code>poll/epoll</code> 发现可读后主动读取。</td></tr>
+        <tr><td>控制流</td><td>异步插入 handler，之后通过 <code>rt_sigreturn</code> 恢复。</td><td>同步函数调用，像读取普通 fd 一样返回结构体。</td></tr>
+        <tr><td>pending 消费</td><td><code>get_signal()</code> 递送时 dequeue。</td><td><code>signalfd_read()</code> 调用 <code>dequeue_signal()</code> 消费。</td></tr>
+        <tr><td>适合场景</td><td>传统 UNIX 信号、崩溃处理、必须捕获同步硬件异常如 SIGSEGV。</td><td>事件循环、服务进程、希望避免异步 handler 限制的程序。</td></tr>
+        <tr><td>限制</td><td>handler 内只能安全调用 async-signal-safe 函数，且要考虑重入。</td><td>通常需先 block 对应信号；不能接收 <code>SIGKILL/SIGSTOP</code>；同步硬件异常不能靠 signalfd 接收。</td></tr>
+      </tbody></table>
+      <div class="svg-wrap"><svg viewBox="0 0 960 430" role="img" aria-label="handler 和 signalfd 分流图">
+        <defs><marker id="arrow3" markerWidth="8" markerHeight="8" refX="7" refY="3" orient="auto"><path d="M0,0 L7,3 L0,6 Z" fill="#8b949e"/></marker></defs>
+        <text x="20" y="30" class="svg-title">同一个 pending 集合，两个消费入口</text>
+        <rect x="360" y="70" width="230" height="70" class="box-accent"/><text x="390" y="104" class="svg-text">task.pending / shared_pending</text><text x="390" y="124" class="svg-small">位图 + sigqueue list</text>
+        <rect x="90" y="230" width="240" height="78" class="box-good"/><text x="120" y="263" class="svg-text">返回用户态</text><text x="120" y="286" class="svg-small">do_notify_resume -> get_signal</text>
+        <rect x="625" y="230" width="240" height="78" class="box-purple"/><text x="655" y="263" class="svg-text">事件循环读取</text><text x="655" y="286" class="svg-small">read(signalfd) -> dequeue_signal</text>
+        <path d="M430 140 C350 180 260 180 210 230" class="wire" style="marker-end:url(#arrow3)"/><path d="M520 140 C610 180 700 180 745 230" class="wire" style="marker-end:url(#arrow3)"/>
+        <rect x="180" y="335" width="600" height="50" class="box-warn"/><text x="210" y="366" class="svg-text">谁先 dequeue，谁就消费该信号；因此 signalfd 常配合 sigprocmask 先 block。</text>
+      </svg></div>
+      <div class="panel"><strong>第一性原理概述：</strong>handler 和 signalfd 不是两个来源，而是同一 pending 状态的两个出口。为了让 signalfd 稳定接收，必须阻止 handler/default action 抢先消费。</div>
+    </section>
+
+    <section id="summary">
+      <h2>全流程总结</h2>
+      <ol>
+        <li>A 调用 <code>kill(pid, sig)</code>，内核构造 <code>kernel_siginfo</code>，记录发送者 PID/UID 和 <code>SI_USER</code>。</li>
+        <li>内核按 PID 语义找到目标进程或进程组，执行 UID、<code>CAP_KILL</code>、<code>SIGCONT</code> session 例外、audit 和 LSM 检查。</li>
+        <li>目标 <code>sighand-&gt;siglock</code> 下，内核选择线程私有 pending 或线程组共享 pending，设置 pending 位，必要时挂入 <code>sigqueue</code> 保存 <code>siginfo</code>。</li>
+        <li><code>complete_signal()</code> 选择一个未屏蔽且可响应的线程，设置 pending 标志并唤醒；fatal signal 可直接推动整个线程组退出。</li>
+        <li>B 返回用户态时，MIPS <code>do_notify_resume()</code> 调用 <code>do_signal()</code>，<code>get_signal()</code> 从 pending 中取出未屏蔽信号，按 disposition 决定忽略、停止、终止或构造 handler。</li>
+        <li>若执行 handler，MIPS 把 <code>rt_sigframe</code> 写到用户栈，设置 <code>a0/a1/a2/sp/ra/epc</code>，用户态 handler 返回后通过 <code>rt_sigreturn</code> 恢复原现场。</li>
+        <li>若 B 使用 signalfd，<code>read()</code> 在同一 <code>siglock</code> 下调用 <code>dequeue_signal()</code> 消费 pending，并把 <code>siginfo</code> 转成 128 字节 <code>signalfd_siginfo</code> 返回。</li>
+      </ol>
+      <div class="panel"><strong>第一性原理概述：</strong>整个信号系统围绕一个核心不变量：信号先成为目标任务中受锁保护的 pending 状态，再由接收方可处理的执行上下文消费。异步 handler 是“内核改写用户返回现场”，signalfd 是“用户同步读取同一 pending 队列”。</div>
+    </section>
+
+    <div class="chapter-nav"><a id="prevChapter" href="#intro">上一章</a><a id="nextChapter" href="#official">下一章</a></div>
+  </main>
+  <script>
+    const sections = Array.from(document.querySelectorAll('main section, header.hero'));
+    const links = Array.from(document.querySelectorAll('.nav-list a'));
+    const progressBar = document.getElementById('progressBar');
+    const menuButton = document.getElementById('menuButton');
+    const prevChapter = document.getElementById('prevChapter');
+    const nextChapter = document.getElementById('nextChapter');
+
+    function currentIndex() {
+      let idx = 0;
+      const y = window.scrollY + 90;
+      sections.forEach((section, i) => {
+        if (section.offsetTop <= y) idx = i;
+      });
+      return idx;
+    }
+
+    function updateState() {
+      const scrollable = document.documentElement.scrollHeight - window.innerHeight;
+      const pct = scrollable > 0 ? (window.scrollY / scrollable) * 100 : 0;
+      progressBar.style.width = pct + '%';
+
+      const idx = currentIndex();
+      const id = sections[idx].id;
+      links.forEach(link => link.classList.toggle('active', link.getAttribute('href') === '#' + id));
+
+      const prev = sections[Math.max(0, idx - 1)];
+      const next = sections[Math.min(sections.length - 1, idx + 1)];
+      prevChapter.href = '#' + prev.id;
+      nextChapter.href = '#' + next.id;
+      prevChapter.style.visibility = idx === 0 ? 'hidden' : 'visible';
+      nextChapter.style.visibility = idx === sections.length - 1 ? 'hidden' : 'visible';
+    }
+
+    menuButton.addEventListener('click', () => document.body.classList.toggle('nav-open'));
+    links.forEach(link => link.addEventListener('click', () => document.body.classList.remove('nav-open')));
+    window.addEventListener('scroll', updateState, { passive: true });
+    window.addEventListener('resize', updateState);
+    window.addEventListener('keydown', event => {
+      if (event.altKey || event.ctrlKey || event.metaKey || event.shiftKey) return;
+      if (event.key !== 'ArrowLeft' && event.key !== 'ArrowRight') return;
+      const idx = currentIndex();
+      const target = event.key === 'ArrowLeft' ? sections[idx - 1] : sections[idx + 1];
+      if (target) {
+        event.preventDefault();
+        target.scrollIntoView({ behavior: 'smooth', block: 'start' });
+      }
+    });
+    updateState();
+  </script>
+</body>
+</html>

@@ -1,0 +1,389 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>IPv4 邻居子系统与 ARP 状态机分析</title>
+  <style>
+    :root { --bg:#0f1117; --bg2:#161b22; --bg3:#1e2530; --border:#30363d; --accent:#0a84ff; --green:#30d158; --red:#ff453a; --violet:#bf5af2; --warn:#ffa657; --text:#e6edf3; --muted:#8b949e; --nav-w:292px; --header-h:48px; --radius:8px; }
+    * { box-sizing:border-box; }
+    html { scroll-behavior:smooth; }
+    body { margin:0; background:var(--bg); color:var(--text); font-family:-apple-system,BlinkMacSystemFont,'Segoe UI','PingFang SC','Microsoft YaHei',sans-serif; line-height:1.75; }
+    a { color:#79c0ff; text-decoration-thickness:1px; text-underline-offset:3px; }
+    code,.mono { font-family:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace; }
+    code { color:#79c0ff; }
+    .progress { position:fixed; inset:0 0 auto 0; height:3px; z-index:1000; background:rgba(10,132,255,.12); }
+    .progress span { display:block; width:0; height:100%; background:linear-gradient(90deg,var(--accent),var(--green)); }
+    .topbar { position:fixed; top:3px; left:0; right:0; height:var(--header-h); z-index:900; display:flex; align-items:center; gap:.75rem; padding:0 1rem; background:rgba(15,17,23,.95); backdrop-filter:blur(10px); border-bottom:1px solid var(--border); }
+    .topbar h1 { margin:0; font-size:.95rem; color:var(--accent); }
+    .topbar a { color:var(--muted); text-decoration:none; font-size:.8rem; }
+    .topbar a:hover { color:var(--accent); }
+    .topbar .meta { margin-left:auto; color:var(--muted); font-size:.75rem; }
+    .hamburger { width:2.25rem; height:2.25rem; border:1px solid var(--border); border-radius:var(--radius); background:transparent; color:var(--text); cursor:pointer; font:inherit; }
+    nav { position:fixed; top:calc(var(--header-h) + 3px); left:0; bottom:0; width:var(--nav-w); overflow:auto; background:var(--bg2); border-right:1px solid var(--border); padding:1rem .5rem; z-index:800; }
+    .brand { padding:.35rem .75rem .9rem; margin-bottom:.5rem; border-bottom:1px solid var(--border); }
+    .brand strong { display:block; color:var(--accent); font-size:.92rem; }
+    .brand small { display:block; margin-top:.3rem; color:var(--muted); font-size:.76rem; line-height:1.55; }
+    details { border-bottom:1px solid var(--border); padding:.25rem 0; }
+    summary { cursor:pointer; padding:.45rem .75rem; font-size:.82rem; font-weight:700; }
+    .nav-list { list-style:none; padding:0 0 .35rem; margin:0; }
+    .nav-list a { display:block; color:var(--muted); text-decoration:none; border-left:3px solid transparent; border-radius:.4rem; font-size:.82rem; padding:.4rem .75rem .4rem 1.1rem; line-height:1.35; }
+    .nav-list a:hover { color:var(--text); background:var(--bg3); }
+    .nav-list a.active { color:var(--accent); background:rgba(10,132,255,.08); border-left-color:var(--accent); }
+    main { margin:calc(var(--header-h) + 3px) 0 0 var(--nav-w); max-width:1080px; padding:2rem 2.5rem 4rem; }
+    header.hero { margin-bottom:3rem; padding-bottom:1.2rem; border-bottom:1px solid var(--border); }
+    .eyebrow { display:inline-block; margin-bottom:.75rem; padding:.2rem .55rem; border:1px solid rgba(10,132,255,.35); border-radius:99px; color:var(--accent); background:rgba(10,132,255,.15); font-size:.7rem; font-weight:700; letter-spacing:.04em; }
+    h1,h2,h3 { line-height:1.22; letter-spacing:0; }
+    h1 { margin:0 0 .75rem; font-size:1.8rem; }
+    h2 { margin:0 0 1rem; padding-bottom:.5rem; border-bottom:1px solid var(--border); font-size:1.35rem; }
+    h3 { margin:1.25rem 0 .75rem; color:var(--accent); font-size:1.05rem; }
+    .lead { color:var(--muted); font-size:1.05rem; }
+    section { margin-bottom:3rem; scroll-margin-top:calc(var(--header-h) + 16px); }
+    p,li { font-size:.95rem; }
+    p { margin:0 0 .75rem; }
+    pre { margin:1rem 0; padding:1rem; overflow-x:auto; color:#c9d1d9; background:#0b0d12; border:1px solid var(--border); border-radius:var(--radius); font-size:.82rem; line-height:1.55; }
+    table { width:100%; border-collapse:collapse; margin:1rem 0; font-size:.85rem; }
+    th,td { padding:.55rem .65rem; border:1px solid var(--border); text-align:left; vertical-align:top; }
+    th { color:var(--accent); background:var(--bg3); }
+    .panel { margin:1rem 0; padding:1rem; border:1px solid rgba(48,213,88,.25); border-radius:var(--radius); background:rgba(48,213,88,.08); }
+    .note { margin:1rem 0; padding:.85rem 1rem; border-left:4px solid var(--warn); border-radius:0 var(--radius) var(--radius) 0; background:rgba(255,166,87,.08); }
+    .grid { display:grid; grid-template-columns:repeat(2,minmax(0,1fr)); gap:1rem; margin:1rem 0; }
+    .concept { padding:1rem; border:1px solid var(--border); border-radius:var(--radius); background:var(--bg2); }
+    .concept h3 { margin-top:0; }
+    .svg-wrap { margin:1.25rem 0; padding:1rem; overflow-x:auto; border:1px solid var(--border); border-radius:.75rem; background:var(--bg2); }
+    svg { display:block; max-width:100%; height:auto; margin:0 auto; font-family:-apple-system,BlinkMacSystemFont,'Segoe UI','PingFang SC','Microsoft YaHei',sans-serif; }
+    .box { fill:var(--bg3); stroke:var(--border); stroke-width:1.4; rx:8; }
+    .box-blue { fill:rgba(10,132,255,.14); stroke:var(--accent); }
+    .box-green { fill:rgba(48,213,88,.10); stroke:var(--green); }
+    .box-warn { fill:rgba(255,166,87,.10); stroke:var(--warn); }
+    .box-red { fill:rgba(255,69,58,.08); stroke:var(--red); }
+    .box-violet { fill:rgba(191,90,242,.12); stroke:var(--violet); }
+    .wire { stroke:var(--muted); stroke-width:2; fill:none; marker-end:url(#arrow); }
+    .wire-blue { stroke:var(--accent); stroke-width:2; fill:none; marker-end:url(#arrowBlue); }
+    .wire-green { stroke:var(--green); stroke-width:2; fill:none; marker-end:url(#arrowGreen); }
+    .wire-warn { stroke:var(--warn); stroke-width:2; fill:none; marker-end:url(#arrowWarn); }
+    .wire-red { stroke:var(--red); stroke-width:2; fill:none; marker-end:url(#arrowWarn); }
+    .svg-title { fill:var(--text); font-size:16px; font-weight:800; }
+    .svg-text { fill:var(--text); font-size:13px; }
+    .svg-small { fill:var(--muted); font-size:11px; }
+    .fig-cap { margin-top:.5rem; color:var(--muted); text-align:center; font-size:.8rem; }
+    .chapter-nav { display:flex; justify-content:space-between; gap:.75rem; margin-top:3rem; padding-top:1rem; border-top:1px solid var(--border); }
+    .chapter-nav a { display:inline-flex; align-items:center; justify-content:center; min-height:2.4rem; padding:.45rem .85rem; border:1px solid var(--border); border-radius:var(--radius); color:var(--text); background:var(--bg2); text-decoration:none; }
+    @media (max-width:900px) { .topbar .meta,.topbar a { display:none; } nav { width:min(86vw,20rem); transform:translateX(-100%); transition:transform 180ms ease; } body.nav-open nav { transform:translateX(0); } main { margin-left:0; padding:1.25rem; } .grid { grid-template-columns:1fr; } table { display:block; overflow-x:auto; } }
+    @media (min-width:901px) { .hamburger { display:none; } }
+  </style>
+</head>
+<body>
+  <div class="progress" aria-hidden="true"><span id="progressBar"></span></div>
+  <header class="topbar">
+    <button class="hamburger" id="menuButton" aria-label="打开或关闭导航">☰</button>
+    <h1>IPv4 neighbour / ARP</h1>
+    <a href="ipv4-routing-subsystem-design.html">路由子系统</a>
+    <a href="ipv4-address-route-interaction.html">地址与路由交互</a>
+    <span class="meta">独立 HTML · 内联 SVG · 无外部资源依赖</span>
+  </header>
+
+  <nav aria-label="章节导航">
+    <div class="brand"><strong>邻居子系统</strong><small>把下一跳 IP 映射到二层地址，并用 NUD 状态机维护映射可用性。</small></div>
+    <details open><summary>一、设计总览</summary><ul class="nav-list"><li><a href="#intro">范围说明</a></li><li><a href="#sources">官方依据</a></li><li><a href="#model">核心模型</a></li><li><a href="#objects">核心对象</a></li></ul></details>
+    <details open><summary>二、初始化与状态机</summary><ul class="nav-list"><li><a href="#init">初始化</a></li><li><a href="#nud-states">NUD 状态</a></li><li><a href="#timer">定时器迁移</a></li><li><a href="#gc">GC 与参数</a></li></ul></details>
+    <details open><summary>三、收发流程</summary><ul class="nav-list"><li><a href="#tx">发送解析</a></li><li><a href="#rx">ARP 接收</a></li><li><a href="#update">neigh_update</a></li><li><a href="#admin">用户管理</a></li></ul></details>
+    <details open><summary>四、交互与总结</summary><ul class="nav-list"><li><a href="#route">与路由交互</a></li><li><a href="#msc">完整 MSC</a></li><li><a href="#scenarios">典型场景</a></li><li><a href="#principles">设计原则</a></li><li><a href="#summary">整体总结</a></li></ul></details>
+  </nav>
+
+  <main>
+    <header class="hero" id="intro">
+      <div class="eyebrow">net/core/neighbour.c · include/net/neighbour.h · net/ipv4/arp.c · net/ipv4/ip_output.c · net/ipv4/route.c</div>
+      <h1>IPv4 邻居子系统：从路由下一跳到 ARP 状态机</h1>
+      <p class="lead">邻居子系统位于三层路由和二层发送之间。FIB 决定下一跳 IP 与输出设备，邻居子系统负责把这个下一跳解析成链路层地址，并用 NUD 状态机判断这个映射是否仍可信。IPv4 的协议适配是 ARP；通用缓存、定时器、GC、队列和状态迁移在 `net/core/neighbour.c`。</p>
+    </header>
+
+    <section id="sources">
+      <h2>官方依据</h2>
+      <table><thead><tr><th>主题</th><th>官方链接</th><th>本文使用的事实</th></tr></thead><tbody>
+        <tr><td>ARP 协议</td><td><a href="https://www.rfc-editor.org/rfc/rfc826">RFC 826</a></td><td>ARP 用于把协议地址动态映射到链路层地址；发送前先查表，缺失时广播 request，收到 request/reply 后学习 sender 映射。</td></tr>
+        <tr><td>Linux ARP 模块</td><td><a href="https://man7.org/linux/man-pages/man7/arp.7.html">arp(7)</a></td><td>Linux ARP 维护有限大小的缓存，permanent 项不被 GC 删除；stale 后会重新探测；上层可通过正反馈延长可达性。</td></tr>
+        <tr><td>IPv4 sysctl</td><td><a href="https://docs.kernel.org/networking/ip-sysctl.html">ip-sysctl</a></td><td>`neigh/default/gc_thresh*`、`unres_qlen_bytes`、`mcast_solicit`、`ucast_solicit`、`arp_ignore`、`arp_announce`、`arp_accept` 等控制缓存、探测和 ARP 策略。</td></tr>
+      </tbody></table>
+      <div class="panel"><strong>第一性原理概述：</strong>路由回答“下一跳是谁”，邻居子系统回答“这个下一跳当前对应哪个二层地址，以及这个答案还能不能信”。没有邻居层，IP 路由无法落到设备发送队列；没有状态机，旧 MAC 会长时间污染数据面。</div>
+    </section>
+
+    <section id="model">
+      <h2>核心模型：通用缓存 + 协议适配 + 设备发送</h2>
+      <div class="svg-wrap"><svg viewBox="0 0 1000 430" role="img" aria-label="邻居子系统整体架构">
+        <defs><marker id="arrow" markerWidth="8" markerHeight="8" refX="7" refY="3" orient="auto"><path d="M0,0 L7,3 L0,6 Z" fill="#8b949e"/></marker><marker id="arrowBlue" markerWidth="8" markerHeight="8" refX="7" refY="3" orient="auto"><path d="M0,0 L7,3 L0,6 Z" fill="#0a84ff"/></marker><marker id="arrowGreen" markerWidth="8" markerHeight="8" refX="7" refY="3" orient="auto"><path d="M0,0 L7,3 L0,6 Z" fill="#30d158"/></marker><marker id="arrowWarn" markerWidth="8" markerHeight="8" refX="7" refY="3" orient="auto"><path d="M0,0 L7,3 L0,6 Z" fill="#ffa657"/></marker></defs>
+        <text x="24" y="34" class="svg-title">IPv4 neighbour subsystem 分层</text>
+        <rect x="50" y="82" width="190" height="88" class="box-blue"/><text x="96" y="116" class="svg-text">route / dst</text><text x="75" y="142" class="svg-small">rtable: gateway + dev</text><text x="75" y="162" class="svg-small">ip_finish_output2()</text>
+        <rect x="326" y="68" width="230" height="120" class="box-green"/><text x="382" y="104" class="svg-text">通用 neighbour cache</text><text x="354" y="130" class="svg-small">neigh_table / neighbour</text><text x="354" y="152" class="svg-small">NUD timer / GC / queue</text><text x="354" y="174" class="svg-small">neigh_event_send()</text>
+        <rect x="660" y="82" width="210" height="88" class="box-violet"/><text x="718" y="116" class="svg-text">IPv4 ARP 适配</text><text x="690" y="142" class="svg-small">arp_tbl / arp_solicit</text><text x="690" y="162" class="svg-small">arp_rcv / arp_process</text>
+        <rect x="326" y="278" width="230" height="86" class="box-warn"/><text x="388" y="312" class="svg-text">链路层输出</text><text x="356" y="338" class="svg-small">dev_hard_header()</text><text x="356" y="358" class="svg-small">dev_queue_xmit()</text>
+        <rect x="660" y="278" width="210" height="86" class="box-red"/><text x="716" y="312" class="svg-text">外部事件</text><text x="690" y="338" class="svg-small">ARP reply/request</text><text x="690" y="358" class="svg-small">netdev/ioctl/sysctl</text>
+        <path d="M240 126 H326" class="wire-blue"/><path d="M556 126 H660" class="wire-green"/><path d="M441 188 V278" class="wire-warn"/><path d="M765 278 V170" class="wire"/><path d="M660 321 H556" class="wire"/>
+      </svg><div class="fig-cap">图 1：邻居子系统把路由选择出的下一跳 IP 转换为二层可发送目标。</div></div>
+      <p>Linux 把邻居缓存做成通用框架：`include/net/neighbour.h` 定义 `struct neigh_table`、`struct neighbour`、`struct neigh_ops`、`NUD_*` 状态；`net/core/neighbour.c` 实现 hash、创建、状态机、GC、未解析 skb 队列、netlink 通知和 sysctl；`net/ipv4/arp.c` 注册 `arp_tbl`，提供 IPv4 特有的 key、constructor、probe、ARP 收包和 proxy ARP。</p>
+      <div class="panel"><strong>第一性原理概述：</strong>IPv4 ARP 和 IPv6 ND 都需要“邻居可达性检测”。把状态机抽成通用 neighbour 层，可以让协议只负责如何发探测包和如何解释收到的链路层地址。</div>
+    </section>
+
+    <section id="objects">
+      <h2>核心对象：一张表、一条邻居项、一组协议回调</h2>
+      <table><thead><tr><th>对象</th><th>关键字段/函数</th><th>作用</th></tr></thead><tbody>
+        <tr><td>`struct neigh_table`</td><td>`arp_tbl`、`hash`、`arp_constructor`、`parms`、`gc_thresh1/2/3`、`gc_work`</td><td>一类邻居表。IPv4 ARP 的表 ID 是 `NEIGH_ARP_TABLE`，key 长度为 4 字节 IPv4 地址。</td></tr>
+        <tr><td>`struct neighbour`</td><td>`primary_key`、`dev`、`ha`、`nud_state`、`arp_queue`、`timer`、`confirmed/used/updated`、`output`</td><td>一条 IP 到链路层地址映射，附带状态机、队列和发送函数。</td></tr>
+        <tr><td>`struct neigh_parms`</td><td>`MCAST_PROBES`、`UCAST_PROBES`、`RETRANS_TIME`、`BASE_REACHABLE_TIME`、`QUEUE_LEN_BYTES`</td><td>全局或 per-device 参数。`devinet.c` 为 IPv4 设备分配 `in_dev->arp_parms`。</td></tr>
+        <tr><td>`struct neigh_ops`</td><td>`solicit`、`error_report`、`output`、`connected_output`</td><td>协议适配层。IPv4 ARP 把 `solicit` 指向 `arp_solicit()`。</td></tr>
+        <tr><td>`hh_cache`</td><td>`neigh->hh`、`dev->header_ops->cache`、`neigh_hh_output()`</td><td>缓存二层头，`NUD_CONNECTED` 且 header cache 有效时绕过慢速构造。</td></tr>
+      </tbody></table>
+    </section>
+
+    <section id="init">
+      <h2>初始化：`arp_init()` 注册 ARP 表、包入口和设备事件</h2>
+      <p>IPv4 协议族初始化 `inet_init()` 会调用 `arp_init()`。`arp_init()` 做四件事：`neigh_table_init(NEIGH_ARP_TABLE, &arp_tbl)` 初始化通用邻居表；`dev_add_pack(&arp_packet_type)` 注册 `ETH_P_ARP` 收包入口；创建 proc 节点；注册 `neigh_sysctl_register(NULL, &arp_tbl.parms, NULL)` 和 `arp_netdev_notifier`。</p>
+      <pre><code>inet_init()
+  -> arp_init()
+       -> neigh_table_init(NEIGH_ARP_TABLE, &arp_tbl)
+            -> 初始化 hash、proxy hash、gc_work、proxy_timer、默认 neigh_parms
+       -> dev_add_pack(ETH_P_ARP -> arp_rcv)
+       -> neigh_sysctl_register(NULL, &arp_tbl.parms, NULL)
+       -> register_netdevice_notifier(&arp_netdev_notifier)
+
+devinet: inetdev_init(dev)
+  -> in_dev->arp_parms = neigh_parms_alloc(dev, &arp_tbl)</code></pre>
+      <p>`arp_tbl` 的默认参数与 man page 对应：`MCAST_PROBES=3`、`UCAST_PROBES=3`、`RETRANS_TIME=1*HZ`、`BASE_REACHABLE_TIME=30*HZ`、`DELAY_PROBE_TIME=5*HZ`、`GC_STALETIME=60*HZ`、`QUEUE_LEN_BYTES=SK_WMEM_MAX`、`gc_thresh1/2/3=128/512/1024`。</p>
+    </section>
+
+    <section id="nud-states">
+      <h2>NUD 状态：缓存项可信度的有限状态机</h2>
+      <div class="svg-wrap"><svg viewBox="0 0 1000 560" role="img" aria-label="NUD 状态机">
+        <text x="24" y="34" class="svg-title">Neighbor Unreachability Detection 状态机</text>
+        <rect x="420" y="70" width="160" height="56" class="box"/><text x="460" y="104" class="svg-text">NUD_NONE</text>
+        <rect x="74" y="220" width="172" height="64" class="box-warn"/><text x="112" y="254" class="svg-text">INCOMPLETE</text><text x="94" y="274" class="svg-small">等待 ARP reply，skb 排队</text>
+        <rect x="416" y="210" width="170" height="64" class="box-green"/><text x="456" y="244" class="svg-text">REACHABLE</text><text x="444" y="264" class="svg-small">二层地址可信</text>
+        <rect x="740" y="210" width="160" height="64" class="box-violet"/><text x="790" y="244" class="svg-text">STALE</text><text x="766" y="264" class="svg-small">可用但需确认</text>
+        <rect x="740" y="372" width="160" height="64" class="box-blue"/><text x="792" y="406" class="svg-text">DELAY</text><text x="762" y="426" class="svg-small">延迟探测窗口</text>
+        <rect x="420" y="372" width="160" height="64" class="box-warn"/><text x="462" y="406" class="svg-text">PROBE</text><text x="444" y="426" class="svg-small">单播/应用/广播探测</text>
+        <rect x="74" y="372" width="172" height="64" class="box-red"/><text x="120" y="406" class="svg-text">FAILED</text><text x="94" y="426" class="svg-small">解析失败，清队列</text>
+        <rect x="74" y="70" width="172" height="56" class="box-green"/><text x="120" y="104" class="svg-text">NOARP</text>
+        <rect x="740" y="70" width="160" height="56" class="box-green"/><text x="780" y="104" class="svg-text">PERMANENT</text>
+        <path d="M420 98 H246" class="wire-green"/><text x="276" y="86" class="svg-small">直连/广播/NOARP 设备</text>
+        <path d="M580 98 H740" class="wire-green"/><text x="612" y="86" class="svg-small">管理员静态项</text>
+        <path d="M420 126 C260 150 176 180 160 220" class="wire-warn"/><text x="236" y="168" class="svg-small">first use</text>
+        <path d="M246 252 H416" class="wire-green"/><text x="292" y="240" class="svg-small">ARP reply / neigh_update</text>
+        <path d="M586 242 H740" class="wire"/><text x="620" y="230" class="svg-small">reachable_time 到期</text>
+        <path d="M820 274 V372" class="wire-blue"/><text x="832" y="326" class="svg-small">再次发送</text>
+        <path d="M740 404 H580" class="wire-warn"/><text x="612" y="392" class="svg-small">delay 到期且无确认</text>
+        <path d="M420 404 H246" class="wire-red"/><text x="276" y="392" class="svg-small">探测耗尽</text>
+        <path d="M500 372 V274" class="wire-green"/><text x="512" y="330" class="svg-small">收到确认</text>
+        <path d="M160 372 V284" class="wire-warn"/><text x="174" y="330" class="svg-small">重新发送触发</text>
+      </svg><div class="fig-cap">图 2：`NUD_NOARP` 和 `NUD_PERMANENT` 是伪状态，普通动态项围绕 INCOMPLETE/REACHABLE/STALE/DELAY/PROBE/FAILED 迁移。</div></div>
+      <table><thead><tr><th>状态</th><th>语义</th><th>代码行为</th></tr></thead><tbody>
+        <tr><td>`NUD_INCOMPLETE`</td><td>还不知道链路层地址。</td><td>`__neigh_event_send()` 排队 skb，启动 timer，`neigh_probe()` 调 `arp_solicit()`。</td></tr>
+        <tr><td>`NUD_REACHABLE`</td><td>最近确认过，映射可信。</td><td>`neigh_output()` 可走 `neigh_hh_output()` 或 `connected_output` 快速发送。</td></tr>
+        <tr><td>`NUD_STALE`</td><td>有地址但没有近期确认。</td><td>下一次发送把状态改成 `NUD_DELAY`，先不立刻探测。</td></tr>
+        <tr><td>`NUD_DELAY`</td><td>给上层正反馈一个窗口。</td><td>`neigh_timer_handler()` 到期后若无确认则进入 `NUD_PROBE`。</td></tr>
+        <tr><td>`NUD_PROBE`</td><td>主动确认旧地址是否仍有效。</td><td>先用已有 MAC 单播探测，再可经应用探测、广播探测。</td></tr>
+        <tr><td>`NUD_FAILED`</td><td>探测失败。</td><td>`neigh_invalidate()` 调 `error_report` 并清空 `arp_queue`。</td></tr>
+      </tbody></table>
+    </section>
+
+    <section id="timer">
+      <h2>定时器：`neigh_timer_handler()` 驱动状态迁移</h2>
+      <p>每个 `struct neighbour` 在 `neigh_alloc()` 中设置 `timer_setup(&n->timer, neigh_timer_handler, 0)`。状态进入 `NUD_IN_TIMER` 集合时会挂定时器，集合定义在 `include/net/neighbour.h`：`NUD_INCOMPLETE | NUD_REACHABLE | NUD_DELAY | NUD_PROBE`。</p>
+      <pre><code>neigh_timer_handler()
+  -> REACHABLE:
+       confirmed 仍在 reachable_time 内: 继续保持
+       recently used: 转 DELAY，等待上层确认
+       否则: 转 STALE，通知用户态
+  -> DELAY:
+       confirmed 足够新: 回 REACHABLE
+       否则: 转 PROBE，probes 清零
+  -> INCOMPLETE / PROBE:
+       probes >= neigh_max_probes(): 转 FAILED，清队列
+       否则: 重新挂 retrans timer，调用 neigh_probe()</code></pre>
+      <p>`neigh_max_probes()` 把 `UCAST_PROBES`、`APP_PROBES`、`MCAST_PROBES/MCAST_REPROBES` 相加。IPv4 的 probe 实现是 `arp_solicit()`：先决定 ARP sender IP，再根据 probes 次数选择单播旧 MAC、通知用户态 ARP daemon，或广播 ARP request。</p>
+    </section>
+
+    <section id="gc">
+      <h2>GC 与容量控制：防止邻居表无限增长</h2>
+      <p>`neigh_table_init()` 给每张表初始化 hash、proxy hash、`gc_work` 和 `proxy_timer`。周期任务 `neigh_periodic_work()` 会定期重算随机 reachable_time，并在表项数量达到 `gc_thresh1` 后扫描 hash。普通动态项如果 refcnt 只有表自身持有，且处于 `NUD_FAILED` 或超过 `GC_STALETIME` 未使用，就会被删除。</p>
+      <p>创建新项时 `neigh_alloc()` 也会看 `gc_thresh2/gc_thresh3`：超过软阈值并且距离上次 flush 足够久时尝试 forced GC；超过硬阈值且 GC 不能释放空间时返回失败并记录 table overflow。`NUD_PERMANENT`、`NTF_EXT_LEARNED` 等特殊项会被排除在普通 GC 外。</p>
+      <div class="panel"><strong>第一性原理概述：</strong>邻居表缓存的是“局部链路上的近期通信对象”。它必须有容量边界，否则扫描、hash 冲突和未解析队列都可能被异常流量拖垮。</div>
+    </section>
+
+    <section id="tx">
+      <h2>发送解析：从 `ip_finish_output2()` 到 ARP request</h2>
+      <div class="svg-wrap"><svg viewBox="0 0 1000 455" role="img" aria-label="发送路径邻居解析流程">
+        <text x="24" y="34" class="svg-title">发送路径：route result -> neighbour output</text>
+        <rect x="48" y="80" width="180" height="78" class="box-blue"/><text x="88" y="112" class="svg-text">ip_finish_output2</text><text x="70" y="138" class="svg-small">skb_dst -> rtable</text>
+        <rect x="300" y="72" width="190" height="92" class="box-green"/><text x="348" y="106" class="svg-text">ip_neigh_for_gw</text><text x="326" y="132" class="svg-small">gateway 或 daddr</text><text x="326" y="152" class="svg-small">__ipv4_neigh_lookup</text>
+        <rect x="570" y="72" width="170" height="92" class="box-violet"/><text x="614" y="106" class="svg-text">neigh_output</text><text x="596" y="132" class="svg-small">hh_cache 快速路径</text><text x="596" y="152" class="svg-small">或 n->output()</text>
+        <rect x="804" y="72" width="150" height="92" class="box-warn"/><text x="838" y="106" class="svg-text">dev_queue_xmit</text><text x="828" y="132" class="svg-small">已构造二层头</text>
+        <path d="M228 119 H300" class="wire-blue"/><path d="M490 119 H570" class="wire-green"/><path d="M740 119 H804" class="wire-warn"/>
+        <rect x="300" y="286" width="190" height="92" class="box-red"/><text x="346" y="320" class="svg-text">NUD_INCOMPLETE</text><text x="326" y="346" class="svg-small">skb 入 arp_queue</text><text x="326" y="366" class="svg-small">启动 retrans timer</text>
+        <rect x="570" y="286" width="170" height="92" class="box-warn"/><text x="620" y="320" class="svg-text">arp_solicit</text><text x="596" y="346" class="svg-small">ARP request</text><text x="596" y="366" class="svg-small">ucast/app/mcast</text>
+        <path d="M655 164 V286" class="wire"/><text x="670" y="226" class="svg-small">无有效地址</text>
+        <path d="M490 332 H570" class="wire-warn"/>
+        <path d="M395 286 C360 230 426 188 570 164" class="wire-green"/><text x="382" y="226" class="svg-small">收到 ARP 后释放队列</text>
+      </svg><div class="fig-cap">图 3：没有有效邻居项时，发送路径不会忙等，而是排队 skb 并触发 ARP 探测。</div></div>
+      <p>`ip_finish_output2()` 拿到 `rtable` 后调用 `ip_neigh_for_gw(rt, skb, &is_v6gw)`。route.c 的 `ipv4_neigh_lookup()` 会根据 `rt->rt_gw_family` 选择 gateway：有 IPv4 gateway 时查 `rt_gw4`，有 IPv6 gateway 时走 IPv6 stub，否则用报文目的地址作为直接下一跳。</p>
+      <p>`neigh_output()` 是真正的分流点：如果 `n->nud_state & NUD_CONNECTED` 且 `hh_cache` 可用，直接复制缓存二层头并 `dev_queue_xmit()`；否则调用 `n->output`。IPv4 普通 ARP 项的 `output` 是 `neigh_resolve_output()`，连接态的 `connected_output` 是 `neigh_connected_output()`；前者会先调用 `neigh_event_send()`，后者直接构造硬件头并发送。</p>
+    </section>
+
+    <section id="rx">
+      <h2>ARP 接收：先校验协议头，再学习 sender，再决定是否回复</h2>
+      <p>`arp_init()` 注册 `arp_packet_type` 后，设备收到 `ETH_P_ARP` 会进 `arp_rcv()`。`arp_rcv()` 丢弃 `IFF_NOARP`、OTHERHOST、LOOPBACK 包，检查 ARP 头长度与设备地址长度，再经 `NF_HOOK(NFPROTO_ARP, NF_ARP_IN, ..., arp_process)` 进入处理。</p>
+      <div class="svg-wrap"><svg viewBox="0 0 1000 500" role="img" aria-label="ARP 接收流程">
+        <text x="24" y="34" class="svg-title">ARP receive: 校验、学习、回复</text>
+        <rect x="60" y="74" width="170" height="70" class="box-blue"/><text x="112" y="106" class="svg-text">arp_rcv</text><text x="82" y="130" class="svg-small">长度/设备/NF_HOOK</text>
+        <rect x="310" y="74" width="180" height="70" class="box-green"/><text x="358" y="106" class="svg-text">arp_process</text><text x="334" y="130" class="svg-small">解析 sha/sip/tha/tip</text>
+        <rect x="574" y="74" width="180" height="70" class="box-violet"/><text x="624" y="106" class="svg-text">route 判断</text><text x="598" y="130" class="svg-small">ip_route_input_noref</text>
+        <rect x="810" y="74" width="132" height="70" class="box-warn"/><text x="844" y="106" class="svg-text">ARP reply</text><text x="832" y="130" class="svg-small">arp_send_dst</text>
+        <path d="M230 109 H310" class="wire-blue"/><path d="M490 109 H574" class="wire-green"/><path d="M754 109 H810" class="wire-warn"/>
+        <rect x="310" y="258" width="180" height="78" class="box"/><text x="356" y="290" class="svg-text">lookup sip</text><text x="334" y="316" class="svg-small">__neigh_lookup(&arp_tbl)</text>
+        <rect x="574" y="258" width="180" height="78" class="box-green"/><text x="620" y="290" class="svg-text">neigh_update</text><text x="598" y="316" class="svg-small">REACHABLE 或 STALE</text>
+        <rect x="810" y="258" width="132" height="78" class="box-red"/><text x="846" y="290" class="svg-text">释放队列</text><text x="830" y="316" class="svg-small">arp_queue -> output</text>
+        <path d="M400 144 V258" class="wire"/><text x="414" y="204" class="svg-small">学习 sender</text>
+        <path d="M490 297 H574" class="wire-green"/><path d="M754 297 H810" class="wire-warn"/>
+        <path d="M664 144 V258" class="wire"/><text x="678" y="204" class="svg-small">请求本机/代理</text>
+      </svg><div class="fig-cap">图 4：ARP 接收既可能驱动回复，也可能只更新已有邻居项。</div></div>
+      <p>`arp_process()` 严格过滤硬件类型、协议类型、opcode、loopback/multicast 目标和 gratuitous ARP 策略。对 request，它会用 `ip_route_input_noref()` 判断 `tip` 是否本机 `RTN_LOCAL`，或者是否可代理；本机地址还要经过 `arp_ignore()` 和 `arp_filter()`。如果需要回复，先通过 `neigh_event_ns(&arp_tbl, sha, &sip, dev)` 学习 sender，再 `arp_send_dst(ARPOP_REPLY, ...)`。</p>
+      <p>对 reply 或可接受的 gratuitous ARP，`arp_process()` 会查 `sip` 对应的邻居项；如果存在，调用 `neigh_update(n, sha, state, flags, 0)`。单播 reply 且目标是本机时状态为 `NUD_REACHABLE`；广播 reply 或 request 不证明双向可达，通常只更新为 `NUD_STALE`。</p>
+    </section>
+
+    <section id="update">
+      <h2>`neigh_update()`：学习地址、切换 output、释放队列</h2>
+      <p>`__neigh_update()` 是所有学习路径的核心：ARP 收包、ioctl 设置、netlink 设置、探测失败都会进入这里。它先检查 dead、`NUD_NOARP/PERMANENT`、override 规则和 link-layer 地址合法性；然后根据新状态更新 timer、`ha`、`confirmed`、`updated`，并调用 `neigh_connect()` 或 `neigh_suspect()` 改变 `neigh->output`。</p>
+      <pre><code>__neigh_update(neigh, lladdr, new, flags)
+  -> 若 new 不再 NUD_VALID: 删除 timer，必要时 neigh_invalidate()
+  -> 若 lladdr 变化且允许 override: 更新 neigh->ha 和 hh_cache
+  -> new & NUD_CONNECTED: neigh_connect()    // output = connected_output
+     否则: neigh_suspect()                   // output = output / resolve_output
+  -> old 非 VALID 且 new 变 VALID:
+       while skb = arp_queue.pop():
+         dst_neigh_lookup_skb(dst, skb)
+         n1->output(n1, skb)
+  -> 发送 RTM_NEWNEIGH / NETEVENT_NEIGH_UPDATE 通知</code></pre>
+      <p>这里有一个关键细节：释放队列时不是简单地直接用当前 `neigh` 输出，而是通过 `dst_neigh_lookup_skb()` 重新查 top-level neighbour。源码注释说明，shaper、eql、sch_teql 等路径可能在输出路径中使用不同 neighbour 对象，因此重新查一次避免把包送到错误对象。</p>
+    </section>
+
+    <section id="admin">
+      <h2>用户管理：ioctl、rtnetlink、sysctl 三条控制面</h2>
+      <table><thead><tr><th>控制面</th><th>入口</th><th>作用</th></tr></thead><tbody>
+        <tr><td>ioctl</td><td>`arp_ioctl()`、`SIOCSARP/SIOCDARP/SIOCGARP`</td><td>设置、删除、查询 IPv4 ARP 映射；`ATF_PERM` 会变成 `NUD_PERMANENT`，`ATF_PUBL` 走 proxy ARP。</td></tr>
+        <tr><td>rtnetlink</td><td>`RTM_NEWNEIGH/DELNEIGH/GETNEIGH` 在通用 rtnetlink/neighbour 层</td><td>`ip neigh` 使用的主接口，状态和属性来自 `include/uapi/linux/neighbour.h`。</td></tr>
+        <tr><td>sysctl</td><td>`/proc/sys/net/ipv4/neigh/*/*`</td><td>调节探测次数、超时、未解析队列、GC 阈值、proxy delay 等。</td></tr>
+        <tr><td>设备事件</td><td>`arp_netdev_event()`</td><td>`NETDEV_CHANGEADDR` 调 `neigh_changeaddr()`；carrier down 调 `neigh_carrier_down()`；IP down 后 `arp_ifdown()` 调 `neigh_ifdown()`。</td></tr>
+      </tbody></table>
+      <p>用户态设置 permanent 项并不意味着它绕开 neighbour 框架；它仍是 `struct neighbour`，只是状态为 `NUD_PERMANENT`，不会被普通状态机和 GC 删除。相反，动态项必须接受 timer 和 GC 管理。</p>
+    </section>
+
+    <section id="route">
+      <h2>与路由子系统交互：FIB 定下一跳，neighbour 定二层地址</h2>
+      <p>路由文档中的输出路径到 `__mkroute_output()` 后，会通过 `rt_set_nexthop()` 在 `rtable` 中记录 gateway 语义：如果 `fib_nh_common` 有 gateway 且 scope 是 link，就设置 `rt_uses_gateway`、`rt_gw_family`、`rt_gw4/rt_gw6`；否则 direct route 用目的地址作为邻居 key。随后 `ip_finish_output2()` 根据 `rtable` 查邻居并发送。</p>
+      <table><thead><tr><th>交互点</th><th>源码</th><th>意义</th></tr></thead><tbody>
+        <tr><td>输出邻居查找</td><td>`ip_finish_output2()`、`ip_neigh_for_gw()`、`ipv4_neigh_lookup()`</td><td>把 `rtable` 中的 gateway 或目的地址映射到 `arp_tbl` 的 neighbour。</td></tr>
+        <tr><td>路径确认</td><td>`dst_confirm_neigh()`、`ipv4_confirm_neigh()`、`sock_confirm_neigh()`</td><td>上层有正反馈时更新 neighbour confirmed 时间，延长 REACHABLE。</td></tr>
+        <tr><td>多路径健康</td><td>`fib_detect_death()`、`fib_good_nh()`、`sysctl_fib_multipath_use_neigh`</td><td>ECMP 选择可参考 neighbour 状态，避免选择已经失败的 nexthop。</td></tr>
+        <tr><td>设备 down</td><td>`fib_disable_ip()` 调 `arp_ifdown()`</td><td>路由失效时同步清邻居缓存，避免旧二层映射继续使用。</td></tr>
+        <tr><td>地址/设备参数</td><td>`devinet.c:inetdev_init()` 分配 `arp_parms`</td><td>每个 IPv4 设备有自己的 ARP/neighbor 参数视图。</td></tr>
+      </tbody></table>
+      <div class="panel"><strong>第一性原理概述：</strong>FIB 不能缓存 MAC，因为 MAC 属于输出设备所在链路；neighbor 也不能决定路由，因为它只知道本链路可达对象。两者通过 `rtable` 和 `dst_ops.neigh_lookup` 组合。</div>
+    </section>
+
+    <section id="msc">
+      <h2>完整 MSC：第一次 ping 同网段主机</h2>
+      <div class="svg-wrap"><svg viewBox="0 0 1060 545" role="img" aria-label="第一次发送触发 ARP 的 MSC">
+        <text x="24" y="34" class="svg-title">第一次发送：FIB 命中直连路由，但 neighbour 还未解析</text>
+        <rect x="44" y="70" width="118" height="44" class="box-blue"/><text x="70" y="98" class="svg-text">应用/ICMP</text>
+        <rect x="216" y="70" width="118" height="44" class="box-green"/><text x="250" y="98" class="svg-text">route</text>
+        <rect x="388" y="70" width="130" height="44" class="box-violet"/><text x="414" y="98" class="svg-text">neighbour</text>
+        <rect x="576" y="70" width="118" height="44" class="box-warn"/><text x="620" y="98" class="svg-text">ARP</text>
+        <rect x="752" y="70" width="126" height="44" class="box-red"/><text x="778" y="98" class="svg-text">目标主机</text>
+        <rect x="928" y="70" width="90" height="44" class="box"/><text x="952" y="98" class="svg-text">dev</text>
+        <path d="M103 114 V500" class="wire"/><path d="M275 114 V500" class="wire"/><path d="M453 114 V500" class="wire"/><path d="M635 114 V500" class="wire"/><path d="M815 114 V500" class="wire"/><path d="M973 114 V500" class="wire"/>
+        <path d="M103 150 H275" class="wire-blue"/><text x="128" y="140" class="svg-small">发送 IP 包</text>
+        <path d="M275 190 H453" class="wire-green"/><text x="300" y="180" class="svg-small">ip_finish_output2 -> lookup neighbour</text>
+        <path d="M453 230 H635" class="wire-warn"/><text x="486" y="220" class="svg-small">neigh_event_send</text>
+        <path d="M453 270 H453" class="wire"/><text x="470" y="260" class="svg-small">NUD_INCOMPLETE，skb 入 arp_queue</text>
+        <path d="M635 310 H973" class="wire-warn"/><text x="702" y="300" class="svg-small">ARP request 广播</text>
+        <path d="M815 350 H635" class="wire-green"/><text x="674" y="340" class="svg-small">ARP reply 单播</text>
+        <path d="M635 390 H453" class="wire-green"/><text x="490" y="380" class="svg-small">arp_process -> neigh_update(REACHABLE)</text>
+        <path d="M453 430 H973" class="wire-blue"/><text x="560" y="420" class="svg-small">释放 arp_queue，构造二层头并 dev_queue_xmit</text>
+        <path d="M103 470 H453" class="wire"/><text x="162" y="460" class="svg-small">后续包直接 neigh_output 快速发送</text>
+      </svg><div class="fig-cap">图 5：第一次发送通常先排队并发 ARP，收到 reply 后缓存 MAC 并重放队列。</div></div>
+    </section>
+
+    <section id="scenarios">
+      <h2>典型场景：从代码看行为</h2>
+      <table><thead><tr><th>场景</th><th>主路径</th><th>设计含义</th></tr></thead><tbody>
+        <tr><td>第一次发往直连 IP</td><td>`ip_finish_output2 -> neigh_output -> neigh_resolve_output -> __neigh_event_send -> arp_solicit`</td><td>先排队 skb，再发 ARP request；不会阻塞发送者等待 reply。</td></tr>
+        <tr><td>收到 ARP reply</td><td>`arp_rcv -> arp_process -> neigh_update(REACHABLE)`</td><td>更新 `ha`，切换到 connected output，并释放未解析队列。</td></tr>
+        <tr><td>收到 ARP request for 本机</td><td>`arp_process -> ip_route_input_noref -> RTN_LOCAL -> neigh_event_ns -> arp_send_dst(REPLY)`</td><td>回复前学习请求方 sender 映射，符合 RFC 826 的“先合并 sender 信息”思想。</td></tr>
+        <tr><td>STALE 项再次发送</td><td>`neigh_event_send` 把 `NUD_STALE` 转 `NUD_DELAY`</td><td>先允许使用旧地址发送，等待 TCP ACK/MSG_CONFIRM 等正反馈，避免每次 stale 都立即广播。</td></tr>
+        <tr><td>探测耗尽</td><td>`neigh_timer_handler -> NUD_FAILED -> neigh_invalidate`</td><td>丢弃 queued skb，调用 `arp_error_report()` / `dst_link_failure()` 通知上层。</td></tr>
+        <tr><td>设备 MAC 改变</td><td>`arp_netdev_event(NETDEV_CHANGEADDR) -> neigh_changeaddr -> rt_cache_flush`</td><td>二层头缓存与邻居项都要失效，否则会继续使用旧硬件地址。</td></tr>
+        <tr><td>设备 carrier down</td><td>`arp_netdev_event(NETDEV_CHANGE) -> neigh_carrier_down`</td><td>链路不可用时清理动态 neighbour，防止短时间内复用无效映射。</td></tr>
+        <tr><td>手工永久项</td><td>`arp_ioctl(SIOCSARP) -> neigh_update(..., NUD_PERMANENT, ADMIN)`</td><td>permanent 项不会走普通 NUD 与 GC，但仍通过 neighbour output 发送。</td></tr>
+      </tbody></table>
+    </section>
+
+    <section id="principles">
+      <h2>设计原则：为什么邻居层这样拆</h2>
+      <div class="grid">
+        <div class="concept"><h3>按需解析</h3><p>RFC 826 本身强调需要通信时再解析。Linux 在 `neigh_event_send()` 中只在有 skb 要发时进入 INCOMPLETE/PROBE，避免无意义探测。</p></div>
+        <div class="concept"><h3>状态表达可信度</h3><p>`REACHABLE`、`STALE`、`DELAY`、`PROBE` 不是协议包类型，而是内核对映射可信度的估计。</p></div>
+        <div class="concept"><h3>队列解耦等待</h3><p>解析未完成时 skb 进入 `arp_queue`，发送路径返回；ARP reply 到来后由 `neigh_update()` 重放队列。</p></div>
+        <div class="concept"><h3>正反馈优先</h3><p>TCP ACK、`MSG_CONFIRM`、`dst_confirm_neigh()` 等能延长 confirmed 时间，减少 ARP 探测流量。</p></div>
+        <div class="concept"><h3>协议适配最小化</h3><p>ARP 只实现 key、constructor、solicit、receive；hash、GC、timer、netlink 通知都复用通用 neighbour。</p></div>
+        <div class="concept"><h3>容量有边界</h3><p>GC 阈值、未解析队列字节数、proxy 队列长度共同限制异常流量对内存和队列的影响。</p></div>
+      </div>
+    </section>
+
+    <section id="summary">
+      <h2>整体总结</h2>
+      <p>邻居子系统是三层路由结果落到二层发送的执行层。`arp_init()` 注册 IPv4 的 `arp_tbl`、ARP 包入口、sysctl 和设备事件；`neigh_table_init()` 建立通用 hash、GC、proxy queue 和默认参数；`devinet.c` 为每个 IPv4 设备分配自己的 `arp_parms`。</p>
+      <p>发送时，`ip_finish_output2()` 根据 `rtable` 找到下一跳 neighbour，`neigh_output()` 在 `NUD_CONNECTED + hh_cache` 条件下走最快路径，否则进入 `neigh_resolve_output()`。如果没有有效二层地址，`__neigh_event_send()` 把 skb 排入 `arp_queue`，转 `NUD_INCOMPLETE` 并调用 `arp_solicit()`。收到 ARP request/reply 后，`arp_process()` 学习 sender 并调用 `neigh_update()`；一旦状态变成有效，队列中的 skb 被重新送入输出路径。</p>
+      <p>状态机的核心是延迟确认和主动探测：`REACHABLE` 到期后先变 `STALE`，下一次使用变 `DELAY`，仍没有正反馈才进入 `PROBE`；探测耗尽后转 `FAILED` 并清队列。与 <a href="ipv4-routing-subsystem-design.html">路由子系统文档</a> 合起来看，FIB 选择下一跳，neighbour 证明下一跳当前是否能在链路层抵达。</p>
+    </section>
+
+    <div class="chapter-nav">
+      <a id="prevChapter" href="ipv4-routing-subsystem-design.html">← 上一篇：IPv4 路由子系统</a>
+      <a id="nextChapter" href="ipv4-address-route-interaction.html">下一篇：地址与路由交互 →</a>
+    </div>
+  </main>
+
+  <script>
+    const links = Array.from(document.querySelectorAll('nav a[href^="#"]'));
+    const sections = links.map(a => document.querySelector(a.getAttribute('href'))).filter(Boolean);
+    const progressBar = document.getElementById('progressBar');
+    const menuButton = document.getElementById('menuButton');
+    const prevChapter = document.getElementById('prevChapter');
+    const nextChapter = document.getElementById('nextChapter');
+
+    function updateProgress() {
+      const max = document.documentElement.scrollHeight - window.innerHeight;
+      const pct = max > 0 ? (window.scrollY / max) * 100 : 0;
+      progressBar.style.width = `${Math.min(100, Math.max(0, pct))}%`;
+    }
+
+    function updateActive() {
+      let current = sections[0];
+      for (const section of sections) {
+        if (section.getBoundingClientRect().top <= 72) current = section;
+      }
+      links.forEach(a => a.classList.toggle('active', a.getAttribute('href') === `#${current.id}`));
+    }
+
+    window.addEventListener('scroll', () => { updateProgress(); updateActive(); }, { passive:true });
+    window.addEventListener('resize', updateProgress);
+    menuButton.addEventListener('click', () => document.body.classList.toggle('nav-open'));
+    links.forEach(a => a.addEventListener('click', () => document.body.classList.remove('nav-open')));
+    document.addEventListener('keydown', event => {
+      if (event.altKey || event.ctrlKey || event.metaKey || event.shiftKey) return;
+      if (event.key === 'ArrowLeft') prevChapter.click();
+      if (event.key === 'ArrowRight') nextChapter.click();
+    });
+    updateProgress();
+    updateActive();
+  </script>
+</body>
+</html>

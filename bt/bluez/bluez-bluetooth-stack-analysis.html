@@ -1,0 +1,2153 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<title>BlueZ 蓝牙协议栈深度分析</title>
+<style>
+  :root {
+    --primary: #2563eb;
+    --primary-dark: #1d4ed8;
+    --accent: #06b6d4;
+    --kernel-color: #7c3aed;
+    --user-color: #059669;
+    --ipc-color: #d97706;
+    --bg: #0f172a;
+    --surface: #1e293b;
+    --surface2: #273549;
+    --border: #334155;
+    --text: #e2e8f0;
+    --text-muted: #94a3b8;
+    --text-dim: #64748b;
+    --sidebar-w: 280px;
+    --header-h: 56px;
+  }
+
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+
+  html { scroll-behavior: smooth; font-size: 16px; }
+
+  body {
+    font-family: 'Segoe UI', system-ui, -apple-system, sans-serif;
+    background: var(--bg);
+    color: var(--text);
+    line-height: 1.7;
+    overflow-x: hidden;
+  }
+
+  /* ── Progress bar ── */
+  #progress-bar {
+    position: fixed;
+    top: 0; left: 0;
+    height: 3px;
+    background: linear-gradient(90deg, var(--primary), var(--accent));
+    width: 0%;
+    z-index: 1000;
+    transition: width .1s linear;
+  }
+
+  /* ── Top header ── */
+  #topbar {
+    position: fixed;
+    top: 0; left: 0; right: 0;
+    height: var(--header-h);
+    background: rgba(15,23,42,.95);
+    backdrop-filter: blur(12px);
+    border-bottom: 1px solid var(--border);
+    display: flex;
+    align-items: center;
+    padding: 0 1.25rem;
+    z-index: 900;
+    gap: .75rem;
+  }
+
+  #hamburger {
+    display: none;
+    flex-direction: column;
+    gap: 5px;
+    cursor: pointer;
+    padding: 4px;
+    background: none;
+    border: none;
+  }
+  #hamburger span {
+    display: block;
+    width: 22px; height: 2px;
+    background: var(--text);
+    border-radius: 2px;
+    transition: all .3s;
+  }
+
+  #topbar-title {
+    font-size: .95rem;
+    font-weight: 600;
+    color: var(--text);
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+  }
+
+  #chapter-nav-btns {
+    margin-left: auto;
+    display: flex;
+    gap: .5rem;
+    flex-shrink: 0;
+  }
+
+  .nav-btn {
+    background: var(--surface2);
+    border: 1px solid var(--border);
+    color: var(--text);
+    padding: .3rem .8rem;
+    border-radius: 6px;
+    cursor: pointer;
+    font-size: .8rem;
+    transition: background .2s;
+    white-space: nowrap;
+  }
+  .nav-btn:hover { background: var(--primary); border-color: var(--primary); }
+  .nav-btn:disabled { opacity: .4; cursor: default; }
+
+  /* ── Sidebar overlay (mobile) ── */
+  #sidebar-overlay {
+    display: none;
+    position: fixed;
+    inset: 0;
+    background: rgba(0,0,0,.5);
+    z-index: 800;
+  }
+
+  /* ── Sidebar ── */
+  #sidebar {
+    position: fixed;
+    top: var(--header-h);
+    left: 0;
+    bottom: 0;
+    width: var(--sidebar-w);
+    background: var(--surface);
+    border-right: 1px solid var(--border);
+    overflow-y: auto;
+    z-index: 850;
+    padding: 1rem 0 2rem;
+    transition: transform .3s;
+  }
+
+  #sidebar::-webkit-scrollbar { width: 4px; }
+  #sidebar::-webkit-scrollbar-track { background: transparent; }
+  #sidebar::-webkit-scrollbar-thumb { background: var(--border); border-radius: 2px; }
+
+  .sidebar-group {
+    margin-bottom: .25rem;
+  }
+
+  .sidebar-group-title {
+    font-size: .7rem;
+    font-weight: 700;
+    text-transform: uppercase;
+    letter-spacing: .08em;
+    color: var(--text-dim);
+    padding: .6rem 1.25rem .3rem;
+  }
+
+  .sidebar-link {
+    display: block;
+    padding: .45rem 1.25rem .45rem 1.5rem;
+    font-size: .82rem;
+    color: var(--text-muted);
+    text-decoration: none;
+    border-left: 3px solid transparent;
+    transition: all .2s;
+    line-height: 1.4;
+  }
+  .sidebar-link:hover { color: var(--text); background: var(--surface2); }
+  .sidebar-link.active {
+    color: var(--accent);
+    border-left-color: var(--accent);
+    background: rgba(6,182,212,.08);
+    font-weight: 600;
+  }
+
+  /* ── Main content ── */
+  #main {
+    margin-left: var(--sidebar-w);
+    margin-top: var(--header-h);
+    min-height: calc(100vh - var(--header-h));
+    padding: 2.5rem 2rem 4rem;
+  }
+
+  .content-inner {
+    max-width: 860px;
+    margin: 0 auto;
+  }
+
+  /* ── Section ── */
+  .section {
+    padding-top: 1.5rem;
+    margin-bottom: 3rem;
+    scroll-margin-top: calc(var(--header-h) + 1rem);
+  }
+
+  /* ── Headings ── */
+  h1 {
+    font-size: 2rem;
+    font-weight: 800;
+    line-height: 1.2;
+    background: linear-gradient(135deg, #60a5fa, #06b6d4, #818cf8);
+    -webkit-background-clip: text;
+    -webkit-text-fill-color: transparent;
+    background-clip: text;
+    margin-bottom: .5rem;
+  }
+
+  h2 {
+    font-size: 1.45rem;
+    font-weight: 700;
+    color: var(--text);
+    padding-bottom: .5rem;
+    border-bottom: 2px solid var(--border);
+    margin-bottom: 1.25rem;
+    display: flex;
+    align-items: center;
+    gap: .6rem;
+  }
+
+  h2 .sec-num {
+    background: var(--primary);
+    color: #fff;
+    border-radius: 6px;
+    padding: .1rem .5rem;
+    font-size: .85rem;
+    font-weight: 700;
+    flex-shrink: 0;
+  }
+
+  h3 {
+    font-size: 1.1rem;
+    font-weight: 600;
+    color: #a5b4fc;
+    margin: 1.4rem 0 .6rem;
+  }
+
+  /* ── Paragraphs & lists ── */
+  p { margin-bottom: .85rem; color: var(--text); }
+
+  ul, ol {
+    padding-left: 1.4rem;
+    margin-bottom: .85rem;
+  }
+
+  li { margin-bottom: .3rem; color: var(--text); }
+
+  code {
+    font-family: 'Cascadia Code', 'Fira Code', monospace;
+    background: var(--surface2);
+    color: #f472b6;
+    padding: .15em .4em;
+    border-radius: 4px;
+    font-size: .88em;
+  }
+
+  pre {
+    background: var(--surface2);
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    padding: 1rem 1.25rem;
+    overflow-x: auto;
+    margin: 1rem 0;
+    font-family: 'Cascadia Code', 'Fira Code', monospace;
+    font-size: .83rem;
+    line-height: 1.6;
+    color: #a5f3fc;
+  }
+
+  /* ── Cards ── */
+  .card {
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: 10px;
+    padding: 1.25rem;
+    margin-bottom: 1rem;
+  }
+
+  .card-kernel { border-left: 4px solid var(--kernel-color); }
+  .card-user   { border-left: 4px solid var(--user-color); }
+  .card-ipc    { border-left: 4px solid var(--ipc-color); }
+  .card-info   { border-left: 4px solid var(--primary); }
+
+  .card h4 {
+    font-size: 1rem;
+    font-weight: 600;
+    margin-bottom: .6rem;
+    display: flex;
+    align-items: center;
+    gap: .5rem;
+  }
+
+  .badge {
+    display: inline-flex;
+    align-items: center;
+    gap: .3rem;
+    font-size: .72rem;
+    font-weight: 700;
+    padding: .2rem .55rem;
+    border-radius: 20px;
+    letter-spacing: .04em;
+  }
+  .badge-kernel { background: rgba(124,58,237,.25); color: #a78bfa; border: 1px solid rgba(124,58,237,.4); }
+  .badge-user   { background: rgba(5,150,105,.25); color: #6ee7b7; border: 1px solid rgba(5,150,105,.4); }
+  .badge-ipc    { background: rgba(217,119,6,.25); color: #fcd34d; border: 1px solid rgba(217,119,6,.4); }
+
+  /* ── Tables ── */
+  .table-wrap { overflow-x: auto; margin: 1rem 0; }
+
+  table {
+    width: 100%;
+    border-collapse: collapse;
+    font-size: .85rem;
+  }
+
+  thead tr { background: var(--surface2); }
+
+  th {
+    padding: .65rem .9rem;
+    text-align: left;
+    font-size: .75rem;
+    font-weight: 700;
+    text-transform: uppercase;
+    letter-spacing: .06em;
+    color: var(--text-muted);
+    border-bottom: 2px solid var(--border);
+    white-space: nowrap;
+  }
+
+  td {
+    padding: .6rem .9rem;
+    border-bottom: 1px solid var(--border);
+    vertical-align: top;
+  }
+
+  tr:hover td { background: rgba(255,255,255,.02); }
+
+  td code { font-size: .8rem; }
+
+  /* ── Principle box ── */
+  .principle-box {
+    background: linear-gradient(135deg, rgba(37,99,235,.15), rgba(6,182,212,.1));
+    border: 1px solid rgba(37,99,235,.35);
+    border-radius: 10px;
+    padding: 1.25rem 1.4rem;
+    margin-top: 1.5rem;
+  }
+
+  .principle-box .pt {
+    font-size: .7rem;
+    font-weight: 700;
+    text-transform: uppercase;
+    letter-spacing: .1em;
+    color: var(--accent);
+    margin-bottom: .5rem;
+    display: flex;
+    align-items: center;
+    gap: .4rem;
+  }
+
+  .principle-box p {
+    font-size: .93rem;
+    color: #cbd5e1;
+    margin: 0;
+  }
+
+  /* ── Source links ── */
+  .src-link {
+    display: inline-flex;
+    align-items: center;
+    gap: .3rem;
+    color: var(--accent);
+    text-decoration: none;
+    font-size: .8rem;
+    border: 1px solid rgba(6,182,212,.3);
+    padding: .2rem .6rem;
+    border-radius: 5px;
+    transition: all .2s;
+    margin: .2rem .2rem .2rem 0;
+  }
+  .src-link:hover { background: rgba(6,182,212,.1); border-color: var(--accent); }
+
+  /* ── Intro block ── */
+  .hero {
+    background: linear-gradient(135deg, rgba(37,99,235,.12), rgba(6,182,212,.08));
+    border: 1px solid rgba(37,99,235,.25);
+    border-radius: 12px;
+    padding: 1.5rem;
+    margin-bottom: 2rem;
+  }
+
+  .hero p { color: #cbd5e1; margin: 0; font-size: .95rem; }
+
+  /* ── SVG diagrams ── */
+  .svg-wrap {
+    overflow-x: auto;
+    margin: 1.25rem 0;
+    border-radius: 10px;
+    background: var(--surface);
+    border: 1px solid var(--border);
+    padding: 1rem;
+  }
+
+  .svg-wrap svg { display: block; margin: 0 auto; max-width: 100%; height: auto; }
+
+  /* ── Responsive ── */
+  @media (max-width: 768px) {
+    :root { --sidebar-w: 280px; }
+
+    #hamburger { display: flex; }
+
+    #sidebar {
+      transform: translateX(-100%);
+    }
+    #sidebar.open {
+      transform: translateX(0);
+    }
+    #sidebar-overlay.open { display: block; }
+
+    #main {
+      margin-left: 0;
+      padding: 1.5rem 1rem 3rem;
+    }
+
+    h1 { font-size: 1.5rem; }
+    h2 { font-size: 1.2rem; }
+
+    #chapter-nav-btns .nav-btn span { display: none; }
+  }
+
+  @media (max-width: 480px) {
+    #main { padding: 1rem .75rem 3rem; }
+    pre { font-size: .78rem; }
+  }
+
+  /* ── Utility ── */
+  .flex { display: flex; gap: .75rem; flex-wrap: wrap; }
+  .grid2 { display: grid; grid-template-columns: repeat(auto-fit, minmax(260px, 1fr)); gap: 1rem; margin: 1rem 0; }
+  .mt1 { margin-top: 1rem; }
+  .caption {
+    text-align: center;
+    font-size: .78rem;
+    color: var(--text-dim);
+    margin-top: .5rem;
+    margin-bottom: 1rem;
+  }
+
+  /* highlight rows */
+  .row-kernel td:first-child { color: #a78bfa; }
+  .row-user td:first-child { color: #6ee7b7; }
+</style>
+</head>
+<body>
+
+<div id="progress-bar"></div>
+
+<!-- Top bar -->
+<header id="topbar">
+  <button id="hamburger" aria-label="菜单" onclick="toggleSidebar()">
+    <span></span><span></span><span></span>
+  </button>
+  <div id="topbar-title">BlueZ 蓝牙协议栈深度分析</div>
+  <div id="chapter-nav-btns">
+    <button class="nav-btn" id="btn-prev" onclick="prevChapter()">&#8592; <span>上一章</span></button>
+    <button class="nav-btn" id="btn-next" onclick="nextChapter()"><span>下一章</span> &#8594;</button>
+  </div>
+</header>
+
+<!-- Sidebar overlay -->
+<div id="sidebar-overlay" onclick="closeSidebar()"></div>
+
+<!-- Sidebar -->
+<nav id="sidebar">
+  <div class="sidebar-group">
+    <div class="sidebar-group-title">导言</div>
+    <a class="sidebar-link" href="#s0" data-sec="0">概述与背景</a>
+  </div>
+  <div class="sidebar-group">
+    <div class="sidebar-group-title">整体架构</div>
+    <a class="sidebar-link" href="#s1" data-sec="1">BlueZ 整体架构图</a>
+    <a class="sidebar-link" href="#s2" data-sec="2">内核层 vs 用户层划分</a>
+  </div>
+  <div class="sidebar-group">
+    <div class="sidebar-group-title">内核层详解</div>
+    <a class="sidebar-link" href="#s3" data-sec="3">内核蓝牙子系统</a>
+    <a class="sidebar-link" href="#s4" data-sec="4">HCI 核心与设备驱动</a>
+    <a class="sidebar-link" href="#s5" data-sec="5">L2CAP 协议层</a>
+    <a class="sidebar-link" href="#s6" data-sec="6">SCO / ISO / SMP</a>
+    <a class="sidebar-link" href="#s7" data-sec="7">内核模块：RFCOMM / BNEP / HIDP</a>
+  </div>
+  <div class="sidebar-group">
+    <div class="sidebar-group-title">用户层详解</div>
+    <a class="sidebar-link" href="#s8" data-sec="8">bluetoothd 守护进程</a>
+    <a class="sidebar-link" href="#s9" data-sec="9">D-Bus API 与应用接口</a>
+    <a class="sidebar-link" href="#s10" data-sec="10">obexd 与音频守护进程</a>
+    <a class="sidebar-link" href="#s11" data-sec="11">用户层工具链</a>
+  </div>
+  <div class="sidebar-group">
+    <div class="sidebar-group-title">内核↔用户层交互</div>
+    <a class="sidebar-link" href="#s12" data-sec="12">Socket 接口体系</a>
+    <a class="sidebar-link" href="#s13" data-sec="13">Management 管理接口</a>
+    <a class="sidebar-link" href="#s14" data-sec="14">HCI Socket 通道类型</a>
+    <a class="sidebar-link" href="#s15" data-sec="15">交互流程实例</a>
+  </div>
+  <div class="sidebar-group">
+    <div class="sidebar-group-title">总结</div>
+    <a class="sidebar-link" href="#s16" data-sec="16">对比与权衡</a>
+    <a class="sidebar-link" href="#s17" data-sec="17">参考资料</a>
+  </div>
+</nav>
+
+<!-- Main -->
+<main id="main">
+<div class="content-inner">
+
+<!-- ─── S0 Overview ─── -->
+<section class="section" id="s0">
+  <h1>BlueZ 蓝牙协议栈深度分析</h1>
+  <div class="hero">
+    <p>
+      BlueZ 是 Linux 官方蓝牙协议栈，自 2001 年起集成于 Linux 内核。
+      其独特之处在于将协议实现<strong>分布于内核与用户空间两层</strong>——
+      内核负责低延迟的协议处理，用户层负责高层策略与应用接口。
+      本文基于官方源码、内核 Kconfig 文档、BlueZ 官方 mgmt-api 规范等权威资料，
+      系统梳理两层的职责划分及其交互机制。
+    </p>
+  </div>
+
+  <div class="flex">
+    <a class="src-link" href="https://www.kernel.org/pub/linux/bluetooth/" target="_blank">🔗 kernel.org/bluetooth</a>
+    <a class="src-link" href="https://github.com/torvalds/linux/tree/master/net/bluetooth" target="_blank">🔗 Linux net/bluetooth 源码</a>
+    <a class="src-link" href="https://github.com/bluez/bluez" target="_blank">🔗 BlueZ GitHub</a>
+    <a class="src-link" href="https://github.com/bluez/bluez/wiki/HCI" target="_blank">🔗 HCI 官方文档</a>
+  </div>
+
+  <div class="principle-box mt1">
+    <div class="pt">🧭 第一性原理</div>
+    <p>
+      蓝牙通信的本质是在受限的无线信道上可靠地传输多种类型的数据。
+      协议栈的任何分层设计，都服务于一个核心目标：
+      <strong>在低延迟、高安全的前提下，让应用程序能够用最简单的接口使用无线链路</strong>。
+      BlueZ 将时间敏感、权限敏感的部分放入内核，将策略逻辑、设备管理放在用户空间，
+      正是这一目标驱动下的自然分工。
+    </p>
+  </div>
+</section>
+
+<!-- ─── S1 Architecture Overview ─── -->
+<section class="section" id="s1">
+  <h2><span class="sec-num">01</span>BlueZ 整体架构图</h2>
+  <p>
+    下图展示了 BlueZ 的完整分层架构，从硬件控制器到最终应用程序的数据流路径。
+    蓝紫色代表<strong>内核空间</strong>，绿色代表<strong>用户空间</strong>，
+    橙色代表<strong>内核↔用户交互边界</strong>。
+  </p>
+
+  <div class="svg-wrap">
+    <svg viewBox="0 0 760 640" xmlns="http://www.w3.org/2000/svg" font-family="'Segoe UI',system-ui,sans-serif">
+      <defs>
+        <linearGradient id="gKernel" x1="0" y1="0" x2="1" y2="0">
+          <stop offset="0%" stop-color="#7c3aed" stop-opacity=".25"/>
+          <stop offset="100%" stop-color="#6d28d9" stop-opacity=".15"/>
+        </linearGradient>
+        <linearGradient id="gUser" x1="0" y1="0" x2="1" y2="0">
+          <stop offset="0%" stop-color="#059669" stop-opacity=".22"/>
+          <stop offset="100%" stop-color="#047857" stop-opacity=".12"/>
+        </linearGradient>
+        <linearGradient id="gBoundary" x1="0" y1="0" x2="1" y2="0">
+          <stop offset="0%" stop-color="#d97706" stop-opacity=".3"/>
+          <stop offset="100%" stop-color="#b45309" stop-opacity=".18"/>
+        </linearGradient>
+        <linearGradient id="gHW" x1="0" y1="0" x2="1" y2="0">
+          <stop offset="0%" stop-color="#1e40af" stop-opacity=".4"/>
+          <stop offset="100%" stop-color="#1d4ed8" stop-opacity=".25"/>
+        </linearGradient>
+        <marker id="arr" markerWidth="7" markerHeight="7" refX="5" refY="3.5" orient="auto">
+          <polygon points="0 0,7 3.5,0 7" fill="#64748b"/>
+        </marker>
+        <marker id="arrB" markerWidth="7" markerHeight="7" refX="5" refY="3.5" orient="auto">
+          <polygon points="0 0,7 3.5,0 7" fill="#f59e0b"/>
+        </marker>
+      </defs>
+
+      <!-- Zone labels -->
+      <text x="12" y="598" font-size="11" fill="#60a5fa" font-weight="700">硬件层</text>
+      <text x="12" y="488" font-size="11" fill="#a78bfa" font-weight="700">内核空间</text>
+      <text x="12" y="208" font-size="11" fill="#fbbf24" font-weight="700">交互边界</text>
+      <text x="12" y="172" font-size="11" fill="#6ee7b7" font-weight="700">用户空间</text>
+
+      <!-- HW zone -->
+      <rect x="40" y="562" width="680" height="60" rx="10" fill="url(#gHW)" stroke="#3b82f6" stroke-width="1.2"/>
+      <rect x="110" y="575" width="150" height="35" rx="6" fill="#1e40af" fill-opacity=".5" stroke="#60a5fa" stroke-width="1"/>
+      <text x="185" y="596" font-size="11.5" text-anchor="middle" fill="#93c5fd">BT 控制器 (BR/EDR+BLE)</text>
+      <rect x="290" y="575" width="120" height="35" rx="6" fill="#1e40af" fill-opacity=".4" stroke="#60a5fa" stroke-width="1"/>
+      <text x="350" y="596" font-size="11.5" text-anchor="middle" fill="#93c5fd">USB / UART / SDIO</text>
+      <rect x="440" y="575" width="140" height="35" rx="6" fill="#1e40af" fill-opacity=".4" stroke="#60a5fa" stroke-width="1"/>
+      <text x="510" y="596" font-size="11.5" text-anchor="middle" fill="#93c5fd">HCI 传输协议 (H4/H5)</text>
+
+      <!-- Kernel zone -->
+      <rect x="40" y="228" width="680" height="320" rx="10" fill="url(#gKernel)" stroke="#7c3aed" stroke-width="1.5"/>
+
+      <!-- Driver row -->
+      <rect x="100" y="508" width="560" height="34" rx="6" fill="#4c1d95" fill-opacity=".5" stroke="#7c3aed" stroke-width="1"/>
+      <text x="380" y="530" font-size="12" text-anchor="middle" fill="#c4b5fd" font-weight="600">HCI 设备驱动层  btusb / hci_uart / hci_sdio / hci_vhci</text>
+
+      <!-- HCI Core -->
+      <rect x="100" y="462" width="560" height="34" rx="6" fill="#5b21b6" fill-opacity=".45" stroke="#8b5cf6" stroke-width="1"/>
+      <text x="380" y="484" font-size="12" text-anchor="middle" fill="#ddd6fe" font-weight="600">HCI 核心层  hci_core.c — 设备管理 / 连接调度 / 事件路由</text>
+
+      <!-- Protocol row -->
+      <rect x="60" y="352" width="640" height="96" rx="8" fill="rgba(91,33,182,.15)" stroke="#6d28d9" stroke-width="1" stroke-dasharray="4,3"/>
+      <text x="380" y="370" font-size="10" text-anchor="middle" fill="#a78bfa" font-weight="600">核心协议实现层</text>
+
+      <!-- L2CAP -->
+      <rect x="75" y="377" width="148" height="60" rx="6" fill="#6d28d9" fill-opacity=".4" stroke="#8b5cf6" stroke-width="1"/>
+      <text x="149" y="401" font-size="11.5" text-anchor="middle" fill="#c4b5fd" font-weight="600">L2CAP</text>
+      <text x="149" y="418" font-size="9.5" text-anchor="middle" fill="#a78bfa">逻辑链路控制</text>
+      <text x="149" y="430" font-size="9.5" text-anchor="middle" fill="#a78bfa">l2cap_core.c</text>
+
+      <!-- SCO -->
+      <rect x="235" y="377" width="100" height="60" rx="6" fill="#6d28d9" fill-opacity=".4" stroke="#8b5cf6" stroke-width="1"/>
+      <text x="285" y="401" font-size="11.5" text-anchor="middle" fill="#c4b5fd" font-weight="600">SCO</text>
+      <text x="285" y="418" font-size="9.5" text-anchor="middle" fill="#a78bfa">同步音频</text>
+      <text x="285" y="430" font-size="9.5" text-anchor="middle" fill="#a78bfa">sco.c</text>
+
+      <!-- ISO -->
+      <rect x="347" y="377" width="100" height="60" rx="6" fill="#6d28d9" fill-opacity=".4" stroke="#8b5cf6" stroke-width="1"/>
+      <text x="397" y="401" font-size="11.5" text-anchor="middle" fill="#c4b5fd" font-weight="600">ISO</text>
+      <text x="397" y="418" font-size="9.5" text-anchor="middle" fill="#a78bfa">等时信道</text>
+      <text x="397" y="430" font-size="9.5" text-anchor="middle" fill="#a78bfa">iso.c</text>
+
+      <!-- SMP -->
+      <rect x="459" y="377" width="100" height="60" rx="6" fill="#6d28d9" fill-opacity=".4" stroke="#8b5cf6" stroke-width="1"/>
+      <text x="509" y="401" font-size="11.5" text-anchor="middle" fill="#c4b5fd" font-weight="600">SMP</text>
+      <text x="509" y="418" font-size="9.5" text-anchor="middle" fill="#a78bfa">安全管理</text>
+      <text x="509" y="430" font-size="9.5" text-anchor="middle" fill="#a78bfa">smp.c</text>
+
+      <!-- Module row -->
+      <rect x="60" y="244" width="640" height="96" rx="8" fill="rgba(91,33,182,.12)" stroke="#6d28d9" stroke-width="1" stroke-dasharray="4,3"/>
+      <text x="380" y="262" font-size="10" text-anchor="middle" fill="#a78bfa" font-weight="600">内核协议模块层</text>
+
+      <rect x="75" y="268" width="110" height="60" rx="6" fill="#5b21b6" fill-opacity=".35" stroke="#7c3aed" stroke-width="1"/>
+      <text x="130" y="292" font-size="11" text-anchor="middle" fill="#c4b5fd" font-weight="600">RFCOMM</text>
+      <text x="130" y="308" font-size="9" text-anchor="middle" fill="#a78bfa">串口仿真</text>
+      <text x="130" y="320" font-size="9" text-anchor="middle" fill="#a78bfa">rfcomm/</text>
+
+      <rect x="197" y="268" width="110" height="60" rx="6" fill="#5b21b6" fill-opacity=".35" stroke="#7c3aed" stroke-width="1"/>
+      <text x="252" y="292" font-size="11" text-anchor="middle" fill="#c4b5fd" font-weight="600">BNEP</text>
+      <text x="252" y="308" font-size="9" text-anchor="middle" fill="#a78bfa">网络封装</text>
+      <text x="252" y="320" font-size="9" text-anchor="middle" fill="#a78bfa">bnep/</text>
+
+      <rect x="319" y="268" width="110" height="60" rx="6" fill="#5b21b6" fill-opacity=".35" stroke="#7c3aed" stroke-width="1"/>
+      <text x="374" y="292" font-size="11" text-anchor="middle" fill="#c4b5fd" font-weight="600">HIDP</text>
+      <text x="374" y="308" font-size="9" text-anchor="middle" fill="#a78bfa">HID 设备</text>
+      <text x="374" y="320" font-size="9" text-anchor="middle" fill="#a78bfa">hidp/</text>
+
+      <rect x="441" y="268" width="110" height="60" rx="6" fill="#5b21b6" fill-opacity=".35" stroke="#7c3aed" stroke-width="1"/>
+      <text x="496" y="292" font-size="11" text-anchor="middle" fill="#c4b5fd" font-weight="600">CMTP</text>
+      <text x="496" y="308" font-size="9" text-anchor="middle" fill="#a78bfa">CAPI消息</text>
+      <text x="496" y="320" font-size="9" text-anchor="middle" fill="#a78bfa">cmtp/</text>
+
+      <rect x="563" y="268" width="110" height="60" rx="6" fill="#5b21b6" fill-opacity=".35" stroke="#7c3aed" stroke-width="1"/>
+      <text x="618" y="292" font-size="11" text-anchor="middle" fill="#c4b5fd" font-weight="600">6LoWPAN</text>
+      <text x="618" y="308" font-size="9" text-anchor="middle" fill="#a78bfa">IPv6压缩</text>
+      <text x="618" y="320" font-size="9" text-anchor="middle" fill="#a78bfa">6lowpan/</text>
+
+      <!-- Boundary zone -->
+      <rect x="40" y="196" width="680" height="24" rx="4" fill="url(#gBoundary)" stroke="#d97706" stroke-width="1.5"/>
+      <text x="380" y="212" font-size="11" text-anchor="middle" fill="#fcd34d" font-weight="700">
+        AF_BLUETOOTH Socket 边界 ｜ HCI_CHANNEL_CONTROL (mgmt) ｜ HCI_CHANNEL_RAW ｜ L2CAP/SCO/ISO Socket
+      </text>
+
+      <!-- User zone -->
+      <rect x="40" y="20" width="680" height="168" rx="10" fill="url(#gUser)" stroke="#059669" stroke-width="1.5"/>
+
+      <!-- bluetoothd -->
+      <rect x="60" y="35" width="200" height="140" rx="8" fill="#064e3b" fill-opacity=".5" stroke="#059669" stroke-width="1.2"/>
+      <text x="160" y="58" font-size="12" text-anchor="middle" fill="#6ee7b7" font-weight="700">bluetoothd</text>
+      <text x="160" y="75" font-size="9.5" text-anchor="middle" fill="#a7f3d0">适配器管理 / 设备管理</text>
+      <text x="160" y="90" font-size="9.5" text-anchor="middle" fill="#a7f3d0">配对 / 安全策略</text>
+      <text x="160" y="105" font-size="9.5" text-anchor="middle" fill="#a7f3d0">GATT Server/Client</text>
+      <text x="160" y="120" font-size="9.5" text-anchor="middle" fill="#a7f3d0">SDP 服务注册</text>
+      <text x="160" y="137" font-size="9.5" text-anchor="middle" fill="#a7f3d0">插件系统 / Profile</text>
+      <text x="160" y="154" font-size="9.5" text-anchor="middle" fill="#a7f3d0">D-Bus 接口导出</text>
+
+      <!-- obexd -->
+      <rect x="275" y="35" width="130" height="140" rx="8" fill="#064e3b" fill-opacity=".4" stroke="#10b981" stroke-width="1"/>
+      <text x="340" y="58" font-size="12" text-anchor="middle" fill="#6ee7b7" font-weight="700">obexd</text>
+      <text x="340" y="76" font-size="9.5" text-anchor="middle" fill="#a7f3d0">OBEX 协议</text>
+      <text x="340" y="92" font-size="9.5" text-anchor="middle" fill="#a7f3d0">PBAP</text>
+      <text x="340" y="108" font-size="9.5" text-anchor="middle" fill="#a7f3d0">MAP</text>
+      <text x="340" y="124" font-size="9.5" text-anchor="middle" fill="#a7f3d0">OPP</text>
+      <text x="340" y="140" font-size="9.5" text-anchor="middle" fill="#a7f3d0">FTP</text>
+
+      <!-- PipeWire/Audio -->
+      <rect x="418" y="35" width="140" height="140" rx="8" fill="#064e3b" fill-opacity=".4" stroke="#10b981" stroke-width="1"/>
+      <text x="488" y="58" font-size="12" text-anchor="middle" fill="#6ee7b7" font-weight="700">PipeWire</text>
+      <text x="488" y="76" font-size="9.5" text-anchor="middle" fill="#a7f3d0">A2DP / HSP / HFP</text>
+      <text x="488" y="92" font-size="9.5" text-anchor="middle" fill="#a7f3d0">LE Audio (BAP)</text>
+      <text x="488" y="108" font-size="9.5" text-anchor="middle" fill="#a7f3d0">HFP 电话</text>
+      <text x="488" y="124" font-size="9.5" text-anchor="middle" fill="#a7f3d0">SCO Socket</text>
+      <text x="488" y="140" font-size="9.5" text-anchor="middle" fill="#a7f3d0">ISO Socket</text>
+
+      <!-- App -->
+      <rect x="571" y="35" width="130" height="140" rx="8" fill="#064e3b" fill-opacity=".4" stroke="#10b981" stroke-width="1"/>
+      <text x="636" y="58" font-size="12" text-anchor="middle" fill="#6ee7b7" font-weight="700">应用程序</text>
+      <text x="636" y="76" font-size="9.5" text-anchor="middle" fill="#a7f3d0">D-Bus API 调用</text>
+      <text x="636" y="92" font-size="9.5" text-anchor="middle" fill="#a7f3d0">bluetoothctl</text>
+      <text x="636" y="108" font-size="9.5" text-anchor="middle" fill="#a7f3d0">btmon / btmgmt</text>
+      <text x="636" y="124" font-size="9.5" text-anchor="middle" fill="#a7f3d0">hcitool / hciconfig</text>
+      <text x="636" y="140" font-size="9.5" text-anchor="middle" fill="#a7f3d0">自定义 BLE 应用</text>
+
+      <!-- Arrows: kernel internal -->
+      <line x1="380" y1="448" x2="380" y2="462" stroke="#7c3aed" stroke-width="1.5" marker-end="url(#arr)"/>
+      <line x1="380" y1="340" x2="380" y2="352" stroke="#7c3aed" stroke-width="1.5" marker-end="url(#arr)"/>
+      <line x1="380" y1="450" x2="380" y2="460" stroke="#7c3aed" stroke-width="1.2"/>
+
+      <!-- Arrows: HW to driver -->
+      <line x1="380" y1="543" x2="380" y2="556" stroke="#3b82f6" stroke-width="1.5" marker-end="url(#arr)"/>
+
+      <!-- Arrows: boundary -->
+      <line x1="160" y1="175" x2="160" y2="197" stroke="#d97706" stroke-width="1.5" marker-end="url(#arrB)"/>
+      <line x1="340" y1="175" x2="340" y2="197" stroke="#d97706" stroke-width="1.5" marker-end="url(#arrB)"/>
+      <line x1="488" y1="175" x2="488" y2="197" stroke="#d97706" stroke-width="1.5" marker-end="url(#arrB)"/>
+      <line x1="636" y1="175" x2="636" y2="197" stroke="#d97706" stroke-width="1.5" marker-end="url(#arrB)"/>
+    </svg>
+  </div>
+  <p class="caption">图1：BlueZ 完整架构图，展示从硬件到应用的分层结构</p>
+
+  <div class="principle-box">
+    <div class="pt">🧭 第一性原理</div>
+    <p>
+      任何软件系统的分层架构，都是在<strong>"谁最适合做这件事"</strong>的问题上做出的答案。
+      内核离硬件最近，拥有最高权限与最低延迟；用户空间策略灵活，崩溃不影响系统稳定。
+      BlueZ 沿这条边界切分职责，是操作系统设计哲学的直接体现。
+    </p>
+  </div>
+</section>
+
+<!-- ─── S2 Layer Division ─── -->
+<section class="section" id="s2">
+  <h2><span class="sec-num">02</span>内核层 vs 用户层划分</h2>
+  <p>
+    根据 Linux 内核 Kconfig、BlueZ 官方文档（bluez.org）及 Collabora 技术博客（2025年）的权威描述，
+    BlueZ 的两层职责划分如下表所示：
+  </p>
+
+  <div class="table-wrap">
+    <table>
+      <thead>
+        <tr>
+          <th>层次</th>
+          <th>组件</th>
+          <th>源码位置</th>
+          <th>核心职责</th>
+        </tr>
+      </thead>
+      <tbody>
+        <tr class="row-kernel">
+          <td><span class="badge badge-kernel">内核</span></td>
+          <td>HCI 核心层</td>
+          <td><code>net/bluetooth/hci_core.c</code></td>
+          <td>设备管理、连接调度、事件路由</td>
+        </tr>
+        <tr class="row-kernel">
+          <td><span class="badge badge-kernel">内核</span></td>
+          <td>HCI 设备驱动</td>
+          <td><code>drivers/bluetooth/</code></td>
+          <td>btusb、hci_uart、hci_sdio 等硬件适配</td>
+        </tr>
+        <tr class="row-kernel">
+          <td><span class="badge badge-kernel">内核</span></td>
+          <td>L2CAP</td>
+          <td><code>net/bluetooth/l2cap_core.c</code></td>
+          <td>逻辑链路控制与适配、分包重组、流控</td>
+        </tr>
+        <tr class="row-kernel">
+          <td><span class="badge badge-kernel">内核</span></td>
+          <td>SCO</td>
+          <td><code>net/bluetooth/sco.c</code></td>
+          <td>同步面向连接音频链路</td>
+        </tr>
+        <tr class="row-kernel">
+          <td><span class="badge badge-kernel">内核</span></td>
+          <td>ISO</td>
+          <td><code>net/bluetooth/iso.c</code></td>
+          <td>LE Audio 等时信道（BT 5.2+）</td>
+        </tr>
+        <tr class="row-kernel">
+          <td><span class="badge badge-kernel">内核</span></td>
+          <td>SMP</td>
+          <td><code>net/bluetooth/smp.c</code></td>
+          <td>BLE 安全管理协议（配对/密钥）</td>
+        </tr>
+        <tr class="row-kernel">
+          <td><span class="badge badge-kernel">内核</span></td>
+          <td>RFCOMM</td>
+          <td><code>net/bluetooth/rfcomm/</code></td>
+          <td>串口仿真，创建 /dev/rfcomm 设备节点</td>
+        </tr>
+        <tr class="row-kernel">
+          <td><span class="badge badge-kernel">内核</span></td>
+          <td>BNEP</td>
+          <td><code>net/bluetooth/bnep/</code></td>
+          <td>蓝牙网络封装，创建 bnep 网络接口</td>
+        </tr>
+        <tr class="row-kernel">
+          <td><span class="badge badge-kernel">内核</span></td>
+          <td>HIDP</td>
+          <td><code>net/bluetooth/hidp/</code></td>
+          <td>HID 设备协议，创建 /sys/class/input 设备</td>
+        </tr>
+        <tr class="row-user">
+          <td><span class="badge badge-user">用户层</span></td>
+          <td>bluetoothd</td>
+          <td><code>src/</code>（bluez.git）</td>
+          <td>适配器/设备管理，配对，GATT，SDP，D-Bus API</td>
+        </tr>
+        <tr class="row-user">
+          <td><span class="badge badge-user">用户层</span></td>
+          <td>obexd</td>
+          <td><code>obex/</code>（bluez.git）</td>
+          <td>OBEX、PBAP、MAP、OPP 文件传输</td>
+        </tr>
+        <tr class="row-user">
+          <td><span class="badge badge-user">用户层</span></td>
+          <td>PipeWire</td>
+          <td>外部项目</td>
+          <td>A2DP/HSP/HFP/LE Audio 音频 Profile</td>
+        </tr>
+        <tr class="row-user">
+          <td><span class="badge badge-user">用户层</span></td>
+          <td>CLI 工具</td>
+          <td><code>tools/</code></td>
+          <td>bluetoothctl、btmon、btmgmt、hcitool 等</td>
+        </tr>
+      </tbody>
+    </table>
+  </div>
+
+  <div class="principle-box">
+    <div class="pt">🧭 第一性原理</div>
+    <p>
+      内核代码崩溃会导致系统 panic，用户进程崩溃可以被重启。
+      因此<strong>时间敏感、硬件直接操作、数据包转发</strong>放内核；
+      <strong>策略判断、用户交互、状态持久化</strong>放用户空间。
+      BlueZ 在 L2CAP 处划出边界，正是这一准则的最优实践点。
+    </p>
+  </div>
+</section>
+
+<!-- ─── S3 Kernel Subsystem ─── -->
+<section class="section" id="s3">
+  <h2><span class="sec-num">03</span>内核蓝牙子系统</h2>
+  <p>
+    Linux 内核的蓝牙子系统位于 <code>net/bluetooth/</code>，通过 <code>Kconfig</code> 控制编译选项。
+    根据内核官方 Kconfig 描述，该子系统由以下层次组成：
+  </p>
+
+  <pre>Linux 蓝牙子系统 (net/bluetooth/Kconfig):
+
+Bluetooth Core
+  ├── HCI device and connection manager, scheduler  [hci_core.c]
+  ├── SCO audio links                               [sco.c]
+  ├── L2CAP (Logical Link Control)                  [l2cap_core.c]
+  ├── SMP on LE links                               [smp.c]
+  └── ISO isochronous links                         [iso.c]
+
+HCI Device drivers (drivers/bluetooth/)
+  ├── btusb   — USB 蓝牙适配器
+  ├── hciuart — UART 串口接口
+  └── hci_sdio — SDIO 接口
+
+Protocol Modules
+  ├── RFCOMM  [BT_RFCOMM]   — net/bluetooth/rfcomm/
+  ├── BNEP    [BT_BNEP]     — net/bluetooth/bnep/
+  ├── CMTP    [BT_CMTP]     — net/bluetooth/cmtp/
+  └── HIDP    [BT_HIDP]     — net/bluetooth/hidp/</pre>
+
+  <p>来源：<a class="src-link" href="https://github.com/torvalds/linux/blob/master/net/bluetooth/Kconfig" target="_blank">🔗 Linux Kconfig</a></p>
+
+  <div class="card card-kernel">
+    <h4>📌 内核子系统的关键特性</h4>
+    <ul>
+      <li>自 Linux 2.4.6 起集成，2001 年正式成为内核一部分</li>
+      <li>使用 <code>AF_BLUETOOTH</code> 地址族，类似 <code>AF_INET</code> 对 TCP/IP 的地位</li>
+      <li>向用户空间暴露多种 Socket 类型：<code>BTPROTO_HCI</code>、<code>BTPROTO_L2CAP</code>、<code>BTPROTO_SCO</code>、<code>BTPROTO_RFCOMM</code>、<code>BTPROTO_ISO</code></li>
+      <li>加密操作使用内核 Crypto API（AES-CCM、CMAC、ECDH-P256）</li>
+    </ul>
+  </div>
+
+  <div class="principle-box">
+    <div class="pt">🧭 第一性原理</div>
+    <p>
+      内核是操作系统的"物理定律层"——它直接调度硬件、管理内存、提供进程间公平的资源抽象。
+      把 HCI、L2CAP、SMP 放在内核，是因为这些协议要求<strong>微秒级的响应</strong>（连接保活、加密握手）
+      以及<strong>跨进程共享同一硬件</strong>的能力，只有内核才能做到。
+    </p>
+  </div>
+</section>
+
+<!-- ─── S4 HCI ─── -->
+<section class="section" id="s4">
+  <h2><span class="sec-num">04</span>HCI 核心层与设备驱动</h2>
+  <p>
+    HCI（Host Controller Interface）是蓝牙规范定义的主机与控制器之间的标准接口，
+    是整个蓝牙栈的基础。在 BlueZ 中，HCI 的内核实现分为两个子层：
+  </p>
+
+  <div class="grid2">
+    <div class="card card-kernel">
+      <h4><span class="badge badge-kernel">内核</span> HCI 核心层</h4>
+      <p>文件：<code>net/bluetooth/hci_core.c</code></p>
+      <ul>
+        <li>维护 <code>hci_dev_list</code>（全局适配器列表）</li>
+        <li>管理 HCI 连接状态机（<code>hci_conn.c</code>）</li>
+        <li>HCI 命令队列与事件分发（<code>hci_event.c</code>）</li>
+        <li>连接参数管理、Key 存储（LTK/IRK/CSRK）</li>
+        <li>调度 TX/RX work：<code>hci_tx_work</code> / <code>hci_rx_work</code></li>
+      </ul>
+    </div>
+    <div class="card card-kernel">
+      <h4><span class="badge badge-kernel">内核</span> HCI 设备驱动</h4>
+      <p>目录：<code>drivers/bluetooth/</code></p>
+      <ul>
+        <li><code>btusb.c</code> — USB 蓝牙适配器（最常见）</li>
+        <li><code>hci_uart.c</code> — UART 串口接口</li>
+        <li><code>btsdio.c</code> — SDIO 接口</li>
+        <li><code>hci_vhci.c</code> — 虚拟 HCI 设备（测试用）</li>
+        <li>负责 H4/H5 等 HCI 传输协议的物理帧封装</li>
+      </ul>
+    </div>
+  </div>
+
+  <h3>HCI 数据帧类型</h3>
+  <div class="table-wrap">
+    <table>
+      <thead>
+        <tr><th>帧类型</th><th>H4 标识字节</th><th>方向</th><th>说明</th></tr>
+      </thead>
+      <tbody>
+        <tr><td>HCI Command</td><td><code>0x01</code></td><td>Host → Controller</td><td>控制命令（复位、扫描、连接等）</td></tr>
+        <tr><td>HCI ACL Data</td><td><code>0x02</code></td><td>双向</td><td>异步连接数据（L2CAP 承载于此）</td></tr>
+        <tr><td>HCI SCO Data</td><td><code>0x03</code></td><td>双向</td><td>同步音频数据</td></tr>
+        <tr><td>HCI Event</td><td><code>0x04</code></td><td>Controller → Host</td><td>事件上报（连接完成、配对结果等）</td></tr>
+        <tr><td>HCI ISO Data</td><td><code>0x05</code></td><td>双向</td><td>等时数据（LE Audio，BT 5.2+）</td></tr>
+      </tbody>
+    </table>
+  </div>
+
+  <div class="principle-box">
+    <div class="pt">🧭 第一性原理</div>
+    <p>
+      HCI 是蓝牙规范定义的唯一标准化接口，类似于 CPU 的指令集。
+      让内核实现 HCI，意味着任何用户程序无需关心硬件的物理连接方式（USB/UART/SDIO），
+      只需操作统一的 Socket 接口——这就是<strong>抽象的价值</strong>：屏蔽差异，暴露能力。
+    </p>
+  </div>
+</section>
+
+<!-- ─── S5 L2CAP ─── -->
+<section class="section" id="s5">
+  <h2><span class="sec-num">05</span>L2CAP 协议层</h2>
+  <p>
+    L2CAP（Logical Link Control and Adaptation Protocol）是 BlueZ 内核实现中最核心的协议层，
+    位于 <code>net/bluetooth/l2cap_core.c</code>（约 7000 行）。它是 SCO 以外几乎所有上层协议的基础。
+  </p>
+
+  <div class="svg-wrap">
+    <svg viewBox="0 0 680 320" xmlns="http://www.w3.org/2000/svg" font-family="'Segoe UI',system-ui,sans-serif">
+      <defs>
+        <marker id="a2" markerWidth="6" markerHeight="6" refX="5" refY="3" orient="auto">
+          <polygon points="0 0,6 3,0 6" fill="#94a3b8"/>
+        </marker>
+      </defs>
+
+      <!-- L2CAP box -->
+      <rect x="40" y="120" width="600" height="60" rx="8" fill="#5b21b6" fill-opacity=".35" stroke="#7c3aed" stroke-width="1.5"/>
+      <text x="340" y="145" font-size="13" text-anchor="middle" fill="#c4b5fd" font-weight="700">L2CAP 核心层  (net/bluetooth/l2cap_core.c)</text>
+      <text x="340" y="165" font-size="10.5" text-anchor="middle" fill="#a78bfa">信道复用 · 分段重组 · 流量控制 · QoS · 安全检查</text>
+
+      <!-- Upper protocols -->
+      <text x="340" y="35" font-size="11" text-anchor="middle" fill="#6ee7b7" font-weight="600">上层协议（使用 L2CAP 信道）</text>
+      <rect x="50" y="45" width="100" height="60" rx="6" fill="#064e3b" fill-opacity=".6" stroke="#059669" stroke-width="1"/>
+      <text x="100" y="69" font-size="11" text-anchor="middle" fill="#6ee7b7">RFCOMM</text>
+      <text x="100" y="86" font-size="9" text-anchor="middle" fill="#a7f3d0">PSM 0x0003</text>
+
+      <rect x="165" y="45" width="100" height="60" rx="6" fill="#064e3b" fill-opacity=".6" stroke="#059669" stroke-width="1"/>
+      <text x="215" y="69" font-size="11" text-anchor="middle" fill="#6ee7b7">SDP</text>
+      <text x="215" y="86" font-size="9" text-anchor="middle" fill="#a7f3d0">PSM 0x0001</text>
+
+      <rect x="280" y="45" width="100" height="60" rx="6" fill="#064e3b" fill-opacity=".6" stroke="#059669" stroke-width="1"/>
+      <text x="330" y="69" font-size="11" text-anchor="middle" fill="#6ee7b7">ATT/GATT</text>
+      <text x="330" y="86" font-size="9" text-anchor="middle" fill="#a7f3d0">CID 0x0004</text>
+
+      <rect x="395" y="45" width="100" height="60" rx="6" fill="#064e3b" fill-opacity=".6" stroke="#059669" stroke-width="1"/>
+      <text x="445" y="69" font-size="11" text-anchor="middle" fill="#6ee7b7">SMP</text>
+      <text x="445" y="86" font-size="9" text-anchor="middle" fill="#a7f3d0">CID 0x0006</text>
+
+      <rect x="510" y="45" width="110" height="60" rx="6" fill="#064e3b" fill-opacity=".6" stroke="#059669" stroke-width="1"/>
+      <text x="565" y="69" font-size="11" text-anchor="middle" fill="#6ee7b7">A2DP/AVCTP</text>
+      <text x="565" y="86" font-size="9" text-anchor="middle" fill="#a7f3d0">动态PSM</text>
+
+      <!-- Arrows down to L2CAP -->
+      <line x1="100" y1="105" x2="100" y2="120" stroke="#94a3b8" stroke-width="1.2" marker-end="url(#a2)"/>
+      <line x1="215" y1="105" x2="215" y2="120" stroke="#94a3b8" stroke-width="1.2" marker-end="url(#a2)"/>
+      <line x1="330" y1="105" x2="330" y2="120" stroke="#94a3b8" stroke-width="1.2" marker-end="url(#a2)"/>
+      <line x1="445" y1="105" x2="445" y2="120" stroke="#94a3b8" stroke-width="1.2" marker-end="url(#a2)"/>
+      <line x1="565" y1="105" x2="565" y2="120" stroke="#94a3b8" stroke-width="1.2" marker-end="url(#a2)"/>
+
+      <!-- HCI below -->
+      <rect x="40" y="200" width="600" height="50" rx="8" fill="#1e40af" fill-opacity=".35" stroke="#3b82f6" stroke-width="1.5"/>
+      <text x="340" y="222" font-size="13" text-anchor="middle" fill="#93c5fd" font-weight="700">HCI 核心层</text>
+      <text x="340" y="240" font-size="10.5" text-anchor="middle" fill="#60a5fa">ACL / SCO / ISO 数据包</text>
+
+      <!-- Arrow L2CAP to HCI -->
+      <line x1="340" y1="180" x2="340" y2="200" stroke="#3b82f6" stroke-width="1.5" marker-end="url(#a2)"/>
+
+      <!-- L2CAP modes -->
+      <rect x="40" y="265" width="600" height="46" rx="6" fill="rgba(91,33,182,.12)" stroke="#6d28d9" stroke-width="1" stroke-dasharray="3,2"/>
+      <text x="340" y="283" font-size="10" text-anchor="middle" fill="#a78bfa" font-weight="600">L2CAP 工作模式</text>
+      <text x="340" y="301" font-size="9.5" text-anchor="middle" fill="#94a3b8">Basic · ERTM(Enhanced Retransmission) · Streaming · LE Flow Control · Enhanced Credit (ECRED/BT5.2)</text>
+    </svg>
+  </div>
+  <p class="caption">图2：L2CAP 在协议栈中的位置与上层协议信道复用</p>
+
+  <h3>L2CAP 关键功能</h3>
+  <ul>
+    <li><strong>协议复用（PSM/CID）</strong>：使用 PSM（Protocol/Service Multiplexer）区分上层协议，CID 标识具体信道</li>
+    <li><strong>分段与重组</strong>：将大数据包分割为 HCI ACL 包大小，接收端重组</li>
+    <li><strong>流量控制</strong>：ERTM 模式提供可靠传输，Streaming 模式无重传</li>
+    <li><strong>安全检查</strong>：调用 <code>l2cap_chan_check_security()</code> 验证连接安全等级</li>
+    <li><strong>LE Enhanced Credit</strong>：BT 5.2 的 ECRED 模式，支持多信道并发信用流控</li>
+  </ul>
+
+  <div class="principle-box">
+    <div class="pt">🧭 第一性原理</div>
+    <p>
+      物理信道是稀缺资源——同一时刻只能传输一路信号。L2CAP 解决的根本问题是：
+      <strong>如何让多个逻辑连接共享同一条物理链路</strong>。
+      这与 TCP/IP 中 IP 复用物理以太网、TCP 端口复用 IP 地址的本质完全相同——
+      都是"一条线路，多个通道"的复用哲学。
+    </p>
+  </div>
+</section>
+
+<!-- ─── S6 SCO ISO SMP ─── -->
+<section class="section" id="s6">
+  <h2><span class="sec-num">06</span>SCO / ISO / SMP 内核实现</h2>
+
+  <div class="grid2">
+    <div class="card card-kernel">
+      <h4><span class="badge badge-kernel">内核</span> SCO — 同步音频链路</h4>
+      <p>源文件：<code>net/bluetooth/sco.c</code></p>
+      <ul>
+        <li>实现 <code>BTPROTO_SCO</code> Socket 类型</li>
+        <li>面向语音通话，固定时槽、固定带宽</li>
+        <li>支持 CVSD、mSBC 编码参数协商</li>
+        <li>PipeWire/HSP/HFP 通过 SCO Socket 访问</li>
+      </ul>
+    </div>
+    <div class="card card-kernel">
+      <h4><span class="badge badge-kernel">内核</span> ISO — 等时信道</h4>
+      <p>源文件：<code>net/bluetooth/iso.c</code></p>
+      <ul>
+        <li>BT 5.2 新增，支持 LE Audio</li>
+        <li>实现 <code>BTPROTO_ISO</code> Socket 类型</li>
+        <li>CIG/CIS（单播）和 BIG/BIS（广播）</li>
+        <li>PipeWire LE Audio 通过 ISO Socket 访问</li>
+      </ul>
+    </div>
+    <div class="card card-kernel">
+      <h4><span class="badge badge-kernel">内核</span> SMP — 安全管理协议</h4>
+      <p>源文件：<code>net/bluetooth/smp.c</code></p>
+      <ul>
+        <li>BLE 配对与密钥分发协议</li>
+        <li>实现在内核 L2CAP CID 0x0006 上</li>
+        <li>使用内核 Crypto API：CMAC-AES、ECDH-P256</li>
+        <li>生成 LTK/IRK/CSRK，存储于 hci_dev</li>
+        <li>SSP（经典蓝牙安全简单配对）也在内核侧处理</li>
+      </ul>
+    </div>
+    <div class="card card-kernel">
+      <h4><span class="badge badge-kernel">内核</span> 为何 SMP 放在内核？</h4>
+      <p>BlueZ 官方博客（2011年）解释：</p>
+      <blockquote style="border-left:3px solid #7c3aed;padding-left:.8rem;color:#94a3b8;font-size:.88rem;">
+        "SMP uses L2CAP and not HCI for messaging. Unlike SSP, there'd be a big problem 
+        with dealing with it from user space using the existing kernel interface."
+      </blockquote>
+      <p>SMP 消息基于 L2CAP 而非 HCI，从用户空间处理极为困难，因此放入内核。</p>
+    </div>
+  </div>
+
+  <div class="principle-box">
+    <div class="pt">🧭 第一性原理</div>
+    <p>
+      安全性是系统的基础属性，不能委托给可能被攻击的用户进程。
+      将 SMP 放入内核，等同于将 TLS 握手放入内核网络栈——
+      <strong>保证密钥材料永远不暴露在用户空间，防止任何进程窃取配对密钥</strong>。
+      这是"最小权限原则"的体现：只有内核才能保管秘密。
+    </p>
+  </div>
+</section>
+
+<!-- ─── S7 RFCOMM BNEP HIDP ─── -->
+<section class="section" id="s7">
+  <h2><span class="sec-num">07</span>内核模块：RFCOMM / BNEP / HIDP</h2>
+  <p>
+    这三个模块将蓝牙连接以标准 Linux 接口暴露给上层，使蓝牙设备透明地融入 Linux 设备体系。
+  </p>
+
+  <div class="table-wrap">
+    <table>
+      <thead>
+        <tr><th>模块</th><th>Kconfig</th><th>Linux 接口</th><th>典型用途</th></tr>
+      </thead>
+      <tbody>
+        <tr>
+          <td><code>RFCOMM</code></td>
+          <td><code>BT_RFCOMM</code></td>
+          <td><code>/dev/rfcomm0</code>、<code>/dev/rfcomm1</code>…</td>
+          <td>GPS 接收器、SPP 串口设备、OBEX 传输</td>
+        </tr>
+        <tr>
+          <td><code>BNEP</code></td>
+          <td><code>BT_BNEP</code></td>
+          <td><code>/sys/class/net/bnep0</code>（标准网络接口）</td>
+          <td>蓝牙个人局域网（PAN Profile）</td>
+        </tr>
+        <tr>
+          <td><code>HIDP</code></td>
+          <td><code>BT_HIDP</code></td>
+          <td><code>/sys/class/input/</code>（标准输入设备）</td>
+          <td>蓝牙键盘、鼠标、游戏手柄</td>
+        </tr>
+        <tr>
+          <td><code>CMTP</code></td>
+          <td><code>BT_CMTP</code></td>
+          <td>CAPI 2.0 接口</td>
+          <td>蓝牙 ISDN/电话访问（较少使用）</td>
+        </tr>
+        <tr>
+          <td><code>6LoWPAN</code></td>
+          <td><code>BT_6LOWPAN</code></td>
+          <td>IPv6 网络接口</td>
+          <td>IoT 设备 IPv6 压缩传输</td>
+        </tr>
+      </tbody>
+    </table>
+  </div>
+
+  <div class="card card-info">
+    <h4>📌 RFCOMM TTY 机制</h4>
+    <p>
+      当 <code>BT_RFCOMM_TTY=y</code> 时，内核 RFCOMM 模块会向 TTY 子系统注册，
+      创建 <code>/dev/rfcomm<em>N</em></code> 字符设备。
+      应用程序可以像操作普通串口一样（<code>open/read/write</code>）与蓝牙设备通信，
+      无需了解任何蓝牙协议细节。
+    </p>
+    <pre>// 使用 RFCOMM 的示例（来自 Gateworks 文档）
+rfcomm connect hci0 00:02:72:C9:56:47 1
+// 之后 /dev/rfcomm0 作为标准串口使用</pre>
+  </div>
+
+  <div class="principle-box">
+    <div class="pt">🧭 第一性原理</div>
+    <p>
+      Linux 的哲学是"一切皆文件"（Everything is a file）。
+      RFCOMM→TTY、BNEP→netdev、HIDP→input 的映射，
+      是将蓝牙物理通道翻译成 Linux VFS 统一接口的过程。
+      <strong>应用不需要学习蓝牙 API，只需使用已知的文件/网络接口</strong>——
+      这是"面向接口编程"的最高境界。
+    </p>
+  </div>
+</section>
+
+<!-- ─── S8 bluetoothd ─── -->
+<section class="section" id="s8">
+  <h2><span class="sec-num">08</span>bluetoothd 守护进程</h2>
+  <p>
+    <code>bluetoothd</code> 是 BlueZ 用户层的核心守护进程，源码位于 <code>src/</code> 目录。
+    它通过 Management Socket（<code>HCI_CHANNEL_CONTROL</code>）与内核通信，
+    并通过 D-Bus 向应用程序暴露高级 API。
+  </p>
+
+  <div class="svg-wrap">
+    <svg viewBox="0 0 680 340" xmlns="http://www.w3.org/2000/svg" font-family="'Segoe UI',system-ui,sans-serif">
+      <!-- bluetoothd center -->
+      <rect x="220" y="130" width="240" height="80" rx="10" fill="#064e3b" fill-opacity=".6" stroke="#059669" stroke-width="2"/>
+      <text x="340" y="162" font-size="14" text-anchor="middle" fill="#6ee7b7" font-weight="700">bluetoothd</text>
+      <text x="340" y="180" font-size="10" text-anchor="middle" fill="#a7f3d0">src/main.c · src/adapter.c</text>
+      <text x="340" y="196" font-size="10" text-anchor="middle" fill="#a7f3d0">src/device.c · src/gatt-*.c</text>
+
+      <!-- Left: Kernel -->
+      <rect x="30" y="145" width="150" height="50" rx="8" fill="#5b21b6" fill-opacity=".4" stroke="#7c3aed" stroke-width="1.2"/>
+      <text x="105" y="167" font-size="11" text-anchor="middle" fill="#c4b5fd" font-weight="600">Linux 内核</text>
+      <text x="105" y="183" font-size="9.5" text-anchor="middle" fill="#a78bfa">MGMT / HCI Socket</text>
+      <line x1="180" y1="170" x2="220" y2="170" stroke="#d97706" stroke-width="2" marker-end="url(#arrB)" marker-start="url(#arrB)"/>
+      <text x="200" y="162" font-size="8.5" text-anchor="middle" fill="#fcd34d">MGMT</text>
+
+      <!-- Right: D-Bus / Apps -->
+      <rect x="500" y="145" width="150" height="50" rx="8" fill="#064e3b" fill-opacity=".5" stroke="#10b981" stroke-width="1.2"/>
+      <text x="575" y="167" font-size="11" text-anchor="middle" fill="#6ee7b7" font-weight="600">应用层</text>
+      <text x="575" y="183" font-size="9.5" text-anchor="middle" fill="#a7f3d0">D-Bus (org.bluez)</text>
+      <line x1="460" y1="170" x2="500" y2="170" stroke="#059669" stroke-width="2" marker-end="url(#arrB)" marker-start="url(#arrB)"/>
+      <text x="480" y="162" font-size="8.5" text-anchor="middle" fill="#6ee7b7">D-Bus</text>
+
+      <!-- Sub-components -->
+      <text x="340" y="38" font-size="11" text-anchor="middle" fill="#94a3b8" font-weight="600">bluetoothd 内部组件</text>
+
+      <rect x="50" y="52" width="120" height="56" rx="6" fill="rgba(5,150,105,.15)" stroke="#059669" stroke-width="1"/>
+      <text x="110" y="74" font-size="10.5" text-anchor="middle" fill="#6ee7b7" font-weight="600">Adapter Manager</text>
+      <text x="110" y="91" font-size="9" text-anchor="middle" fill="#a7f3d0">hci0/hci1 管理</text>
+      <text x="110" y="103" font-size="9" text-anchor="middle" fill="#a7f3d0">扫描/广播控制</text>
+      <line x1="110" y1="108" x2="230" y2="130" stroke="#059669" stroke-width="1" stroke-dasharray="3,2"/>
+
+      <rect x="190" y="52" width="120" height="56" rx="6" fill="rgba(5,150,105,.15)" stroke="#059669" stroke-width="1"/>
+      <text x="250" y="74" font-size="10.5" text-anchor="middle" fill="#6ee7b7" font-weight="600">Device Manager</text>
+      <text x="250" y="91" font-size="9" text-anchor="middle" fill="#a7f3d0">设备发现/缓存</text>
+      <text x="250" y="103" font-size="9" text-anchor="middle" fill="#a7f3d0">连接跟踪</text>
+      <line x1="250" y1="108" x2="295" y2="130" stroke="#059669" stroke-width="1" stroke-dasharray="3,2"/>
+
+      <rect x="330" y="52" width="120" height="56" rx="6" fill="rgba(5,150,105,.15)" stroke="#059669" stroke-width="1"/>
+      <text x="390" y="74" font-size="10.5" text-anchor="middle" fill="#6ee7b7" font-weight="600">GATT Server</text>
+      <text x="390" y="91" font-size="9" text-anchor="middle" fill="#a7f3d0">属性数据库</text>
+      <text x="390" y="103" font-size="9" text-anchor="middle" fill="#a7f3d0">特征值读写</text>
+      <line x1="390" y1="108" x2="385" y2="130" stroke="#059669" stroke-width="1" stroke-dasharray="3,2"/>
+
+      <rect x="470" y="52" width="120" height="56" rx="6" fill="rgba(5,150,105,.15)" stroke="#059669" stroke-width="1"/>
+      <text x="530" y="74" font-size="10.5" text-anchor="middle" fill="#6ee7b7" font-weight="600">Profile Plugins</text>
+      <text x="530" y="91" font-size="9" text-anchor="middle" fill="#a7f3d0">A2DP/HFP/HoG</text>
+      <text x="530" y="103" font-size="9" text-anchor="middle" fill="#a7f3d0">插件化注册</text>
+      <line x1="530" y1="108" x2="450" y2="130" stroke="#059669" stroke-width="1" stroke-dasharray="3,2"/>
+
+      <!-- Bottom: pairing/security -->
+      <rect x="50" y="235" width="130" height="56" rx="6" fill="rgba(5,150,105,.15)" stroke="#059669" stroke-width="1"/>
+      <text x="115" y="257" font-size="10.5" text-anchor="middle" fill="#6ee7b7" font-weight="600">Agent Manager</text>
+      <text x="115" y="274" font-size="9" text-anchor="middle" fill="#a7f3d0">配对 UI 代理</text>
+      <text x="115" y="286" font-size="9" text-anchor="middle" fill="#a7f3d0">PIN/Passkey 输入</text>
+      <line x1="115" y1="235" x2="245" y2="210" stroke="#059669" stroke-width="1" stroke-dasharray="3,2"/>
+
+      <rect x="200" y="235" width="130" height="56" rx="6" fill="rgba(5,150,105,.15)" stroke="#059669" stroke-width="1"/>
+      <text x="265" y="257" font-size="10.5" text-anchor="middle" fill="#6ee7b7" font-weight="600">SDP Server</text>
+      <text x="265" y="274" font-size="9" text-anchor="middle" fill="#a7f3d0">服务记录注册</text>
+      <text x="265" y="286" font-size="9" text-anchor="middle" fill="#a7f3d0">L2CAP PSM 0x0001</text>
+      <line x1="265" y1="235" x2="310" y2="210" stroke="#059669" stroke-width="1" stroke-dasharray="3,2"/>
+
+      <rect x="350" y="235" width="130" height="56" rx="6" fill="rgba(5,150,105,.15)" stroke="#059669" stroke-width="1"/>
+      <text x="415" y="257" font-size="10.5" text-anchor="middle" fill="#6ee7b7" font-weight="600">Key Store</text>
+      <text x="415" y="274" font-size="9" text-anchor="middle" fill="#a7f3d0">链路密钥持久化</text>
+      <text x="415" y="286" font-size="9" text-anchor="middle" fill="#a7f3d0">/var/lib/bluetooth</text>
+      <line x1="415" y1="235" x2="380" y2="210" stroke="#059669" stroke-width="1" stroke-dasharray="3,2"/>
+
+      <rect x="500" y="235" width="130" height="56" rx="6" fill="rgba(5,150,105,.15)" stroke="#059669" stroke-width="1"/>
+      <text x="565" y="257" font-size="10.5" text-anchor="middle" fill="#6ee7b7" font-weight="600">GATT Client</text>
+      <text x="565" y="274" font-size="9" text-anchor="middle" fill="#a7f3d0">服务发现</text>
+      <text x="565" y="286" font-size="9" text-anchor="middle" fill="#a7f3d0">特征订阅</text>
+      <line x1="565" y1="235" x2="450" y2="210" stroke="#059669" stroke-width="1" stroke-dasharray="3,2"/>
+    </svg>
+  </div>
+  <p class="caption">图3：bluetoothd 内部组件与对外接口</p>
+
+  <h3>bluetoothd 核心职责</h3>
+  <div class="grid2">
+    <div class="card card-user">
+      <h4><span class="badge badge-user">用户层</span> 适配器与设备管理</h4>
+      <ul>
+        <li>通过 MGMT Socket 控制适配器上下电、名称设置</li>
+        <li>管理扫描/广播参数，发现远端设备</li>
+        <li>维护设备缓存与连接状态机</li>
+      </ul>
+    </div>
+    <div class="card card-user">
+      <h4><span class="badge badge-user">用户层</span> 配对与安全</h4>
+      <ul>
+        <li>实现 GAP（Generic Access Profile）安全流程</li>
+        <li>通过 Agent D-Bus 接口请求用户输入 PIN/Passkey</li>
+        <li>持久化存储链路密钥（<code>/var/lib/bluetooth/</code>）</li>
+      </ul>
+    </div>
+    <div class="card card-user">
+      <h4><span class="badge badge-user">用户层</span> GATT Server/Client</h4>
+      <ul>
+        <li>维护本地 GATT 属性数据库</li>
+        <li>处理远端设备的 ATT 读写请求</li>
+        <li>支持应用通过 D-Bus 注册自定义 Service/Characteristic</li>
+      </ul>
+    </div>
+    <div class="card card-user">
+      <h4><span class="badge badge-user">用户层</span> 插件与 Profile</h4>
+      <ul>
+        <li>插件化架构（<code>src/plugin.c</code>），Profile 按需加载</li>
+        <li>每个 Profile 通过回调注册到 Adapter/Device 生命周期</li>
+        <li>支持外部 Profile（如 PipeWire 通过 D-Bus 注册）</li>
+      </ul>
+    </div>
+  </div>
+
+  <div class="principle-box">
+    <div class="pt">🧭 第一性原理</div>
+    <p>
+      守护进程是"常驻的管家"——它知道所有蓝牙设备的状态，协调多个应用对蓝牙资源的竞争性访问。
+      <strong>如果没有 bluetoothd，每个应用都需要自己实现发现、配对、安全策略</strong>，
+      不仅重复，更会因竞态条件导致混乱。
+      守护进程的本质价值是：<em>用一个可信的、有状态的进程，为无状态的应用提供稳定的蓝牙视图</em>。
+    </p>
+  </div>
+</section>
+
+<!-- ─── S9 D-Bus API ─── -->
+<section class="section" id="s9">
+  <h2><span class="sec-num">09</span>D-Bus API 与应用接口</h2>
+  <p>
+    BlueZ 5 通过 D-Bus 向应用层暴露所有蓝牙功能。接口设计遵循 freedesktop.org 规范，
+    使用 <code>ObjectManager</code> 管理动态对象，接口版本号后缀为 <code>1</code>。
+  </p>
+
+  <h3>D-Bus 接口层次结构</h3>
+  <div class="table-wrap">
+    <table>
+      <thead>
+        <tr><th>D-Bus 对象路径</th><th>接口</th><th>职责</th></tr>
+      </thead>
+      <tbody>
+        <tr><td><code>/org/bluez</code></td><td><code>org.bluez.AgentManager1</code></td><td>配对代理注册管理</td></tr>
+        <tr><td><code>/org/bluez</code></td><td><code>org.bluez.ProfileManager1</code></td><td>自定义 Profile 注册</td></tr>
+        <tr><td><code>/org/bluez/hci0</code></td><td><code>org.bluez.Adapter1</code></td><td>适配器控制（扫描、名称、电源等）</td></tr>
+        <tr><td><code>/org/bluez/hci0/dev_XX_XX_XX_XX_XX_XX</code></td><td><code>org.bluez.Device1</code></td><td>设备管理（连接、配对、属性）</td></tr>
+        <tr><td><code>/org/bluez/hci0/dev_.../serviceXXXX</code></td><td><code>org.bluez.GattService1</code></td><td>GATT 服务</td></tr>
+        <tr><td><code>/org/bluez/hci0/dev_.../charXXXX</code></td><td><code>org.bluez.GattCharacteristic1</code></td><td>GATT 特征值（读/写/通知）</td></tr>
+        <tr><td><code>/org/bluez/hci0/dev_.../descXXXX</code></td><td><code>org.bluez.GattDescriptor1</code></td><td>GATT 描述符</td></tr>
+      </tbody>
+    </table>
+  </div>
+
+  <h3>org.bluez.Device1 关键方法</h3>
+  <pre>// 来源：bluez/doc/device-api.txt
+
+Methods:
+  void Connect()          — 连接设备支持的所有 Auto-connectable Profile
+  void Disconnect()       — 断开所有 Profile，终止 ACL 连接
+  void ConnectProfile(string uuid)   — 连接指定 Profile（UUID）
+  void DisconnectProfile(string uuid)
+  void Pair()             — 发起配对（获取 SDP/GATT 记录）
+  void CancelPairing()
+
+Properties:
+  string  Address         [readonly]  — 蓝牙地址
+  string  Name            [readonly]  — 远端设备名称
+  string  Alias           [readwrite] — 本地别名
+  uint32  Class           [readonly]  — 设备 Class
+  bool    Paired          [readonly]
+  bool    Connected       [readonly]
+  bool    Trusted         [readwrite]
+  bool    Blocked         [readwrite]</pre>
+
+  <div class="card card-info">
+    <h4>📌 应用程序通过 D-Bus 注册 GATT Service 示例</h4>
+    <p>来源：linuxvox.com BlueZ GATT API 示例（2026年1月）</p>
+    <pre>import pydbus
+from gi.repository import GLib
+
+# 连接系统 D-Bus，获取 bluetoothd 的 GattManager
+bus = pydbus.SystemBus()
+adapter = bus.get("org.bluez", "/org/bluez/hci0")
+gatt_manager = adapter["org.bluez.GattManager1"]
+
+# 实现 GattCharacteristic1 接口
+class HelloCharacteristic:
+    __dbus_xml__ = """&lt;node&gt;
+      &lt;interface name="org.bluez.GattCharacteristic1"&gt;
+        &lt;method name="ReadValue"&gt;
+          &lt;arg type="ay" name="value" direction="out"/&gt;
+        &lt;/method&gt;
+      &lt;/interface&gt;
+    &lt;/node&gt;"""
+    def ReadValue(self, options):
+        return list(b"Hello World!")
+
+# 注册到 bluetoothd
+gatt_manager.RegisterService(SERVICE_PATH, {})</pre>
+  </div>
+
+  <div class="principle-box">
+    <div class="pt">🧭 第一性原理</div>
+    <p>
+      IPC（进程间通信）的本质是：让不同进程共享信息而不破坏各自的内存隔离。
+      D-Bus 选择了"服务总线"模型——所有消息经过一个中央 broker，任何进程都可以订阅/发布，
+      而不需要知道对方的进程 ID。
+      <strong>bluetoothd 之所以用 D-Bus 而非共享内存，是因为蓝牙操作天然是异步事件驱动的，
+      D-Bus 的信号（Signal）机制完美匹配这种模型</strong>。
+    </p>
+  </div>
+</section>
+
+<!-- ─── S10 obexd audio ─── -->
+<section class="section" id="s10">
+  <h2><span class="sec-num">10</span>obexd 与音频守护进程</h2>
+
+  <div class="grid2">
+    <div class="card card-user">
+      <h4><span class="badge badge-user">用户层</span> obexd — OBEX 守护进程</h4>
+      <p>实现基于 OBEX（Object Exchange）协议的文件传输 Profile：</p>
+      <ul>
+        <li><strong>PBAP</strong>（Phone Book Access Profile）— 电话本访问</li>
+        <li><strong>MAP</strong>（Message Access Profile）— 消息访问</li>
+        <li><strong>OPP</strong>（Object Push Profile）— 文件推送</li>
+        <li><strong>FTP</strong>（File Transfer Profile）— 文件管理</li>
+      </ul>
+      <p>obexd 通过 RFCOMM Socket 或 L2CAP Socket 与远端通信，并通过 D-Bus 暴露给应用。</p>
+    </div>
+    <div class="card card-user">
+      <h4><span class="badge badge-user">用户层</span> PipeWire — 音频守护进程</h4>
+      <p>负责所有蓝牙音频 Profile 的实现（来源：Collabora 2025年博客）：</p>
+      <ul>
+        <li><strong>A2DP</strong>（Advanced Audio Distribution Profile）— 高质量音频流</li>
+        <li><strong>HSP</strong>（Headset Profile）— 耳机语音</li>
+        <li><strong>HFP</strong>（Hands-Free Profile）— 免提电话</li>
+        <li><strong>LE Audio / BAP</strong>（BT 5.2+）— 低功耗音频</li>
+      </ul>
+      <p>PipeWire 通过 SCO Socket（语音）和 ISO Socket（LE Audio）与内核交互。</p>
+    </div>
+  </div>
+
+  <div class="principle-box">
+    <div class="pt">🧭 第一性原理</div>
+    <p>
+      音频是实时性要求最高的数据类型，延迟超过 20ms 人耳可感知。
+      <strong>PipeWire 直接使用内核 SCO/ISO Socket 而非通过 D-Bus 中转</strong>，
+      正是因为实时数据不能经过高延迟的 IPC 链路。
+      策略（哪个 codec？哪条路由？）走 D-Bus；数据（PCM 帧）走 Socket——
+      这是"控制面与数据面分离"原则的完美体现。
+    </p>
+  </div>
+</section>
+
+<!-- ─── S11 Tools ─── -->
+<section class="section" id="s11">
+  <h2><span class="sec-num">11</span>用户层工具链</h2>
+
+  <div class="table-wrap">
+    <table>
+      <thead>
+        <tr><th>工具</th><th>位置</th><th>底层接口</th><th>用途</th></tr>
+      </thead>
+      <tbody>
+        <tr>
+          <td><code>bluetoothctl</code></td>
+          <td>client/</td>
+          <td>D-Bus → bluetoothd</td>
+          <td>交互式蓝牙控制（扫描、配对、连接）</td>
+        </tr>
+        <tr>
+          <td><code>btmgmt</code></td>
+          <td>tools/</td>
+          <td>MGMT Socket（直接）</td>
+          <td>低级管理接口操作，调试用</td>
+        </tr>
+        <tr>
+          <td><code>btmon</code></td>
+          <td>monitor/</td>
+          <td>HCI_CHANNEL_MONITOR</td>
+          <td>实时抓包监控所有 HCI 流量</td>
+        </tr>
+        <tr>
+          <td><code>hciconfig</code></td>
+          <td>tools/</td>
+          <td>HCI_CHANNEL_RAW（已废弃路径）</td>
+          <td>适配器配置（老版工具）</td>
+        </tr>
+        <tr>
+          <td><code>hcitool</code></td>
+          <td>tools/</td>
+          <td>HCI Socket</td>
+          <td>HCI 命令发送、设备扫描</td>
+        </tr>
+        <tr>
+          <td><code>l2ping</code></td>
+          <td>tools/</td>
+          <td>L2CAP Socket</td>
+          <td>L2CAP 连通性测试（类似 ping）</td>
+        </tr>
+        <tr>
+          <td><code>rfcomm</code></td>
+          <td>tools/</td>
+          <td>RFCOMM / /dev/rfcomm</td>
+          <td>RFCOMM 连接管理</td>
+        </tr>
+      </tbody>
+    </table>
+  </div>
+
+  <div class="principle-box">
+    <div class="pt">🧭 第一性原理</div>
+    <p>
+      工具链存在的意义是<strong>将协议的抽象能力具象化为人类可操作的命令</strong>。
+      越接近底层的工具（btmgmt、btmon）越需要特权，越接近顶层的工具（bluetoothctl）
+      越友好但也越依赖守护进程。
+      工具链的分层与协议栈分层完全同构——这是系统设计自洽的标志。
+    </p>
+  </div>
+</section>
+
+<!-- ─── S12 Socket Interface ─── -->
+<section class="section" id="s12">
+  <h2><span class="sec-num">12</span>Socket 接口体系</h2>
+  <p>
+    BlueZ 内核向用户空间暴露 <code>AF_BLUETOOTH</code> 地址族的 Socket。
+    类比 <code>AF_INET</code>（TCP/IP），但协议类型更丰富。
+    这是内核与用户层通信的<strong>数据面</strong>主要接口。
+  </p>
+
+  <div class="svg-wrap">
+    <svg viewBox="0 0 680 290" xmlns="http://www.w3.org/2000/svg" font-family="'Segoe UI',system-ui,sans-serif">
+      <defs>
+        <marker id="a3" markerWidth="6" markerHeight="6" refX="5" refY="3" orient="auto">
+          <polygon points="0 0,6 3,0 6" fill="#94a3b8"/>
+        </marker>
+      </defs>
+
+      <!-- AF_BLUETOOTH label -->
+      <rect x="30" y="120" width="620" height="50" rx="8" fill="#d97706" fill-opacity=".15" stroke="#d97706" stroke-width="1.5" stroke-dasharray="5,3"/>
+      <text x="340" y="140" font-size="11" text-anchor="middle" fill="#fcd34d" font-weight="700">AF_BLUETOOTH 地址族 — 内核/用户层边界</text>
+      <text x="340" y="158" font-size="9.5" text-anchor="middle" fill="#fbbf24">socket(AF_BLUETOOTH, SOCK_RAW/SOCK_SEQPACKET/SOCK_STREAM, BTPROTO_*)</text>
+
+      <!-- Socket types -->
+      <rect x="40" y="185" width="110" height="70" rx="6" fill="#1e1b4b" stroke="#6d28d9" stroke-width="1.2"/>
+      <text x="95" y="207" font-size="11" text-anchor="middle" fill="#a78bfa" font-weight="600">BTPROTO_HCI</text>
+      <text x="95" y="224" font-size="9" text-anchor="middle" fill="#7c3aed">直接 HCI</text>
+      <text x="95" y="238" font-size="9" text-anchor="middle" fill="#7c3aed">命令/事件</text>
+      <text x="95" y="249" font-size="9" text-anchor="middle" fill="#7c3aed">btmon/btmgmt</text>
+      <line x1="95" y1="170" x2="95" y2="185" stroke="#6d28d9" stroke-width="1.2" marker-end="url(#a3)"/>
+
+      <rect x="164" y="185" width="110" height="70" rx="6" fill="#1e1b4b" stroke="#6d28d9" stroke-width="1.2"/>
+      <text x="219" y="207" font-size="11" text-anchor="middle" fill="#a78bfa" font-weight="600">BTPROTO_L2CAP</text>
+      <text x="219" y="224" font-size="9" text-anchor="middle" fill="#7c3aed">L2CAP 信道</text>
+      <text x="219" y="238" font-size="9" text-anchor="middle" fill="#7c3aed">ATT / GATT</text>
+      <text x="219" y="249" font-size="9" text-anchor="middle" fill="#7c3aed">l2ping</text>
+      <line x1="219" y1="170" x2="219" y2="185" stroke="#6d28d9" stroke-width="1.2" marker-end="url(#a3)"/>
+
+      <rect x="288" y="185" width="110" height="70" rx="6" fill="#1e1b4b" stroke="#6d28d9" stroke-width="1.2"/>
+      <text x="343" y="207" font-size="11" text-anchor="middle" fill="#a78bfa" font-weight="600">BTPROTO_SCO</text>
+      <text x="343" y="224" font-size="9" text-anchor="middle" fill="#7c3aed">同步音频</text>
+      <text x="343" y="238" font-size="9" text-anchor="middle" fill="#7c3aed">HSP/HFP</text>
+      <text x="343" y="249" font-size="9" text-anchor="middle" fill="#7c3aed">PipeWire</text>
+      <line x1="343" y1="170" x2="343" y2="185" stroke="#6d28d9" stroke-width="1.2" marker-end="url(#a3)"/>
+
+      <rect x="412" y="185" width="115" height="70" rx="6" fill="#1e1b4b" stroke="#6d28d9" stroke-width="1.2"/>
+      <text x="469" y="207" font-size="11" text-anchor="middle" fill="#a78bfa" font-weight="600">BTPROTO_RFCOMM</text>
+      <text x="469" y="224" font-size="9" text-anchor="middle" fill="#7c3aed">串口仿真</text>
+      <text x="469" y="238" font-size="9" text-anchor="middle" fill="#7c3aed">SPP / GPS</text>
+      <text x="469" y="249" font-size="9" text-anchor="middle" fill="#7c3aed">rfcomm tool</text>
+      <line x1="469" y1="170" x2="469" y2="185" stroke="#6d28d9" stroke-width="1.2" marker-end="url(#a3)"/>
+
+      <rect x="540" y="185" width="110" height="70" rx="6" fill="#1e1b4b" stroke="#6d28d9" stroke-width="1.2"/>
+      <text x="595" y="207" font-size="11" text-anchor="middle" fill="#a78bfa" font-weight="600">BTPROTO_ISO</text>
+      <text x="595" y="224" font-size="9" text-anchor="middle" fill="#7c3aed">等时数据</text>
+      <text x="595" y="238" font-size="9" text-anchor="middle" fill="#7c3aed">LE Audio</text>
+      <text x="595" y="249" font-size="9" text-anchor="middle" fill="#7c3aed">PipeWire</text>
+      <line x1="595" y1="170" x2="595" y2="185" stroke="#6d28d9" stroke-width="1.2" marker-end="url(#a3)"/>
+
+      <!-- User / kernel labels -->
+      <text x="340" y="30" font-size="11" text-anchor="middle" fill="#6ee7b7" font-weight="600">用户空间（应用/守护进程）</text>
+      <text x="340" y="55" font-size="9.5" text-anchor="middle" fill="#94a3b8">调用 socket() bind() connect() send() recv()</text>
+      <text x="340" y="80" font-size="9.5" text-anchor="middle" fill="#94a3b8">与 TCP/IP 编程模型完全一致</text>
+
+      <text x="340" y="275" font-size="11" text-anchor="middle" fill="#a78bfa" font-weight="600">内核空间（协议实现层）</text>
+    </svg>
+  </div>
+  <p class="caption">图4：AF_BLUETOOTH Socket 接口体系（数据面）</p>
+
+  <h3>Socket 创建示例</h3>
+  <pre>// 来源：bluez/wiki/HCI (github.com/bluez/bluez/wiki/HCI)
+
+#include &lt;sys/socket.h&gt;
+#include &lt;bluetooth/bluetooth.h&gt;
+#include &lt;bluetooth/hci.h&gt;
+
+// 创建 HCI Socket（用于控制管理）
+int hci_sock = socket(PF_BLUETOOTH, SOCK_RAW, BTPROTO_HCI);
+
+struct sockaddr_hci addr = {
+    .hci_family  = AF_BLUETOOTH,
+    .hci_dev     = HCI_DEV_NONE,
+    .hci_channel = HCI_CHANNEL_CONTROL,  // 管理信道
+};
+bind(hci_sock, (struct sockaddr*)&addr, sizeof(addr));</pre>
+
+  <div class="principle-box">
+    <div class="pt">🧭 第一性原理</div>
+    <p>
+      Socket 是 UNIX 哲学"一切皆文件"的网络扩展。
+      <strong>用 Socket 作为内核/用户层边界</strong>的核心优势是：
+      用户进程无需特殊权限即可通过标准系统调用（read/write/send/recv）访问协议栈，
+      内核通过文件描述符自动管理生命周期和权限，进程崩溃时内核自动清理连接。
+      这与 TCP 应用无需知道 IP 路由细节完全一样——<em>接口正交于实现</em>。
+    </p>
+  </div>
+</section>
+
+<!-- ─── S13 MGMT Interface ─── -->
+<section class="section" id="s13">
+  <h2><span class="sec-num">13</span>Management 管理接口</h2>
+  <p>
+    Management Interface（MGMT）是 BlueZ 内核与 bluetoothd 之间的<strong>控制面</strong>主接口，
+    自 Linux 3.4 引入，替代了旧的 Raw HCI Socket 方案。
+    来源：<a class="src-link" href="https://github.com/bluez/bluez/blob/master/doc/mgmt-api.txt" target="_blank">🔗 bluez/doc/mgmt-api.txt</a>
+  </p>
+
+  <div class="card card-ipc">
+    <h4>📌 MGMT 接口概述（来自官方 mgmt-api.txt）</h4>
+    <blockquote style="border-left:3px solid #d97706;padding-left:.8rem;color:#fcd34d;font-size:.88rem;font-style:italic;">
+      "This document describes the format of data used for communicating with the kernel 
+      using a so-called Bluetooth Management sockets. These sockets are available starting 
+      with Linux kernel version 3.4, and can be created by setting the hci_channel member 
+      of struct sockaddr_hci to HCI_CHANNEL_CONTROL (3) when creating a raw HCI socket."
+    </blockquote>
+  </div>
+
+  <h3>MGMT 版本历史</h3>
+  <div class="table-wrap">
+    <table>
+      <thead>
+        <tr><th>内核版本</th><th>MGMT API 版本</th><th>新增能力</th></tr>
+      </thead>
+      <tbody>
+        <tr><td>Linux 3.4</td><td>v1.0</td><td>基础框架</td></tr>
+        <tr><td>Linux 3.5</td><td>v1.1</td><td>新增命令/事件</td></tr>
+        <tr><td>Linux 3.7</td><td>v1.2</td><td>BLE 支持增强</td></tr>
+        <tr><td>Linux 3.9</td><td>v1.3</td><td>LE 白名单</td></tr>
+        <tr><td>Linux 3.13</td><td>v1.4</td><td>调试功能</td></tr>
+        <tr><td>Linux 3.15</td><td>v1.5</td><td>隐私特性</td></tr>
+      </tbody>
+    </table>
+  </div>
+
+  <h3>MGMT 数据包格式</h3>
+  <pre>// MGMT 消息头结构（来自 mgmt-api.txt）
+struct mgmt_hdr {
+    uint16_t opcode;      // 命令/事件码
+    uint16_t index;       // 控制器索引（0xFFFF = 全局）
+    uint16_t len;         // 参数长度
+} __packed;
+
+// 典型命令操作码示例：
+0x0001  Read Version Information
+0x0002  Read Supported Commands
+0x0003  Read Controller Index List
+0x0004  Read Controller Information
+0x0007  Set Powered             // 上下电
+0x0009  Set Discoverable        // 设置可发现
+0x001A  Start Discovery         // 开始扫描
+0x001B  Stop Discovery
+0x0019  Pair Device             // 配对</pre>
+
+  <h3>MGMT 事件（内核 → 用户层）</h3>
+  <div class="table-wrap">
+    <table>
+      <thead>
+        <tr><th>事件码</th><th>事件名称</th><th>触发时机</th></tr>
+      </thead>
+      <tbody>
+        <tr><td><code>0x0012</code></td><td>Device Found Event</td><td>扫描发现设备时</td></tr>
+        <tr><td><code>0x0013</code></td><td>Discovering Event</td><td>发现状态变化</td></tr>
+        <tr><td><code>0x000F</code></td><td>Pin Code Request Event</td><td>配对需要 PIN 码</td></tr>
+        <tr><td><code>0x0010</code></td><td>User Passkey Request Event</td><td>需要用户输入 Passkey</td></tr>
+        <tr><td><code>0x0011</code></td><td>Authentication Failed Event</td><td>认证失败</td></tr>
+        <tr><td><code>0x0016</code></td><td>Device Unpaired Event</td><td>设备解除配对</td></tr>
+        <tr><td><code>0x0017</code></td><td>Passkey Notify Event</td><td>显示 Passkey 给用户</td></tr>
+        <tr><td><code>0x0018</code></td><td>New Identity Resolving Key</td><td>新 IRK 生成</td></tr>
+      </tbody>
+    </table>
+  </div>
+
+  <div class="principle-box">
+    <div class="pt">🧭 第一性原理</div>
+    <p>
+      管理接口解决的是<strong>"控制权归属"</strong>问题：谁有权让适配器上下电？谁有权发起扫描？
+      MGMT 设计为<strong>单一入口点</strong>——只有持有 MGMT Socket 的进程（bluetoothd）
+      才能下发控制命令。这防止了多个进程竞争控制同一硬件，
+      是<em>互斥访问</em>在系统设计中的具体实现。
+    </p>
+  </div>
+</section>
+
+<!-- ─── S14 HCI Channel Types ─── -->
+<section class="section" id="s14">
+  <h2><span class="sec-num">14</span>HCI Socket 通道类型</h2>
+  <p>
+    HCI Socket 通过 <code>hci_channel</code> 字段区分不同的访问模式。
+    来源：<a class="src-link" href="https://github.com/bluez/bluez/wiki/HCI" target="_blank">🔗 BlueZ Wiki/HCI</a>
+    、<a class="src-link" href="https://man.archlinux.org/man/extra/bluez-utils/hci.7.en" target="_blank">🔗 hci(7) man page</a>
+  </p>
+
+  <div class="table-wrap">
+    <table>
+      <thead>
+        <tr><th>常量</th><th>值</th><th>使用者</th><th>描述</th></tr>
+      </thead>
+      <tbody>
+        <tr>
+          <td><code>HCI_CHANNEL_RAW</code></td>
+          <td><code>0x00</code></td>
+          <td>hcitool 等老工具</td>
+          <td>原始 HCI 通信，可设置 HCI_FILTER 过滤器；设置后适配器进入 promisc 模式</td>
+        </tr>
+        <tr>
+          <td><code>HCI_CHANNEL_USER</code></td>
+          <td><code>0x01</code></td>
+          <td>用户空间 HCI 实现</td>
+          <td>完全接管适配器，禁用内核处理（供 Android HCI 或 userspace 栈）</td>
+        </tr>
+        <tr>
+          <td><code>HCI_CHANNEL_MONITOR</code></td>
+          <td><code>0x02</code></td>
+          <td><code>btmon</code></td>
+          <td>只读监控所有适配器的 HCI 流量，用于协议分析/抓包</td>
+        </tr>
+        <tr>
+          <td><code>HCI_CHANNEL_CONTROL</code></td>
+          <td><code>0x03</code></td>
+          <td><code>bluetoothd</code></td>
+          <td>MGMT 控制信道，管理本地适配器（上下电、扫描、配对等）</td>
+        </tr>
+        <tr>
+          <td><code>HCI_CHANNEL_LOGGING</code></td>
+          <td><code>0x04</code></td>
+          <td><code>bluetoothd</code></td>
+          <td>注入日志消息，用于调试</td>
+        </tr>
+      </tbody>
+    </table>
+  </div>
+
+  <h3>HCI Socket 过滤器</h3>
+  <pre>// 来源：bluez/wiki/HCI
+// 仅对 HCI_CHANNEL_RAW 有效
+
+struct hci_filter {
+    uint32_t type_mask;      // 过滤包类型（Command/Event/ACL/SCO）
+    uint32_t event_mask[2];  // 过滤事件掩码（64 bit）
+    uint16_t opcode;         // 过滤特定命令 opcode
+};
+
+// 示例：只接收 HCI 事件
+struct hci_filter flt;
+memset(&flt, 0, sizeof(flt));
+flt.type_mask = 1 &lt;&lt; BT_H4_EVT_PKT;   // 只要 Event 包
+flt.event_mask[0] = 0xffffffff;          // 所有事件
+flt.event_mask[1] = 0xffffffff;
+setsockopt(fd, SOL_HCI, HCI_FILTER, &flt, sizeof(flt));</pre>
+
+  <div class="card card-ipc">
+    <h4>📌 为何 HCI_CHANNEL_RAW 已被废弃推荐？</h4>
+    <p>来源：BlueZ 官方博客（2011年）：</p>
+    <blockquote style="border-left:3px solid #d97706;padding-left:.8rem;color:#fcd34d;font-size:.88rem;font-style:italic;">
+      "When there's one or more raw HCI sockets in user space a special promisc flag is set 
+      for the corresponding adapter on the kernel side. When this flag is set the kernel 
+      needs to do extra processing to figure out whether an HCI event packet needs to be 
+      forwarded to user space or not."
+    </blockquote>
+    <p>
+      使用 RAW Socket 会导致内核对<em>每个</em> HCI 事件包都额外检查是否需要转发，
+      增加不必要的开销。MGMT 接口（HCI_CHANNEL_CONTROL）设计上避免了这个问题。
+    </p>
+  </div>
+
+  <div class="principle-box">
+    <div class="pt">🧭 第一性原理</div>
+    <p>
+      通道类型的本质是<strong>访问控制模型</strong>：
+      不同的使用者需要不同程度的控制权。
+      RAW 给予最大灵活性但代价是安全风险和性能开销；
+      CONTROL 提供结构化的管理能力；MONITOR 给予只读观察权。
+      这与 Linux 文件权限的读/写/执行三级模型同构——
+      <em>用最细粒度的权限划分实现最安全的系统</em>。
+    </p>
+  </div>
+</section>
+
+<!-- ─── S15 Interaction Flow ─── -->
+<section class="section" id="s15">
+  <h2><span class="sec-num">15</span>交互流程实例</h2>
+  <p>以下通过两个典型场景，说明内核与用户层的完整交互链路。</p>
+
+  <h3>场景一：BLE 设备发现与配对</h3>
+  <div class="svg-wrap">
+    <svg viewBox="0 0 720 440" xmlns="http://www.w3.org/2000/svg" font-family="'Segoe UI',system-ui,sans-serif" font-size="10.5">
+      <defs>
+        <marker id="a4" markerWidth="6" markerHeight="6" refX="5" refY="3" orient="auto">
+          <polygon points="0 0,6 3,0 6" fill="#64748b"/>
+        </marker>
+        <marker id="a5" markerWidth="6" markerHeight="6" refX="5" refY="3" orient="auto">
+          <polygon points="0 0,6 3,0 6" fill="#6ee7b7"/>
+        </marker>
+        <marker id="a6" markerWidth="6" markerHeight="6" refX="5" refY="3" orient="auto">
+          <polygon points="0 0,6 3,0 6" fill="#fcd34d"/>
+        </marker>
+        <marker id="a7" markerWidth="6" markerHeight="6" refX="5" refY="3" orient="auto">
+          <polygon points="0 0,6 3,0 6" fill="#a78bfa"/>
+        </marker>
+      </defs>
+
+      <!-- Column headers -->
+      <rect x="20" y="10" width="130" height="30" rx="5" fill="#064e3b" fill-opacity=".7" stroke="#059669" stroke-width="1"/>
+      <text x="85" y="30" text-anchor="middle" fill="#6ee7b7" font-weight="600">应用程序</text>
+
+      <rect x="180" y="10" width="130" height="30" rx="5" fill="#064e3b" fill-opacity=".5" stroke="#10b981" stroke-width="1"/>
+      <text x="245" y="30" text-anchor="middle" fill="#6ee7b7" font-weight="600">bluetoothd</text>
+
+      <rect x="340" y="10" width="130" height="30" rx="5" fill="#78350f" fill-opacity=".7" stroke="#d97706" stroke-width="1"/>
+      <text x="405" y="30" text-anchor="middle" fill="#fcd34d" font-weight="600">MGMT Socket</text>
+
+      <rect x="500" y="10" width="140" height="30" rx="5" fill="#4c1d95" fill-opacity=".7" stroke="#7c3aed" stroke-width="1"/>
+      <text x="570" y="30" text-anchor="middle" fill="#c4b5fd" font-weight="600">内核 (HCI/L2CAP/SMP)</text>
+
+      <!-- Lifelines -->
+      <line x1="85" y1="40" x2="85" y2="430" stroke="#059669" stroke-width="1" stroke-dasharray="4,3" opacity=".5"/>
+      <line x1="245" y1="40" x2="245" y2="430" stroke="#10b981" stroke-width="1" stroke-dasharray="4,3" opacity=".5"/>
+      <line x1="405" y1="40" x2="405" y2="430" stroke="#d97706" stroke-width="1" stroke-dasharray="4,3" opacity=".5"/>
+      <line x1="570" y1="40" x2="570" y2="430" stroke="#7c3aed" stroke-width="1" stroke-dasharray="4,3" opacity=".5"/>
+
+      <!-- Step 1 -->
+      <text x="10" y="67" fill="#64748b">①</text>
+      <line x1="85" y1="62" x2="245" y2="62" stroke="#6ee7b7" stroke-width="1.5" marker-end="url(#a5)"/>
+      <text x="165" y="57" text-anchor="middle" fill="#a7f3d0">D-Bus: StartDiscovery()</text>
+
+      <!-- Step 2 -->
+      <text x="10" y="95" fill="#64748b">②</text>
+      <line x1="245" y1="90" x2="405" y2="90" stroke="#fcd34d" stroke-width="1.5" marker-end="url(#a6)"/>
+      <text x="325" y="85" text-anchor="middle" fill="#fbbf24">MGMT: Start Discovery</text>
+
+      <!-- Step 3 -->
+      <text x="10" y="123" fill="#64748b">③</text>
+      <line x1="405" y1="118" x2="570" y2="118" stroke="#a78bfa" stroke-width="1.5" marker-end="url(#a7)"/>
+      <text x="487" y="113" text-anchor="middle" fill="#c4b5fd">HCI: LE Set Scan Enable</text>
+
+      <!-- Step 4 -->
+      <text x="10" y="151" fill="#64748b">④</text>
+      <line x1="570" y1="146" x2="405" y2="146" stroke="#a78bfa" stroke-width="1.5" marker-end="url(#a6)"/>
+      <text x="487" y="141" text-anchor="middle" fill="#c4b5fd">MGMT Event: Device Found</text>
+
+      <!-- Step 5 -->
+      <text x="10" y="179" fill="#64748b">⑤</text>
+      <line x1="405" y1="174" x2="245" y2="174" stroke="#fcd34d" stroke-width="1.5" marker-end="url(#a5)"/>
+      <text x="325" y="169" text-anchor="middle" fill="#fbbf24">Device Found (addr, rssi, EIR)</text>
+
+      <!-- Step 6 -->
+      <text x="10" y="207" fill="#64748b">⑥</text>
+      <line x1="245" y1="202" x2="85" y2="202" stroke="#6ee7b7" stroke-width="1.5" marker-end="url(#a5)"/>
+      <text x="165" y="197" text-anchor="middle" fill="#a7f3d0">D-Bus Signal: InterfacesAdded</text>
+
+      <!-- Step 7 -->
+      <text x="10" y="235" fill="#64748b">⑦</text>
+      <line x1="85" y1="230" x2="245" y2="230" stroke="#6ee7b7" stroke-width="1.5" marker-end="url(#a5)"/>
+      <text x="165" y="225" text-anchor="middle" fill="#a7f3d0">D-Bus: Pair()</text>
+
+      <!-- Step 8 -->
+      <text x="10" y="263" fill="#64748b">⑧</text>
+      <line x1="245" y1="258" x2="405" y2="258" stroke="#fcd34d" stroke-width="1.5" marker-end="url(#a6)"/>
+      <text x="325" y="253" text-anchor="middle" fill="#fbbf24">MGMT: Pair Device</text>
+
+      <!-- Step 9 -->
+      <text x="10" y="291" fill="#64748b">⑨</text>
+      <line x1="405" y1="286" x2="570" y2="286" stroke="#a78bfa" stroke-width="1.5" marker-end="url(#a7)"/>
+      <text x="487" y="281" text-anchor="middle" fill="#c4b5fd">HCI Connect + SMP Pairing</text>
+
+      <!-- Step 10 -->
+      <text x="10" y="319" fill="#64748b">⑩</text>
+      <line x1="570" y1="314" x2="405" y2="314" stroke="#a78bfa" stroke-width="1.5" marker-end="url(#a6)"/>
+      <text x="487" y="309" text-anchor="middle" fill="#c4b5fd">MGMT: User Passkey Request</text>
+
+      <!-- Step 11 -->
+      <text x="10" y="347" fill="#64748b">⑪</text>
+      <line x1="405" y1="342" x2="245" y2="342" stroke="#fcd34d" stroke-width="1.5" marker-end="url(#a5)"/>
+      <text x="325" y="337" text-anchor="middle" fill="#fbbf24">User Passkey Event</text>
+
+      <!-- Step 12 -->
+      <text x="10" y="375" fill="#64748b">⑫</text>
+      <line x1="245" y1="370" x2="85" y2="370" stroke="#6ee7b7" stroke-width="1.5" marker-end="url(#a5)"/>
+      <text x="165" y="365" text-anchor="middle" fill="#a7f3d0">D-Bus: Agent.RequestPasskey</text>
+
+      <!-- Step 13 -->
+      <text x="10" y="403" fill="#64748b">⑬</text>
+      <line x1="85" y1="398" x2="245" y2="398" stroke="#6ee7b7" stroke-width="1.5" marker-end="url(#a5)"/>
+      <text x="165" y="393" text-anchor="middle" fill="#a7f3d0">用户输入 Passkey → 回调</text>
+
+      <!-- Step 14 -->
+      <text x="10" y="428" fill="#64748b">⑭</text>
+      <line x1="245" y1="422" x2="405" y2="422" stroke="#fcd34d" stroke-width="1" stroke-dasharray="4,2" marker-end="url(#a6)"/>
+      <text x="325" y="417" text-anchor="middle" fill="#fbbf24">MGMT: User Passkey Reply → LTK 生成</text>
+    </svg>
+  </div>
+  <p class="caption">图5：BLE 设备发现与配对的完整交互序列</p>
+
+  <h3>场景二：bluetoothctl 连接设备的调用链</h3>
+  <pre># 用户操作（bluetoothctl 工具）
+bluetoothctl scan on
+bluetoothctl pair AA:BB:CC:DD:EE:FF
+bluetoothctl connect AA:BB:CC:DD:EE:FF
+
+# 对应的调用链：
+bluetoothctl
+  → D-Bus: org.bluez.Adapter1.StartDiscovery()
+    → bluetoothd src/adapter.c
+      → MGMT Socket: start_discovery cmd (opcode 0x001A)
+        → 内核 net/bluetooth/hci_core.c
+          → HCI LE Set Scan Parameters + Enable
+            → btusb → USB → 蓝牙控制器
+              → 扫描发现广播 → HCI Event
+                → 内核事件上报 → MGMT Device Found Event
+                  → bluetoothd → D-Bus Signal → bluetoothctl</pre>
+
+  <div class="principle-box">
+    <div class="pt">🧭 第一性原理</div>
+    <p>
+      每一次蓝牙操作都需要穿越 5-6 个层次：应用 → D-Bus → bluetoothd → MGMT → 内核 → HCI → 硬件。
+      这看似繁琐，实则每一层都有其存在的必要性。
+      <strong>去掉任何一层都会破坏某个关键属性：
+      去掉 D-Bus 则无法多进程共享；去掉 MGMT 则无法统一控制；去掉内核协议层则失去安全保障。</strong>
+      复杂性是功能需求的自然结果，而非过度设计。
+    </p>
+  </div>
+</section>
+
+<!-- ─── S16 Comparison ─── -->
+<section class="section" id="s16">
+  <h2><span class="sec-num">16</span>对比与权衡</h2>
+  <p>
+    来源：Collabora 技术博客（2025年2月27日）
+    "<em>Implementing Bluetooth on embedded Linux: Open source BlueZ vs proprietary stacks</em>"
+  </p>
+
+  <div class="table-wrap">
+    <table>
+      <thead>
+        <tr><th>维度</th><th>BlueZ（内核+用户层混合）</th><th>专有栈（纯用户层）</th></tr>
+      </thead>
+      <tbody>
+        <tr>
+          <td>架构</td>
+          <td>内核实现 HCI/L2CAP/SMP/SCO/ISO，用户层实现高层 Profile</td>
+          <td>全部在用户进程中实现，通过串口/UART 直接访问控制器</td>
+        </tr>
+        <tr>
+          <td>延迟</td>
+          <td>✅ 内核协议处理延迟低，无用户态系统调用开销</td>
+          <td>⚠️ 用户进程受调度器限制，延迟较高</td>
+        </tr>
+        <tr>
+          <td>安全性</td>
+          <td>✅ 密钥材料在内核保管，用户进程无法直接访问</td>
+          <td>⚠️ 安全数据在用户空间，理论上可被攻击</td>
+        </tr>
+        <tr>
+          <td>可移植性</td>
+          <td>⚠️ 与 Linux 内核版本强绑定，嵌入式 SoC 需要反向移植</td>
+          <td>✅ 可在容器/VM 中运行，跨 OS 移植容易</td>
+        </tr>
+        <tr>
+          <td>稳定性</td>
+          <td>✅ 内核崩溃 = 系统崩溃（促使代码质量更高）</td>
+          <td>✅ 进程崩溃可重启，不影响系统</td>
+        </tr>
+        <tr>
+          <td>维护</td>
+          <td>✅ 积极维护，LTS 支持，社区覆盖广</td>
+          <td>⚠️ 依赖厂商更新，可能停止支持</td>
+        </tr>
+        <tr>
+          <td>硬件支持</td>
+          <td>✅ 数百种控制器兼容</td>
+          <td>⚠️ 通常只支持特定厂商硬件</td>
+        </tr>
+      </tbody>
+    </table>
+  </div>
+
+  <div class="svg-wrap">
+    <svg viewBox="0 0 640 200" xmlns="http://www.w3.org/2000/svg" font-family="'Segoe UI',system-ui,sans-serif">
+      <text x="320" y="22" text-anchor="middle" font-size="12" fill="#94a3b8" font-weight="600">BlueZ 内核层 vs 用户层 职责分布</text>
+
+      <!-- Kernel bar -->
+      <rect x="30" y="40" width="580" height="28" rx="4" fill="var(--surface2)" stroke="var(--border)" stroke-width="1"/>
+      <rect x="30" y="40" width="232" height="28" rx="4" fill="#5b21b6" fill-opacity=".7"/>
+      <text x="146" y="58" text-anchor="middle" font-size="10" fill="#c4b5fd" font-weight="600">内核层 (40%)</text>
+      <text x="30" y="83" font-size="9.5" fill="#a78bfa">HCI · L2CAP · SCO · ISO · SMP · RFCOMM · BNEP · HIDP</text>
+
+      <!-- User bar -->
+      <rect x="30" y="105" width="580" height="28" rx="4" fill="var(--surface2)" stroke="var(--border)" stroke-width="1"/>
+      <rect x="30" y="105" width="406" height="28" rx="4" fill="#059669" fill-opacity=".6"/>
+      <text x="233" y="123" text-anchor="middle" font-size="10" fill="#6ee7b7" font-weight="600">用户层 (70%)</text>
+      <text x="30" y="148" font-size="9.5" fill="#6ee7b7">bluetoothd · GATT · SDP · Profile Plugins · D-Bus API · obexd · PipeWire · 工具链</text>
+
+      <text x="320" y="180" text-anchor="middle" font-size="9" fill="#64748b">* 按代码行数/功能复杂度估算，用户层功能集更广但延迟敏感部分均在内核</text>
+    </svg>
+  </div>
+
+  <div class="principle-box">
+    <div class="pt">🧭 第一性原理</div>
+    <p>
+      BlueZ 的设计权衡反映了一个基本真理：
+      <strong>没有完美的架构，只有针对特定约束条件的最优解</strong>。
+      内核层保证了延迟和安全；用户层保证了灵活性和可维护性。
+      BlueZ 在 L2CAP 处划出的边界，是在"实时性/安全 vs 灵活性/可靠"
+      这对永恒矛盾上做出的工程选择。
+      理解这个选择，就理解了整个 BlueZ 设计的灵魂。
+    </p>
+  </div>
+</section>
+
+<!-- ─── S17 References ─── -->
+<section class="section" id="s17">
+  <h2><span class="sec-num">17</span>参考资料</h2>
+  <p>以下所有内容均为本文撰写所参考的权威官方来源：</p>
+
+  <div class="card card-info">
+    <h4>官方文档与源码</h4>
+    <div class="flex">
+      <a class="src-link" href="https://github.com/torvalds/linux/blob/master/net/bluetooth/Kconfig" target="_blank">🔗 Linux net/bluetooth/Kconfig</a>
+      <a class="src-link" href="https://github.com/torvalds/linux/blob/master/net/bluetooth/hci_core.c" target="_blank">🔗 hci_core.c</a>
+      <a class="src-link" href="https://github.com/torvalds/linux/blob/master/net/bluetooth/l2cap_core.c" target="_blank">🔗 l2cap_core.c</a>
+      <a class="src-link" href="https://github.com/torvalds/linux/blob/master/net/bluetooth/smp.c" target="_blank">🔗 smp.c</a>
+      <a class="src-link" href="https://github.com/bluez/bluez/wiki/HCI" target="_blank">🔗 BlueZ Wiki: HCI (October 2024)</a>
+      <a class="src-link" href="https://github.com/bluez/bluez/blob/master/doc/mgmt-api.txt" target="_blank">🔗 BlueZ mgmt-api.txt</a>
+      <a class="src-link" href="https://github.com/bluez/bluez" target="_blank">🔗 BlueZ GitHub Repository</a>
+    </div>
+  </div>
+
+  <div class="card card-info">
+    <h4>技术博客与演讲</h4>
+    <div class="flex">
+      <a class="src-link" href="https://www.collabora.com/news-and-blog/blog/2025/02/27/implementing-bluetooth-on-embedded-linux-with-open-source-bluez-vs-proprietary-stacks/" target="_blank">🔗 Collabora: BlueZ vs 专有栈 (2025)</a>
+      <a class="src-link" href="https://linuxvox.com/blog/bluez-architecture-explain-this-architecture/" target="_blank">🔗 linuxvox: BlueZ Architecture (2026)</a>
+      <a class="src-link" href="https://linuxvox.com/blog/bluetooth-low-energy-on-linux-api/" target="_blank">🔗 linuxvox: BLE on Linux API</a>
+      <a class="src-link" href="https://man.archlinux.org/man/extra/bluez-utils/hci.7.en" target="_blank">🔗 Arch: hci(7) man page</a>
+      <a class="src-link" href="https://www.linuxfromscratch.org/blfs/view/stable/general/bluez.html" target="_blank">🔗 LFS: BlueZ-5.83</a>
+    </div>
+  </div>
+
+  <div class="card card-info">
+    <h4>内核配置文档</h4>
+    <div class="flex">
+      <a class="src-link" href="https://www.linuxtopia.org/online_books/linux_kernel/kernel_configuration/re191.html" target="_blank">🔗 Linux Kernel Config: BT subsystem</a>
+      <a class="src-link" href="https://trac.gateworks.com/wiki/wireless/bluetooth" target="_blank">🔗 Gateworks: Bluetooth on Linux</a>
+    </div>
+  </div>
+
+  <div class="principle-box mt1">
+    <div class="pt">🧭 终极第一性原理</div>
+    <p>
+      BlueZ 的整体架构可以用一句话概括：
+      <strong>"让内核处理时间，让用户空间处理策略，让 Socket 连接两个世界"</strong>。<br><br>
+      时间（延迟/实时性）是物理约束，只有内核能满足；
+      策略（谁能连、连什么、怎么配对）是业务逻辑，应该灵活可变，属于用户空间；
+      Socket 是两个世界间唯一需要的桥梁——简单、标准、有权限控制、有生命周期管理。
+      一旦理解了这个三角关系，BlueZ 所有的设计决策都变得顺理成章。
+    </p>
+  </div>
+</section>
+
+</div><!-- content-inner -->
+</main>
+
+<script>
+// ─── Section IDs for navigation ───
+const sectionIds = ['s0','s1','s2','s3','s4','s5','s6','s7','s8','s9','s10','s11','s12','s13','s14','s15','s16','s17'];
+let currentSec = 0;
+
+// ─── Progress bar ───
+function updateProgress() {
+  const scrollTop = document.documentElement.scrollTop;
+  const docHeight = document.documentElement.scrollHeight - window.innerHeight;
+  const pct = docHeight > 0 ? (scrollTop / docHeight) * 100 : 0;
+  document.getElementById('progress-bar').style.width = pct + '%';
+}
+
+// ─── Active sidebar link tracking ───
+function updateActiveLink() {
+  const links = document.querySelectorAll('.sidebar-link');
+  const headerH = parseInt(getComputedStyle(document.documentElement).getPropertyValue('--header-h')) || 56;
+  let best = 0;
+
+  sectionIds.forEach((id, i) => {
+    const el = document.getElementById(id);
+    if (!el) return;
+    const rect = el.getBoundingClientRect();
+    if (rect.top <= headerH + 40) best = i;
+  });
+
+  links.forEach((l, i) => {
+    l.classList.toggle('active', i === best);
+  });
+  currentSec = best;
+  updateNavBtns();
+}
+
+// ─── Nav buttons ───
+function updateNavBtns() {
+  document.getElementById('btn-prev').disabled = currentSec === 0;
+  document.getElementById('btn-next').disabled = currentSec === sectionIds.length - 1;
+}
+
+function prevChapter() {
+  if (currentSec > 0) {
+    currentSec--;
+    scrollToSection(currentSec);
+  }
+}
+
+function nextChapter() {
+  if (currentSec < sectionIds.length - 1) {
+    currentSec++;
+    scrollToSection(currentSec);
+  }
+}
+
+function scrollToSection(idx) {
+  const el = document.getElementById(sectionIds[idx]);
+  if (el) el.scrollIntoView({ behavior: 'smooth' });
+}
+
+// ─── Keyboard navigation ───
+document.addEventListener('keydown', (e) => {
+  if (e.target.tagName === 'INPUT' || e.target.tagName === 'TEXTAREA') return;
+  if (e.key === 'ArrowRight' || e.key === 'ArrowDown') { e.preventDefault(); nextChapter(); }
+  if (e.key === 'ArrowLeft' || e.key === 'ArrowUp') { e.preventDefault(); prevChapter(); }
+});
+
+// ─── Sidebar toggle (mobile) ───
+function toggleSidebar() {
+  document.getElementById('sidebar').classList.toggle('open');
+  document.getElementById('sidebar-overlay').classList.toggle('open');
+}
+
+function closeSidebar() {
+  document.getElementById('sidebar').classList.remove('open');
+  document.getElementById('sidebar-overlay').classList.remove('open');
+}
+
+// Close sidebar on link click (mobile)
+document.querySelectorAll('.sidebar-link').forEach(link => {
+  link.addEventListener('click', () => {
+    if (window.innerWidth <= 768) closeSidebar();
+  });
+});
+
+// ─── Scroll events ───
+window.addEventListener('scroll', () => {
+  updateProgress();
+  updateActiveLink();
+}, { passive: true });
+
+// ─── Init ───
+updateProgress();
+updateActiveLink();
+updateNavBtns();
+</script>
+</body>
+</html>

@@ -1,0 +1,1027 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>memblock 到伙伴系统的创建与移交流程</title>
+  <style>
+    :root {
+      --bg: #0f1117;
+      --bg2: #161b22;
+      --bg3: #1e2530;
+      --border: #30363d;
+      --accent: #0a84ff;
+      --accent2: #30d158;
+      --accent3: #ff453a;
+      --accent4: #bf5af2;
+      --warn: #ffa657;
+      --text: #e6edf3;
+      --text2: #8b949e;
+      --nav-w: 284px;
+      --header-h: 48px;
+      --radius: 8px;
+    }
+
+    * { box-sizing: border-box; }
+    html { scroll-behavior: smooth; }
+    body {
+      margin: 0;
+      font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', 'PingFang SC', 'Microsoft YaHei', sans-serif;
+      background: var(--bg);
+      color: var(--text);
+      line-height: 1.75;
+      overflow-x: hidden;
+    }
+    a { color: #79c0ff; text-decoration-thickness: 1px; text-underline-offset: 3px; }
+    .progress { position: fixed; top: 0; left: 0; width: 100%; height: 3px; z-index: 1000; background: rgba(10,132,255,.12); }
+    .progress span { display: block; width: 0%; height: 100%; background: linear-gradient(90deg, var(--accent), var(--accent2)); transition: width 120ms linear; }
+    .topbar {
+      position: fixed; top: 3px; left: 0; right: 0; height: var(--header-h);
+      background: rgba(15,17,23,.95); backdrop-filter: blur(10px);
+      border-bottom: 1px solid var(--border); display: flex; align-items: center;
+      padding: 0 1rem; gap: .75rem; z-index: 900;
+    }
+    .topbar h1 { font-size: .95rem; font-weight: 700; color: var(--accent); margin: 0; }
+    .topbar .meta { margin-left: auto; font-size: .75rem; color: var(--text2); }
+    .topbar a { color: var(--text2); text-decoration: none; font-size: .8rem; }
+    .topbar a:hover { color: var(--accent); }
+    .hamburger {
+      width: 2.25rem; height: 2.25rem; border: 1px solid var(--border);
+      background: transparent; color: var(--text); border-radius: var(--radius);
+      cursor: pointer; font: inherit;
+    }
+    .layout { display: block; min-height: 100vh; }
+    nav {
+      position: fixed; top: calc(var(--header-h) + 3px); left: 0; bottom: 0; height: auto;
+      width: var(--nav-w); background: var(--bg2); color: var(--text);
+      border-right: 1px solid var(--border); padding: 1rem .5rem; z-index: 800; overflow: auto;
+    }
+    .brand { border-bottom: 1px solid var(--border); padding: .35rem .75rem .9rem; margin-bottom: .5rem; }
+    .brand strong { display: block; color: var(--accent); font-size: .92rem; }
+    .brand small { display: block; color: var(--text2); font-size: .76rem; line-height: 1.55; margin-top: .3rem; }
+    details { border-bottom: 1px solid var(--border); padding: .25rem 0; }
+    summary { cursor: pointer; color: var(--text); font-size: .82rem; font-weight: 700; padding: .45rem .75rem; }
+    .nav-list { list-style: none; padding: 0 0 .35rem; margin: 0; }
+    .nav-list a { display: block; color: var(--text2); text-decoration: none; border-left: 3px solid transparent; border-radius: .4rem; font-size: .82rem; padding: .4rem .75rem .4rem 1.1rem; line-height: 1.35; }
+    .nav-list a:hover { background: var(--bg3); color: var(--text); }
+    .nav-list a.active { color: var(--accent); border-left-color: var(--accent); background: rgba(10,132,255,.08); }
+    main { margin: calc(var(--header-h) + 3px) 0 0 var(--nav-w); max-width: 1040px; padding: 2rem 2.5rem 4rem; width: auto; }
+    header.hero { border-bottom: 1px solid var(--border); margin-bottom: 3rem; padding-bottom: 1.2rem; }
+    .eyebrow { display: inline-block; color: var(--accent); font-size: .7rem; font-weight: 700; letter-spacing: .04em; padding: .2rem .55rem; border-radius: 99px; margin-bottom: .75rem; background: rgba(10,132,255,.15); border: 1px solid rgba(10,132,255,.35); }
+    h1, h2, h3 { line-height: 1.22; letter-spacing: 0; }
+    h1 { font-size: 1.8rem; margin: 0 0 .75rem; color: var(--text); }
+    h2 { font-size: 1.35rem; margin: 0 0 1rem; padding-bottom: .5rem; border-bottom: 1px solid var(--border); color: var(--text); }
+    h3 { font-size: 1.05rem; margin: 1.25rem 0 .75rem; color: var(--accent); }
+    .lead { font-size: 1.05rem; color: var(--text2); margin-bottom: 0; }
+    p, li { color: var(--text); font-size: .95rem; }
+    p { margin: 0 0 .75rem; }
+    section { margin-bottom: 3rem; scroll-margin-top: calc(var(--header-h) + 16px); }
+    code, .mono { font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; }
+    code { color: #79c0ff; }
+    pre { background: #0b0d12; color: #c9d1d9; border: 1px solid var(--border); border-radius: var(--radius); padding: 1rem; overflow-x: auto; font-size: .82rem; line-height: 1.55; margin: 1rem 0; }
+    table { width: 100%; border-collapse: collapse; margin: 1rem 0; font-size: .85rem; background: transparent; }
+    th, td { border: 1px solid var(--border); padding: .55rem .65rem; vertical-align: top; }
+    th { background: var(--bg3); color: var(--accent); font-weight: 600; text-align: left; }
+    td { color: var(--text); }
+    .panel { background: rgba(48,213,88,.08); border: 1px solid rgba(48,213,88,.25); border-radius: var(--radius); padding: 1rem; margin: 1rem 0; }
+    .quote { border-left: 4px solid var(--accent2); background: rgba(48,213,88,.08); color: var(--text); border-radius: 0 .6rem .6rem 0; padding: .8rem 1rem; margin: 1rem 0; }
+    .grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 1rem; margin: 1rem 0; }
+    .concept { border: 1px solid var(--border); background: var(--bg2); border-radius: var(--radius); padding: 1rem; }
+    .concept h3 { margin-top: 0; }
+    .tag { display: inline-block; color: var(--accent); background: rgba(10,132,255,.15); border: 1px solid rgba(10,132,255,.35); border-radius: 99px; font-size: .72rem; padding: .1rem .55rem; margin-right: .35rem; white-space: nowrap; }
+    .svg-wrap { background: var(--bg2); border: 1px solid var(--border); border-radius: .75rem; padding: 1rem; margin: 1.25rem 0; overflow-x: auto; }
+    svg { display: block; max-width: 100%; height: auto; margin: 0 auto; font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', 'PingFang SC', 'Microsoft YaHei', sans-serif; }
+    .box { fill: var(--bg3); stroke: var(--border); stroke-width: 1.4; rx: 8; }
+    .box-accent { fill: rgba(10,132,255,.14); stroke: var(--accent); }
+    .box-good { fill: rgba(48,213,88,.10); stroke: var(--accent2); }
+    .box-warn { fill: rgba(255,166,87,.10); stroke: var(--warn); }
+    .box-danger { fill: rgba(255,69,58,.08); stroke: var(--accent3); }
+    .box-purple { fill: rgba(191,90,242,.12); stroke: var(--accent4); }
+    .wire { stroke: var(--text2); stroke-width: 2; fill: none; marker-end: url(#arrow); }
+    .wire-blue { stroke: var(--accent); stroke-width: 2; fill: none; marker-end: url(#arrowBlue); }
+    .wire-green { stroke: var(--accent2); stroke-width: 2; fill: none; marker-end: url(#arrowGreen); }
+    .wire-warn { stroke: var(--warn); stroke-width: 2; fill: none; marker-end: url(#arrowWarn); }
+    .svg-title { font-size: 16px; font-weight: 800; fill: var(--text); }
+    .svg-text { font-size: 13px; fill: var(--text); }
+    .svg-small { font-size: 11px; fill: var(--text2); }
+    .fig-cap { font-size: .8rem; color: var(--text2); text-align: center; margin-top: .5rem; }
+    .chapter-nav { display: flex; gap: .75rem; justify-content: space-between; margin-top: 3rem; padding-top: 1rem; border-top: 1px solid var(--border); }
+    .chapter-nav a { display: inline-flex; align-items: center; justify-content: center; min-height: 2.4rem; padding: .45rem .85rem; border: 1px solid var(--border); border-radius: var(--radius); background: var(--bg2); text-decoration: none; color: var(--text); }
+    @media (max-width: 900px) {
+      .topbar .meta, .topbar a { display: none; }
+      nav { transform: translateX(-100%); transition: transform 180ms ease; width: min(86vw, 20rem); }
+      body.nav-open nav { transform: translateX(0); }
+      main { margin-left: 0; padding: 1.25rem; }
+      .grid { grid-template-columns: 1fr; }
+      table { display: block; overflow-x: auto; }
+    }
+    @media (min-width: 901px) { .topbar .hamburger { display: none; } }
+  </style>
+</head>
+<body>
+  <div class="progress" aria-hidden="true"><span id="progressBar"></span></div>
+  <header class="topbar">
+    <button class="hamburger" id="menuButton" aria-label="打开或关闭导航">☰</button>
+    <h1>memblock / buddy handoff</h1>
+    <a href="kernel-entry-before-start-kernel.html">入口文档</a>
+    <span class="meta">独立 HTML · 内联 SVG · 无外部资源依赖</span>
+  </header>
+
+  <div class="layout">
+    <nav id="sideNav" aria-label="章节导航">
+      <div class="brand">
+        <strong>memblock 到伙伴系统</strong>
+        <small>当前 MIPS 启动路径：setup_arch 建 memblock，paging_init 建 zone，mem_init 释放给 buddy</small>
+      </div>
+      <details open>
+        <summary>一、依据与总览</summary>
+        <ul class="nav-list">
+          <li><a href="#intro">范围说明</a></li>
+          <li><a href="#sources">官方依据</a></li>
+          <li><a href="#timeline">启动总时序</a></li>
+        </ul>
+      </details>
+      <details open>
+        <summary>二、memblock 阶段</summary>
+        <ul class="nav-list">
+          <li><a href="#memblock-struct">memblock 结构</a></li>
+          <li><a href="#arch-mem-init">MIPS 建立内存图</a></li>
+          <li><a href="#reserve">保留区间</a></li>
+          <li><a href="#early-alloc">早期分配约束</a></li>
+        </ul>
+      </details>
+      <details open>
+        <summary>三、buddy 创建</summary>
+        <ul class="nav-list">
+          <li><a href="#paging-init">paging_init 入口</a></li>
+          <li><a href="#free-area-init">free_area_init</a></li>
+          <li><a href="#zone-core">zone 核心结构</a></li>
+          <li><a href="#free-lists">free_area 空链表</a></li>
+        </ul>
+      </details>
+      <details open>
+        <summary>四、移交</summary>
+        <ul class="nav-list">
+          <li><a href="#mem-init">mem_init 入口</a></li>
+          <li><a href="#free-all">memblock_free_all</a></li>
+          <li><a href="#free-pages-core">释放到 buddy</a></li>
+          <li><a href="#after-handoff">移交之后</a></li>
+        </ul>
+      </details>
+      <details open>
+        <summary>五、关联文档</summary>
+        <ul class="nav-list">
+          <li><a href="#links">参考链接</a></li>
+          <li><a href="#summary">总结</a></li>
+        </ul>
+      </details>
+    </nav>
+
+    <main>
+      <header class="hero" id="intro">
+        <div class="eyebrow">arch/mips/kernel/setup.c · arch/mips/mm/init.c · mm/memblock.c · mm/page_alloc.c</div>
+        <h1>伙伴系统起来之前，memblock 如何管理内存；伙伴系统如何创建；memblock 如何把页交给 buddy</h1>
+        <p class="lead">本文只按当前仓库源码解释 MIPS 启动路径。外部依据先取 kernel.org 官方文档；本地源码直接复制进页面逐段说明。核心结论：memblock 管“物理区间事实”，`free_area_init()` 建“伙伴系统元数据”，`memblock_free_all()` 把 `memory - reserved` 的低端页逐批释放进 buddy。</p>
+      </header>
+
+      <section id="sources">
+        <h2>官方依据</h2>
+        <table>
+          <thead><tr><th>主题</th><th>官方原文链接</th><th>本文使用的事实</th></tr></thead>
+          <tbody>
+            <tr><td>boot-time memory management</td><td><a href="https://www.kernel.org/doc/html/latest/core-api/boot-time-mm.html">Boot time memory management</a></td><td>普通内存分配器未建立时使用 `memblock`；架构代码在 `setup_arch()` 设置它，并在 `mem_init()` 中把内存释放给 buddy。</td></tr>
+            <tr><td>memblock 数据模型</td><td><a href="https://www.kernel.org/doc/html/latest/core-api/boot-time-mm.html#memblock-overview">Memblock Overview</a></td><td>`memory` 描述可用物理内存，`reserved` 描述已分配/保留区间；`for_each_free_mem_range()` 遍历 `memory` 中排除 `reserved` 的空闲范围。</td></tr>
+            <tr><td>物理内存 node/zone</td><td><a href="https://www.kernel.org/doc/html/latest/mm/physical_memory.html">Physical Memory</a></td><td>Linux 用 `pg_data_t` 表示 node，用 `struct zone` 表示物理内存区间；架构代码调用 `free_area_init()` 初始化 zone。</td></tr>
+            <tr><td>buddy free_area</td><td><a href="https://www.kernel.org/doc/html/latest/mm/physical_memory.html#zones">Physical Memory: Zones</a></td><td>`zone->free_area[]` 是 buddy allocator 管理不同 order 空闲块的核心结构；每个 order 是 2 的幂大小。</td></tr>
+          </tbody>
+        </table>
+        <div class="panel"><strong>第一性原理概述：</strong>启动早期最缺的是“可分配内存”，但恰好普通分配器本身也要内存才能建立。memblock 用静态小数组先记录物理区间，避免在分配器尚未存在时递归依赖分配器。</div>
+      </section>
+
+      <section id="timeline">
+        <h2>启动总时序</h2>
+        <div class="svg-wrap">
+          <svg viewBox="0 0 980 470" role="img" aria-label="memblock 到 buddy 的启动时序">
+            <defs>
+              <marker id="arrowBlue" markerWidth="8" markerHeight="8" refX="7" refY="3" orient="auto"><path d="M0,0 L7,3 L0,6 Z" fill="#0a84ff"/></marker>
+              <marker id="arrowGreen" markerWidth="8" markerHeight="8" refX="7" refY="3" orient="auto"><path d="M0,0 L7,3 L0,6 Z" fill="#30d158"/></marker>
+              <marker id="arrowWarn" markerWidth="8" markerHeight="8" refX="7" refY="3" orient="auto"><path d="M0,0 L7,3 L0,6 Z" fill="#ffa657"/></marker>
+            </defs>
+            <text x="24" y="30" class="svg-title">MSC：当前 MIPS 启动中内存管理从区间表走向伙伴系统</text>
+            <line x1="110" y1="70" x2="110" y2="410" stroke="#30363d"/>
+            <line x1="305" y1="70" x2="305" y2="410" stroke="#30363d"/>
+            <line x1="500" y1="70" x2="500" y2="410" stroke="#30363d"/>
+            <line x1="695" y1="70" x2="695" y2="410" stroke="#30363d"/>
+            <line x1="875" y1="70" x2="875" y2="410" stroke="#30363d"/>
+            <text x="74" y="58" class="svg-text">start_kernel</text>
+            <text x="262" y="58" class="svg-text">setup_arch</text>
+            <text x="454" y="58" class="svg-text">memblock</text>
+            <text x="654" y="58" class="svg-text">page_alloc</text>
+            <text x="840" y="58" class="svg-text">buddy</text>
+            <path d="M110 105 H305" class="wire-blue"/><text x="145" y="96" class="svg-small">setup_arch()</text>
+            <path d="M305 155 H500" class="wire-blue"/><text x="335" y="146" class="svg-small">arch_mem_init: add/reserve</text>
+            <path d="M305 215 H695" class="wire-warn"/><text x="386" y="206" class="svg-small">paging_init: free_area_init(max_zone_pfns)</text>
+            <path d="M695 265 H875" class="wire-warn"/><text x="728" y="256" class="svg-small">zone/free_area 初始化为空</text>
+            <path d="M110 320 H500" class="wire-green"/><text x="178" y="311" class="svg-small">mm_init → mem_init → memblock_free_all</text>
+            <path d="M500 370 H875" class="wire-green"/><text x="595" y="361" class="svg-small">free ranges → __free_pages_core</text>
+          </svg>
+          <div class="fig-cap">图 1：`free_area_init()` 建好框架，`memblock_free_all()` 才真正给 buddy 填充空闲页。</div>
+        </div>
+        <pre><code>/* init/main.c */
+setup_arch(&amp;command_line);
+...
+build_all_zonelists(NULL);
+page_alloc_init();
+...
+mm_init();
+...
+setup_per_cpu_pageset();</code></pre>
+        <p>逐段解释：`setup_arch()` 是 MIPS 建立 memblock 内存图和 zone 元数据的地方。之后 `build_all_zonelists()` 建立分配 fallback 顺序，`page_alloc_init()` 注册 page allocator 的 CPU hotplug 状态。真正释放页给 buddy 发生在后面的 `mm_init()` 里，而 per-cpu pageset 的正式初始化更晚，在 `setup_per_cpu_pageset()`。</p>
+        <div class="panel"><strong>第一性原理概述：</strong>一个分配器的“可用”分两步：先有描述结构和路由规则，再有可分配对象。伙伴系统的结构在 `paging_init()` 建好，但空闲页要等 memblock 移交后才进入 free list。</div>
+      </section>
+
+      <section id="memblock-struct">
+        <h2>memblock 的结构：memory 与 reserved 两个有序区间集合</h2>
+        <pre><code>/* include/linux/memblock.h */
+struct memblock_region {
+        phys_addr_t base;
+        phys_addr_t size;
+        enum memblock_flags flags;
+#ifdef CONFIG_NEED_MULTIPLE_NODES
+        int nid;
+#endif
+};
+
+struct memblock_type {
+        unsigned long cnt;
+        unsigned long max;
+        phys_addr_t total_size;
+        struct memblock_region *regions;
+        char *name;
+};
+
+struct memblock {
+        bool bottom_up;  /* is bottom up direction? */
+        phys_addr_t current_limit;
+        struct memblock_type memory;
+        struct memblock_type reserved;
+};
+
+/* mm/memblock.c */
+static struct memblock_region memblock_memory_init_regions[INIT_MEMBLOCK_REGIONS] __initdata_memblock;
+static struct memblock_region memblock_reserved_init_regions[INIT_MEMBLOCK_RESERVED_REGIONS] __initdata_memblock;
+
+struct memblock memblock __initdata_memblock = {
+        .memory.regions         = memblock_memory_init_regions,
+        .memory.cnt             = 1,    /* empty dummy entry */
+        .memory.max             = INIT_MEMBLOCK_REGIONS,
+        .memory.name            = "memory",
+
+        .reserved.regions       = memblock_reserved_init_regions,
+        .reserved.cnt           = 1,    /* empty dummy entry */
+        .reserved.max           = INIT_MEMBLOCK_RESERVED_REGIONS,
+        .reserved.name          = "reserved",
+
+        .bottom_up              = false,
+        .current_limit          = MEMBLOCK_ALLOC_ANYWHERE,
+};</code></pre>
+        <p>逐段解释：`memblock_region` 只记录一个物理区间的起点、大小、属性，以及多节点配置下的 node id。它没有页粒度链表，也不维护 order。</p>
+        <p>`memblock_type` 是某类区间的数组包装，维护当前区间数、数组容量和总大小。`memblock` 自身只有两个核心集合：`memory` 与 `reserved`。</p>
+        <p>全局 `memblock` 在编译期静态初始化，两个数组也是静态早期数据。这个设计解决了“分配器初始化前不能依赖动态分配”的问题。后续如果允许 resize，扩容也必须避开 initrd 等将要保留的区域。</p>
+        <div class="svg-wrap">
+          <svg viewBox="0 0 940 330" role="img" aria-label="memblock memory reserved 两集合">
+            <defs><marker id="arrowBlue2" markerWidth="8" markerHeight="8" refX="7" refY="3" orient="auto"><path d="M0,0 L7,3 L0,6 Z" fill="#0a84ff"/></marker></defs>
+            <text x="24" y="30" class="svg-title">memblock 的核心是区间集合，不是页级伙伴树</text>
+            <rect x="65" y="90" width="360" height="82" class="box-accent"/><text x="92" y="124" class="svg-text">memblock.memory</text><text x="92" y="148" class="svg-small">系统可用物理 RAM 区间：[base, base + size)</text>
+            <rect x="515" y="90" width="360" height="82" class="box-danger"/><text x="542" y="124" class="svg-text">memblock.reserved</text><text x="542" y="148" class="svg-small">内核镜像、initrd、FDT、crashkernel、nosave...</text>
+            <rect x="170" y="230" width="600" height="46" class="box-good"/><text x="246" y="258" class="svg-text">free range = memory 中排除 reserved 后的剩余区间</text>
+            <path d="M245 172 V230" class="wire-blue"/><path d="M695 172 V230" class="wire-blue"/>
+          </svg>
+          <div class="fig-cap">图 2：memblock 的“空闲”是集合差，不是已经挂到 buddy free list 的页。</div>
+        </div>
+        <div class="panel"><strong>第一性原理概述：</strong>早期内存管理只需要回答“哪些物理范围存在、哪些不能用、从哪里切一段出来”。区间表比页级结构小得多，也更适合在内核自举阶段使用。</div>
+      </section>
+
+      <section id="arch-mem-init">
+        <h2>MIPS 如何建立 memblock 内存图</h2>
+        <pre><code>/* arch/mips/kernel/setup.c */
+void __init detect_memory_region(phys_addr_t start, phys_addr_t sz_min, phys_addr_t sz_max)
+{
+        void *dm = &amp;detect_magic;
+        phys_addr_t size;
+
+        for (size = sz_min; size &lt; sz_max; size &lt;&lt;= 1) {
+                if (!memcmp(dm, dm + size, sizeof(detect_magic)))
+                        break;
+        }
+
+        pr_debug("Memory: %lluMB of RAM detected at 0x%llx (min: %lluMB, max: %lluMB)\n",
+                ((unsigned long long) size) / SZ_1M,
+                (unsigned long long) start,
+                ((unsigned long long) sz_min) / SZ_1M,
+                ((unsigned long long) sz_max) / SZ_1M);
+
+        memblock_add(start, size);
+}
+
+static int __init early_parse_mem(char *p)
+{
+        phys_addr_t start, size;
+
+        if (usermem == 0) {
+                usermem = 1;
+                memblock_remove(memblock_start_of_DRAM(),
+                        memblock_end_of_DRAM() - memblock_start_of_DRAM());
+        }
+        start = 0;
+        size = memparse(p, &amp;p);
+        if (*p == '@')
+                start = memparse(p + 1, &amp;p);
+
+        memblock_add(start, size);
+
+        return 0;
+}
+early_param("mem", early_parse_mem);</code></pre>
+        <p>逐段解释：`detect_memory_region()` 是平台可调用的探测 helper，最终用 `memblock_add(start, size)` 把探测到的 RAM 加进 `memblock.memory`。</p>
+        <p>`mem=` 命令行会覆盖自动发现的内存图。第一次解析用户内存时，它先把当前 DRAM 范围从 memblock 中移除，再按用户指定的 `size[@start]` 添加回来。这保证用户命令行是权威输入。</p>
+        <pre><code>/* arch/mips/kernel/setup.c */
+static void __init arch_mem_init(char **cmdline_p)
+{
+        /* call board setup routine */
+        plat_mem_setup();
+        memblock_set_bottom_up(true);
+
+        bootcmdline_init();
+        strlcpy(command_line, boot_command_line, COMMAND_LINE_SIZE);
+        *cmdline_p = command_line;
+
+        parse_early_param();
+
+        if (usermem)
+                pr_info("User-defined physical RAM map overwrite\n");
+
+        check_kernel_sections_mem();
+
+        early_init_fdt_reserve_self();
+
+#ifndef CONFIG_NUMA
+        memblock_set_node(0, PHYS_ADDR_MAX, &amp;memblock.memory, 0);
+#endif
+        bootmem_init();
+
+        memblock_set_current_limit(PFN_PHYS(max_low_pfn));
+        ...
+        device_tree_init();
+        early_init_fdt_scan_reserved_mem();
+        ...
+        sparse_init();
+        ...
+        dma_contiguous_reserve(PFN_PHYS(max_low_pfn));
+
+        memblock_reserve(__pa_symbol(&amp;__nosave_begin),
+                __pa_symbol(&amp;__nosave_end) - __pa_symbol(&amp;__nosave_begin));
+
+        memblock_dump_all();
+}</code></pre>
+        <p>逐段解释：`arch_mem_init()` 由 `setup_arch()` 调用。`plat_mem_setup()` 负责平台早期内存发现，随后 `parse_early_param()` 允许 `mem=`、`memmap=` 等命令行修正 memblock 图。</p>
+        <p>非 NUMA 下，代码把全部 memblock memory 标记到 node 0。`bootmem_init()` 计算 `min_low_pfn/max_low_pfn/max_pfn`，并保留内核镜像、initrd 等关键范围。之后 `memblock_set_current_limit(PFN_PHYS(max_low_pfn))` 禁止 memblock 分配高端内存，保证早期分配能被内核直接访问。</p>
+        <p>`device_tree_init()`、`early_init_fdt_scan_reserved_mem()`、`dma_contiguous_reserve()` 和 nosave 保留区继续往 `reserved` 集合写入不可释放范围。最后 `memblock_dump_all()` 打印当前区间图，供调试启动内存布局。</p>
+        <div class="panel"><strong>第一性原理概述：</strong>memblock 的第一阶段是“事实收集”：固件、平台代码、命令行和 DT 都可能提供物理内存事实。内核必须先把这些事实合并成一个可计算的区间图，后面的 zone 和 buddy 才有边界依据。</div>
+      </section>
+
+      <section id="reserve">
+        <h2>memblock_add 与 memblock_reserve：同一个插入算法，写入不同集合</h2>
+        <pre><code>/* mm/memblock.c */
+static int __init_memblock memblock_add_range(struct memblock_type *type,
+                                phys_addr_t base, phys_addr_t size,
+                                int nid, enum memblock_flags flags)
+{
+        bool insert = false;
+        phys_addr_t obase = base;
+        phys_addr_t end = base + memblock_cap_size(base, &amp;size);
+        int idx, nr_new;
+        struct memblock_region *rgn;
+
+        if (!size)
+                return 0;
+
+        /* special case for empty array */
+        if (type-&gt;regions[0].size == 0) {
+                WARN_ON(type-&gt;cnt != 1 || type-&gt;total_size);
+                type-&gt;regions[0].base = base;
+                type-&gt;regions[0].size = size;
+                type-&gt;regions[0].flags = flags;
+                memblock_set_region_node(&amp;type-&gt;regions[0], nid);
+                type-&gt;total_size = size;
+                return 0;
+        }
+repeat:
+        base = obase;
+        nr_new = 0;
+
+        for_each_memblock_type(idx, type, rgn) {
+                phys_addr_t rbase = rgn-&gt;base;
+                phys_addr_t rend = rbase + rgn-&gt;size;
+
+                if (rbase &gt;= end)
+                        break;
+                if (rend &lt;= base)
+                        continue;
+                if (rbase &gt; base) {
+                        nr_new++;
+                        if (insert)
+                                memblock_insert_region(type, idx++, base,
+                                                       rbase - base, nid,
+                                                       flags);
+                }
+                base = min(rend, end);
+        }
+
+        if (base &lt; end) {
+                nr_new++;
+                if (insert)
+                        memblock_insert_region(type, idx, base, end - base,
+                                               nid, flags);
+        }
+
+        if (!nr_new)
+                return 0;
+
+        if (!insert) {
+                while (type-&gt;cnt + nr_new &gt; type-&gt;max)
+                        if (memblock_double_array(type, obase, size) &lt; 0)
+                                return -ENOMEM;
+                insert = true;
+                goto repeat;
+        } else {
+                memblock_merge_regions(type);
+                return 0;
+        }
+}</code></pre>
+        <p>逐段解释：`memblock_add_range()` 先处理空数组，再进入两遍算法。第一遍只计算需要插入多少个新片段，必要时扩容；第二遍真正插入。</p>
+        <p>它允许新区间与已有区间重叠。重叠部分不重复插入，只插入已有区间覆盖不到的洞，最后调用 `memblock_merge_regions()` 合并相邻兼容区间。这样 memblock 始终保持紧凑、有序、可遍历。</p>
+        <pre><code>/* mm/memblock.c */
+int __init_memblock memblock_add(phys_addr_t base, phys_addr_t size)
+{
+        phys_addr_t end = base + size - 1;
+
+        memblock_dbg("%s: [%pa-%pa] %pS\n", __func__,
+                     &amp;base, &amp;end, (void *)_RET_IP_);
+
+        return memblock_add_range(&amp;memblock.memory, base, size, MAX_NUMNODES, 0);
+}
+
+int __init_memblock memblock_reserve(phys_addr_t base, phys_addr_t size)
+{
+        phys_addr_t end = base + size - 1;
+
+        memblock_dbg("%s: [%pa-%pa] %pS\n", __func__,
+                     &amp;base, &amp;end, (void *)_RET_IP_);
+
+        return memblock_add_range(&amp;memblock.reserved, base, size, MAX_NUMNODES, 0);
+}</code></pre>
+        <p>逐段解释：`memblock_add()` 与 `memblock_reserve()` 都复用同一个区间插入算法，区别只是目标集合不同。前者声明“这段 RAM 存在且可纳入内核管理”，后者声明“这段 RAM 暂不能释放给普通分配器”。</p>
+        <div class="svg-wrap">
+          <svg viewBox="0 0 920 290" role="img" aria-label="memblock 区间插入与保留">
+            <defs><marker id="arrowGreen3" markerWidth="8" markerHeight="8" refX="7" refY="3" orient="auto"><path d="M0,0 L7,3 L0,6 Z" fill="#30d158"/></marker></defs>
+            <text x="24" y="28" class="svg-title">同一套区间算法服务 memory 与 reserved 两类事实</text>
+            <rect x="70" y="82" width="210" height="62" class="box-accent"/><text x="106" y="118" class="svg-text">memblock_add</text>
+            <rect x="355" y="82" width="210" height="62" class="box"/><text x="388" y="118" class="svg-text">memblock_add_range</text>
+            <rect x="640" y="82" width="210" height="62" class="box-good"/><text x="674" y="118" class="svg-text">memory.regions</text>
+            <rect x="70" y="190" width="210" height="62" class="box-danger"/><text x="96" y="226" class="svg-text">memblock_reserve</text>
+            <rect x="640" y="190" width="210" height="62" class="box-warn"/><text x="668" y="226" class="svg-text">reserved.regions</text>
+            <path d="M280 113 H355" class="wire-green"/><path d="M565 113 H640" class="wire-green"/>
+            <path d="M280 221 C330 221 330 113 355 113" class="wire-green"/><path d="M565 113 C600 113 600 221 640 221" class="wire-green"/>
+          </svg>
+        </div>
+        <div class="panel"><strong>第一性原理概述：</strong>“存在”和“可用”是两件事。memblock 用 `memory` 记录存在的 RAM，用 `reserved` 扣除暂不可用部分，避免把内核自身、设备树、initrd 等关键数据释放掉。</div>
+      </section>
+
+      <section id="early-alloc">
+        <h2>早期分配约束：低端、方向、直接可访问</h2>
+        <pre><code>/* arch/mips/kernel/setup.c */
+bootmem_init();
+
+/*
+ * Prevent memblock from allocating high memory.
+ * This cannot be done before max_low_pfn is detected, so up
+ * to this point is possible to only reserve physical memory
+ * with memblock_reserve; memblock_alloc* can be used
+ * only after this point
+ */
+memblock_set_current_limit(PFN_PHYS(max_low_pfn));
+...
+memblock_set_bottom_up(false);
+sparse_init();
+memblock_set_bottom_up(true);</code></pre>
+        <p>逐段解释：`bootmem_init()` 之后才知道 `max_low_pfn`，因此在此之前只能安全地做 `memblock_reserve()` 这种记录操作，不能随意做 `memblock_alloc*()`。</p>
+        <p>`memblock_set_current_limit(PFN_PHYS(max_low_pfn))` 把早期分配限制在低端内存中。对 32 位 MIPS 来说，低端内存可被内核直接映射访问；如果早期分配跑到 highmem，普通线性地址可能无法直接访问。</p>
+        <p>`sparse_init()` 前临时切到 top-down 分配，是为了让稀疏内存模型的元数据分配策略减少对低地址的挤占；结束后切回 bottom-up。这里体现 memblock 不只是区间表，也提供受方向和上限约束的早期分配策略。</p>
+        <div class="panel"><strong>第一性原理概述：</strong>早期分配必须满足“分配出来马上能被当前内核访问”。因此 memblock 不只找空洞，还要受 `current_limit`、分配方向、对齐和 node 等约束控制。</div>
+      </section>
+
+      <section id="paging-init">
+        <h2>伙伴系统创建入口：MIPS `paging_init()`</h2>
+        <pre><code>/* arch/mips/mm/init.c */
+void __init paging_init(void)
+{
+        unsigned long max_zone_pfns[MAX_NR_ZONES];
+
+        pagetable_init();
+
+#ifdef CONFIG_HIGHMEM
+        kmap_init();
+#endif
+#ifdef CONFIG_ZONE_DMA
+        max_zone_pfns[ZONE_DMA] = MAX_DMA_PFN;
+#endif
+#ifdef CONFIG_ZONE_DMA32
+        max_zone_pfns[ZONE_DMA32] = MAX_DMA32_PFN;
+#endif
+        max_zone_pfns[ZONE_NORMAL] = max_low_pfn;
+#ifdef CONFIG_HIGHMEM
+        max_zone_pfns[ZONE_HIGHMEM] = highend_pfn;
+
+        if (cpu_has_dc_aliases &amp;&amp; max_low_pfn != highend_pfn) {
+                printk(KERN_WARNING "This processor doesn't support highmem."
+                       " %ldk highmem ignored\n",
+                       (highend_pfn - max_low_pfn) &lt;&lt; (PAGE_SHIFT - 10));
+                max_zone_pfns[ZONE_HIGHMEM] = max_low_pfn;
+        }
+#endif
+
+        free_area_init(max_zone_pfns);
+}</code></pre>
+        <p>逐段解释：`paging_init()` 先初始化内核页表，再准备 `max_zone_pfns[]`，告诉通用 page allocator 每个 zone 的结束 PFN。</p>
+        <p>当前普通配置重点是 `ZONE_NORMAL`，其结束 PFN 是 `max_low_pfn`，这个值来自前面的 `bootmem_init()` 对 memblock DRAM 范围的扫描。最后调用 `free_area_init(max_zone_pfns)`，进入通用 buddy 元数据初始化。</p>
+        <div class="panel"><strong>第一性原理概述：</strong>伙伴系统不能凭空知道自己管理哪段物理页。架构代码必须先把硬件/平台约束转换成 zone 边界，通用代码才能按 zone 建立 free_area。</div>
+      </section>
+
+      <section id="free-area-init">
+        <h2>`free_area_init()`：用 memblock PFN 范围计算 node/zone</h2>
+        <pre><code>/* mm/page_alloc.c */
+void __init free_area_init(unsigned long *max_zone_pfn)
+{
+        unsigned long start_pfn, end_pfn;
+        int i, nid, zone;
+        bool descending;
+
+        memset(arch_zone_lowest_possible_pfn, 0,
+                                sizeof(arch_zone_lowest_possible_pfn));
+        memset(arch_zone_highest_possible_pfn, 0,
+                                sizeof(arch_zone_highest_possible_pfn));
+
+        start_pfn = find_min_pfn_with_active_regions();
+        descending = arch_has_descending_max_zone_pfns();
+
+        for (i = 0; i &lt; MAX_NR_ZONES; i++) {
+                if (descending)
+                        zone = MAX_NR_ZONES - i - 1;
+                else
+                        zone = i;
+
+                if (zone == ZONE_MOVABLE)
+                        continue;
+
+                end_pfn = max(max_zone_pfn[zone], start_pfn);
+                arch_zone_lowest_possible_pfn[zone] = start_pfn;
+                arch_zone_highest_possible_pfn[zone] = end_pfn;
+
+                start_pfn = end_pfn;
+        }
+
+        find_zone_movable_pfns_for_nodes();
+
+        pr_info("Early memory node ranges\n");
+        for_each_mem_pfn_range(i, MAX_NUMNODES, &amp;start_pfn, &amp;end_pfn, &amp;nid) {
+                pr_info("  node %3d: [mem %#018Lx-%#018Lx]\n", nid,
+                        (u64)start_pfn &lt;&lt; PAGE_SHIFT,
+                        ((u64)end_pfn &lt;&lt; PAGE_SHIFT) - 1);
+                subsection_map_init(start_pfn, end_pfn - start_pfn);
+        }
+
+        mminit_verify_pageflags_layout();
+        setup_nr_node_ids();
+        for_each_online_node(nid) {
+                pg_data_t *pgdat = NODE_DATA(nid);
+                free_area_init_node(nid);
+
+                if (pgdat-&gt;node_present_pages)
+                        node_set_state(nid, N_MEMORY);
+                check_for_memory(pgdat, nid);
+        }
+}</code></pre>
+        <p>逐段解释：`free_area_init()` 先根据架构给出的 `max_zone_pfn[]` 计算每个 zone 的最低/最高可能 PFN。zone 边界是 page allocator 的地址空间分区。</p>
+        <p>`for_each_mem_pfn_range()` 遍历早期 memblock memory 范围，打印 node 内存范围并初始化 subsection map。这个循环说明：buddy 的 node/zone 初始化仍然以 memblock 提供的物理 PFN 图为输入。</p>
+        <p>最后对每个 online node 调 `free_area_init_node()`，它会计算 node 总页数、分配 `struct page` 数组并初始化 zone。</p>
+        <div class="svg-wrap">
+          <svg viewBox="0 0 950 340" role="img" aria-label="free_area_init 使用 memblock 创建 node zone">
+            <defs><marker id="arrowBlue4" markerWidth="8" markerHeight="8" refX="7" refY="3" orient="auto"><path d="M0,0 L7,3 L0,6 Z" fill="#0a84ff"/></marker></defs>
+            <text x="24" y="30" class="svg-title">free_area_init：从 memblock PFN 图到 node/zone 元数据</text>
+            <rect x="50" y="82" width="220" height="70" class="box-accent"/><text x="88" y="112" class="svg-text">memblock.memory</text><text x="88" y="136" class="svg-small">active PFN ranges</text>
+            <rect x="360" y="82" width="220" height="70" class="box-warn"/><text x="398" y="112" class="svg-text">max_zone_pfn[]</text><text x="398" y="136" class="svg-small">架构约束的 zone 边界</text>
+            <rect x="670" y="82" width="220" height="70" class="box-good"/><text x="708" y="112" class="svg-text">free_area_init_node</text><text x="708" y="136" class="svg-small">pgdat / zone / mem_map</text>
+            <path d="M270 117 H360" class="wire-blue"/><path d="M580 117 H670" class="wire-blue"/>
+            <rect x="120" y="230" width="710" height="54" class="box-purple"/><text x="258" y="263" class="svg-text">结果：zone 存在、free_area[] 链表存在，但空闲页还没有真正释放进去</text>
+          </svg>
+        </div>
+        <div class="panel"><strong>第一性原理概述：</strong>zone 是“物理页的管理边界”，不是内存发现机制。memblock 发现和修正物理图，`free_area_init()` 把这张图投影成 allocator 可以使用的 node/zone 数据结构。</div>
+      </section>
+
+      <section id="zone-core">
+        <h2>zone 核心结构：managed_pages 与 free_area[]</h2>
+        <pre><code>/* include/linux/mmzone.h */
+struct free_area {
+        struct list_head        free_list[MIGRATE_TYPES];
+        unsigned long           nr_free;
+};
+
+struct zone {
+        ...
+        atomic_long_t           managed_pages;
+        unsigned long           spanned_pages;
+        unsigned long           present_pages;
+        ...
+        const char              *name;
+        ...
+        struct free_area        free_area[MAX_ORDER];
+        unsigned long           flags;
+        spinlock_t              lock;
+        ...
+};</code></pre>
+        <p>逐段解释：`free_area` 是伙伴系统最核心的数据结构。每个 order 对应一个 `free_area`，每个 `free_area` 又按迁移类型分多个链表，`nr_free` 记录该 order 的空闲块数量。</p>
+        <p>`zone` 记录一个物理内存区域的边界与状态。`spanned_pages` 是 zone 覆盖范围，包括洞；`present_pages` 是实际存在页；`managed_pages` 是 buddy 真正管理的页数，它会在 memblock 释放页面时重新计数。</p>
+        <div class="svg-wrap">
+          <svg viewBox="0 0 960 380" role="img" aria-label="zone free_area 伙伴系统结构">
+            <text x="24" y="30" class="svg-title">buddy 元数据：zone 内按 order 和 migratetype 组织空闲块</text>
+            <rect x="55" y="78" width="190" height="240" class="box-accent"/><text x="100" y="110" class="svg-text">struct zone</text><text x="82" y="140" class="svg-small">start_pfn</text><text x="82" y="162" class="svg-small">present_pages</text><text x="82" y="184" class="svg-small">managed_pages</text><text x="82" y="206" class="svg-small">lock</text>
+            <rect x="330" y="78" width="500" height="46" class="box-good"/><text x="360" y="107" class="svg-text">free_area[0]：1 页块链表，按 MIGRATE_TYPES 分桶</text>
+            <rect x="330" y="144" width="500" height="46" class="box-good"/><text x="360" y="173" class="svg-text">free_area[1]：2 页块链表</text>
+            <rect x="330" y="210" width="500" height="46" class="box-good"/><text x="360" y="239" class="svg-text">free_area[2]：4 页块链表</text>
+            <rect x="330" y="276" width="500" height="46" class="box-purple"/><text x="360" y="305" class="svg-text">... free_area[MAX_ORDER-1]：最大 order 块</text>
+            <path d="M245 198 H330" class="wire-blue"/>
+          </svg>
+          <div class="fig-cap">图 3：伙伴系统创建的目标，是让 zone 能按 order 快速拆分/合并空闲页块。</div>
+        </div>
+        <div class="panel"><strong>第一性原理概述：</strong>伙伴系统的基本单位不是任意字节区间，而是 2 的幂个连续页。用 order 链表组织空闲块，可以在分配时拆大块、释放时按地址关系合并 buddy。</div>
+      </section>
+
+      <section id="free-lists">
+        <h2>free_area 初始化：先建空架子，所有页仍是 reserved</h2>
+        <pre><code>/* mm/page_alloc.c */
+/*
+ * Initially all pages are reserved - free ones are freed
+ * up by memblock_free_all() once the early boot process is
+ * done. Non-atomic initialization, single-pass.
+ */
+void __meminit memmap_init_zone(unsigned long size, int nid, unsigned long zone,
+                unsigned long start_pfn, unsigned long zone_end_pfn,
+                enum meminit_context context,
+                struct vmem_altmap *altmap, int migratetype)
+{
+        unsigned long pfn, end_pfn = start_pfn + size;
+        struct page *page;
+        ...
+}
+
+static void __meminit zone_init_free_lists(struct zone *zone)
+{
+        unsigned int order, t;
+        for_each_migratetype_order(order, t) {
+                INIT_LIST_HEAD(&amp;zone-&gt;free_area[order].free_list[t]);
+                zone-&gt;free_area[order].nr_free = 0;
+        }
+}
+
+void __meminit init_currently_empty_zone(struct zone *zone,
+                                        unsigned long zone_start_pfn,
+                                        unsigned long size)
+{
+        struct pglist_data *pgdat = zone-&gt;zone_pgdat;
+        int zone_idx = zone_idx(zone) + 1;
+
+        if (zone_idx &gt; pgdat-&gt;nr_zones)
+                pgdat-&gt;nr_zones = zone_idx;
+
+        zone-&gt;zone_start_pfn = zone_start_pfn;
+        ...
+        zone_init_free_lists(zone);
+        zone-&gt;initialized = 1;
+}</code></pre>
+        <p>逐段解释：源码注释直接说明：初始所有页都是 reserved，空闲页要等 `memblock_free_all()` 后才释放。这个设计避免在元数据尚未完整初始化时，页面被普通分配路径拿走。</p>
+        <p>`zone_init_free_lists()` 对所有 order、所有 migratetype 初始化链表头，并把 `nr_free` 置 0。此时 buddy 的结构已经有了，但里面没有页块。</p>
+        <p>`init_currently_empty_zone()` 设置 zone 起始 PFN，初始化 free list，并标记 zone 已初始化。名字里的 “empty” 很准确：这是一个还没接收空闲页的 zone。</p>
+        <div class="panel"><strong>第一性原理概述：</strong>数据结构初始化必须先于对象发布。buddy 先建立空链表和 `struct page` 状态，再由 memblock 按真实空闲范围发布页面，避免把未初始化页暴露给分配器。</div>
+      </section>
+
+      <section id="mem-init">
+        <h2>移交入口：MIPS `mem_init()`</h2>
+        <pre><code>/* init/main.c */
+static void __init mm_init(void)
+{
+        page_ext_init_flatmem();
+        init_debug_pagealloc();
+        report_meminit();
+        mem_init();
+        kmem_cache_init();
+        kmemleak_init();
+        pgtable_init();
+        debug_objects_mem_init();
+        vmalloc_init();
+        ioremap_huge_init();
+        init_espfix_bsp();
+        pti_init();
+}
+
+/* arch/mips/mm/init.c */
+void __init mem_init(void)
+{
+        BUILD_BUG_ON(IS_ENABLED(CONFIG_32BIT) &amp;&amp; (_PFN_SHIFT &gt; PAGE_SHIFT));
+
+#ifdef CONFIG_HIGHMEM
+        max_mapnr = highend_pfn ? highend_pfn : max_low_pfn;
+#else
+        max_mapnr = max_low_pfn;
+#endif
+        high_memory = (void *) __va(max_low_pfn &lt;&lt; PAGE_SHIFT);
+
+        maar_init();
+        memblock_free_all();
+        setup_zero_pages();      /* Setup zeroed pages.  */
+        mem_init_free_highmem();
+        mem_init_print_info(NULL);
+        ...
+}</code></pre>
+        <p>逐段解释：`mm_init()` 中先调用体系结构的 `mem_init()`，再初始化 slab。也就是说 slab 普通缓存建立前，buddy 必须已经拿到可用页。</p>
+        <p>MIPS `mem_init()` 设置 `max_mapnr` 和 `high_memory` 后，调用 `memblock_free_all()`。这是本文的交接点：memblock 不再只是早期分配器，它会把自己认为空闲的低端页释放进 page allocator。</p>
+        <div class="panel"><strong>第一性原理概述：</strong>slab、vmalloc、后续内核子系统都依赖页分配器。因此 `mem_init()` 必须在这些系统之前完成 memblock 到 buddy 的交接。</div>
+      </section>
+
+      <section id="free-all">
+        <h2>`memblock_free_all()`：遍历 free ranges，把页释放给 buddy</h2>
+        <pre><code>/* mm/memblock.c */
+static void __init __free_pages_memory(unsigned long start, unsigned long end)
+{
+        int order;
+
+        while (start &lt; end) {
+                order = min(MAX_ORDER - 1UL, __ffs(start));
+
+                while (start + (1UL &lt;&lt; order) &gt; end)
+                        order--;
+
+                memblock_free_pages(pfn_to_page(start), start, order);
+
+                start += (1UL &lt;&lt; order);
+        }
+}
+
+static unsigned long __init __free_memory_core(phys_addr_t start,
+                                 phys_addr_t end)
+{
+        unsigned long start_pfn = PFN_UP(start);
+        unsigned long end_pfn = min_t(unsigned long,
+                                      PFN_DOWN(end), max_low_pfn);
+
+        if (start_pfn &gt;= end_pfn)
+                return 0;
+
+        __free_pages_memory(start_pfn, end_pfn);
+
+        return end_pfn - start_pfn;
+}
+
+static unsigned long __init free_low_memory_core_early(void)
+{
+        unsigned long count = 0;
+        phys_addr_t start, end;
+        u64 i;
+
+        memblock_clear_hotplug(0, -1);
+
+        for_each_reserved_mem_range(i, &amp;start, &amp;end)
+                reserve_bootmem_region(start, end);
+
+        for_each_free_mem_range(i, NUMA_NO_NODE, MEMBLOCK_NONE, &amp;start, &amp;end,
+                                NULL)
+                count += __free_memory_core(start, end);
+
+        return count;
+}
+
+unsigned long __init memblock_free_all(void)
+{
+        unsigned long pages;
+
+        reset_all_zones_managed_pages();
+
+        pages = free_low_memory_core_early();
+        totalram_pages_add(pages);
+
+        return pages;
+}</code></pre>
+        <p>逐段解释：`memblock_free_all()` 先把所有 zone 的 `managed_pages` 归零，随后调用 `free_low_memory_core_early()`。这说明 `free_area_init_core()` 中的 `managed_pages` 只是近似值，真正计数要在释放时重新计算。</p>
+        <p>`free_low_memory_core_early()` 先遍历 reserved 区间并调用 `reserve_bootmem_region()`，把这些页保持为 reserved。然后 `for_each_free_mem_range()` 遍历 `memory - reserved` 的空闲区间，只释放这些范围。</p>
+        <p>`__free_memory_core()` 将物理地址按页对齐，并裁剪到 `max_low_pfn` 以下。`__free_pages_memory()` 再把连续 PFN 范围切成尽可能大的、对齐的 order 块，调用 `memblock_free_pages()` 释放。</p>
+        <div class="svg-wrap">
+          <svg viewBox="0 0 960 430" role="img" aria-label="memblock_free_all 移交流程">
+            <defs>
+              <marker id="arrowBlue5" markerWidth="8" markerHeight="8" refX="7" refY="3" orient="auto"><path d="M0,0 L7,3 L0,6 Z" fill="#0a84ff"/></marker>
+              <marker id="arrowGreen5" markerWidth="8" markerHeight="8" refX="7" refY="3" orient="auto"><path d="M0,0 L7,3 L0,6 Z" fill="#30d158"/></marker>
+            </defs>
+            <text x="24" y="30" class="svg-title">MSC：memblock_free_all 把区间切成 order 块释放</text>
+            <line x1="120" y1="70" x2="120" y2="380" stroke="#30363d"/>
+            <line x1="330" y1="70" x2="330" y2="380" stroke="#30363d"/>
+            <line x1="550" y1="70" x2="550" y2="380" stroke="#30363d"/>
+            <line x1="780" y1="70" x2="780" y2="380" stroke="#30363d"/>
+            <text x="80" y="58" class="svg-text">mem_init</text>
+            <text x="286" y="58" class="svg-text">memblock</text>
+            <text x="500" y="58" class="svg-text">free range</text>
+            <text x="728" y="58" class="svg-text">buddy zone</text>
+            <path d="M120 110 H330" stroke="#0a84ff" stroke-width="2" fill="none" marker-end="url(#arrowBlue5)"/>
+            <text x="158" y="101" class="svg-small">memblock_free_all()</text>
+            <path d="M330 165 H550" stroke="#0a84ff" stroke-width="2" fill="none" marker-end="url(#arrowBlue5)"/>
+            <text x="365" y="156" class="svg-small">for_each_free_mem_range</text>
+            <path d="M550 225 H780" stroke="#30d158" stroke-width="2" fill="none" marker-end="url(#arrowGreen5)"/>
+            <text x="595" y="216" class="svg-small">memblock_free_pages(order)</text>
+            <path d="M780 290 H120" stroke="#30d158" stroke-width="2" fill="none" marker-end="url(#arrowGreen5)"/>
+            <text x="350" y="281" class="svg-small">managed_pages 增加，free_area[] 获得空闲块</text>
+          </svg>
+          <div class="fig-cap">图 4：交接不是复制内存，而是把 memblock 认定可释放的 PFN 变成 buddy free list 节点。</div>
+        </div>
+        <div class="panel"><strong>第一性原理概述：</strong>memblock 到 buddy 的移交本质是所有权转移：同一批物理页不移动，只是管理权从“区间差集”转到“zone/order 链表”。</div>
+      </section>
+
+      <section id="free-pages-core">
+        <h2>`__free_pages_core()`：清 reserved、清 refcount、进入 buddy</h2>
+        <pre><code>/* mm/page_alloc.c */
+void __free_pages_core(struct page *page, unsigned int order)
+{
+        unsigned int nr_pages = 1 &lt;&lt; order;
+        struct page *p = page;
+        unsigned int loop;
+
+        /*
+         * When initializing the memmap, __init_single_page() sets the refcount
+         * of all pages to 1 ("allocated"/"not free"). We have to set the
+         * refcount of all involved pages to 0.
+         */
+        prefetchw(p);
+        for (loop = 0; loop &lt; (nr_pages - 1); loop++, p++) {
+                prefetchw(p + 1);
+                __ClearPageReserved(p);
+                set_page_count(p, 0);
+        }
+        __ClearPageReserved(p);
+        set_page_count(p, 0);
+
+        atomic_long_add(nr_pages, &amp;page_zone(page)-&gt;managed_pages);
+
+        /*
+         * Bypass PCP and place fresh pages right to the tail, primarily
+         * relevant for memory onlining.
+         */
+        __free_pages_ok(page, order, FPI_TO_TAIL);
+}
+
+void __init memblock_free_pages(struct page *page, unsigned long pfn,
+                                                        unsigned int order)
+{
+        if (early_page_uninitialised(pfn))
+                return;
+        __free_pages_core(page, order);
+}</code></pre>
+        <p>逐段解释：`struct page` 初始化时引用计数为 1，含义是“已分配/不可自由使用”。释放给 buddy 前，`__free_pages_core()` 对整个 order 块逐页清 `PageReserved`，并把 refcount 置 0。</p>
+        <p>随后 `managed_pages` 增加 `1 << order`，表示这些页现在由 buddy 管理。最后调用 `__free_pages_ok()`，它会进入普通释放路径，把页块按 order 和 migratetype 放入 zone 的 `free_area[]`，并在可能时合并 buddy。</p>
+        <p>`memblock_free_pages()` 还会跳过 `early_page_uninitialised()` 的 PFN，避免把尚未初始化 `struct page` 的页释放给普通分配器。</p>
+        <div class="svg-wrap">
+          <svg viewBox="0 0 940 300" role="img" aria-label="页面从 reserved 状态进入 buddy">
+            <defs><marker id="arrowGreen6" markerWidth="8" markerHeight="8" refX="7" refY="3" orient="auto"><path d="M0,0 L7,3 L0,6 Z" fill="#30d158"/></marker></defs>
+            <text x="24" y="30" class="svg-title">一个 order 块进入 buddy 前后的状态变化</text>
+            <rect x="70" y="90" width="210" height="86" class="box-danger"/><text x="112" y="123" class="svg-text">PageReserved</text><text x="114" y="148" class="svg-small">refcount = 1</text>
+            <rect x="365" y="90" width="210" height="86" class="box-warn"/><text x="398" y="123" class="svg-text">__free_pages_core</text><text x="402" y="148" class="svg-small">clear reserved / count 0</text>
+            <rect x="660" y="90" width="210" height="86" class="box-good"/><text x="692" y="123" class="svg-text">zone->free_area</text><text x="696" y="148" class="svg-small">order + migratetype</text>
+            <path d="M280 133 H365" class="wire-green"/><path d="M575 133 H660" class="wire-green"/>
+          </svg>
+        </div>
+        <div class="panel"><strong>第一性原理概述：</strong>要让一个页能被分配，必须同时满足三个条件：它不再是 reserved，引用计数表明它空闲，并且它被挂入 allocator 能找到的数据结构。</div>
+      </section>
+
+      <section id="after-handoff">
+        <h2>移交之后：zonelist、PCP、slab 继续接管更高层分配</h2>
+        <pre><code>/* init/main.c */
+build_all_zonelists(NULL);
+page_alloc_init();
+...
+mm_init();
+...
+setup_per_cpu_pageset();
+
+/* mm/page_alloc.c */
+void __init page_alloc_init(void)
+{
+        int ret;
+
+#ifdef CONFIG_NUMA
+        if (num_node_state(N_MEMORY) == 1)
+                hashdist = 0;
+#endif
+
+        ret = cpuhp_setup_state_nocalls(CPUHP_PAGE_ALLOC_DEAD,
+                                        "mm/page_alloc:dead", NULL,
+                                        page_alloc_cpu_dead);
+        WARN_ON(ret &lt; 0);
+}</code></pre>
+        <p>逐段解释：`build_all_zonelists()` 在 `mm_init()` 前运行，建立从哪些 zone 以及按什么 fallback 顺序分配的路由表。`page_alloc_init()` 注册 CPU dead 回调，用于 CPU hotplug 时处理 page allocator 状态。</p>
+        <p>`setup_per_cpu_pageset()` 在中后段启动时运行，为每个 zone 建立正式 per-cpu pageset。此后小批量页分配可以先走 PCP，减少频繁触碰 zone 全局锁；PCP 与 buddy 之间批量转移页面。</p>
+        <p>`kmem_cache_init()` 位于 `mem_init()` 之后，说明 slab 建立在 buddy 已可用的基础上。memblock 负责早期粗粒度区间分配，buddy 负责页级分配，slab 再在页之上提供对象级缓存。</p>
+        <div class="panel"><strong>第一性原理概述：</strong>内存管理是分层的。memblock 解决自举，buddy 解决页框，PCP 解决多 CPU 热路径，slab 解决小对象。每一层都依赖下一层先建立足够稳定的供给。</div>
+      </section>
+
+      <section id="links">
+        <h2>相关本地文档链接</h2>
+        <table>
+          <thead><tr><th>文档</th><th>关联点</th></tr></thead>
+          <tbody>
+            <tr><td><a href="kernel-entry-before-start-kernel.html">kernel-entry-before-start-kernel.html</a></td><td>理解进入 `start_kernel()` 前 MIPS 初始状态。</td></tr>
+            <tr><td><a href="mips-page-table-flow.html">mips-page-table-flow.html</a></td><td>理解 `paging_init()` 中页表与 zone 初始化的相邻关系。</td></tr>
+            <tr><td><a href="process_memory_layout_view.html">process_memory_layout_view.html</a></td><td>理解后续进程虚拟地址空间与物理页分配的关系。</td></tr>
+            <tr><td><a href="fork_page_table_flow.html">fork_page_table_flow.html</a></td><td>理解 buddy 可用后 fork/COW 路径如何继续消耗页分配器。</td></tr>
+          </tbody>
+        </table>
+        <div class="panel"><strong>第一性原理概述：</strong>启动内存、页表、进程地址空间并不是三套系统，而是同一条供应链的不同阶段：先发现物理页，再建立页框分配，再把页映射进虚拟地址空间。</div>
+      </section>
+
+      <section id="summary">
+        <h2>整体总结</h2>
+        <div class="grid">
+          <div class="concept"><h3>memblock 管什么</h3><p>它管理物理区间集合：`memory` 表示可纳入管理的 RAM，`reserved` 表示不可释放的保留范围，空闲范围是二者差集。</p></div>
+          <div class="concept"><h3>buddy 怎么创建</h3><p>MIPS `paging_init()` 给出 zone 边界，`free_area_init()` 创建 node、zone、mem_map、usemap，并初始化 `free_area[MAX_ORDER]` 空链表。</p></div>
+          <div class="concept"><h3>如何移交</h3><p>`mem_init()` 调 `memblock_free_all()`，遍历 `for_each_free_mem_range()`，把低端空闲 PFN 切成 order 块，清 reserved/refcount 后释放进 buddy。</p></div>
+          <div class="concept"><h3>为什么这样设计</h3><p>早期只能用小而静态的区间表自举；buddy 需要完整 `struct page` 和 zone 元数据；二者分阶段交接避免循环依赖和未初始化页暴露。</p></div>
+        </div>
+        <div class="quote">从第一性原理看，memblock 到 buddy 的变化不是内存内容搬运，而是“管理模型”的切换：从少量物理区间记录，切换到按页、按 order、按 zone 的可并发分配结构。</div>
+      </section>
+
+      <div class="chapter-nav" aria-label="章节翻页">
+        <a id="prevChapter" href="#intro">上一章</a>
+        <a id="nextChapter" href="#sources">下一章</a>
+      </div>
+    </main>
+  </div>
+
+  <script>
+    (function () {
+      const body = document.body;
+      const menuButton = document.getElementById('menuButton');
+      const progressBar = document.getElementById('progressBar');
+      const links = Array.from(document.querySelectorAll('.nav-list a'));
+      const sections = links.map(link => document.querySelector(link.getAttribute('href'))).filter(Boolean);
+      const prev = document.getElementById('prevChapter');
+      const next = document.getElementById('nextChapter');
+
+      function currentIndex() {
+        const y = window.scrollY + 90;
+        let index = 0;
+        sections.forEach((section, i) => {
+          if (section.offsetTop <= y) index = i;
+        });
+        return index;
+      }
+
+      function update() {
+        const doc = document.documentElement;
+        const max = Math.max(1, doc.scrollHeight - window.innerHeight);
+        progressBar.style.width = Math.min(100, Math.max(0, window.scrollY / max * 100)) + '%';
+
+        const index = currentIndex();
+        links.forEach(link => link.classList.remove('active'));
+        if (links[index]) links[index].classList.add('active');
+
+        if (sections[index - 1]) prev.href = '#' + sections[index - 1].id;
+        else prev.href = '#' + sections[0].id;
+        if (sections[index + 1]) next.href = '#' + sections[index + 1].id;
+        else next.href = '#' + sections[sections.length - 1].id;
+      }
+
+      menuButton.addEventListener('click', () => body.classList.toggle('nav-open'));
+      links.forEach(link => link.addEventListener('click', () => body.classList.remove('nav-open')));
+      window.addEventListener('scroll', update, { passive: true });
+      window.addEventListener('resize', update);
+      window.addEventListener('keydown', event => {
+        if (event.altKey || event.ctrlKey || event.metaKey || event.shiftKey) return;
+        if (event.key === 'ArrowLeft') {
+          event.preventDefault();
+          location.hash = prev.getAttribute('href');
+        }
+        if (event.key === 'ArrowRight') {
+          event.preventDefault();
+          location.hash = next.getAttribute('href');
+        }
+      });
+      update();
+    }());
+  </script>
+</body>
+</html>

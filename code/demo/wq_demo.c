@@ -25,9 +25,9 @@
 #include "raii.h"
 
 enum {
-    DEMO_PRODUCER_COUNT   = 4,
-    DEMO_TASKS_PER_THREAD = 8,
-    DEMO_WORKER_COUNT     = 4,
+    DEMO_PRODUCER_COUNT   = 1,
+    DEMO_TASKS_PER_THREAD = 2,
+    DEMO_WORKER_COUNT     = 2,
 };
 
 /** 慢任务 sleep 时长（微秒），给 cancel 演示留出窗口 */
@@ -57,17 +57,6 @@ static void demo_static_handler(wq_work_t *work);
 
 WQ_DECLARE_WORK(g_static_work, demo_static_handler);
 
-/** demo 进度输出（stdout 演示轨迹，非 LogError 日志通道） */
-static void
-demo_trace(const char *fmt, ...)
-{
-    va_list ap;
-
-    va_start(ap, fmt);
-    (void)vprintf(fmt, ap);
-    va_end(ap);
-}
-
 static void
 demo_task_handler(wq_work_t *work)
 {
@@ -82,7 +71,7 @@ demo_task_handler(wq_work_t *work)
     }
 
     atomic_add(1, &g_completed_count);
-    demo_trace("  [handler] task #%d done on thread %ju\n",
+    LogInfo("  [handler] task #%d done on thread %ju",
                 task->id, (uintmax_t)tid);
 }
 
@@ -91,7 +80,7 @@ demo_static_handler(wq_work_t *work)
 {
     (void)work;
     atomic_add(1, &g_completed_count);
-    demo_trace("  [handler] WQ_DECLARE_WORK static item done\n");
+    LogInfo("  [handler] WQ_DECLARE_WORK static item done");
 }
 
 static void
@@ -100,11 +89,11 @@ demo_slow_handler(wq_work_t *work)
     demo_task_t *task = NULL;
 
     task = WQ_ENTRY(work, demo_task_t, work);
-    demo_trace("  [handler] slow task #%d started (sleep %dms)\n",
+    LogInfo("  [handler] slow task #%d started (sleep %dms)",
                task->id, DEMO_SLOW_SLEEP_US / 1000);
     usleep((useconds_t)DEMO_SLOW_SLEEP_US);
     atomic_add(1, &g_completed_count);
-    demo_trace("  [handler] slow task #%d finished\n", task->id);
+    LogInfo("  [handler] slow task #%d finished", task->id);
 }
 
 static void *
@@ -121,7 +110,7 @@ producer_thread(void *arg)
     }
 
     base_id = ctx->thread_idx * DEMO_TASKS_PER_THREAD;
-    demo_trace("[producer-%d] start (tid=%ju)\n",
+    LogInfo("[producer-%d] start (tid=%ju)",
                ctx->thread_idx, (uintmax_t)(uintptr_t)pthread_self());
 
     for (i = 0; i < DEMO_TASKS_PER_THREAD; i++) {
@@ -136,16 +125,16 @@ producer_thread(void *arg)
         WQ_INIT_WORK(&task->work, demo_task_handler);
 
         queued = wq_queue_work(ctx->wq, &task->work);
-        demo_trace("[producer-%d] wq_queue_work task #%d -> %s\n",
+        LogInfo("[producer-%d] wq_queue_work task #%d -> %s",
                    ctx->thread_idx, task->id, queued ? "queued" : "rejected");
 
         /* 同一 work 重复入队应被拒绝（内核 queue_work 幂等语义） */
         dup = wq_queue_work(ctx->wq, &task->work);
-        demo_trace("[producer-%d] wq_queue_work duplicate task #%d -> %s (expect rejected)\n",
+        LogInfo("[producer-%d] wq_queue_work duplicate task #%d -> %s (expect rejected)",
                    ctx->thread_idx, task->id, dup ? "queued" : "rejected");
     }
 
-    demo_trace("[producer-%d] done\n", ctx->thread_idx);
+    LogInfo("[producer-%d] done", ctx->thread_idx);
     return NULL;
 }
 
@@ -178,14 +167,14 @@ demo_run_concurrent_producers(void)
     int             total_tasks = 0;
     int             err = 0;
 
-    demo_trace("\n=== [1] wq_create + multi-producer wq_queue_work ===\n");
+    LogInfo("=== [1] wq_create + multi-producer wq_queue_work ===");
 
     wq = wq_create("demo-wq", DEMO_WORKER_COUNT);
     if (wq == NULL) {
         LogError("wq_create(demo-wq) failed");
         return -1;
     }
-    demo_trace("wq_create(\"demo-wq\", %d) ok\n", DEMO_WORKER_COUNT);
+    LogInfo("wq_create(\"demo-wq\", %d) ok", DEMO_WORKER_COUNT);
 
     total_tasks = DEMO_PRODUCER_COUNT * DEMO_TASKS_PER_THREAD;
     tasks = (demo_task_t *)calloc((size_t)total_tasks, sizeof(*tasks));
@@ -222,28 +211,28 @@ demo_run_concurrent_producers(void)
         return -1;
     }
 
-    demo_trace("\n=== [2] WQ_DECLARE_WORK + wq_queue_work ===\n");
+    LogInfo("=== [2] WQ_DECLARE_WORK + wq_queue_work ===");
     if (!wq_queue_work(wq, &g_static_work)) {
         LogError("wq_queue_work(g_static_work) rejected");
         wq_destroy(wq);
         free(tasks);
         return -1;
     }
-    demo_trace("wq_queue_work(g_static_work) ok\n");
+    LogInfo("wq_queue_work(g_static_work) ok");
 
-    demo_trace("\n=== [3] wq_flush ===\n");
+    LogInfo("=== [3] wq_flush ===");
     wq_flush(wq);
-    demo_trace("wq_flush done, completed=%d (expect %d + 1 static)\n",
+    LogInfo("wq_flush done, completed=%d (expect %d + 1 static)",
                atomic_read(&g_completed_count), total_tasks);
 
-    demo_trace("\n=== [4] wq_destroy ===\n");
+    LogInfo("=== [4] wq_destroy ===");
     wq_destroy(wq);
     wq = NULL;
-    demo_trace("wq_destroy ok\n");
+    LogInfo("wq_destroy ok");
 
     wq_flush(NULL);
     wq_destroy(NULL);
-    demo_trace("wq_flush(NULL) / wq_destroy(NULL) ok (NULL-safe)\n");
+    LogInfo("wq_flush(NULL) / wq_destroy(NULL) ok (NULL-safe)");
 
     free(tasks);
     tasks = NULL;
@@ -259,7 +248,7 @@ demo_run_cancel(void)
     demo_task_t  solo;
     bool         cancelled = false;
 
-    demo_trace("\n=== [5] wq_cancel_work_sync ===\n");
+    LogInfo("=== [5] wq_cancel_work_sync ===");
 
     /* 5a：单 worker 下，队首慢任务占用 worker 时取消队中 victim */
     wq = wq_create("cancel-wq", 1);
@@ -278,11 +267,11 @@ demo_run_cancel(void)
 
     (void)wq_queue_work(wq, &blocker.work);
     (void)wq_queue_work(wq, &victim.work);
-    demo_trace("[5a] queued slow#100 then victim#101 (single worker, FIFO)\n");
+    LogInfo("[5a] queued slow#100 then victim#101 (single worker, FIFO)");
 
     usleep((useconds_t)DEMO_CANCEL_WINDOW_US);
     cancelled = wq_cancel_work_sync(wq, &victim.work);
-    demo_trace("[5a] wq_cancel_work_sync(victim#101) -> %s\n",
+    LogInfo("[5a] wq_cancel_work_sync(victim#101) -> %s",
                cancelled ? "cancelled" : "not cancelled");
     wq_flush(wq);
     wq_destroy(wq);
@@ -300,11 +289,11 @@ demo_run_cancel(void)
     WQ_INIT_WORK(&solo.work, demo_slow_handler);
 
     (void)wq_queue_work(wq, &solo.work);
-    demo_trace("[5b] queued slow#200, wait until worker picks it up\n");
+    LogInfo("[5b] queued slow#200, wait until worker picks it up");
     usleep((useconds_t)DEMO_RUNNING_PICKUP_US);
 
     cancelled = wq_cancel_work_sync(wq, &solo.work);
-    demo_trace("[5b] wq_cancel_work_sync(slow#200 running) -> %s (expect not cancelled)\n",
+    LogInfo("[5b] wq_cancel_work_sync(slow#200 running) -> %s (expect not cancelled)",
                cancelled ? "cancelled" : "not cancelled");
 
     wq_destroy(wq);
@@ -316,11 +305,11 @@ demo_run_create_invalid(void)
 {
     struct wq *wq = NULL;
 
-    demo_trace("\n=== [6] wq_create parameter validation ===\n");
+    LogInfo("=== [6] wq_create parameter validation ===");
 
     wq = wq_create("bad-wq", 0);
     if (wq == NULL) {
-        demo_trace("wq_create(nr_workers=0) -> NULL (expected)\n");
+        LogInfo("wq_create(nr_workers=0) -> NULL (expected)");
     } else {
         LogError("wq_create(nr_workers=0) should fail");
         wq_destroy(wq);
@@ -332,7 +321,7 @@ demo_run_create_invalid(void)
         LogError("wq_create(NULL name, 1) failed unexpectedly");
         return -1;
     }
-    demo_trace("wq_create(NULL name, 1) ok (default name \"wq\")\n");
+    LogInfo("wq_create(NULL name, 1) ok (default name \"wq\")");
     wq_destroy(wq);
     return 0;
 }
@@ -344,7 +333,7 @@ main(void)
 
     atomic_set(&g_completed_count, 0);
 
-    demo_trace("wq demo — cover all APIs in wq.h\n");
+    LogInfo("wq demo — cover all APIs in wq.h");
     (void)fflush(stdout);
 
     rc = demo_run_create_invalid();
@@ -362,6 +351,6 @@ main(void)
         return EXIT_FAILURE;
     }
 
-    demo_trace("\nAll demos finished.\n");
+    LogInfo("All demos finished.");
     return EXIT_SUCCESS;
 }

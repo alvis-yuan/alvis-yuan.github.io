@@ -1,0 +1,633 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>fork 创建进程时页表的创建与更新</title>
+<style>
+  :root {
+    --bg: #f5f1e8;
+    --paper: #fffdf8;
+    --ink: #1f2933;
+    --muted: #52606d;
+    --line: #d9d2c3;
+    --accent: #005f73;
+    --accent-2: #bb3e03;
+    --accent-3: #ca6702;
+    --ok: #2d6a4f;
+    --code: #f3efe6;
+  }
+
+  * { box-sizing: border-box; }
+
+  body {
+    margin: 0;
+    font-family: "Noto Serif CJK SC", "Source Han Serif SC", "Songti SC", serif;
+    color: var(--ink);
+    background:
+      radial-gradient(circle at top left, #fff6dd 0, transparent 26%),
+      linear-gradient(180deg, #f7f3ea 0%, #efe7d8 100%);
+    line-height: 1.7;
+  }
+
+  header {
+    padding: 56px 24px 28px;
+    border-bottom: 1px solid rgba(0, 95, 115, 0.15);
+    background: linear-gradient(135deg, rgba(0,95,115,0.08), rgba(187,62,3,0.06));
+  }
+
+  .wrap {
+    width: min(1120px, calc(100% - 32px));
+    margin: 0 auto;
+  }
+
+  h1, h2, h3 {
+    font-family: "Noto Sans CJK SC", "Source Han Sans SC", "PingFang SC", sans-serif;
+    line-height: 1.25;
+  }
+
+  h1 {
+    margin: 0;
+    font-size: clamp(2rem, 3vw, 3rem);
+    letter-spacing: 0.01em;
+  }
+
+  .subhead {
+    margin-top: 14px;
+    max-width: 900px;
+    color: var(--muted);
+    font-size: 1.02rem;
+  }
+
+  main {
+    padding: 24px 0 56px;
+  }
+
+  section {
+    margin: 22px 0;
+    padding: 24px;
+    background: rgba(255, 253, 248, 0.86);
+    border: 1px solid var(--line);
+    border-radius: 18px;
+    box-shadow: 0 10px 30px rgba(31, 41, 51, 0.05);
+    backdrop-filter: blur(3px);
+  }
+
+  h2 {
+    margin: 0 0 14px;
+    font-size: 1.55rem;
+    color: var(--accent);
+  }
+
+  h3 {
+    margin: 20px 0 8px;
+    font-size: 1.08rem;
+    color: var(--accent-2);
+  }
+
+  p, li { font-size: 0.98rem; }
+
+  code, pre {
+    font-family: "JetBrains Mono", "Cascadia Code", monospace;
+  }
+
+  code {
+    background: var(--code);
+    padding: 0.1em 0.35em;
+    border-radius: 6px;
+  }
+
+  pre {
+    background: #faf5ea;
+    border: 1px solid #eadfcb;
+    border-radius: 14px;
+    padding: 16px;
+    overflow-x: auto;
+  }
+
+  .grid {
+    display: grid;
+    gap: 18px;
+  }
+
+  .grid.two {
+    grid-template-columns: repeat(auto-fit, minmax(300px, 1fr));
+  }
+
+  .note, .callout {
+    padding: 14px 16px;
+    border-radius: 14px;
+    border-left: 4px solid var(--accent-3);
+    background: #fff7e6;
+  }
+
+  .callout.ok {
+    border-left-color: var(--ok);
+    background: #eef8f1;
+  }
+
+  .checklist {
+    margin: 0;
+    padding-left: 1.2rem;
+  }
+
+  .path {
+    display: block;
+    padding: 14px 16px;
+    background: #f9f5ed;
+    border: 1px dashed #c8bda7;
+    border-radius: 14px;
+    font-family: "JetBrains Mono", "Cascadia Code", monospace;
+    font-size: 0.95rem;
+    overflow-x: auto;
+  }
+
+  table {
+    width: 100%;
+    border-collapse: collapse;
+    margin-top: 10px;
+  }
+
+  th, td {
+    text-align: left;
+    vertical-align: top;
+    padding: 10px 12px;
+    border-bottom: 1px solid #e9e0d1;
+  }
+
+  th {
+    color: var(--accent);
+    font-family: "Noto Sans CJK SC", "Source Han Sans SC", sans-serif;
+    font-size: 0.95rem;
+  }
+
+  svg {
+    width: 100%;
+    height: auto;
+    display: block;
+    border-radius: 16px;
+    background: #fffdf9;
+    border: 1px solid #efe5d6;
+  }
+
+  .refs ol {
+    padding-left: 1.2rem;
+    margin-bottom: 0;
+  }
+
+  .small {
+    color: var(--muted);
+    font-size: 0.92rem;
+  }
+
+  footer {
+    padding: 10px 0 30px;
+    color: var(--muted);
+    font-size: 0.9rem;
+  }
+
+  @media (max-width: 720px) {
+    section {
+      padding: 18px;
+      border-radius: 14px;
+    }
+  }
+</style>
+</head>
+<body>
+<header>
+  <div class="wrap">
+    <h1>fork 创建进程时页表的创建与更新</h1>
+    <p class="subhead">本文把 Linux 中 <code>fork()</code> 时进程地址空间和页表的创建、复制、写时复制（COW）与 TLB 关系串起来说明，并结合本仓库代码路径给出可对照的实现落点。重点覆盖：<code>fork -&gt; kernel_clone -&gt; copy_process -&gt; copy_mm -&gt; dup_mm -&gt; dup_mmap -&gt; copy_page_range</code>。</p>
+  </div>
+</header>
+
+<main class="wrap">
+  <section>
+    <h2>先说结论</h2>
+    <div class="grid two">
+      <div class="callout ok">
+        <strong>fork 不是立刻把所有物理页都复制一份。</strong>
+        <p>Linux 的常规 <code>fork()</code> 语义是：先创建一个新的 <code>task_struct</code> 和新的 <code>mm_struct</code>，复制 VMA 元数据和页表层级；对私有可写页，把父子两边的 PTE 都改成只读，随后在第一次写入时再通过缺页异常分配新页并完成 COW。</p>
+      </div>
+      <div class="note">
+        <strong>fork 的主要开销是什么？</strong>
+        <p>权威表述可直接引用 <code>fork(2)</code> 的 NOTE：Linux 中 <code>fork()</code> 使用 copy-on-write，因此主要代价是复制父进程的页表，以及创建子进程自身的内核对象，而不是复制全部用户物理页。</p>
+      </div>
+    </div>
+    <ul class="checklist">
+      <li>新进程的顶层页表会被创建出来，且内核映射部分通常直接继承自内核模板。</li>
+      <li>用户态各个 VMA 会被复制，必要时还会复制页表层级与叶子 PTE。</li>
+      <li>私有可写映射在 <code>fork()</code> 后通常会降级为父子共享的只读映射。</li>
+      <li>真正分配新的物理页，通常发生在后续写缺页，而不是发生在 <code>fork()</code> 这个系统调用本身。</li>
+    </ul>
+  </section>
+
+  <section>
+    <h2>一、从系统调用到页表复制的主流程</h2>
+    <span class="path">SYSCALL_DEFINE0(fork) -&gt; kernel_clone() -&gt; copy_process() -&gt; copy_mm() -&gt; dup_mm() -&gt; dup_mmap() -&gt; copy_page_range()</span>
+
+    <table>
+      <thead>
+        <tr>
+          <th>阶段</th>
+          <th>代码落点</th>
+          <th>作用</th>
+        </tr>
+      </thead>
+      <tbody>
+        <tr>
+          <td>系统调用入口</td>
+          <td><code>kernel/fork.c:2559</code> 附近</td>
+          <td><code>fork()</code> 组装 <code>kernel_clone_args</code>，调用 <code>kernel_clone()</code>。</td>
+        </tr>
+        <tr>
+          <td>通用建进程</td>
+          <td><code>kernel/fork.c:2462</code>、<code>1857</code> 附近</td>
+          <td><code>kernel_clone()</code> 调 <code>copy_process()</code>，后者复制 task、signal、files、fs、mm 等各类资源。</td>
+        </tr>
+        <tr>
+          <td>地址空间处理</td>
+          <td><code>kernel/fork.c:1380</code> 左右</td>
+          <td><code>copy_mm()</code> 判断是否 <code>CLONE_VM</code>。普通 <code>fork()</code> 不共享地址空间，因此会走 <code>dup_mm()</code>。</td>
+        </tr>
+        <tr>
+          <td>新 mm 创建</td>
+          <td><code>kernel/fork.c:1348</code> 左右</td>
+          <td><code>dup_mm()</code> 分配新的 <code>mm_struct</code>，调用 <code>mm_init()</code> 建立基本框架，再调用 <code>dup_mmap()</code> 复制 VMA 和页表。</td>
+        </tr>
+        <tr>
+          <td>VMA 复制</td>
+          <td><code>kernel/fork.c:472</code> 左右</td>
+          <td><code>dup_mmap()</code> 遍历父进程 VMA，给子进程创建对应 VMA，并在合适条件下调用 <code>copy_page_range()</code>。</td>
+        </tr>
+        <tr>
+          <td>页表复制</td>
+          <td><code>mm/memory.c:1139</code> 左右</td>
+          <td><code>copy_page_range()</code> 递归遍历 PGD/P4D/PUD/PMD/PTE，复制父页表中的相关条目。</td>
+        </tr>
+      </tbody>
+    </table>
+
+    <svg viewBox="0 0 1080 350" aria-label="fork 页表复制调用链图">
+      <defs>
+        <marker id="arrow" markerWidth="10" markerHeight="10" refX="8" refY="3" orient="auto">
+          <path d="M0,0 L0,6 L9,3 z" fill="#005f73"></path>
+        </marker>
+      </defs>
+      <rect x="35" y="50" width="145" height="58" rx="14" fill="#e7f4f6" stroke="#005f73"></rect>
+      <text x="108" y="74" text-anchor="middle" font-size="20" fill="#0f1720">fork()</text>
+      <text x="108" y="96" text-anchor="middle" font-size="12" fill="#52606d">kernel/fork.c</text>
+
+      <rect x="215" y="50" width="165" height="58" rx="14" fill="#e7f4f6" stroke="#005f73"></rect>
+      <text x="297" y="74" text-anchor="middle" font-size="20" fill="#0f1720">kernel_clone()</text>
+      <text x="297" y="96" text-anchor="middle" font-size="12" fill="#52606d">构造 clone 语义</text>
+
+      <rect x="420" y="50" width="165" height="58" rx="14" fill="#eef8f1" stroke="#2d6a4f"></rect>
+      <text x="502" y="74" text-anchor="middle" font-size="20" fill="#0f1720">copy_process()</text>
+      <text x="502" y="96" text-anchor="middle" font-size="12" fill="#52606d">复制 task / mm / files</text>
+
+      <rect x="620" y="50" width="145" height="58" rx="14" fill="#fff4e8" stroke="#ca6702"></rect>
+      <text x="692" y="74" text-anchor="middle" font-size="20" fill="#0f1720">copy_mm()</text>
+      <text x="692" y="96" text-anchor="middle" font-size="12" fill="#52606d">普通 fork 不共享 mm</text>
+
+      <rect x="800" y="50" width="125" height="58" rx="14" fill="#fff4e8" stroke="#ca6702"></rect>
+      <text x="862" y="74" text-anchor="middle" font-size="20" fill="#0f1720">dup_mm()</text>
+      <text x="862" y="96" text-anchor="middle" font-size="12" fill="#52606d">新 mm_struct</text>
+
+      <rect x="942" y="50" width="103" height="58" rx="14" fill="#fdeee8" stroke="#bb3e03"></rect>
+      <text x="993" y="74" text-anchor="middle" font-size="18" fill="#0f1720">dup_mmap()</text>
+      <text x="993" y="96" text-anchor="middle" font-size="12" fill="#52606d">复制 VMA</text>
+
+      <path d="M180 79 H210" stroke="#005f73" stroke-width="3" marker-end="url(#arrow)"></path>
+      <path d="M380 79 H415" stroke="#005f73" stroke-width="3" marker-end="url(#arrow)"></path>
+      <path d="M585 79 H615" stroke="#005f73" stroke-width="3" marker-end="url(#arrow)"></path>
+      <path d="M765 79 H795" stroke="#005f73" stroke-width="3" marker-end="url(#arrow)"></path>
+      <path d="M925 79 H937" stroke="#005f73" stroke-width="3" marker-end="url(#arrow)"></path>
+
+      <rect x="280" y="205" width="520" height="92" rx="18" fill="#fffdfa" stroke="#c8bda7" stroke-dasharray="6 6"></rect>
+      <text x="540" y="234" text-anchor="middle" font-size="22" fill="#0f1720">copy_page_range()</text>
+      <text x="540" y="257" text-anchor="middle" font-size="14" fill="#52606d">对每个可继承 VMA，按页表层级复制 PGD → P4D → PUD → PMD → PTE</text>
+      <text x="540" y="279" text-anchor="middle" font-size="14" fill="#52606d">对子进程建立新页表条目；对私有可写页改成父子共享只读，等待后续写缺页触发 COW</text>
+
+      <path d="M993 108 V160 H540 V197" stroke="#bb3e03" stroke-width="3" fill="none" marker-end="url(#arrow)"></path>
+    </svg>
+  </section>
+
+  <section>
+    <h2>二、新进程的顶层页表是怎么来的</h2>
+    <p>在普通 <code>fork()</code> 中，子进程不是共享父进程的 <code>mm</code>，而是创建新的 <code>mm_struct</code>。顶层页表的分配发生在 <code>mm_init()</code> 里面触发的 <code>pgd_alloc()</code>。对于这棵 MIPS 树，<code>pgd_alloc()</code> 位于 <code>arch/mips/mm/pgtable.c</code>。</p>
+
+<pre>pgd_t *pgd_alloc(struct mm_struct *mm)
+{
+    pgd_t *ret, *init;
+
+    ret = (pgd_t *) __get_free_pages(GFP_KERNEL, PGD_ORDER);
+    if (ret) {
+        init = pgd_offset(&amp;init_mm, 0UL);
+        pgd_init((unsigned long)ret);
+        memcpy(ret + USER_PTRS_PER_PGD, init + USER_PTRS_PER_PGD,
+               (PTRS_PER_PGD - USER_PTRS_PER_PGD) * sizeof(pgd_t));
+    }
+    return ret;
+}</pre>
+
+    <div class="grid two">
+      <div>
+        <h3>这一段代码说明了什么</h3>
+        <ul class="checklist">
+          <li>先为子进程分配一份新的顶层 PGD 页。</li>
+          <li><code>pgd_init()</code> 先把新 PGD 初始化成“空/无效”的用户态部分。</li>
+          <li>再把 <code>init_mm</code> 的内核半区 PGD 直接拷贝给子进程。</li>
+        </ul>
+      </div>
+      <div class="note">
+        <strong>MIPS 树里的一个关键点</strong>
+        <p>这意味着子进程从一开始就拥有与内核一致的 kernel mapping，而用户半区映射则需要随后在 <code>dup_mmap()</code> / <code>copy_page_range()</code> 阶段按 VMA 和 PTE 逐步补齐。</p>
+      </div>
+    </div>
+
+    <svg viewBox="0 0 980 330" aria-label="fork 时顶层页表来源图">
+      <rect x="45" y="42" width="250" height="225" rx="16" fill="#eef8f1" stroke="#2d6a4f"></rect>
+      <text x="170" y="72" text-anchor="middle" font-size="22">init_mm / 内核模板 PGD</text>
+      <rect x="75" y="96" width="190" height="58" rx="10" fill="#f8fcf9" stroke="#2d6a4f"></rect>
+      <text x="170" y="122" text-anchor="middle" font-size="18">用户半区</text>
+      <text x="170" y="143" text-anchor="middle" font-size="12" fill="#52606d">不直接复用给子进程</text>
+      <rect x="75" y="176" width="190" height="58" rx="10" fill="#dff2e6" stroke="#2d6a4f"></rect>
+      <text x="170" y="202" text-anchor="middle" font-size="18">内核半区</text>
+      <text x="170" y="223" text-anchor="middle" font-size="12" fill="#52606d">作为模板 memcpy 到子 PGD</text>
+
+      <rect x="358" y="108" width="245" height="95" rx="16" fill="#fff7e6" stroke="#ca6702"></rect>
+      <text x="480" y="139" text-anchor="middle" font-size="22">pgd_alloc()</text>
+      <text x="480" y="166" text-anchor="middle" font-size="14" fill="#52606d">__get_free_pages + pgd_init + memcpy(kernel half)</text>
+
+      <rect x="690" y="42" width="245" height="225" rx="16" fill="#e7f4f6" stroke="#005f73"></rect>
+      <text x="812" y="72" text-anchor="middle" font-size="22">子进程 PGD</text>
+      <rect x="720" y="96" width="185" height="58" rx="10" fill="#fffdfa" stroke="#005f73"></rect>
+      <text x="812" y="122" text-anchor="middle" font-size="18">用户半区</text>
+      <text x="812" y="143" text-anchor="middle" font-size="12" fill="#52606d">先初始化为空，后续按 VMA 填充</text>
+      <rect x="720" y="176" width="185" height="58" rx="10" fill="#d8eef1" stroke="#005f73"></rect>
+      <text x="812" y="202" text-anchor="middle" font-size="18">内核半区</text>
+      <text x="812" y="223" text-anchor="middle" font-size="12" fill="#52606d">直接继承 init_mm 的内核映射</text>
+
+      <path d="M295 205 C340 205, 340 205, 356 190" stroke="#2d6a4f" stroke-width="3" fill="none"></path>
+      <path d="M603 190 C638 190, 650 190, 688 205" stroke="#005f73" stroke-width="3" fill="none"></path>
+    </svg>
+  </section>
+
+  <section>
+    <h2>三、VMA 何时复制，页表何时真正遍历</h2>
+    <p><code>dup_mmap()</code> 在持有父子 <code>mmap_write_lock</code> 的情况下遍历父进程 VMA，为子进程建立对应 VMA，并在满足条件时调用 <code>copy_page_range(tmp, mpnt)</code>。这一步是“地址空间结构复制”的核心。</p>
+
+<pre>/* Link in the new vma and copy the page table entries. */
+*pprev = tmp;
+...
+mm-&gt;map_count++;
+if (!(tmp-&gt;vm_flags &amp; VM_WIPEONFORK))
+    retval = copy_page_range(tmp, mpnt);</pre>
+
+    <h3>哪些 VMA 可能不立即复制 PTE</h3>
+    <p><code>copy_page_range()</code> 开头有一个很重要的优化：</p>
+
+<pre>/* Don't copy ptes where a page fault will fill them correctly. */
+if (!(src_vma-&gt;vm_flags &amp; (VM_HUGETLB | VM_PFNMAP | VM_MIXEDMAP)) &amp;&amp;
+    !src_vma-&gt;anon_vma)
+    return 0;</pre>
+
+    <div class="note">
+      <strong>含义</strong>
+      <p>如果这段 VMA 没有匿名内存状态，又不是 hugetlb、PFNMAP、MIXEDMAP 这类特殊映射，那么 Linux 可能选择不去复制叶子 PTE，而让以后真正访问时由 page fault 正确补齐。这样可以显著降低 <code>fork()</code> 在大只读映射场景下的成本。</p>
+    </div>
+  </section>
+
+  <section>
+    <h2>四、真正复制页表项时，内核做了什么</h2>
+    <p><code>copy_page_range()</code> 按页表层级向下走，直到 PTE 级别。每一级逻辑基本都是：</p>
+    <ul class="checklist">
+      <li>为子进程按需分配下级页表页，例如 <code>p4d_alloc()</code>、<code>pud_alloc()</code>、<code>pmd_alloc()</code>。</li>
+      <li>遍历父进程对应范围的条目。</li>
+      <li>在 PTE 级别根据条目类型分别处理 present / nonpresent / huge / swap / device-private 等情况。</li>
+    </ul>
+
+    <svg viewBox="0 0 980 380" aria-label="copy_page_range 页表层级遍历图">
+      <rect x="63" y="45" width="155" height="60" rx="14" fill="#e7f4f6" stroke="#005f73"></rect>
+      <text x="140" y="72" text-anchor="middle" font-size="21">PGD</text>
+      <text x="140" y="94" text-anchor="middle" font-size="12" fill="#52606d">pgd_offset()</text>
+
+      <rect x="257" y="45" width="155" height="60" rx="14" fill="#eef8f1" stroke="#2d6a4f"></rect>
+      <text x="334" y="72" text-anchor="middle" font-size="21">P4D</text>
+      <text x="334" y="94" text-anchor="middle" font-size="12" fill="#52606d">p4d_alloc()</text>
+
+      <rect x="452" y="45" width="155" height="60" rx="14" fill="#fff7e6" stroke="#ca6702"></rect>
+      <text x="529" y="72" text-anchor="middle" font-size="21">PUD</text>
+      <text x="529" y="94" text-anchor="middle" font-size="12" fill="#52606d">pud_alloc()</text>
+
+      <rect x="646" y="45" width="155" height="60" rx="14" fill="#fff1ea" stroke="#bb3e03"></rect>
+      <text x="723" y="72" text-anchor="middle" font-size="21">PMD</text>
+      <text x="723" y="94" text-anchor="middle" font-size="12" fill="#52606d">pmd_alloc()</text>
+
+      <rect x="742" y="220" width="165" height="70" rx="14" fill="#fffdfa" stroke="#7c6743"></rect>
+      <text x="824" y="248" text-anchor="middle" font-size="21">PTE</text>
+      <text x="824" y="270" text-anchor="middle" font-size="12" fill="#52606d">copy_pte_range()</text>
+
+      <path d="M218 75 H252" stroke="#005f73" stroke-width="3"></path>
+      <path d="M412 75 H447" stroke="#2d6a4f" stroke-width="3"></path>
+      <path d="M607 75 H641" stroke="#ca6702" stroke-width="3"></path>
+      <path d="M801 105 C832 128, 848 156, 838 214" stroke="#bb3e03" stroke-width="3" fill="none"></path>
+
+      <rect x="70" y="180" width="580" height="145" rx="18" fill="#faf5ea" stroke="#d3c7b3"></rect>
+      <text x="360" y="212" text-anchor="middle" font-size="22">PTE 级别的两条主要路径</text>
+      <text x="108" y="248" font-size="18" fill="#0f1720">1. 非 present 条目</text>
+      <text x="108" y="272" font-size="14" fill="#52606d">copy_nonpresent_pte()：swap、migration、device-private 等</text>
+      <text x="108" y="302" font-size="18" fill="#0f1720">2. present 条目</text>
+      <text x="108" y="326" font-size="14" fill="#52606d">copy_present_pte()：常规页面共享；若是私有可写映射，父子两边一起降为只读</text>
+    </svg>
+
+    <h3>非 present 条目</h3>
+    <p><code>copy_nonpresent_pte()</code> 会处理 swap entry、migration entry、device private entry 等情况。它不是“分配一页新物理内存再拷一份”，而是复制/调整描述这些特殊状态的页表项，并维护引用与统计。</p>
+
+    <h3>present 条目</h3>
+    <p><code>copy_present_pte()</code> 是常见路径。它会先通过 <code>vm_normal_page()</code> 找到父进程当前 PTE 对应的物理页，再决定是直接共享，还是因为 pinned page 等原因需要提前复制一页给子进程。</p>
+  </section>
+
+  <section>
+    <h2>五、COW 在 fork 期间是如何准备好的</h2>
+    <p>对于私有可写映射，<code>fork()</code> 并不会马上复制物理页，而是在 <code>copy_present_pte()</code> 中把父子两边的 PTE 都改成只读：</p>
+
+<pre>if (is_cow_mapping(vm_flags) &amp;&amp; pte_write(pte)) {
+    ptep_set_wrprotect(src_mm, addr, src_pte);
+    pte = pte_wrprotect(pte);
+}
+...
+set_pte_at(dst_vma-&gt;vm_mm, addr, dst_pte, pte);</pre>
+
+    <div class="grid two">
+      <div>
+        <h3>fork 刚结束时</h3>
+        <ul class="checklist">
+          <li>父进程原来可写的私有页，PTE 会被改成只读。</li>
+          <li>子进程得到的是同一个物理页的只读映射。</li>
+          <li>两边共享同一个物理页，页引用计数与反向映射计数增加。</li>
+        </ul>
+      </div>
+      <div class="callout ok">
+        <strong>关键认识</strong>
+        <p>COW 的本质不是“fork 后马上复制页”，而是“fork 后把可写共享先降成只读共享，等谁先写谁触发缺页，再复制”。这也是 <code>fork()</code> 能足够轻量的根本原因。</p>
+      </div>
+    </div>
+
+    <svg viewBox="0 0 1080 420" aria-label="fork 后 COW 状态变化图">
+      <rect x="55" y="50" width="280" height="120" rx="16" fill="#eef8f1" stroke="#2d6a4f"></rect>
+      <text x="195" y="83" text-anchor="middle" font-size="24">fork 前</text>
+      <text x="195" y="116" text-anchor="middle" font-size="16">父进程 PTE: VA 0x4000 -&gt; Page X | RW | private</text>
+      <text x="195" y="141" text-anchor="middle" font-size="16">物理页 Page X 仅父进程映射</text>
+
+      <rect x="403" y="30" width="270" height="160" rx="16" fill="#fff7e6" stroke="#ca6702"></rect>
+      <text x="538" y="65" text-anchor="middle" font-size="24">fork 期间</text>
+      <text x="538" y="100" text-anchor="middle" font-size="16">copy_present_pte()</text>
+      <text x="538" y="126" text-anchor="middle" font-size="16">父 PTE: wrprotect</text>
+      <text x="538" y="152" text-anchor="middle" font-size="16">子 PTE: wrprotect + 指向同一 Page X</text>
+
+      <rect x="745" y="50" width="280" height="120" rx="16" fill="#fdeee8" stroke="#bb3e03"></rect>
+      <text x="885" y="83" text-anchor="middle" font-size="24">fork 后</text>
+      <text x="885" y="116" text-anchor="middle" font-size="16">父 PTE: RO -&gt; Page X</text>
+      <text x="885" y="141" text-anchor="middle" font-size="16">子 PTE: RO -&gt; Page X</text>
+
+      <path d="M336 110 H395" stroke="#2d6a4f" stroke-width="3"></path>
+      <path d="M674 110 H737" stroke="#ca6702" stroke-width="3"></path>
+
+      <rect x="90" y="255" width="900" height="105" rx="18" fill="#fffdfa" stroke="#c8bda7"></rect>
+      <text x="540" y="288" text-anchor="middle" font-size="22">第一次写入时发生什么</text>
+      <text x="540" y="316" text-anchor="middle" font-size="16">CPU 对只读 PTE 执行写访问 → 写保护缺页异常</text>
+      <text x="540" y="340" text-anchor="middle" font-size="16">内核分配新物理页、复制旧内容、更新当前进程 PTE 为可写、再回填 TLB</text>
+    </svg>
+  </section>
+
+  <section>
+    <h2>六、第一次访问某个 VA 时，页表、缺页和 TLB 分别做什么</h2>
+    <p>从使用者角度，地址转换可分成三种情况：</p>
+    <table>
+      <thead>
+        <tr>
+          <th>场景</th>
+          <th>TLB</th>
+          <th>页表</th>
+          <th>是否分配新物理页</th>
+        </tr>
+      </thead>
+      <tbody>
+        <tr>
+          <td>TLB 命中</td>
+          <td>已有缓存翻译</td>
+          <td>不需要再走主页表</td>
+          <td>否</td>
+        </tr>
+        <tr>
+          <td>TLB miss，但页表已有有效映射</td>
+          <td>未命中</td>
+          <td>页表查得到 PTE</td>
+          <td>否，只需要回填 TLB</td>
+        </tr>
+        <tr>
+          <td>TLB miss，且页表也无有效映射或发生写保护</td>
+          <td>未命中</td>
+          <td>进入缺页异常处理</td>
+          <td>视具体 fault 类型而定：可能分配新页、读文件页、执行 COW，或报错</td>
+        </tr>
+      </tbody>
+    </table>
+
+    <div class="note">
+      <strong>和 fork 的关系</strong>
+      <p>fork 阶段最常做的是“建立页表条目并准备 COW 语义”，不是“为每个用户 VA 立即分配一个新物理页”。真正分配新页通常发生在后续 page fault，例如匿名页首次写入或 COW 写缺页。</p>
+    </div>
+
+    <svg viewBox="0 0 1050 420" aria-label="访问 VA 时 TLB 与页表关系图">
+      <defs>
+        <marker id="arrow2" markerWidth="10" markerHeight="10" refX="8" refY="3" orient="auto">
+          <path d="M0,0 L0,6 L9,3 z" fill="#7c6743"></path>
+        </marker>
+      </defs>
+      <rect x="50" y="160" width="150" height="70" rx="14" fill="#e7f4f6" stroke="#005f73"></rect>
+      <text x="125" y="202" text-anchor="middle" font-size="24">VA</text>
+
+      <rect x="275" y="60" width="190" height="70" rx="14" fill="#eef8f1" stroke="#2d6a4f"></rect>
+      <text x="370" y="101" text-anchor="middle" font-size="24">TLB</text>
+
+      <rect x="275" y="265" width="190" height="90" rx="14" fill="#fff7e6" stroke="#ca6702"></rect>
+      <text x="370" y="305" text-anchor="middle" font-size="22">页表</text>
+      <text x="370" y="329" text-anchor="middle" font-size="13">PGD / P4D / PUD / PMD / PTE</text>
+
+      <rect x="555" y="60" width="165" height="70" rx="14" fill="#eef8f1" stroke="#2d6a4f"></rect>
+      <text x="637" y="101" text-anchor="middle" font-size="22">TLB hit</text>
+
+      <rect x="555" y="265" width="165" height="90" rx="14" fill="#fff4e8" stroke="#ca6702"></rect>
+      <text x="637" y="302" text-anchor="middle" font-size="20">PTE 有效</text>
+      <text x="637" y="327" text-anchor="middle" font-size="13">回填 TLB</text>
+
+      <rect x="805" y="220" width="190" height="135" rx="14" fill="#fdeee8" stroke="#bb3e03"></rect>
+      <text x="900" y="255" text-anchor="middle" font-size="20">缺页异常处理</text>
+      <text x="900" y="282" text-anchor="middle" font-size="13">匿名页首次分配</text>
+      <text x="900" y="304" text-anchor="middle" font-size="13">文件页调入</text>
+      <text x="900" y="326" text-anchor="middle" font-size="13">COW 复制新物理页</text>
+
+      <rect x="830" y="60" width="135" height="70" rx="14" fill="#fffdfa" stroke="#7c6743"></rect>
+      <text x="897" y="101" text-anchor="middle" font-size="22">PA</text>
+
+      <path d="M202 183 H267" stroke="#7c6743" stroke-width="3" marker-end="url(#arrow2)"></path>
+      <path d="M370 132 V255" stroke="#7c6743" stroke-width="3" fill="none" marker-end="url(#arrow2)"></path>
+      <path d="M465 95 H548" stroke="#2d6a4f" stroke-width="3" marker-end="url(#arrow2)"></path>
+      <path d="M720 95 H822" stroke="#2d6a4f" stroke-width="3" marker-end="url(#arrow2)"></path>
+      <path d="M465 308 H548" stroke="#ca6702" stroke-width="3" marker-end="url(#arrow2)"></path>
+      <path d="M720 308 H797" stroke="#bb3e03" stroke-width="3" marker-end="url(#arrow2)"></path>
+      <path d="M900 220 V138" stroke="#bb3e03" stroke-width="3" fill="none" marker-end="url(#arrow2)"></path>
+    </svg>
+  </section>
+
+  <section>
+    <h2>七、结合官方资料，如何理解 fork 的“权威语义”</h2>
+    <div class="grid two">
+      <div>
+        <h3>官方手册 fork(2)</h3>
+        <p>man-pages 的权威表述是：父子进程在 <code>fork()</code> 时拥有不同的地址空间，但起始内容相同；Linux 借助 copy-on-write 实现，因此 <code>fork()</code> 的主要惩罚是复制页表和创建新的进程结构，而不是复制全部物理页。</p>
+      </div>
+      <div>
+        <h3>Linux kernel 文档</h3>
+        <p><code>docs.kernel.org</code> 的 MM 文档强调：页表是分层结构；叶子条目可以指向真正的数据页，也可以是 swap/migration 等特殊条目；安装新的页表项时必须保证 VMA 稳定并在相应层级持有正确的页表锁。</p>
+      </div>
+    </div>
+
+    <div class="callout ok">
+      <strong>因此可以得到一条稳定的工程判断</strong>
+      <p>分析 <code>fork()</code> 时，不要把“复制地址空间”误解成“复制每一页物理内存”。在 Linux 里，这通常意味着：复制 <code>mm_struct</code>、复制 VMA 拓扑、按需复制/共享页表层级、对私有可写页建立 COW 保护。</p>
+    </div>
+  </section>
+
+  <section>
+    <h2>八、结合本仓库代码，可抓住的几个观察点</h2>
+    <ol>
+      <li><code>kernel/fork.c</code> 里的 <code>copy_mm()</code> 是地址空间复制与共享的分叉点。<code>CLONE_VM</code> 共享地址空间；普通 <code>fork()</code> 则创建新 <code>mm</code>。</li>
+      <li><code>arch/mips/mm/pgtable.c</code> 说明了 MIPS 上顶层页表不是完全从父进程原样拷贝，而是新分配一份，再继承内核半区模板。</li>
+      <li><code>dup_mmap()</code> 先复制 VMA，再决定是否复制页表。这意味着“虚拟地址范围定义”和“PTE 具体复制”是两层逻辑。</li>
+      <li><code>copy_page_range()</code> 对没有匿名页状态的普通映射会尽量偷懒，让缺页路径后补，这是一项重要的 fork 优化。</li>
+      <li><code>copy_present_pte()</code> 是理解 COW 的最佳入口：它清晰展示了父子共享同一物理页、同时降为只读的关键动作。</li>
+    </ol>
+  </section>
+
+  <section class="refs">
+    <h2>参考资料</h2>
+    <ol>
+      <li>Linux kernel source, <code>kernel/fork.c</code>, <code>mm/memory.c</code>, <code>arch/mips/mm/pgtable.c</code>。</li>
+      <li>Linux kernel documentation: <code>docs.kernel.org/mm/process_addrs.html</code>。</li>
+      <li>Linux kernel documentation: <code>docs.kernel.org/admin-guide/mm/concepts.html</code>。</li>
+      <li>Linux man-pages: <code>fork(2)</code>。</li>
+    </ol>
+    <p class="small">本文中的“官方权威知识”以 Linux kernel 官方文档与 Linux man-pages 为准；代码路径和实现细节以当前仓库源码为准。</p>
+  </section>
+</main>
+
+<footer class="wrap">
+  文档文件：<code>doc/fork_page_table_flow.html</code>
+</footer>
+</body>
+</html>

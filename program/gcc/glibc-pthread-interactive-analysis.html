@@ -1,0 +1,2026 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>glibc NPTL Pthread 实现深度分析</title>
+<style>
+  :root {
+    --bg: #0f1117;
+    --bg2: #161b22;
+    --bg3: #1c2333;
+    --border: #30363d;
+    --accent: #58a6ff;
+    --accent2: #79c0ff;
+    --accent3: #56d364;
+    --accent4: #f78166;
+    --accent5: #d2a8ff;
+    --accent6: #ffa657;
+    --text: #e6edf3;
+    --text2: #8b949e;
+    --text3: #c9d1d9;
+    --nav-w: 270px;
+    --hdr-h: 48px;
+  }
+  *{box-sizing:border-box;margin:0;padding:0;}
+  html{scroll-behavior:smooth;}
+  body{
+    background:var(--bg);
+    color:var(--text3);
+    font-family:'Segoe UI',system-ui,-apple-system,sans-serif;
+    font-size:15px;
+    line-height:1.7;
+    overflow-x:hidden;
+  }
+
+  /* ── Progress Bar ── */
+  #progress-bar{
+    position:fixed;top:0;left:0;
+    height:3px;width:0%;
+    background:linear-gradient(90deg,var(--accent),var(--accent5));
+    z-index:9999;
+    transition:width .1s linear;
+  }
+
+  /* ── Top Header ── */
+  #top-header{
+    position:fixed;top:3px;left:0;right:0;
+    height:var(--hdr-h);
+    background:rgba(15,17,23,.95);
+    backdrop-filter:blur(12px);
+    border-bottom:1px solid var(--border);
+    display:flex;align-items:center;
+    padding:0 16px;
+    z-index:900;
+    gap:12px;
+  }
+  #hamburger{
+    display:none;
+    background:none;border:none;cursor:pointer;
+    flex-direction:column;gap:4px;padding:4px;
+  }
+  #hamburger span{
+    display:block;width:22px;height:2px;
+    background:var(--text3);border-radius:2px;
+    transition:.3s;
+  }
+  #top-title{
+    font-size:14px;font-weight:600;color:var(--accent);
+    white-space:nowrap;overflow:hidden;text-overflow:ellipsis;
+  }
+  #nav-keys{
+    margin-left:auto;font-size:12px;color:var(--text2);
+    display:flex;gap:6px;align-items:center;
+    flex-shrink:0;
+  }
+  .kbd{
+    background:var(--bg3);border:1px solid var(--border);
+    border-radius:4px;padding:1px 6px;font-size:11px;
+    color:var(--text);font-family:monospace;
+  }
+
+  /* ── Sidebar ── */
+  #sidebar{
+    position:fixed;top:calc(var(--hdr-h)+3px);left:0;
+    width:var(--nav-w);
+    height:calc(100vh - var(--hdr-h) - 3px);
+    overflow-y:auto;
+    background:var(--bg2);
+    border-right:1px solid var(--border);
+    padding:12px 0 32px;
+    z-index:800;
+    transition:transform .3s ease;
+  }
+  #sidebar::-webkit-scrollbar{width:4px;}
+  #sidebar::-webkit-scrollbar-thumb{background:var(--border);border-radius:4px;}
+
+  .nav-group-title{
+    font-size:10px;font-weight:700;
+    letter-spacing:1.2px;text-transform:uppercase;
+    color:var(--text2);
+    padding:10px 16px 4px;
+  }
+  .nav-item{
+    display:block;
+    padding:5px 16px 5px 20px;
+    font-size:13px;color:var(--text2);
+    text-decoration:none;
+    border-left:3px solid transparent;
+    transition:all .2s;
+    cursor:pointer;
+    white-space:nowrap;overflow:hidden;text-overflow:ellipsis;
+  }
+  .nav-item:hover{color:var(--text);background:var(--bg3);}
+  .nav-item.active{
+    color:var(--accent);
+    border-left-color:var(--accent);
+    background:rgba(88,166,255,.08);
+  }
+
+  /* ── Overlay ── */
+  #overlay{
+    display:none;position:fixed;inset:0;
+    background:rgba(0,0,0,.6);z-index:750;
+  }
+
+  /* ── Main Content ── */
+  #main{
+    margin-left:var(--nav-w);
+    padding-top:calc(var(--hdr-h)+3px);
+    min-height:100vh;
+  }
+  #content{
+    max-width:900px;
+    margin:0 auto;
+    padding:40px 32px 80px;
+  }
+
+  /* ── Section ── */
+  .section{
+    margin-bottom:72px;
+    scroll-margin-top:calc(var(--hdr-h)+16px);
+  }
+  .section-label{
+    font-size:11px;font-weight:700;
+    letter-spacing:1.5px;text-transform:uppercase;
+    color:var(--accent);margin-bottom:6px;
+  }
+  h2.section-title{
+    font-size:26px;font-weight:700;
+    color:var(--text);
+    border-bottom:1px solid var(--border);
+    padding-bottom:10px;margin-bottom:20px;
+    line-height:1.3;
+  }
+  h3.sub-title{
+    font-size:18px;font-weight:600;color:var(--text);
+    margin:28px 0 12px;
+  }
+  h4.sub-sub-title{
+    font-size:15px;font-weight:600;color:var(--accent2);
+    margin:20px 0 8px;
+  }
+  p{margin-bottom:14px;color:var(--text3);}
+
+  /* ── Source Link ── */
+  .source-link{
+    display:inline-flex;align-items:center;gap:6px;
+    font-size:12px;color:var(--text2);
+    background:var(--bg3);
+    border:1px solid var(--border);
+    border-radius:6px;padding:4px 10px;
+    text-decoration:none;margin-bottom:16px;
+    transition:.2s;
+  }
+  .source-link:hover{color:var(--accent);border-color:var(--accent);}
+  .source-link::before{content:"📄";}
+
+  /* ── Code Block ── */
+  pre{
+    background:var(--bg3);
+    border:1px solid var(--border);
+    border-radius:8px;
+    padding:16px;
+    overflow-x:auto;
+    font-family:'Fira Code','Cascadia Code',monospace;
+    font-size:13px;
+    line-height:1.6;
+    margin:12px 0 20px;
+    color:#e6edf3;
+  }
+  code{
+    font-family:'Fira Code','Cascadia Code',monospace;
+    font-size:12.5px;
+    background:var(--bg3);
+    border:1px solid var(--border);
+    border-radius:4px;
+    padding:1px 5px;
+    color:var(--accent6);
+  }
+  pre code{background:none;border:none;padding:0;color:inherit;}
+
+  /* ── Callout / First Principle ── */
+  .callout{
+    border-left:4px solid var(--accent);
+    background:rgba(88,166,255,.06);
+    border-radius:0 8px 8px 0;
+    padding:14px 18px;
+    margin:24px 0;
+  }
+  .callout-fp{
+    border-left-color:var(--accent5);
+    background:rgba(210,168,255,.06);
+  }
+  .callout-warn{
+    border-left-color:var(--accent4);
+    background:rgba(247,129,102,.06);
+  }
+  .callout-ok{
+    border-left-color:var(--accent3);
+    background:rgba(86,211,100,.06);
+  }
+  .callout-title{
+    font-size:11px;font-weight:700;
+    letter-spacing:1px;text-transform:uppercase;
+    margin-bottom:6px;
+  }
+  .callout .callout-title{color:var(--accent);}
+  .callout-fp .callout-title{color:var(--accent5);}
+  .callout-warn .callout-title{color:var(--accent4);}
+  .callout-ok .callout-title{color:var(--accent3);}
+
+  /* ── SVG / Diagram Container ── */
+  .diagram-wrap{
+    background:var(--bg3);
+    border:1px solid var(--border);
+    border-radius:10px;
+    padding:20px;
+    margin:20px 0;
+    overflow-x:auto;
+    text-align:center;
+  }
+  .diagram-caption{
+    font-size:12px;color:var(--text2);
+    text-align:center;margin-top:8px;font-style:italic;
+  }
+
+  /* ── Table ── */
+  table{
+    width:100%;border-collapse:collapse;
+    margin:16px 0;font-size:13px;
+  }
+  th{
+    background:var(--bg3);color:var(--accent2);
+    padding:8px 12px;text-align:left;
+    border:1px solid var(--border);font-weight:600;
+  }
+  td{
+    padding:7px 12px;border:1px solid var(--border);
+    color:var(--text3);
+  }
+  tr:nth-child(even) td{background:rgba(255,255,255,.02);}
+
+  /* ── Tag / Badge ── */
+  .badge{
+    display:inline-block;
+    font-size:11px;font-weight:600;
+    padding:2px 7px;border-radius:4px;
+    margin:0 2px;
+  }
+  .badge-blue{background:rgba(88,166,255,.2);color:var(--accent);}
+  .badge-green{background:rgba(86,211,100,.2);color:var(--accent3);}
+  .badge-orange{background:rgba(255,166,87,.2);color:var(--accent6);}
+  .badge-red{background:rgba(247,129,102,.2);color:var(--accent4);}
+  .badge-purple{background:rgba(210,168,255,.2);color:var(--accent5);}
+
+  /* ── Responsive ── */
+  @media(max-width:768px){
+    :root{--nav-w:260px;}
+    #hamburger{display:flex;}
+    #sidebar{transform:translateX(-100%);}
+    #sidebar.open{transform:translateX(0);}
+    #overlay.open{display:block;}
+    #main{margin-left:0;}
+    #content{padding:24px 16px 60px;}
+    #nav-keys{display:none;}
+    h2.section-title{font-size:21px;}
+    pre{font-size:12px;}
+  }
+</style>
+</head>
+<body>
+
+<div id="progress-bar"></div>
+
+<!-- Top Header -->
+<header id="top-header">
+  <button id="hamburger" aria-label="菜单" onclick="toggleSidebar()">
+    <span></span><span></span><span></span>
+  </button>
+  <div id="top-title">glibc NPTL Pthread 实现分析</div>
+  <div id="nav-keys">
+    <span style="font-size:12px;color:var(--text2)">键盘导航：</span>
+    <kbd class="kbd">←</kbd>
+    <kbd class="kbd">→</kbd>
+    <span style="font-size:12px;color:var(--text2)">翻章节</span>
+  </div>
+</header>
+
+<!-- Sidebar -->
+<nav id="sidebar">
+  <div class="nav-group-title">概述</div>
+  <a class="nav-item" data-section="s0" onclick="navTo('s0')">0. 引言与 NPTL 背景</a>
+
+  <div class="nav-group-title">线程的一生</div>
+  <a class="nav-item" data-section="s1" onclick="navTo('s1')">1. 线程描述符 struct pthread</a>
+  <a class="nav-item" data-section="s2" onclick="navTo('s2')">2. 栈分配与内存布局</a>
+  <a class="nav-item" data-section="s3" onclick="navTo('s3')">3. 线程创建：pthread_create</a>
+  <a class="nav-item" data-section="s4" onclick="navTo('s4')">4. 线程启动：start_thread</a>
+  <a class="nav-item" data-section="s5" onclick="navTo('s5')">5. 线程运行与调度</a>
+  <a class="nav-item" data-section="s6" onclick="navTo('s6')">6. 线程销毁：pthread_exit</a>
+  <a class="nav-item" data-section="s7" onclick="navTo('s7')">7. 线程回收：pthread_join</a>
+
+  <div class="nav-group-title">互斥锁</div>
+  <a class="nav-item" data-section="s8" onclick="navTo('s8')">8. Futex 原理</a>
+  <a class="nav-item" data-section="s9" onclick="navTo('s9')">9. pthread_mutex_lock 实现</a>
+  <a class="nav-item" data-section="s10" onclick="navTo('s10')">10. pthread_mutex_unlock 实现</a>
+  <a class="nav-item" data-section="s11" onclick="navTo('s11')">11. 互斥锁类型与 Robust Mutex</a>
+
+  <div class="nav-group-title">附录</div>
+  <a class="nav-item" data-section="s12" onclick="navTo('s12')">12. 关键数据结构速查</a>
+</nav>
+
+<!-- Overlay -->
+<div id="overlay" onclick="toggleSidebar()"></div>
+
+<!-- Main -->
+<main id="main">
+<div id="content">
+
+<!-- ════════════════════════════════ S0 ════════════════════════════════ -->
+<section class="section" id="s0">
+  <div class="section-label">概述</div>
+  <h2 class="section-title">0. 引言与 NPTL 背景</h2>
+
+  <a class="source-link" href="https://grokipedia.com/page/native_posix_thread_library" target="_blank">
+    Native POSIX Thread Library — Grokipedia
+  </a>
+  <a class="source-link" href="https://lwn.net/Articles/10465/" target="_blank" style="margin-left:8px;">
+    NPTL 0.1 发布公告 — LWN.net
+  </a>
+
+  <p>
+    <strong style="color:var(--text)">NPTL（Native POSIX Thread Library）</strong> 由 Ulrich Drepper 和 Ingo Molnar 于 2002 年在 Red Hat 开发，并在 2003 年随 glibc 2.3 成为默认的线程库。它彻底取代了之前存在严重缺陷的 <em>LinuxThreads</em> 实现，成为现代 Linux 多线程的基石。
+  </p>
+
+  <h3 class="sub-title">LinuxThreads 的问题</h3>
+  <p>LinuxThreads 使用"管理线程（manager thread）"来协调线程的创建与销毁，存在以下核心问题：</p>
+  <ul style="margin-left:20px;margin-bottom:16px;">
+    <li>每个线程 PID 不同（违反 POSIX 语义）</li>
+    <li>信号处理为线程级别，而非进程级别</li>
+    <li>依赖 System V 信号量作为同步原语，性能差</li>
+    <li>管理线程是单点故障，扩展性受限</li>
+  </ul>
+
+  <h3 class="sub-title">NPTL 的核心设计原则</h3>
+
+  <div class="diagram-wrap">
+    <svg viewBox="0 0 760 300" width="100%" xmlns="http://www.w3.org/2000/svg" style="max-width:760px;">
+      <defs>
+        <marker id="arr" markerWidth="8" markerHeight="8" refX="6" refY="3" orient="auto">
+          <path d="M0,0 L0,6 L8,3 z" fill="#58a6ff"/>
+        </marker>
+        <marker id="arr2" markerWidth="8" markerHeight="8" refX="6" refY="3" orient="auto">
+          <path d="M0,0 L0,6 L8,3 z" fill="#56d364"/>
+        </marker>
+      </defs>
+
+      <!-- User Space -->
+      <rect x="10" y="30" width="740" height="120" rx="8" fill="rgba(88,166,255,0.06)" stroke="#30363d"/>
+      <text x="20" y="50" font-size="11" fill="#8b949e" font-weight="700" letter-spacing="1">USER SPACE</text>
+
+      <!-- Thread boxes -->
+      <rect x="40" y="60" width="100" height="70" rx="6" fill="#1c2333" stroke="#58a6ff" stroke-width="1.5"/>
+      <text x="90" y="90" text-anchor="middle" font-size="12" fill="#58a6ff" font-weight="600">Thread 1</text>
+      <text x="90" y="107" text-anchor="middle" font-size="10" fill="#8b949e">pthread_t</text>
+      <text x="90" y="122" text-anchor="middle" font-size="10" fill="#8b949e">struct pthread</text>
+
+      <rect x="170" y="60" width="100" height="70" rx="6" fill="#1c2333" stroke="#58a6ff" stroke-width="1.5"/>
+      <text x="220" y="90" text-anchor="middle" font-size="12" fill="#58a6ff" font-weight="600">Thread 2</text>
+      <text x="220" y="107" text-anchor="middle" font-size="10" fill="#8b949e">pthread_t</text>
+      <text x="220" y="122" text-anchor="middle" font-size="10" fill="#8b949e">struct pthread</text>
+
+      <rect x="300" y="60" width="100" height="70" rx="6" fill="#1c2333" stroke="#58a6ff" stroke-width="1.5"/>
+      <text x="350" y="90" text-anchor="middle" font-size="12" fill="#58a6ff" font-weight="600">Thread N</text>
+      <text x="350" y="107" text-anchor="middle" font-size="10" fill="#8b949e">pthread_t</text>
+      <text x="350" y="122" text-anchor="middle" font-size="10" fill="#8b949e">struct pthread</text>
+
+      <!-- NPTL -->
+      <rect x="430" y="55" width="180" height="80" rx="6" fill="rgba(210,168,255,0.1)" stroke="#d2a8ff" stroke-width="1.5"/>
+      <text x="520" y="80" text-anchor="middle" font-size="12" fill="#d2a8ff" font-weight="700">NPTL (glibc)</text>
+      <text x="520" y="100" text-anchor="middle" font-size="10" fill="#8b949e">1:1 模型</text>
+      <text x="520" y="116" text-anchor="middle" font-size="10" fill="#8b949e">futex / clone()</text>
+      <text x="520" y="130" text-anchor="middle" font-size="10" fill="#8b949e">无管理线程</text>
+
+      <!-- Kernel Space -->
+      <rect x="10" y="180" width="740" height="108" rx="8" fill="rgba(86,211,100,0.05)" stroke="#30363d"/>
+      <text x="20" y="200" font-size="11" fill="#8b949e" font-weight="700" letter-spacing="1">KERNEL SPACE</text>
+
+      <!-- LWP boxes -->
+      <rect x="40" y="210" width="100" height="64" rx="6" fill="#1c2333" stroke="#56d364" stroke-width="1.5"/>
+      <text x="90" y="236" text-anchor="middle" font-size="12" fill="#56d364" font-weight="600">LWP 1</text>
+      <text x="90" y="253" text-anchor="middle" font-size="10" fill="#8b949e">task_struct</text>
+      <text x="90" y="268" text-anchor="middle" font-size="10" fill="#8b949e">TID=PID</text>
+
+      <rect x="170" y="210" width="100" height="64" rx="6" fill="#1c2333" stroke="#56d364" stroke-width="1.5"/>
+      <text x="220" y="236" text-anchor="middle" font-size="12" fill="#56d364" font-weight="600">LWP 2</text>
+      <text x="220" y="253" text-anchor="middle" font-size="10" fill="#8b949e">task_struct</text>
+      <text x="220" y="268" text-anchor="middle" font-size="10" fill="#8b949e">TID</text>
+
+      <rect x="300" y="210" width="100" height="64" rx="6" fill="#1c2333" stroke="#56d364" stroke-width="1.5"/>
+      <text x="350" y="236" text-anchor="middle" font-size="12" fill="#56d364" font-weight="600">LWP N</text>
+      <text x="350" y="253" text-anchor="middle" font-size="10" fill="#8b949e">task_struct</text>
+      <text x="350" y="268" text-anchor="middle" font-size="10" fill="#8b949e">TID</text>
+
+      <!-- futex -->
+      <rect x="450" y="210" width="140" height="64" rx="6" fill="rgba(255,166,87,0.1)" stroke="#ffa657" stroke-width="1.5"/>
+      <text x="520" y="236" text-anchor="middle" font-size="12" fill="#ffa657" font-weight="700">Kernel</text>
+      <text x="520" y="253" text-anchor="middle" font-size="10" fill="#8b949e">futex hash table</text>
+      <text x="520" y="268" text-anchor="middle" font-size="10" fill="#8b949e">scheduler</text>
+
+      <!-- Arrows 1:1 -->
+      <line x1="90" y1="130" x2="90" y2="210" stroke="#58a6ff" stroke-width="1.5" marker-end="url(#arr)" stroke-dasharray="4,3"/>
+      <line x1="220" y1="130" x2="220" y2="210" stroke="#58a6ff" stroke-width="1.5" marker-end="url(#arr)" stroke-dasharray="4,3"/>
+      <line x1="350" y1="130" x2="350" y2="210" stroke="#58a6ff" stroke-width="1.5" marker-end="url(#arr)" stroke-dasharray="4,3"/>
+      <text x="400" y="173" font-size="11" fill="#ffa657" font-style="italic">1:1 映射 (clone)</text>
+
+      <!-- NPTL -> futex -->
+      <line x1="520" y1="135" x2="520" y2="210" stroke="#d2a8ff" stroke-width="1.5" marker-end="url(#arr2)" stroke-dasharray="4,3"/>
+      <text x="530" y="175" font-size="10" fill="#d2a8ff">futex()</text>
+    </svg>
+    <div class="diagram-caption">图 0-1：NPTL 一对一线程模型（1:1 model）— 每个用户线程对应一个内核 LWP（轻量级进程）</div>
+  </div>
+
+  <table>
+    <tr><th>特性</th><th>LinuxThreads</th><th>NPTL（glibc ≥ 2.3）</th></tr>
+    <tr><td>线程模型</td><td>1:1（有管理线程）</td><td>1:1（无管理线程）</td></tr>
+    <tr><td>getpid() 返回值</td><td>各线程不同</td><td>全进程相同</td></tr>
+    <tr><td>信号处理</td><td>线程级别</td><td>进程级别（POSIX 合规）</td></tr>
+    <tr><td>同步原语</td><td>System V 信号量</td><td>futex 系统调用</td></tr>
+    <tr><td>线程创建耗时（10万次）</td><td>~15 秒</td><td>~2.3 秒</td></tr>
+    <tr><td>内核依赖</td><td>2.0+</td><td>2.5.36+（clone 扩展）</td></tr>
+  </table>
+
+  <div class="callout callout-fp">
+    <div class="callout-title">🔭 第一性原理</div>
+    <p style="margin:0;">操作系统的核心职责是资源隔离与共享的权衡。线程的本质是"共享内存的执行上下文"。NPTL 选择 1:1 模型的根本原因：<strong style="color:var(--accent5)">将调度决策委托给内核</strong>——内核看到全部线程的等待状态，能做出最优调度；而用户态的 M:N 调度器无法感知被阻塞的内核事件（如 I/O），会造成饥饿。futex 则是在"无竞争时绝不进内核"与"有竞争时高效睡眠"之间取得最优平衡的系统调用。</p>
+  </div>
+</section>
+
+<!-- ════════════════════════════════ S1 ════════════════════════════════ -->
+<section class="section" id="s1">
+  <div class="section-label">线程的一生</div>
+  <h2 class="section-title">1. 线程描述符 struct pthread</h2>
+
+  <a class="source-link" href="https://github.com/lattera/glibc/blob/master/nptl/descr.h" target="_blank">
+    glibc/nptl/descr.h — struct pthread 定义
+  </a>
+
+  <p>
+    每个线程在用户空间都有一个 <strong style="color:var(--text)"><code>struct pthread</code></strong>（亦称 <em>TCB，Thread Control Block</em>），它是线程一切状态的载体。该结构体定义在 <code>nptl/descr.h</code>，是 NPTL 实现的核心数据结构。
+  </p>
+
+  <h3 class="sub-title">关键字段解析</h3>
+  <pre>
+/* nptl/descr.h — 精简版关键字段 */
+struct pthread {
+  union {
+    tcbhead_t header;      /* TCB 头部：dtv指针、self指针、tid等 */
+    /* x86-64: %fs 寄存器指向此处 */
+  };
+
+  /* ── 调度相关 ── */
+  pid_t        tid;           /* 内核线程 ID（由 clone() 返回）*/
+  int          cancelhandling; /* 取消状态位掩码 */
+  int          flags;         /* ATTR_FLAG_* 属性标志 */
+
+  /* ── 栈信息 ── */
+  void        *stackblock;    /* mmap 分配的栈起始地址 */
+  size_t       stackblock_size;
+  size_t       guardsize;     /* 保护页大小（默认1页）*/
+  bool         user_stack;    /* 是否为用户自提供的栈 */
+
+  /* ── 线程函数 ── */
+  void *(*start_routine)(void *); /* 用户提供的线程函数 */
+  void        *arg;               /* 传递给线程函数的参数 */
+  void        *result;            /* pthread_exit() 的返回值 */
+
+  /* ── Join 状态 ── */
+  struct pthread *joinid;   /* NULL=可join；自身=detached */
+  unsigned int    joinstate; /* THREAD_STATE_* 枚举 */
+
+  /* ── 同步 ── */
+  int          lock;         /* 内部低级锁（LLL）*/
+  int          setxid_futex; /* setxid 信号同步用 */
+
+  /* ── TLS / TSD ── */
+  struct pthread_key_data specific[PTHREAD_KEY_2NDLEVEL_SIZE];
+  /* ... 线程特有数据 (TSD) ... */
+
+  /* ── Robust Mutex 链表 ── */
+  struct robust_list_head robust_head;
+
+  /* ── 信号 ── */
+  internal_sigset_t sigmask;  /* 线程信号掩码 */
+  
+  /* ── Cleanup Handlers ── */
+  struct _pthread_cleanup_buffer *cleanup;
+  struct pthread_unwind_buf *cleanup_jmp_buf;
+} __attribute((aligned(TCB_ALIGNMENT)));
+  </pre>
+
+  <h3 class="sub-title">x86-64 上的 TCB 内存布局</h3>
+
+  <div class="diagram-wrap">
+    <svg viewBox="0 0 700 380" width="100%" xmlns="http://www.w3.org/2000/svg" style="max-width:700px;">
+      <!-- Stack grows down -->
+      <text x="350" y="20" text-anchor="middle" font-size="13" fill="#8b949e">栈底（高地址）↑ 栈顶（低地址）↓</text>
+
+      <!-- Stack segments -->
+      <!-- Guard page -->
+      <rect x="200" y="35" width="300" height="36" rx="4" fill="rgba(247,129,102,0.15)" stroke="#f78166"/>
+      <text x="350" y="57" text-anchor="middle" font-size="12" fill="#f78166" font-weight="600">Guard Page（保护页，不可访问）</text>
+
+      <!-- Stack -->
+      <rect x="200" y="71" width="300" height="80" rx="4" fill="rgba(88,166,255,0.08)" stroke="#58a6ff"/>
+      <text x="350" y="100" text-anchor="middle" font-size="12" fill="#58a6ff">线程栈区域</text>
+      <text x="350" y="120" text-anchor="middle" font-size="10" fill="#8b949e">局部变量 / 函数调用帧</text>
+      <text x="350" y="138" text-anchor="middle" font-size="10" fill="#8b949e">默认 8MB（受 RLIMIT_STACK 限制）</text>
+
+      <!-- Static TLS -->
+      <rect x="200" y="151" width="300" height="50" rx="4" fill="rgba(210,168,255,0.1)" stroke="#d2a8ff"/>
+      <text x="350" y="176" text-anchor="middle" font-size="12" fill="#d2a8ff">Static TLS 块</text>
+      <text x="350" y="193" text-anchor="middle" font-size="10" fill="#8b949e">__thread 变量存储</text>
+
+      <!-- TCB / struct pthread -->
+      <rect x="200" y="201" width="300" height="100" rx="4" fill="rgba(86,211,100,0.1)" stroke="#56d364" stroke-width="2"/>
+      <text x="350" y="225" text-anchor="middle" font-size="13" fill="#56d364" font-weight="700">struct pthread (TCB)</text>
+      <text x="350" y="245" text-anchor="middle" font-size="10" fill="#8b949e">tid / joinid / start_routine</text>
+      <text x="350" y="262" text-anchor="middle" font-size="10" fill="#8b949e">stackblock / robust_head</text>
+      <text x="350" y="279" text-anchor="middle" font-size="10" fill="#8b949e">cleanup / TSD specific[]</text>
+      <text x="350" y="296" text-anchor="middle" font-size="10" fill="#ffa657">← %fs 寄存器指向此结构体</text>
+
+      <!-- Arrow for %fs -->
+      <line x1="95" y1="250" x2="198" y2="250" stroke="#ffa657" stroke-width="2" marker-end="url(#arr)"/>
+      <rect x="10" y="232" width="85" height="36" rx="4" fill="rgba(255,166,87,0.15)" stroke="#ffa657"/>
+      <text x="52" y="252" text-anchor="middle" font-size="11" fill="#ffa657" font-weight="600">%fs reg</text>
+      <text x="52" y="264" text-anchor="middle" font-size="9" fill="#8b949e">THREAD_SELF</text>
+
+      <!-- Low addr -->
+      <rect x="200" y="301" width="300" height="28" rx="4" fill="rgba(255,255,255,0.03)" stroke="#30363d"/>
+      <text x="350" y="320" text-anchor="middle" font-size="11" fill="#8b949e">（低地址）mmap 区域起点</text>
+
+      <!-- Size annotation -->
+      <line x1="510" y1="35" x2="510" y2="200" stroke="#30363d" stroke-dasharray="3,3"/>
+      <text x="520" y="90" font-size="10" fill="#8b949e">mmap()</text>
+      <text x="520" y="106" font-size="10" fill="#8b949e">一次分配</text>
+      <text x="520" y="122" font-size="10" fill="#8b949e">栈+TLS+TCB</text>
+      <line x1="510" y1="201" x2="510" y2="300" stroke="#30363d" stroke-dasharray="3,3"/>
+    </svg>
+    <div class="diagram-caption">图 1-1：x86-64 上非主线程的栈+TLS+TCB 内存布局（由 allocatestack.c 一次 mmap 完成）</div>
+  </div>
+
+  <h4 class="sub-sub-title">cancelhandling 位掩码</h4>
+  <table>
+    <tr><th>位掩码</th><th>名称</th><th>含义</th></tr>
+    <tr><td><code>CANCELING_BITMASK</code></td><td>bit 0</td><td>正在处理取消请求</td></tr>
+    <tr><td><code>CANCELED_BITMASK</code></td><td>bit 1</td><td>线程已被取消</td></tr>
+    <tr><td><code>EXITING_BITMASK</code></td><td>bit 2</td><td>线程正在退出</td></tr>
+    <tr><td><code>TERMINATED_BITMASK</code></td><td>bit 3</td><td>线程已终止</td></tr>
+    <tr><td><code>SETXID_BITMASK</code></td><td>bit 4</td><td>等待 setxid 信号</td></tr>
+  </table>
+
+  <div class="callout callout-fp">
+    <div class="callout-title">🔭 第一性原理</div>
+    <p style="margin:0;"><code>struct pthread</code> 即"线程的物质形态"。线程在代码层面是一段可执行指令流，但在操作系统层面必须有一个数据结构来保存其"身份"（tid）、"状态"（joinid/cancelhandling）、"上下文恢复点"（栈指针/TLS）以及"资源清单"（robust_head）。<code>struct pthread</code> 存放在线程自己的栈顶（高地址端），通过 <code>%fs</code> 段寄存器实现 O(1) 的 <code>THREAD_SELF</code> 宏访问，是零开销的自我引用。</p>
+  </div>
+</section>
+
+<!-- ════════════════════════════════ S2 ════════════════════════════════ -->
+<section class="section" id="s2">
+  <div class="section-label">线程的一生</div>
+  <h2 class="section-title">2. 栈分配与内存布局</h2>
+
+  <a class="source-link" href="https://codebrowser.dev/glibc/glibc/nptl/pthread_create.c.html" target="_blank">
+    glibc/nptl/allocatestack.c（通过 pthread_create.c 包含）
+  </a>
+
+  <p>
+    NPTL 在 <code>allocatestack.c</code> 中实现栈分配逻辑。为了减少 mmap 系统调用次数，NPTL 维护了一个<strong style="color:var(--text)">栈缓存池（stack cache）</strong>，线程退出后其栈内存并不立刻还给操作系统，而是放入缓存，供新线程复用。
+  </p>
+
+  <h3 class="sub-title">allocate_stack 核心流程</h3>
+
+  <div class="diagram-wrap">
+    <svg viewBox="0 0 680 380" width="100%" xmlns="http://www.w3.org/2000/svg" style="max-width:680px;">
+      <defs>
+        <marker id="a1" markerWidth="8" markerHeight="6" refX="6" refY="3" orient="auto">
+          <path d="M0,0 L0,6 L8,3 z" fill="#58a6ff"/>
+        </marker>
+        <marker id="a2" markerWidth="8" markerHeight="6" refX="6" refY="3" orient="auto">
+          <path d="M0,0 L0,6 L8,3 z" fill="#56d364"/>
+        </marker>
+        <marker id="a3" markerWidth="8" markerHeight="6" refX="6" refY="3" orient="auto">
+          <path d="M0,0 L0,6 L8,3 z" fill="#ffa657"/>
+        </marker>
+      </defs>
+
+      <!-- Start -->
+      <ellipse cx="340" cy="30" rx="100" ry="20" fill="#1c2333" stroke="#58a6ff" stroke-width="1.5"/>
+      <text x="340" y="35" text-anchor="middle" font-size="12" fill="#58a6ff" font-weight="600">allocate_stack()</text>
+
+      <!-- Decision: cache? -->
+      <polygon points="340,70 460,110 340,150 220,110" fill="#1c2333" stroke="#ffa657" stroke-width="1.5"/>
+      <text x="340" y="108" text-anchor="middle" font-size="11" fill="#ffa657">缓存池有</text>
+      <text x="340" y="122" text-anchor="middle" font-size="11" fill="#ffa657">合适的栈？</text>
+
+      <!-- Yes branch -->
+      <line x1="220" y1="110" x2="100" y2="110" stroke="#ffa657" stroke-width="1.5" marker-end="url(#a3)"/>
+      <text x="155" y="103" font-size="10" fill="#ffa657">是</text>
+      <rect x="10" y="90" width="90" height="40" rx="6" fill="rgba(255,166,87,0.1)" stroke="#ffa657"/>
+      <text x="55" y="115" text-anchor="middle" font-size="11" fill="#ffa657">从缓存取栈</text>
+
+      <!-- No branch -->
+      <line x1="340" y1="150" x2="340" y2="185" stroke="#56d364" stroke-width="1.5" marker-end="url(#a2)"/>
+      <text x="353" y="172" font-size="10" fill="#56d364">否</text>
+      <rect x="240" y="185" width="200" height="40" rx="6" fill="rgba(86,211,100,0.1)" stroke="#56d364"/>
+      <text x="340" y="210" text-anchor="middle" font-size="11" fill="#56d364">mmap(PROT_READ|PROT_WRITE,</text>
+      <text x="340" y="223" text-anchor="middle" font-size="10" fill="#8b949e">MAP_PRIVATE|MAP_ANONYMOUS|MAP_STACK)</text>
+
+      <!-- 合并流 -->
+      <line x1="55" y1="130" x2="55" y2="260" stroke="#ffa657" stroke-width="1.5"/>
+      <line x1="55" y1="260" x2="240" y2="260" stroke="#ffa657" stroke-width="1.5" marker-end="url(#a1)"/>
+      <line x1="340" y1="225" x2="340" y2="250" stroke="#56d364" stroke-width="1.5"/>
+      <line x1="340" y1="250" x2="342" y2="250" stroke="#56d364" stroke-width="1.5" marker-end="url(#a1)"/>
+
+      <!-- Set guard page -->
+      <rect x="240" y="250" width="200" height="40" rx="6" fill="rgba(247,129,102,0.1)" stroke="#f78166"/>
+      <text x="340" y="275" text-anchor="middle" font-size="11" fill="#f78166">mprotect() 设置 Guard Page</text>
+
+      <!-- Init TLS + TCB -->
+      <line x1="340" y1="290" x2="340" y2="320" stroke="#58a6ff" stroke-width="1.5" marker-end="url(#a1)"/>
+      <rect x="200" y="320" width="280" height="50" rx="6" fill="rgba(210,168,255,0.1)" stroke="#d2a8ff"/>
+      <text x="340" y="345" text-anchor="middle" font-size="11" fill="#d2a8ff">在栈顶初始化 Static TLS 块</text>
+      <text x="340" y="362" text-anchor="middle" font-size="11" fill="#d2a8ff">初始化 struct pthread (TCB)</text>
+    </svg>
+    <div class="diagram-caption">图 2-1：allocate_stack() 栈分配流程</div>
+  </div>
+
+  <h3 class="sub-title">栈大小计算</h3>
+  <pre>
+/* allocatestack.c 中的尺寸计算（简化） */
+size_t pagesize = __getpagesize();
+size_t stacksize = attr->stacksize ?: lim.rlim_cur; // 默认=RLIMIT_STACK
+size_t guardsize = attr->guardsize ?: pagesize;       // 默认=1页
+
+/* 总分配 = 栈 + Guard + TLS + struct pthread（对齐到页） */
+size_t total = ALIGN_UP(stacksize + guardsize + tlssize
+                        + sizeof(struct pthread), pagesize);
+  </pre>
+
+  <div class="callout callout-warn">
+    <div class="callout-title">⚠️ 注意</div>
+    <p style="margin:0;">Guard Page 通过 <code>mprotect(PROT_NONE)</code> 设置为不可访问。当线程栈溢出触碰到 Guard Page 时，内核发送 <code>SIGSEGV</code>，从而检测到栈溢出。这是一种低成本的运行时安全机制——不需要在每次函数调用时检查栈边界。</p>
+  </div>
+
+  <h3 class="sub-title">栈缓存机制</h3>
+  <p>
+    全局链表 <code>stack_cache</code>（通过 <code>list_t</code> 链表实现）保存退出线程的栈。当 <code>allocate_stack</code> 被调用时，先遍历缓存查找大小合适且未被锁的栈（通过 <code>lll_trylock</code>），命中则直接复用，避免 mmap/munmap 的系统调用开销。
+  </p>
+
+  <div class="callout callout-fp">
+    <div class="callout-title">🔭 第一性原理</div>
+    <p style="margin:0;">内存分配的根本成本在于系统调用（mmap/munmap）与 TLB 刷新，而非内存本身的占用。NPTL 的栈缓存将"线程创建"的成本从 O(系统调用) 降低到 O(链表查找)。Guard Page 则以"预留一页不可写内存"的极小代价换取"检测栈溢出"的安全保障——这是空间换时间的反向：用少量空间（一页）节省大量时间（无需每次边界检查）。</p>
+  </div>
+</section>
+
+<!-- ════════════════════════════════ S3 ════════════════════════════════ -->
+<section class="section" id="s3">
+  <div class="section-label">线程的一生</div>
+  <h2 class="section-title">3. 线程创建：pthread_create</h2>
+
+  <a class="source-link" href="https://codebrowser.dev/glibc/glibc/nptl/pthread_create.c.html" target="_blank">
+    glibc/nptl/pthread_create.c — 完整源码（codebrowser）
+  </a>
+
+  <p>
+    <code>pthread_create</code> 是线程诞生的入口。其核心实现为 <code>__pthread_create_2_1</code>（在 glibc 2.34 后合并入 libc.so）。整个创建过程分为三个阶段：<strong style="color:var(--text)">用户空间初始化 → clone 系统调用 → 同步等待</strong>。
+  </p>
+
+  <h3 class="sub-title">完整创建流程</h3>
+
+  <div class="diagram-wrap">
+    <svg viewBox="0 0 720 600" width="100%" xmlns="http://www.w3.org/2000/svg" style="max-width:720px;">
+      <defs>
+        <marker id="ba" markerWidth="8" markerHeight="6" refX="6" refY="3" orient="auto">
+          <path d="M0,0 L0,6 L8,3 z" fill="#58a6ff"/>
+        </marker>
+        <marker id="ba2" markerWidth="8" markerHeight="6" refX="6" refY="3" orient="auto">
+          <path d="M0,0 L0,6 L8,3 z" fill="#56d364"/>
+        </marker>
+        <marker id="ba3" markerWidth="8" markerHeight="6" refX="6" refY="3" orient="auto">
+          <path d="M0,0 L0,6 L8,3 z" fill="#ffa657"/>
+        </marker>
+      </defs>
+
+      <!-- Parent column -->
+      <text x="200" y="28" text-anchor="middle" font-size="13" fill="#58a6ff" font-weight="700">创建线程（父）</text>
+      <line x1="200" y1="35" x2="200" y2="590" stroke="#30363d" stroke-dasharray="4,3"/>
+
+      <!-- Child column -->
+      <text x="520" y="28" text-anchor="middle" font-size="13" fill="#56d364" font-weight="700">新线程（子）</text>
+      <line x1="520" y1="35" x2="520" y2="590" stroke="#30363d" stroke-dasharray="4,3"/>
+
+      <!-- Step 1: late_init -->
+      <rect x="80" y="45" width="240" height="34" rx="5" fill="rgba(88,166,255,0.08)" stroke="#58a6ff"/>
+      <text x="200" y="67" text-anchor="middle" font-size="11" fill="#e6edf3">① late_init()（首次多线程时初始化信号）</text>
+
+      <!-- Step 2: allocate_stack -->
+      <rect x="80" y="95" width="240" height="34" rx="5" fill="rgba(88,166,255,0.08)" stroke="#58a6ff"/>
+      <text x="200" y="117" text-anchor="middle" font-size="11" fill="#e6edf3">② allocate_stack()：分配栈+TLS+TCB</text>
+
+      <!-- Step 3: init pd -->
+      <rect x="80" y="145" width="240" height="46" rx="5" fill="rgba(88,166,255,0.08)" stroke="#58a6ff"/>
+      <text x="200" y="165" text-anchor="middle" font-size="11" fill="#e6edf3">③ 初始化 struct pthread：</text>
+      <text x="200" y="181" text-anchor="middle" font-size="10" fill="#8b949e">start_routine / arg / flags / joinid / sigmask</text>
+
+      <!-- Step 4: block signals -->
+      <rect x="80" y="207" width="240" height="34" rx="5" fill="rgba(255,166,87,0.08)" stroke="#ffa657"/>
+      <text x="200" y="229" text-anchor="middle" font-size="11" fill="#ffa657">④ 阻塞所有信号（防止竞争）</text>
+
+      <!-- Step 5: clone -->
+      <rect x="80" y="257" width="240" height="46" rx="5" fill="rgba(210,168,255,0.12)" stroke="#d2a8ff" stroke-width="2"/>
+      <text x="200" y="277" text-anchor="middle" font-size="11" fill="#d2a8ff" font-weight="600">⑤ ARCH_CLONE() → clone(2)</text>
+      <text x="200" y="293" text-anchor="middle" font-size="10" fill="#8b949e">CLONE_VM|FS|FILES|SIGHAND|THREAD|SETTLS|...</text>
+
+      <!-- clone arrow -->
+      <line x1="320" y1="280" x2="510" y2="280" stroke="#d2a8ff" stroke-width="2" marker-end="url(#ba2)" stroke-dasharray="6,3"/>
+      <text x="415" y="272" text-anchor="middle" font-size="10" fill="#d2a8ff">内核创建 LWP</text>
+
+      <!-- Step 6: restore signals -->
+      <rect x="80" y="319" width="240" height="34" rx="5" fill="rgba(255,166,87,0.08)" stroke="#ffa657"/>
+      <text x="200" y="341" text-anchor="middle" font-size="11" fill="#ffa657">⑥ 恢复信号掩码</text>
+
+      <!-- step 7: stopped_start check -->
+      <rect x="80" y="369" width="240" height="46" rx="5" fill="rgba(88,166,255,0.08)" stroke="#58a6ff"/>
+      <text x="200" y="389" text-anchor="middle" font-size="11" fill="#e6edf3">⑦ if(stopped_start)</text>
+      <text x="200" y="405" text-anchor="middle" font-size="10" fill="#8b949e">lll_unlock(pd→lock) 释放子线程</text>
+
+      <!-- Step 8: return -->
+      <rect x="80" y="431" width="240" height="34" rx="5" fill="rgba(86,211,100,0.08)" stroke="#56d364"/>
+      <text x="200" y="453" text-anchor="middle" font-size="11" fill="#56d364">⑧ 返回 pthread_t（即 pd 指针）</text>
+
+      <!-- Child side -->
+      <!-- Child: start_thread -->
+      <rect x="400" y="300" width="240" height="34" rx="5" fill="rgba(86,211,100,0.08)" stroke="#56d364"/>
+      <text x="520" y="322" text-anchor="middle" font-size="11" fill="#56d364">start_thread() 开始执行</text>
+
+      <!-- Child: wait for lock -->
+      <rect x="400" y="350" width="240" height="34" rx="5" fill="rgba(86,211,100,0.08)" stroke="#56d364"/>
+      <text x="520" y="372" text-anchor="middle" font-size="11" fill="#56d364">if(stopped_start) lll_lock(pd→lock)</text>
+
+      <!-- Sync arrow -->
+      <line x1="320" y1="405" x2="510" y2="385" stroke="#ffa657" stroke-width="1.5" stroke-dasharray="4,3" marker-end="url(#ba3)"/>
+      <text x="415" y="395" text-anchor="middle" font-size="9" fill="#ffa657">解锁→子线程继续</text>
+
+      <!-- Child: run user func -->
+      <rect x="400" y="400" width="240" height="46" rx="5" fill="rgba(86,211,100,0.12)" stroke="#56d364" stroke-width="2"/>
+      <text x="520" y="420" text-anchor="middle" font-size="11" fill="#56d364" font-weight="600">调用用户函数</text>
+      <text x="520" y="436" text-anchor="middle" font-size="10" fill="#8b949e">pd→start_routine(pd→arg)</text>
+
+      <!-- Legend -->
+      <rect x="30" y="545" width="12" height="12" fill="rgba(88,166,255,0.3)" stroke="#58a6ff"/>
+      <text x="50" y="556" font-size="11" fill="#8b949e">父线程操作</text>
+      <rect x="150" y="545" width="12" height="12" fill="rgba(86,211,100,0.3)" stroke="#56d364"/>
+      <text x="170" y="556" font-size="11" fill="#8b949e">子线程操作</text>
+      <rect x="270" y="545" width="12" height="12" fill="rgba(210,168,255,0.3)" stroke="#d2a8ff"/>
+      <text x="290" y="556" font-size="11" fill="#8b949e">系统调用/同步</text>
+    </svg>
+    <div class="diagram-caption">图 3-1：pthread_create 完整执行时序（父子线程交互）</div>
+  </div>
+
+  <h3 class="sub-title">clone() 系统调用标志详解</h3>
+  <pre>
+/* nptl/pthread_create.c — create_thread() 中的 clone flags */
+const int clone_flags =
+    CLONE_VM          /* 共享虚拟地址空间（全局变量/堆可见）   */
+  | CLONE_FS          /* 共享文件系统信息（当前目录/umask）     */
+  | CLONE_FILES       /* 共享文件描述符表                      */
+  | CLONE_SYSVSEM     /* 共享 System V 信号量的撤销值           */
+  | CLONE_SIGHAND     /* 共享信号处理器                        */
+  | CLONE_THREAD      /* 同一线程组（getpid()返回相同值）       */
+  | CLONE_SETTLS      /* 第6个参数设置 TLS（%fs 寄存器）        */
+  | CLONE_PARENT_SETTID  /* 内核将新 TID 写入 pd→tid（父进程空间）*/
+  | CLONE_CHILD_CLEARTID /* 子线程退出时内核清零 pd→tid 并 futex_wake */
+  | 0;
+  </pre>
+
+  <div class="callout">
+    <div class="callout-title">💡 关键机制：stopped_start 同步</div>
+    <p style="margin:0;">
+      当需要设置调度策略或 CPU 亲和性时，<code>stopped_start=true</code>：父线程在 clone() 前先 <code>lll_lock(pd→lock)</code>，子线程启动后立即尝试 <code>lll_lock</code>（被阻塞），等父线程完成属性设置后 <code>lll_unlock</code> 才放行子线程。这是一个"启动栅栏"，确保子线程以正确属性运行。
+    </p>
+  </div>
+
+  <h3 class="sub-title">PD 所有权状态机</h3>
+  <p>
+    <code>struct pthread *pd</code> 的所有权（ownership）决定谁负责释放资源。根据源码注释，有四种转移：
+  </p>
+  <table>
+    <tr><th>状态</th><th>所有者</th><th>触发条件</th></tr>
+    <tr><td>(1) Joinable 成功</td><td>进程（所有线程可访问）</td><td>pthread_create 返回 0</td></tr>
+    <tr><td>(2) Detached 成功</td><td>新线程自己</td><td>clone 成功 + detached 属性</td></tr>
+    <tr><td>(3) 动态 detach</td><td>调用 pthread_detach 的线程</td><td>pthread_detach() 调用</td></tr>
+    <tr><td>(4) Join 等待</td><td>调用 pthread_join 的线程</td><td>pthread_join() 调用</td></tr>
+  </table>
+
+  <div class="callout callout-fp">
+    <div class="callout-title">🔭 第一性原理</div>
+    <p style="margin:0;">线程创建的核心问题是"如何最小化共享资源建立的成本"。答案是：复用进程的一切可复用资源（地址空间、文件描述符、信号处理器），只创建最小的独立资源（栈、TLS、寄存器上下文）。<code>clone()</code> 的标志位本质上是一个"资源共享声明"——指定哪些 PCB 字段直接指向父进程的，哪些是独立的。<code>CLONE_CHILD_CLEARTID</code> 与 futex 的结合，则是"零成本通知"的典范：内核在线程退出时自动清零一个内存地址，等待者通过 futex_wait 被唤醒，无需任何额外的用户态簿记。</p>
+  </div>
+</section>
+
+<!-- ════════════════════════════════ S4 ════════════════════════════════ -->
+<section class="section" id="s4">
+  <div class="section-label">线程的一生</div>
+  <h2 class="section-title">4. 线程启动：start_thread</h2>
+
+  <a class="source-link" href="https://codebrowser.dev/glibc/glibc/nptl/pthread_create.c.html" target="_blank">
+    glibc/nptl/pthread_create.c — start_thread() 函数（第336行）
+  </a>
+
+  <p>
+    <code>start_thread()</code> 是新线程在内核完成 clone 后执行的第一个用户态函数，是连接 NPTL 框架与用户代码的桥梁。它被声明为 <code>_Noreturn</code>（永不返回）——线程最终通过 <code>exit(0)</code> 系统调用结束。
+  </p>
+
+  <h3 class="sub-title">start_thread 执行序列</h3>
+
+  <div class="diagram-wrap">
+    <svg viewBox="0 0 600 520" width="100%" xmlns="http://www.w3.org/2000/svg" style="max-width:600px;">
+      <defs>
+        <marker id="ca" markerWidth="7" markerHeight="6" refX="5" refY="3" orient="auto">
+          <path d="M0,0 L0,6 L7,3 z" fill="#56d364"/>
+        </marker>
+      </defs>
+
+      <!-- Flow boxes -->
+      <rect x="160" y="10" width="280" height="36" rx="6" fill="rgba(86,211,100,0.1)" stroke="#56d364" stroke-width="1.5"/>
+      <text x="300" y="33" text-anchor="middle" font-size="12" fill="#56d364" font-weight="600">start_thread(void *arg) → pd = arg</text>
+
+      <line x1="300" y1="46" x2="300" y2="68" stroke="#30363d" stroke-width="1.5" marker-end="url(#ca)"/>
+
+      <rect x="160" y="68" width="280" height="36" rx="6" fill="rgba(255,166,87,0.08)" stroke="#ffa657"/>
+      <text x="300" y="91" text-anchor="middle" font-size="11" fill="#ffa657">if(stopped_start) lll_lock/unlock(pd→lock)</text>
+
+      <line x1="300" y1="104" x2="300" y2="126" stroke="#30363d" stroke-width="1.5" marker-end="url(#ca)"/>
+
+      <rect x="160" y="126" width="280" height="36" rx="6" fill="rgba(88,166,255,0.08)" stroke="#58a6ff"/>
+      <text x="300" y="149" text-anchor="middle" font-size="11" fill="#58a6ff">set_robust_list() 注册 robust mutex 链表</text>
+
+      <line x1="300" y1="162" x2="300" y2="184" stroke="#30363d" stroke-width="1.5" marker-end="url(#ca)"/>
+
+      <rect x="160" y="184" width="280" height="36" rx="6" fill="rgba(88,166,255,0.08)" stroke="#58a6ff"/>
+      <text x="300" y="207" text-anchor="middle" font-size="11" fill="#58a6ff">setjmp(unwind_buf) 设置取消 longjmp 点</text>
+
+      <line x1="300" y1="220" x2="300" y2="242" stroke="#30363d" stroke-width="1.5" marker-end="url(#ca)"/>
+
+      <rect x="160" y="242" width="280" height="36" rx="6" fill="rgba(88,166,255,0.08)" stroke="#58a6ff"/>
+      <text x="300" y="265" text-anchor="middle" font-size="11" fill="#58a6ff">internal_signal_restore_set() 恢复信号掩码</text>
+
+      <line x1="300" y1="278" x2="300" y2="300" stroke="#30363d" stroke-width="1.5" marker-end="url(#ca)"/>
+
+      <!-- User function call - highlighted -->
+      <rect x="140" y="300" width="320" height="52" rx="6" fill="rgba(210,168,255,0.15)" stroke="#d2a8ff" stroke-width="2.5"/>
+      <text x="300" y="323" text-anchor="middle" font-size="13" fill="#d2a8ff" font-weight="700">▶ 执行用户线程函数</text>
+      <text x="300" y="342" text-anchor="middle" font-size="11" fill="#8b949e">pd→start_routine(pd→arg) → pd→result = ret</text>
+
+      <line x1="300" y1="352" x2="300" y2="374" stroke="#30363d" stroke-width="1.5" marker-end="url(#ca)"/>
+
+      <rect x="160" y="374" width="280" height="36" rx="6" fill="rgba(88,166,255,0.08)" stroke="#58a6ff"/>
+      <text x="300" y="397" text-anchor="middle" font-size="11" fill="#58a6ff">__nptl_deallocate_tsd() 清理 TSD 析构</text>
+
+      <line x1="300" y1="410" x2="300" y2="432" stroke="#30363d" stroke-width="1.5" marker-end="url(#ca)"/>
+
+      <rect x="160" y="432" width="280" height="36" rx="6" fill="rgba(88,166,255,0.08)" stroke="#58a6ff"/>
+      <text x="300" y="455" text-anchor="middle" font-size="11" fill="#58a6ff">atomic_fetch_or(EXITING_BITMASK) 标记退出</text>
+
+      <line x1="300" y1="468" x2="300" y2="490" stroke="#30363d" stroke-width="1.5" marker-end="url(#ca)"/>
+
+      <ellipse cx="300" cy="505" rx="100" ry="16" fill="rgba(247,129,102,0.15)" stroke="#f78166"/>
+      <text x="300" y="510" text-anchor="middle" font-size="11" fill="#f78166" font-weight="600">exit(0) 系统调用（线程终止）</text>
+    </svg>
+    <div class="diagram-caption">图 4-1：start_thread() 执行流程（新线程的入口函数）</div>
+  </div>
+
+  <h3 class="sub-title">取消点实现</h3>
+  <pre>
+/* start_thread() 中的 setjmp 机制 */
+struct pthread_unwind_buf unwind_buf;
+int not_first_call = setjmp(
+    (struct __jmp_buf_tag *) unwind_buf.cancel_jmp_buf);
+
+if (__glibc_likely(!not_first_call)) {
+    THREAD_SETMEM(pd, cleanup_jmp_buf, &amp;unwind_buf);
+    /* 正常执行用户代码 */
+    ret = pd-&gt;start_routine(pd-&gt;arg);
+    THREAD_SETMEM(pd, result, ret);
+}
+/* 若被取消，longjmp 跳回此处，not_first_call != 0，跳过用户函数 */
+  </pre>
+
+  <div class="callout callout-fp">
+    <div class="callout-title">🔭 第一性原理</div>
+    <p style="margin:0;"><code>start_thread</code> 的本质是"前置初始化+用户代码+后置清理"的三明治结构。前置部分建立线程的安全基础（robust mutex 注册、信号掩码、setjmp 取消点），确保任何时候的取消或崩溃都有兜底处理；后置部分完成确定性的资源释放顺序（TSD 析构 → 引用计数 → 标记退出 → 真正退出）。<strong style="color:var(--accent2)">setjmp 取消机制</strong>的精妙之处在于：它以"异常恢复"而非"信号中断"的方式实现取消，避免了信号处理的不可重入性问题。</p>
+  </div>
+</section>
+
+<!-- ════════════════════════════════ S5 ════════════════════════════════ -->
+<section class="section" id="s5">
+  <div class="section-label">线程的一生</div>
+  <h2 class="section-title">5. 线程运行与调度</h2>
+
+  <p>
+    线程一旦进入用户函数执行，其调度完全由 Linux 内核的 CFS（完全公平调度器）负责。NPTL 的 1:1 模型意味着每个线程是一个独立的内核调度实体（<code>task_struct</code>）。
+  </p>
+
+  <h3 class="sub-title">线程状态机</h3>
+
+  <div class="diagram-wrap">
+    <svg viewBox="0 0 700 360" width="100%" xmlns="http://www.w3.org/2000/svg" style="max-width:700px;">
+      <defs>
+        <marker id="da" markerWidth="8" markerHeight="6" refX="6" refY="3" orient="auto">
+          <path d="M0,0 L0,6 L8,3 z" fill="#8b949e"/>
+        </marker>
+        <marker id="da2" markerWidth="8" markerHeight="6" refX="6" refY="3" orient="auto">
+          <path d="M0,0 L0,6 L8,3 z" fill="#58a6ff"/>
+        </marker>
+        <marker id="da3" markerWidth="8" markerHeight="6" refX="6" refY="3" orient="auto">
+          <path d="M0,0 L0,6 L8,3 z" fill="#56d364"/>
+        </marker>
+        <marker id="da4" markerWidth="8" markerHeight="6" refX="6" refY="3" orient="auto">
+          <path d="M0,0 L0,6 L8,3 z" fill="#f78166"/>
+        </marker>
+      </defs>
+
+      <!-- States -->
+      <!-- Created -->
+      <ellipse cx="100" cy="60" rx="80" ry="28" fill="rgba(88,166,255,0.12)" stroke="#58a6ff" stroke-width="1.5"/>
+      <text x="100" y="65" text-anchor="middle" font-size="12" fill="#58a6ff" font-weight="600">CREATED</text>
+
+      <!-- Runnable -->
+      <ellipse cx="340" cy="60" rx="80" ry="28" fill="rgba(86,211,100,0.12)" stroke="#56d364" stroke-width="1.5"/>
+      <text x="340" y="65" text-anchor="middle" font-size="12" fill="#56d364" font-weight="600">RUNNABLE</text>
+
+      <!-- Running -->
+      <ellipse cx="560" cy="60" rx="80" ry="28" fill="rgba(210,168,255,0.12)" stroke="#d2a8ff" stroke-width="2"/>
+      <text x="560" y="65" text-anchor="middle" font-size="12" fill="#d2a8ff" font-weight="600">RUNNING</text>
+
+      <!-- Blocked -->
+      <ellipse cx="340" cy="200" rx="80" ry="28" fill="rgba(255,166,87,0.12)" stroke="#ffa657" stroke-width="1.5"/>
+      <text x="340" y="205" text-anchor="middle" font-size="12" fill="#ffa657" font-weight="600">BLOCKED</text>
+      <text x="340" y="222" text-anchor="middle" font-size="9" fill="#8b949e">futex_wait / I/O</text>
+
+      <!-- Zombie -->
+      <ellipse cx="560" cy="200" rx="80" ry="28" fill="rgba(247,129,102,0.12)" stroke="#f78166" stroke-width="1.5"/>
+      <text x="560" y="205" text-anchor="middle" font-size="12" fill="#f78166" font-weight="600">ZOMBIE</text>
+      <text x="560" y="222" text-anchor="middle" font-size="9" fill="#8b949e">等待 pthread_join</text>
+
+      <!-- Dead -->
+      <ellipse cx="340" cy="320" rx="80" ry="28" fill="rgba(139,148,158,0.12)" stroke="#8b949e" stroke-width="1.5"/>
+      <text x="340" y="325" text-anchor="middle" font-size="12" fill="#8b949e" font-weight="600">DEAD</text>
+      <text x="340" y="342" text-anchor="middle" font-size="9" fill="#8b949e">资源已回收</text>
+
+      <!-- Arrows -->
+      <!-- Created -> Runnable -->
+      <line x1="180" y1="60" x2="258" y2="60" stroke="#58a6ff" stroke-width="1.5" marker-end="url(#da2)"/>
+      <text x="219" y="52" text-anchor="middle" font-size="9" fill="#8b949e">clone()成功</text>
+
+      <!-- Runnable <-> Running -->
+      <line x1="420" y1="52" x2="478" y2="52" stroke="#56d364" stroke-width="1.5" marker-end="url(#da3)"/>
+      <text x="449" y="44" text-anchor="middle" font-size="9" fill="#8b949e">CPU调度</text>
+      <line x1="478" y1="70" x2="420" y2="70" stroke="#d2a8ff" stroke-width="1.5" marker-end="url(#da2)"/>
+      <text x="449" y="83" text-anchor="middle" font-size="9" fill="#8b949e">时间片耗尽/抢占</text>
+
+      <!-- Running -> Blocked -->
+      <line x1="530" y1="82" x2="400" y2="180" stroke="#ffa657" stroke-width="1.5" marker-end="url(#da)"/>
+      <text x="490" y="135" text-anchor="middle" font-size="9" fill="#ffa657">futex_wait/阻塞I/O</text>
+
+      <!-- Blocked -> Runnable -->
+      <line x1="280" y1="185" x2="265" y2="80" stroke="#56d364" stroke-width="1.5" marker-end="url(#da3)"/>
+      <text x="230" y="135" text-anchor="middle" font-size="9" fill="#56d364">futex_wake/I/O完成</text>
+
+      <!-- Running -> Zombie -->
+      <line x1="560" y1="88" x2="560" y2="172" stroke="#f78166" stroke-width="1.5" marker-end="url(#da4)"/>
+      <text x="580" y="132" font-size="9" fill="#f78166">pthread_exit()</text>
+
+      <!-- Zombie -> Dead -->
+      <line x1="510" y1="210" x2="400" y2="310" stroke="#8b949e" stroke-width="1.5" marker-end="url(#da)"/>
+      <text x="490" y="270" text-anchor="middle" font-size="9" fill="#8b949e">pthread_join()</text>
+
+      <!-- Runnable -> Dead (detached) -->
+      <line x1="340" y1="228" x2="340" y2="292" stroke="#8b949e" stroke-width="1.5" marker-end="url(#da)"/>
+      <text x="360" y="260" font-size="9" fill="#8b949e">detached退出</text>
+    </svg>
+    <div class="diagram-caption">图 5-1：NPTL 线程完整状态机（用户态视角与内核调度事件）</div>
+  </div>
+
+  <h3 class="sub-title">线程属性与调度策略</h3>
+  <table>
+    <tr><th>属性</th><th>设置函数</th><th>说明</th></tr>
+    <tr><td>调度策略</td><td><code>pthread_attr_setschedpolicy</code></td><td>SCHED_FIFO / SCHED_RR / SCHED_OTHER</td></tr>
+    <tr><td>调度优先级</td><td><code>pthread_attr_setschedparam</code></td><td>实时线程的优先级（1-99）</td></tr>
+    <tr><td>CPU 亲和性</td><td><code>pthread_attr_setaffinity_np</code></td><td>绑定到特定 CPU 核</td></tr>
+    <tr><td>分离状态</td><td><code>pthread_attr_setdetachstate</code></td><td>JOINABLE / DETACHED</td></tr>
+    <tr><td>栈大小</td><td><code>pthread_attr_setstacksize</code></td><td>最小 PTHREAD_STACK_MIN（16384）</td></tr>
+    <tr><td>Guard 大小</td><td><code>pthread_attr_setguardsize</code></td><td>默认1页（4096 bytes）</td></tr>
+  </table>
+
+  <div class="callout callout-fp">
+    <div class="callout-title">🔭 第一性原理</div>
+    <p style="margin:0;">调度的本质是"在有限的 CPU 时间片上，按某种公平/优先级策略分配执行权"。NPTL 选择完全依赖内核调度器，而非实现用户态协程切换，是因为：1) 内核拥有全局视角，能在所有线程中做最优决策；2) I/O 阻塞（epoll、read 等）天然在内核层面发生，用户态调度器无法透明处理；3) 实时调度（SCHED_FIFO）需要内核特权。代价是上下文切换需要陷入内核，但 futex 的快速路径补偿了高频无竞争场景的开销。</p>
+  </div>
+</section>
+
+<!-- ════════════════════════════════ S6 ════════════════════════════════ -->
+<section class="section" id="s6">
+  <div class="section-label">线程的一生</div>
+  <h2 class="section-title">6. 线程销毁：pthread_exit</h2>
+
+  <a class="source-link" href="https://codebrowser.dev/glibc/glibc/nptl/pthread_create.c.html" target="_blank">
+    glibc/nptl/pthread_create.c — start_thread() 退出流程（第450行起）
+  </a>
+
+  <p>
+    线程的退出分为两种途径：<strong>显式调用 <code>pthread_exit()</code></strong> 和 <strong>线程函数正常返回</strong>（本质上等价，均通过 <code>start_thread</code> 的后续逻辑处理）。退出过程必须严格按顺序完成资源清理，以保证正确性。
+  </p>
+
+  <h3 class="sub-title">退出清理流程</h3>
+
+  <div class="diagram-wrap">
+    <svg viewBox="0 0 640 480" width="100%" xmlns="http://www.w3.org/2000/svg" style="max-width:640px;">
+      <defs>
+        <marker id="ea" markerWidth="7" markerHeight="6" refX="5" refY="3" orient="auto">
+          <path d="M0,0 L0,6 L8,3 z" fill="#f78166"/>
+        </marker>
+      </defs>
+
+      <!-- Steps -->
+      <rect x="140" y="10" width="360" height="38" rx="6" fill="rgba(210,168,255,0.1)" stroke="#d2a8ff"/>
+      <text x="320" y="34" text-anchor="middle" font-size="12" fill="#d2a8ff" font-weight="600">pthread_exit(retval) / 线程函数返回</text>
+
+      <line x1="320" y1="48" x2="320" y2="68" stroke="#f78166" stroke-width="1.5" marker-end="url(#ea)"/>
+
+      <rect x="140" y="68" width="360" height="38" rx="6" fill="rgba(247,129,102,0.08)" stroke="#f78166"/>
+      <text x="320" y="92" text-anchor="middle" font-size="11" fill="#f78166">① call_function_static_weak(__call_tls_dtors)</text>
+      <text x="320" y="103" text-anchor="middle" font-size="9" fill="#8b949e">调用 C++ thread_local 析构函数</text>
+
+      <line x1="320" y1="106" x2="320" y2="126" stroke="#f78166" stroke-width="1.5" marker-end="url(#ea)"/>
+
+      <rect x="140" y="126" width="360" height="38" rx="6" fill="rgba(247,129,102,0.08)" stroke="#f78166"/>
+      <text x="320" y="150" text-anchor="middle" font-size="11" fill="#f78166">② __nptl_deallocate_tsd()</text>
+      <text x="320" y="162" text-anchor="middle" font-size="9" fill="#8b949e">按 PTHREAD_DESTRUCTOR_ITERATIONS 次运行 TSD 析构</text>
+
+      <line x1="320" y1="164" x2="320" y2="184" stroke="#f78166" stroke-width="1.5" marker-end="url(#ea)"/>
+
+      <rect x="140" y="184" width="360" height="38" rx="6" fill="rgba(247,129,102,0.08)" stroke="#f78166"/>
+      <text x="320" y="208" text-anchor="middle" font-size="11" fill="#f78166">③ atomic_fetch_or(EXITING_BITMASK)</text>
+      <text x="320" y="220" text-anchor="middle" font-size="9" fill="#8b949e">标记线程正在退出（阻止 pthread_kill 发信号）</text>
+
+      <line x1="320" y1="222" x2="320" y2="242" stroke="#f78166" stroke-width="1.5" marker-end="url(#ea)"/>
+
+      <rect x="140" y="242" width="360" height="38" rx="6" fill="rgba(247,129,102,0.08)" stroke="#f78166"/>
+      <text x="320" y="265" text-anchor="middle" font-size="11" fill="#f78166">④ atomic_fetch_add(__nptl_nthreads, -1)</text>
+      <text x="320" y="277" text-anchor="middle" font-size="9" fill="#8b949e">若为最后一线程则调用 exit(0) 终止进程</text>
+
+      <line x1="320" y1="280" x2="320" y2="300" stroke="#f78166" stroke-width="1.5" marker-end="url(#ea)"/>
+
+      <rect x="140" y="300" width="360" height="38" rx="6" fill="rgba(247,129,102,0.08)" stroke="#f78166"/>
+      <text x="320" y="323" text-anchor="middle" font-size="11" fill="#f78166">⑤ Robust Mutex 处理</text>
+      <text x="320" y="335" text-anchor="middle" font-size="9" fill="#8b949e">内核通过 set_robust_list 链表自动标记 FUTEX_OWNER_DIED</text>
+
+      <line x1="320" y1="338" x2="320" y2="358" stroke="#f78166" stroke-width="1.5" marker-end="url(#ea)"/>
+
+      <rect x="140" y="358" width="360" height="38" rx="6" fill="rgba(247,129,102,0.08)" stroke="#f78166"/>
+      <text x="320" y="380" text-anchor="middle" font-size="11" fill="#f78166">⑥ IS_DETACHED ? __nptl_free_tcb(pd) : 保留TCB</text>
+      <text x="320" y="392" text-anchor="middle" font-size="9" fill="#8b949e">detached线程立即回收栈；joinable线程等待 pthread_join</text>
+
+      <line x1="320" y1="396" x2="320" y2="416" stroke="#f78166" stroke-width="1.5" marker-end="url(#ea)"/>
+
+      <ellipse cx="320" cy="452" rx="130" ry="22" fill="rgba(247,129,102,0.15)" stroke="#f78166" stroke-width="2"/>
+      <text x="320" y="457" text-anchor="middle" font-size="12" fill="#f78166" font-weight="700">exit(0) → 内核清零 pd→tid，触发 futex_wake</text>
+    </svg>
+    <div class="diagram-caption">图 6-1：线程退出清理顺序（start_thread 后半段）</div>
+  </div>
+
+  <h3 class="sub-title">CLONE_CHILD_CLEARTID 机制</h3>
+  <pre>
+/* 线程退出时内核自动执行（由 CLONE_CHILD_CLEARTID 标志控制）：
+   1. 将 pd→tid 写入 0
+   2. 对 pd→tid 执行 futex_wake(FUTEX_WAKE, 1)
+   这使得 pthread_join() 中等待的线程被唤醒 */
+
+/* pthread_join_common.c 中的等待循环 */
+pid_t tid;
+while ((tid = atomic_load_acquire(&amp;pd-&gt;tid)) != 0) {
+    /* 等待内核将 tid 清零 */
+    __futex_abstimed_wait_cancelable64(
+        (unsigned int *) &amp;pd-&gt;tid, tid, clockid, abstime, LLL_SHARED);
+}
+  </pre>
+
+  <div class="callout callout-ok">
+    <div class="callout-title">✅ TSD 析构顺序保证</div>
+    <p style="margin:0;">POSIX 规定线程特有数据（TSD）析构函数最多运行 <code>PTHREAD_DESTRUCTOR_ITERATIONS</code>（glibc 中为 4）轮，每轮检查所有键。若析构函数设置了新的非 NULL 值，则下一轮继续析构。这处理了析构函数之间的依赖链。</p>
+  </div>
+
+  <div class="callout callout-fp">
+    <div class="callout-title">🔭 第一性原理</div>
+    <p style="margin:0;">线程销毁的根本挑战是"对象的生命周期与其持有的资源生命周期的解耦"。线程死后，它拥有的锁（Robust Mutex）、TLS 数据（TSD）、栈内存都需要安全清理。NPTL 的解决方案是分层清理：用户态清理（TSD 析构函数、cleanup handlers）→ NPTL 清理（TCB 释放）→ 内核清理（tid 清零 + futex_wake）。<code>CLONE_CHILD_CLEARTID</code> 将"通知等待者"的工作委托给内核，这是唯一能在线程消亡的同时、且不引发竞态条件地完成通知的机制。</p>
+  </div>
+</section>
+
+<!-- ════════════════════════════════ S7 ════════════════════════════════ -->
+<section class="section" id="s7">
+  <div class="section-label">线程的一生</div>
+  <h2 class="section-title">7. 线程回收：pthread_join</h2>
+
+  <a class="source-link" href="https://codebrowser.dev/glibc/glibc/nptl/pthread_join_common.c.html" target="_blank">
+    glibc/nptl/pthread_join_common.c — 完整源码
+  </a>
+
+  <p>
+    <code>pthread_join</code> 使调用线程等待目标线程结束，并回收其资源。其实现的核心是通过 futex 等待 <code>pd→tid</code> 被内核清零。
+  </p>
+
+  <h3 class="sub-title">pthread_join 执行流程</h3>
+
+  <div class="diagram-wrap">
+    <svg viewBox="0 0 680 420" width="100%" xmlns="http://www.w3.org/2000/svg" style="max-width:680px;">
+      <defs>
+        <marker id="fa" markerWidth="7" markerHeight="6" refX="5" refY="3" orient="auto">
+          <path d="M0,0 L0,6 L8,3 z" fill="#58a6ff"/>
+        </marker>
+        <marker id="fa2" markerWidth="7" markerHeight="6" refX="5" refY="3" orient="auto">
+          <path d="M0,0 L0,6 L8,3 z" fill="#56d364"/>
+        </marker>
+        <marker id="fa3" markerWidth="7" markerHeight="6" refX="5" refY="3" orient="auto">
+          <path d="M0,0 L0,6 L8,3 z" fill="#f78166"/>
+        </marker>
+      </defs>
+
+      <!-- Calling thread -->
+      <text x="180" y="22" text-anchor="middle" font-size="12" fill="#58a6ff" font-weight="600">调用 pthread_join 的线程</text>
+      <line x1="180" y1="28" x2="180" y2="420" stroke="#30363d" stroke-dasharray="3,3"/>
+
+      <!-- Target thread -->
+      <text x="500" y="22" text-anchor="middle" font-size="12" fill="#56d364" font-weight="600">目标线程（被 join 的线程）</text>
+      <line x1="500" y1="28" x2="500" y2="420" stroke="#30363d" stroke-dasharray="3,3"/>
+
+      <!-- Step 1: validate -->
+      <rect x="60" y="40" width="240" height="36" rx="5" fill="rgba(88,166,255,0.08)" stroke="#58a6ff"/>
+      <text x="180" y="62" text-anchor="middle" font-size="11" fill="#e6edf3">验证 pd / 检查 detached / 死锁检测</text>
+
+      <!-- Step 2: CAS joinid -->
+      <rect x="60" y="92" width="240" height="36" rx="5" fill="rgba(88,166,255,0.08)" stroke="#58a6ff"/>
+      <text x="180" y="114" text-anchor="middle" font-size="11" fill="#e6edf3">CAS 设置 pd→joinid = self（独占等待）</text>
+
+      <!-- Concurrent exit flow on right -->
+      <rect x="380" y="140" width="240" height="36" rx="5" fill="rgba(86,211,100,0.08)" stroke="#56d364"/>
+      <text x="500" y="162" text-anchor="middle" font-size="11" fill="#56d364">线程函数返回 / pthread_exit()</text>
+
+      <rect x="380" y="192" width="240" height="36" rx="5" fill="rgba(86,211,100,0.08)" stroke="#56d364"/>
+      <text x="500" y="214" text-anchor="middle" font-size="11" fill="#56d364">内核: pd→tid = 0; futex_wake(&amp;pd→tid)</text>
+
+      <!-- futex_wait loop -->
+      <rect x="60" y="144" width="240" height="52" rx="5" fill="rgba(255,166,87,0.1)" stroke="#ffa657" stroke-width="1.5"/>
+      <text x="180" y="164" text-anchor="middle" font-size="11" fill="#ffa657">futex_wait(&amp;pd→tid, tid)</text>
+      <text x="180" y="180" text-anchor="middle" font-size="10" fill="#8b949e">循环: while(pd→tid != 0) wait</text>
+      <text x="180" y="192" text-anchor="middle" font-size="9" fill="#8b949e">内核 tid 清零后被唤醒</text>
+
+      <!-- Wake arrow -->
+      <line x1="380" y1="210" x2="302" y2="185" stroke="#ffa657" stroke-width="1.5" stroke-dasharray="4,3" marker-end="url(#fa)"/>
+      <text x="340" y="200" text-anchor="middle" font-size="9" fill="#ffa657">futex_wake 唤醒</text>
+
+      <!-- After wake -->
+      <rect x="60" y="214" width="240" height="36" rx="5" fill="rgba(88,166,255,0.08)" stroke="#58a6ff"/>
+      <text x="180" y="236" text-anchor="middle" font-size="11" fill="#e6edf3">pd→tid == 0，退出等待循环</text>
+
+      <rect x="60" y="266" width="240" height="36" rx="5" fill="rgba(88,166,255,0.08)" stroke="#58a6ff"/>
+      <text x="180" y="288" text-anchor="middle" font-size="11" fill="#e6edf3">*thread_return = pd→result（获取返回值）</text>
+
+      <rect x="60" y="318" width="240" height="36" rx="5" fill="rgba(247,129,102,0.1)" stroke="#f78166"/>
+      <text x="180" y="340" text-anchor="middle" font-size="11" fill="#f78166">__nptl_free_tcb(pd)（释放 TCB/栈）</text>
+
+      <rect x="60" y="370" width="240" height="36" rx="5" fill="rgba(86,211,100,0.08)" stroke="#56d364"/>
+      <text x="180" y="392" text-anchor="middle" font-size="11" fill="#56d364">返回 0</text>
+
+      <!-- Lines -->
+      <line x1="180" y1="76" x2="180" y2="92" stroke="#30363d" stroke-width="1.2" marker-end="url(#fa)"/>
+      <line x1="180" y1="128" x2="180" y2="144" stroke="#30363d" stroke-width="1.2" marker-end="url(#fa)"/>
+      <line x1="180" y1="196" x2="180" y2="214" stroke="#30363d" stroke-width="1.2" marker-end="url(#fa)"/>
+      <line x1="180" y1="250" x2="180" y2="266" stroke="#30363d" stroke-width="1.2" marker-end="url(#fa)"/>
+      <line x1="180" y1="302" x2="180" y2="318" stroke="#30363d" stroke-width="1.2" marker-end="url(#fa)"/>
+      <line x1="180" y1="354" x2="180" y2="370" stroke="#30363d" stroke-width="1.2" marker-end="url(#fa)"/>
+      <line x1="500" y1="176" x2="500" y2="192" stroke="#30363d" stroke-width="1.2" marker-end="url(#fa2)"/>
+    </svg>
+    <div class="diagram-caption">图 7-1：pthread_join 与目标线程退出的交互时序</div>
+  </div>
+
+  <h3 class="sub-title">核心代码</h3>
+  <pre>
+/* nptl/pthread_join_common.c — 核心等待循环 */
+pid_t tid;
+while ((tid = atomic_load_acquire(&amp;pd-&gt;tid)) != 0) {
+    /* 内核通过 CLONE_CHILD_CLEARTID 在线程退出时：
+       1. 将 pd→tid 写入 0
+       2. 执行 futex(FUTEX_WAKE) 唤醒等待者
+       注意：kernel ≤ 3.16.3 使用 LLL_SHARED（非私有 futex）*/
+    int ret = __futex_abstimed_wait_cancelable64(
+        (unsigned int *) &amp;pd-&gt;tid, tid, clockid, abstime, LLL_SHARED);
+    if (ret == ETIMEDOUT || ret == EOVERFLOW) {
+        result = ret; break;
+    }
+}
+
+/* 回收资源 */
+if (__glibc_likely(result == 0)) {
+    pd-&gt;tid = -1;
+    if (thread_return != NULL)
+        *thread_return = pd-&gt;result;
+    __nptl_free_tcb(pd);  /* 释放栈+TCB内存 */
+}
+  </pre>
+
+  <div class="callout callout-fp">
+    <div class="callout-title">🔭 第一性原理</div>
+    <p style="margin:0;"><code>pthread_join</code> 解决的根本问题是"如何安全地知道一个并发任务已完成"。答案是利用一个原子变量（<code>pd→tid</code>）作为完成信号：运行中为非零值，完成后由内核保证原子清零。等待者用 futex 监听这个变量，无需轮询（CPU 浪费），无需额外信号（signal 引入额外复杂性）。<strong style="color:var(--accent2)">这正是 POSIX 语义与 Linux futex 机制的完美结合点</strong>：一个整数，两种状态，一次原子写，一次 futex_wake——极简而无竞态。</p>
+  </div>
+</section>
+
+<!-- ════════════════════════════════ S8 ════════════════════════════════ -->
+<section class="section" id="s8">
+  <div class="section-label">互斥锁</div>
+  <h2 class="section-title">8. Futex 原理</h2>
+
+  <a class="source-link" href="https://eorlov.org/posts/2023/basics-of-futexes/" target="_blank">
+    Basics of Futexes — 深度解析（含 glibc 实现对比）
+  </a>
+  <a class="source-link" href="http://www.rkoucha.fr/tech_corner/the_futex.html" target="_blank" style="margin-left:8px;">
+    The Futex 详解 — R. Koucha
+  </a>
+
+  <p>
+    <strong style="color:var(--text)">Futex（Fast Userspace muTEX）</strong> 是 Linux 内核提供的快速用户态互斥机制。它的核心思想：<strong style="color:var(--accent)">无竞争时完全在用户态操作原子变量，仅在发生竞争时才进行系统调用</strong>。这是 NPTL 高性能的根本来源。
+  </p>
+
+  <h3 class="sub-title">Futex 系统调用接口</h3>
+  <pre>
+#include &lt;linux/futex.h&gt;
+long futex(uint32_t *uaddr,  /* 用户态整数的地址（共享内存中）*/
+           int futex_op,     /* 操作类型 */
+           uint32_t val,     /* 期望值 / 唤醒数量 */
+           const struct timespec *timeout,
+           uint32_t *uaddr2, uint32_t val3);
+
+/* 最常用的两个操作 */
+FUTEX_WAIT:  /* 若 *uaddr == val，则线程休眠，等待 FUTEX_WAKE */
+FUTEX_WAKE:  /* 唤醒最多 val 个在 uaddr 上等待的线程 */
+  </pre>
+
+  <h3 class="sub-title">Futex 工作原理图</h3>
+
+  <div class="diagram-wrap">
+    <svg viewBox="0 0 720 400" width="100%" xmlns="http://www.w3.org/2000/svg" style="max-width:720px;">
+      <defs>
+        <marker id="ga" markerWidth="7" markerHeight="6" refX="5" refY="3" orient="auto">
+          <path d="M0,0 L0,6 L8,3 z" fill="#58a6ff"/>
+        </marker>
+        <marker id="ga2" markerWidth="7" markerHeight="6" refX="5" refY="3" orient="auto">
+          <path d="M0,0 L0,6 L8,3 z" fill="#f78166"/>
+        </marker>
+        <marker id="ga3" markerWidth="7" markerHeight="6" refX="5" refY="3" orient="auto">
+          <path d="M0,0 L0,6 L8,3 z" fill="#56d364"/>
+        </marker>
+      </defs>
+
+      <!-- User Space label -->
+      <text x="10" y="20" font-size="11" fill="#8b949e" font-weight="700" letter-spacing="1">USER SPACE</text>
+      <rect x="5" y="28" width="710" height="180" rx="8" fill="rgba(88,166,255,0.04)" stroke="#30363d"/>
+
+      <!-- Thread A -->
+      <rect x="30" y="50" width="130" height="140" rx="6" fill="#1c2333" stroke="#58a6ff"/>
+      <text x="95" y="74" text-anchor="middle" font-size="12" fill="#58a6ff" font-weight="600">线程 A (Lock)</text>
+      <text x="95" y="98" text-anchor="middle" font-size="10" fill="#e6edf3">① CAS atomic_word</text>
+      <text x="95" y="115" text-anchor="middle" font-size="10" fill="#56d364">  0→1 成功</text>
+      <text x="95" y="132" text-anchor="middle" font-size="10" fill="#e6edf3">② 执行临界区</text>
+      <text x="95" y="149" text-anchor="middle" font-size="10" fill="#e6edf3">③ CAS 1→0</text>
+      <text x="95" y="166" text-anchor="middle" font-size="10" fill="#ffa657">④ FUTEX_WAKE</text>
+
+      <!-- atomic word -->
+      <rect x="290" y="80" width="140" height="52" rx="6" fill="rgba(210,168,255,0.15)" stroke="#d2a8ff" stroke-width="2"/>
+      <text x="360" y="102" text-anchor="middle" font-size="12" fill="#d2a8ff" font-weight="600">atomic_word</text>
+      <text x="360" y="120" text-anchor="middle" font-size="13" fill="#e6edf3" font-weight="700" id="fword">0 = unlocked</text>
+
+      <!-- Thread B -->
+      <rect x="560" y="50" width="130" height="140" rx="6" fill="#1c2333" stroke="#f78166"/>
+      <text x="625" y="74" text-anchor="middle" font-size="12" fill="#f78166" font-weight="600">线程 B (Wait)</text>
+      <text x="625" y="98" text-anchor="middle" font-size="10" fill="#e6edf3">① CAS atomic_word</text>
+      <text x="625" y="115" text-anchor="middle" font-size="10" fill="#f78166">  0→1 失败</text>
+      <text x="625" y="132" text-anchor="middle" font-size="10" fill="#e6edf3">② CAS 1→2</text>
+      <text x="625" y="149" text-anchor="middle" font-size="10" fill="#ffa657">③ FUTEX_WAIT(2)</text>
+      <text x="625" y="166" text-anchor="middle" font-size="10" fill="#8b949e">④ 睡眠...</text>
+
+      <!-- Arrows user space -->
+      <line x1="160" y1="120" x2="288" y2="106" stroke="#58a6ff" stroke-width="1.5" marker-end="url(#ga)"/>
+      <line x1="432" y1="106" x2="558" y2="120" stroke="#f78166" stroke-width="1.5" marker-end="url(#ga2)"/>
+
+      <!-- Kernel Space label -->
+      <text x="10" y="232" font-size="11" fill="#8b949e" font-weight="700" letter-spacing="1">KERNEL SPACE</text>
+      <rect x="5" y="238" width="710" height="148" rx="8" fill="rgba(86,211,100,0.04)" stroke="#30363d"/>
+
+      <!-- Kernel hash table -->
+      <rect x="220" y="258" width="280" height="110" rx="6" fill="#1c2333" stroke="#56d364"/>
+      <text x="360" y="282" text-anchor="middle" font-size="12" fill="#56d364" font-weight="600">futex hash table</text>
+      <text x="360" y="302" text-anchor="middle" font-size="10" fill="#8b949e">key = (内存地址 哈希)</text>
+      <rect x="260" y="315" width="200" height="30" rx="4" fill="rgba(255,166,87,0.1)" stroke="#ffa657"/>
+      <text x="360" y="335" text-anchor="middle" font-size="11" fill="#ffa657">等待队列: [Thread B, ...]</text>
+
+      <!-- Arrows kernel -->
+      <line x1="625" y1="190" x2="430" y2="260" stroke="#f78166" stroke-width="1.5" stroke-dasharray="4,3" marker-end="url(#ga2)"/>
+      <text x="565" y="232" text-anchor="middle" font-size="9" fill="#f78166">FUTEX_WAIT 系统调用</text>
+
+      <line x1="95" y1="190" x2="260" y2="324" stroke="#ffa657" stroke-width="1.5" stroke-dasharray="4,3" marker-end="url(#ga3)"/>
+      <text x="130" y="270" text-anchor="middle" font-size="9" fill="#ffa657">FUTEX_WAKE</text>
+      <text x="130" y="284" text-anchor="middle" font-size="9" fill="#ffa657">唤醒等待者</text>
+    </svg>
+    <div class="diagram-caption">图 8-1：Futex 工作原理 — 无竞争时纯用户态操作，竞争时才进内核</div>
+  </div>
+
+  <h3 class="sub-title">三态 Futex 值设计（glibc 采用）</h3>
+  <table>
+    <tr><th>值</th><th>含义</th><th>行为</th></tr>
+    <tr><td><code>0</code></td><td>未锁定</td><td>任何线程可通过 CAS 直接获取</td></tr>
+    <tr><td><code>1</code></td><td>已锁定，无等待者</td><td>解锁时直接写 0，无需 FUTEX_WAKE</td></tr>
+    <tr><td><code>2</code></td><td>已锁定，有等待者</td><td>解锁时必须调用 FUTEX_WAKE</td></tr>
+  </table>
+
+  <div class="callout callout-fp">
+    <div class="callout-title">🔭 第一性原理</div>
+    <p style="margin:0;">锁的核心矛盾是：<strong style="color:var(--accent5)">无竞争时需要极快（无系统调用），有竞争时需要精确等待（不能轮询烧 CPU）</strong>。Futex 用一个 32 位整数同时表达了锁的状态和等待者的存在，通过用户态原子 CAS 处理快路径，通过内核哈希表处理慢路径——这是分层抽象的典范。"三态"设计的精妙在于状态 1 到 0 的转换不需要系统调用（没有等待者），只有状态 2 才需要 FUTEX_WAKE，最小化了系统调用次数。</p>
+  </div>
+</section>
+
+<!-- ════════════════════════════════ S9 ════════════════════════════════ -->
+<section class="section" id="s9">
+  <div class="section-label">互斥锁</div>
+  <h2 class="section-title">9. pthread_mutex_lock 实现</h2>
+
+  <a class="source-link" href="https://github.com/lattera/glibc/blob/master/nptl/pthread_mutex_lock.c" target="_blank">
+    glibc/nptl/pthread_mutex_lock.c — 完整源码
+  </a>
+
+  <p>
+    <code>pthread_mutex_lock</code> 是 NPTL 互斥锁加锁的入口。对于最常见的 <code>PTHREAD_MUTEX_TIMED_NP</code>（普通互斥锁），实现分为两段：<strong style="color:var(--accent)">快速路径（Fast Path）</strong> 纯用户态原子操作，<strong style="color:var(--accent4)">慢速路径（Slow Path）</strong> 调用 futex 睡眠等待。
+  </p>
+
+  <h3 class="sub-title">pthread_mutex_t 内部结构</h3>
+  <pre>
+/* bits/pthreadtypes.h — 内部数据字段（简化） */
+typedef union {
+  struct __pthread_mutex_s {
+    int     __lock;     /* futex 字（0=未锁，1=锁定，2=有等待者）*/
+    unsigned int __count;   /* recursive mutex 的重入计数 */
+    int     __owner;    /* 持有线程的 TID（error-check/recursive）*/
+    /* ... */
+    int     __kind;     /* 锁类型（NORMAL / RECURSIVE / ERRORCHECK）*/
+    /* robust mutex 额外字段 */
+    struct { void *next; } __list;
+  } __data;
+  char __size[__SIZEOF_PTHREAD_MUTEX_T]; /* 40 bytes on x86-64 */
+  long int __align;
+} pthread_mutex_t;
+  </pre>
+
+  <h3 class="sub-title">加锁完整流程</h3>
+
+  <div class="diagram-wrap">
+    <svg viewBox="0 0 680 500" width="100%" xmlns="http://www.w3.org/2000/svg" style="max-width:680px;">
+      <defs>
+        <marker id="ha" markerWidth="7" markerHeight="6" refX="5" refY="3" orient="auto">
+          <path d="M0,0 L0,6 L8,3 z" fill="#58a6ff"/>
+        </marker>
+        <marker id="ha2" markerWidth="7" markerHeight="6" refX="5" refY="3" orient="auto">
+          <path d="M0,0 L0,6 L8,3 z" fill="#56d364"/>
+        </marker>
+        <marker id="ha3" markerWidth="7" markerHeight="6" refX="5" refY="3" orient="auto">
+          <path d="M0,0 L0,6 L8,3 z" fill="#f78166"/>
+        </marker>
+      </defs>
+
+      <!-- Entry -->
+      <ellipse cx="340" cy="24" rx="130" ry="20" fill="#1c2333" stroke="#58a6ff" stroke-width="1.5"/>
+      <text x="340" y="29" text-anchor="middle" font-size="12" fill="#58a6ff" font-weight="600">pthread_mutex_lock(mutex)</text>
+
+      <line x1="340" y1="44" x2="340" y2="64" stroke="#30363d" stroke-width="1.5" marker-end="url(#ha)"/>
+
+      <!-- Check type -->
+      <polygon points="340,64 480,104 340,144 200,104" fill="#1c2333" stroke="#ffa657" stroke-width="1.5"/>
+      <text x="340" y="102" text-anchor="middle" font-size="11" fill="#ffa657">锁类型 ==</text>
+      <text x="340" y="117" text-anchor="middle" font-size="11" fill="#ffa657">MUTEX_TIMED_NP?</text>
+
+      <!-- Non-standard path -->
+      <line x1="480" y1="104" x2="600" y2="104" stroke="#ffa657" stroke-width="1.5" marker-end="url(#ha)"/>
+      <text x="540" y="96" text-anchor="middle" font-size="10" fill="#ffa657">否</text>
+      <rect x="600" y="84" width="70" height="40" rx="5" fill="rgba(255,166,87,0.1)" stroke="#ffa657"/>
+      <text x="635" y="108" text-anchor="middle" font-size="10" fill="#ffa657">全功能路径</text>
+
+      <!-- Standard path -->
+      <line x1="340" y1="144" x2="340" y2="168" stroke="#30363d" stroke-width="1.5" marker-end="url(#ha)"/>
+      <text x="355" y="160" font-size="10" fill="#56d364">是</text>
+
+      <!-- Fast path: CAS -->
+      <rect x="200" y="168" width="280" height="56" rx="6" fill="rgba(86,211,100,0.1)" stroke="#56d364" stroke-width="2"/>
+      <text x="340" y="190" text-anchor="middle" font-size="12" fill="#56d364" font-weight="600">🚀 快速路径（Fast Path）</text>
+      <text x="340" y="210" text-anchor="middle" font-size="10" fill="#8b949e">LLL_MUTEX_LOCK: CAS(__lock, 0, 1)</text>
+      <text x="340" y="222" text-anchor="middle" font-size="9" fill="#8b949e">纯用户态 原子指令（LOCK CMPXCHG）</text>
+
+      <line x1="340" y1="224" x2="340" y2="248" stroke="#30363d" stroke-width="1.5" marker-end="url(#ha)"/>
+
+      <!-- Decision: success? -->
+      <polygon points="340,248 460,280 340,312 220,280" fill="#1c2333" stroke="#58a6ff" stroke-width="1.5"/>
+      <text x="340" y="278" text-anchor="middle" font-size="11" fill="#58a6ff">CAS 成功</text>
+      <text x="340" y="292" text-anchor="middle" font-size="11" fill="#58a6ff">(__lock: 0→1)?</text>
+
+      <!-- Success -->
+      <line x1="220" y1="280" x2="100" y2="280" stroke="#56d364" stroke-width="1.5" marker-end="url(#ha2)"/>
+      <text x="155" y="272" text-anchor="middle" font-size="10" fill="#56d364">是</text>
+      <rect x="10" y="260" width="90" height="40" rx="5" fill="rgba(86,211,100,0.1)" stroke="#56d364"/>
+      <text x="55" y="280" text-anchor="middle" font-size="10" fill="#56d364">获得锁</text>
+      <text x="55" y="295" text-anchor="middle" font-size="10" fill="#56d364">返回 0</text>
+
+      <!-- Failure: slow path -->
+      <line x1="340" y1="312" x2="340" y2="336" stroke="#30363d" stroke-width="1.5" marker-end="url(#ha)"/>
+      <text x="355" y="328" font-size="10" fill="#f78166">否（锁被占用）</text>
+
+      <rect x="200" y="336" width="280" height="72" rx="6" fill="rgba(247,129,102,0.1)" stroke="#f78166" stroke-width="2"/>
+      <text x="340" y="358" text-anchor="middle" font-size="12" fill="#f78166" font-weight="600">🐢 慢速路径（Slow Path）</text>
+      <text x="340" y="376" text-anchor="middle" font-size="10" fill="#8b949e">CAS(__lock, 1, 2)（标记有等待者）</text>
+      <text x="340" y="392" text-anchor="middle" font-size="10" fill="#ffa657">futex(FUTEX_WAIT, &amp;__lock, 2)</text>
+      <text x="340" y="406" text-anchor="middle" font-size="9" fill="#8b949e">线程休眠，等待 FUTEX_WAKE</text>
+
+      <line x1="340" y1="408" x2="340" y2="428" stroke="#30363d" stroke-width="1.5" marker-end="url(#ha)"/>
+
+      <!-- Loop back -->
+      <rect x="200" y="428" width="280" height="36" rx="5" fill="#1c2333" stroke="#30363d"/>
+      <text x="340" y="450" text-anchor="middle" font-size="11" fill="#8b949e">唤醒后：循环重试 CAS</text>
+
+      <!-- Loop arrow -->
+      <line x1="200" y1="446" x2="160" y2="446" stroke="#30363d" stroke-width="1.2"/>
+      <line x1="160" y1="446" x2="160" y2="186" stroke="#30363d" stroke-width="1.2"/>
+      <line x1="160" y1="186" x2="198" y2="186" stroke="#30363d" stroke-width="1.2" marker-end="url(#ha)"/>
+      <text x="138" y="320" font-size="9" fill="#8b949e" transform="rotate(-90,138,320)">重试循环</text>
+    </svg>
+    <div class="diagram-caption">图 9-1：pthread_mutex_lock 快速路径与慢速路径</div>
+  </div>
+
+  <h3 class="sub-title">关键汇编：x86-64 CAS 操作</h3>
+  <pre>
+/* lll_lock 宏展开后的核心（x86-64）*/
+/* LLL_MUTEX_LOCK: 尝试将 __lock 从 0 改为 1 */
+movl $1, %eax
+xchg %eax, mutex.__data.__lock  /* 原子交换 */
+testl %eax, %eax
+jz .done                        /* 原来是0：获得锁 */
+/* 原来非0：调用 __lll_lock_wait */
+
+/* __lll_lock_wait（慢速路径）*/
+movl $2, %edx
+.retry:
+    movl $2, %eax
+    xchg %eax, mutex.__data.__lock  /* 设为2（有等待者）*/
+    testl %eax, %eax
+    jz .done                         /* 期间锁被释放了 */
+    /* 调用 futex(FUTEX_WAIT, &amp;__lock, 2) */
+    movl $SYS_futex, %eax
+    syscall
+    jmp .retry
+  </pre>
+
+  <div class="callout callout-fp">
+    <div class="callout-title">🔭 第一性原理</div>
+    <p style="margin:0;">互斥锁的本质是"在原子性的前提下，将竞争失败的线程从运行队列移除，并在资源就绪时精确唤醒"。<strong style="color:var(--accent2)">原子 CAS</strong> 提供了无锁的状态转换（0→1），解决了"如何原子判断+修改"的问题；<strong style="color:var(--accent5)">futex</strong> 解决了"如何高效等待"的问题。两者结合：CAS 成功则无需任何内核参与（纳秒级）；CAS 失败才进入内核（微秒级）。这将"锁的平均成本"与"锁的竞争频率"绑定，在工程实践中接近理论最优。</p>
+  </div>
+</section>
+
+<!-- ════════════════════════════════ S10 ════════════════════════════════ -->
+<section class="section" id="s10">
+  <div class="section-label">互斥锁</div>
+  <h2 class="section-title">10. pthread_mutex_unlock 实现</h2>
+
+  <a class="source-link" href="https://github.com/jonathanmarvens/glibc/blob/master/nptl/pthread_mutex_unlock.c" target="_blank">
+    glibc/nptl/pthread_mutex_unlock.c — 源码
+  </a>
+
+  <p>
+    解锁是加锁的逆操作，同样分快速路径和慢速路径。关键在于 <strong style="color:var(--text)">是否需要调用 <code>FUTEX_WAKE</code></strong> ——只有当 <code>__lock == 2</code>（有等待者）时才需要。
+  </p>
+
+  <h3 class="sub-title">解锁逻辑</h3>
+  <pre>
+/* pthread_mutex_unlock 普通互斥锁核心逻辑（简化）*/
+int __pthread_mutex_unlock(pthread_mutex_t *mutex) {
+    /* 原子地将 __lock 减 1 */
+    int oldval = atomic_decrement_and_test(&amp;mutex-&gt;__data.__lock);
+    
+    if (oldval == 0) {
+        /* __lock 原来是 1（无等待者），现在为 0，直接完成 */
+        /* 🚀 快速路径：纯用户态，无系统调用 */
+        return 0;
+    }
+    
+    /* __lock 原来是 2（有等待者），设为 0 并唤醒 */
+    mutex-&gt;__data.__lock = 0;
+    /* 🐢 慢速路径：唤醒一个等待的线程 */
+    lll_futex_wake(&amp;mutex-&gt;__data.__lock, 1,
+                   PTHREAD_MUTEX_PSHARED(mutex));
+    return 0;
+}
+  </pre>
+
+  <div class="diagram-wrap">
+    <svg viewBox="0 0 640 300" width="100%" xmlns="http://www.w3.org/2000/svg" style="max-width:640px;">
+      <defs>
+        <marker id="ia" markerWidth="7" markerHeight="6" refX="5" refY="3" orient="auto">
+          <path d="M0,0 L0,6 L8,3 z" fill="#58a6ff"/>
+        </marker>
+        <marker id="ia2" markerWidth="7" markerHeight="6" refX="5" refY="3" orient="auto">
+          <path d="M0,0 L0,6 L8,3 z" fill="#56d364"/>
+        </marker>
+        <marker id="ia3" markerWidth="7" markerHeight="6" refX="5" refY="3" orient="auto">
+          <path d="M0,0 L0,6 L8,3 z" fill="#ffa657"/>
+        </marker>
+      </defs>
+
+      <!-- Entry -->
+      <ellipse cx="320" cy="22" rx="120" ry="18" fill="#1c2333" stroke="#58a6ff"/>
+      <text x="320" y="27" text-anchor="middle" font-size="12" fill="#58a6ff" font-weight="600">pthread_mutex_unlock()</text>
+
+      <line x1="320" y1="40" x2="320" y2="60" stroke="#30363d" stroke-width="1.5" marker-end="url(#ia)"/>
+
+      <rect x="170" y="60" width="300" height="36" rx="5" fill="#1c2333" stroke="#30363d"/>
+      <text x="320" y="82" text-anchor="middle" font-size="11" fill="#e6edf3">atomic_decrement(&amp;__lock) → oldval</text>
+
+      <line x1="320" y1="96" x2="320" y2="118" stroke="#30363d" stroke-width="1.5" marker-end="url(#ia)"/>
+
+      <!-- Diamond -->
+      <polygon points="320,118 450,158 320,198 190,158" fill="#1c2333" stroke="#ffa657" stroke-width="1.5"/>
+      <text x="320" y="156" text-anchor="middle" font-size="11" fill="#ffa657">有等待者？</text>
+      <text x="320" y="172" text-anchor="middle" font-size="10" fill="#8b949e">(oldval != 0)</text>
+
+      <!-- No: fast path -->
+      <line x1="190" y1="158" x2="80" y2="158" stroke="#56d364" stroke-width="1.5" marker-end="url(#ia2)"/>
+      <text x="133" y="150" text-anchor="middle" font-size="10" fill="#56d364">否</text>
+      <rect x="10" y="138" width="70" height="40" rx="5" fill="rgba(86,211,100,0.1)" stroke="#56d364"/>
+      <text x="45" y="158" text-anchor="middle" font-size="10" fill="#56d364">返回 0</text>
+      <text x="45" y="172" text-anchor="middle" font-size="9" fill="#8b949e">（无系统调用）</text>
+
+      <!-- Yes: wake -->
+      <line x1="320" y1="198" x2="320" y2="220" stroke="#30363d" stroke-width="1.5" marker-end="url(#ia)"/>
+      <text x="336" y="212" font-size="10" fill="#f78166">是</text>
+
+      <rect x="170" y="220" width="300" height="36" rx="5" fill="rgba(255,166,87,0.1)" stroke="#ffa657"/>
+      <text x="320" y="242" text-anchor="middle" font-size="11" fill="#ffa657">__lock = 0; FUTEX_WAKE(&amp;__lock, 1)</text>
+
+      <line x1="320" y1="256" x2="320" y2="276" stroke="#30363d" stroke-width="1.5" marker-end="url(#ia)"/>
+
+      <ellipse cx="320" cy="285" rx="80" ry="14" fill="rgba(86,211,100,0.1)" stroke="#56d364"/>
+      <text x="320" y="290" text-anchor="middle" font-size="11" fill="#56d364">返回 0</text>
+    </svg>
+    <div class="diagram-caption">图 10-1：pthread_mutex_unlock 解锁流程</div>
+  </div>
+
+  <h3 class="sub-title">完整的加锁/解锁状态转换</h3>
+
+  <div class="diagram-wrap">
+    <svg viewBox="0 0 700 200" width="100%" xmlns="http://www.w3.org/2000/svg" style="max-width:700px;">
+      <defs>
+        <marker id="ja" markerWidth="7" markerHeight="6" refX="5" refY="3" orient="auto">
+          <path d="M0,0 L0,6 L8,3 z" fill="#8b949e"/>
+        </marker>
+      </defs>
+
+      <!-- States -->
+      <ellipse cx="100" cy="100" rx="80" ry="40" fill="rgba(86,211,100,0.1)" stroke="#56d364" stroke-width="2"/>
+      <text x="100" y="96" text-anchor="middle" font-size="14" fill="#56d364" font-weight="700">__lock = 0</text>
+      <text x="100" y="114" text-anchor="middle" font-size="11" fill="#8b949e">未锁定</text>
+
+      <ellipse cx="360" cy="100" rx="80" ry="40" fill="rgba(88,166,255,0.1)" stroke="#58a6ff" stroke-width="2"/>
+      <text x="360" y="96" text-anchor="middle" font-size="14" fill="#58a6ff" font-weight="700">__lock = 1</text>
+      <text x="360" y="114" text-anchor="middle" font-size="11" fill="#8b949e">已锁，无等待</text>
+
+      <ellipse cx="610" cy="100" rx="80" ry="40" fill="rgba(247,129,102,0.1)" stroke="#f78166" stroke-width="2"/>
+      <text x="610" y="96" text-anchor="middle" font-size="14" fill="#f78166" font-weight="700">__lock = 2</text>
+      <text x="610" y="114" text-anchor="middle" font-size="11" fill="#8b949e">已锁，有等待</text>
+
+      <!-- Arrows -->
+      <!-- 0 -> 1: lock fast path -->
+      <path d="M 180 82 Q 270 40 278 82" fill="none" stroke="#56d364" stroke-width="1.5" marker-end="url(#ja)"/>
+      <text x="230" y="38" text-anchor="middle" font-size="10" fill="#56d364">CAS(0→1) 成功</text>
+      <text x="230" y="52" text-anchor="middle" font-size="9" fill="#8b949e">加锁快路径</text>
+
+      <!-- 1 -> 0: unlock fast path -->
+      <path d="M 280 118 Q 270 160 182 118" fill="none" stroke="#58a6ff" stroke-width="1.5" marker-end="url(#ja)"/>
+      <text x="230" y="162" text-anchor="middle" font-size="10" fill="#58a6ff">atomic_dec → 0</text>
+      <text x="230" y="176" text-anchor="middle" font-size="9" fill="#8b949e">解锁快路径（无系统调用）</text>
+
+      <!-- 1 -> 2: contention -->
+      <path d="M 440 82 Q 525 40 528 82" fill="none" stroke="#ffa657" stroke-width="1.5" marker-end="url(#ja)"/>
+      <text x="487" y="38" text-anchor="middle" font-size="10" fill="#ffa657">CAS(1→2)</text>
+      <text x="487" y="52" text-anchor="middle" font-size="9" fill="#8b949e">竞争，FUTEX_WAIT</text>
+
+      <!-- 2 -> 0: unlock slow path -->
+      <path d="M 530 118 Q 525 160 442 118" fill="none" stroke="#f78166" stroke-width="1.5" marker-end="url(#ja)"/>
+      <text x="487" y="162" text-anchor="middle" font-size="10" fill="#f78166">write 0 + FUTEX_WAKE</text>
+      <text x="487" y="176" text-anchor="middle" font-size="9" fill="#8b949e">解锁慢路径（系统调用）</text>
+    </svg>
+    <div class="diagram-caption">图 10-2：互斥锁三态状态转换图（基于 futex 字值）</div>
+  </div>
+
+  <div class="callout callout-fp">
+    <div class="callout-title">🔭 第一性原理</div>
+    <p style="margin:0;">解锁的根本问题是"如何最小化通知成本"。三态设计的天才之处：状态 1（无等待者）解锁时只需一次原子减法（纯硬件指令），零系统调用；状态 2（有等待者）才需要 FUTEX_WAKE。这意味着<strong style="color:var(--accent2)">只有实际存在竞争的情况才支付系统调用的成本</strong>，而竞争往往是小概率事件。在高并发服务器中，绝大多数锁操作走快速路径，整体性能接近无锁操作。</p>
+  </div>
+</section>
+
+<!-- ════════════════════════════════ S11 ════════════════════════════════ -->
+<section class="section" id="s11">
+  <div class="section-label">互斥锁</div>
+  <h2 class="section-title">11. 互斥锁类型与 Robust Mutex</h2>
+
+  <a class="source-link" href="https://grokipedia.com/page/Futex" target="_blank">
+    Robust Futex 机制 — Grokipedia（含内核实现描述）
+  </a>
+
+  <h3 class="sub-title">互斥锁类型对比</h3>
+  <table>
+    <tr><th>类型</th><th>常量</th><th>重入</th><th>死锁检测</th><th>开销</th></tr>
+    <tr>
+      <td>普通（默认）</td>
+      <td><code>PTHREAD_MUTEX_NORMAL</code></td>
+      <td>❌（死锁）</td><td>❌</td>
+      <td><span class="badge badge-green">最低</span></td>
+    </tr>
+    <tr>
+      <td>递归</td>
+      <td><code>PTHREAD_MUTEX_RECURSIVE</code></td>
+      <td>✅（计数）</td><td>❌</td>
+      <td><span class="badge badge-orange">中等</span></td>
+    </tr>
+    <tr>
+      <td>错误检查</td>
+      <td><code>PTHREAD_MUTEX_ERRORCHECK</code></td>
+      <td>❌（返回EDEADLK）</td><td>✅</td>
+      <td><span class="badge badge-orange">中等</span></td>
+    </tr>
+    <tr>
+      <td>健壮（Robust）</td>
+      <td><code>PTHREAD_MUTEX_ROBUST</code></td>
+      <td>❌</td><td>❌</td>
+      <td><span class="badge badge-red">较高</span></td>
+    </tr>
+    <tr>
+      <td>适应性自旋</td>
+      <td><code>PTHREAD_MUTEX_ADAPTIVE_NP</code></td>
+      <td>❌</td><td>❌</td>
+      <td><span class="badge badge-blue">动态</span></td>
+    </tr>
+  </table>
+
+  <h3 class="sub-title">Robust Mutex：线程崩溃时的锁恢复</h3>
+  <p>
+    普通互斥锁存在一个严重问题：若持锁线程意外终止（segfault、kill -9），锁永远不会被释放，其他等待线程将永久阻塞。<strong style="color:var(--text)">Robust Mutex</strong> 通过内核协助解决此问题。
+  </p>
+
+  <div class="diagram-wrap">
+    <svg viewBox="0 0 680 380" width="100%" xmlns="http://www.w3.org/2000/svg" style="max-width:680px;">
+      <defs>
+        <marker id="ka" markerWidth="7" markerHeight="6" refX="5" refY="3" orient="auto">
+          <path d="M0,0 L0,6 L8,3 z" fill="#58a6ff"/>
+        </marker>
+        <marker id="ka2" markerWidth="7" markerHeight="6" refX="5" refY="3" orient="auto">
+          <path d="M0,0 L0,6 L8,3 z" fill="#f78166"/>
+        </marker>
+        <marker id="ka3" markerWidth="7" markerHeight="6" refX="5" refY="3" orient="auto">
+          <path d="M0,0 L0,6 L8,3 z" fill="#56d364"/>
+        </marker>
+      </defs>
+
+      <!-- Thread A -->
+      <rect x="30" y="30" width="160" height="240" rx="8" fill="#1c2333" stroke="#58a6ff"/>
+      <text x="110" y="56" text-anchor="middle" font-size="12" fill="#58a6ff" font-weight="600">线程 A（持锁方）</text>
+      <text x="110" y="80" text-anchor="middle" font-size="10" fill="#e6edf3">① set_robust_list()</text>
+      <text x="110" y="98" text-anchor="middle" font-size="9" fill="#8b949e">注册 robust 链表到内核</text>
+      <text x="110" y="120" text-anchor="middle" font-size="10" fill="#e6edf3">② pthread_mutex_lock(m)</text>
+      <text x="110" y="138" text-anchor="middle" font-size="9" fill="#8b949e">将 m 加入 robust 链表</text>
+      <text x="110" y="158" text-anchor="middle" font-size="9" fill="#8b949e">__lock |= TID</text>
+      <text x="110" y="180" text-anchor="middle" font-size="10" fill="#e6edf3">③ ... 执行任务 ...</text>
+      <text x="110" y="202" text-anchor="middle" font-size="10" fill="#f78166" font-weight="600">④ 线程崩溃！💥</text>
+      <text x="110" y="220" text-anchor="middle" font-size="9" fill="#8b949e">（锁未释放）</text>
+      <text x="110" y="255" text-anchor="middle" font-size="9" fill="#8b949e">↓ 内核感知线程死亡</text>
+
+      <!-- Kernel -->
+      <rect x="230" y="130" width="200" height="160" rx="8" fill="#1c2333" stroke="#56d364"/>
+      <text x="330" y="156" text-anchor="middle" font-size="12" fill="#56d364" font-weight="600">内核自动处理</text>
+      <text x="330" y="180" text-anchor="middle" font-size="10" fill="#e6edf3">遍历 robust 链表</text>
+      <text x="330" y="198" text-anchor="middle" font-size="10" fill="#e6edf3">对每个持有的锁：</text>
+      <text x="330" y="218" text-anchor="middle" font-size="10" fill="#ffa657">__lock |= FUTEX_OWNER_DIED</text>
+      <text x="330" y="238" text-anchor="middle" font-size="10" fill="#ffa657">(bit 30 = 0x40000000)</text>
+      <text x="330" y="258" text-anchor="middle" font-size="10" fill="#56d364">futex_wake(等待者)</text>
+      <text x="330" y="276" text-anchor="middle" font-size="9" fill="#8b949e">唤醒一个等待线程</text>
+
+      <!-- Thread B -->
+      <rect x="480" y="30" width="170" height="240" rx="8" fill="#1c2333" stroke="#ffa657"/>
+      <text x="565" y="56" text-anchor="middle" font-size="12" fill="#ffa657" font-weight="600">线程 B（等待方）</text>
+      <text x="565" y="80" text-anchor="middle" font-size="10" fill="#e6edf3">① pthread_mutex_lock(m)</text>
+      <text x="565" y="98" text-anchor="middle" font-size="9" fill="#8b949e">被阻塞... futex_wait</text>
+      <text x="565" y="140" text-anchor="middle" font-size="10" fill="#56d364">② 被唤醒！</text>
+      <text x="565" y="158" text-anchor="middle" font-size="9" fill="#8b949e">返回 EOWNERDEAD</text>
+      <text x="565" y="180" text-anchor="middle" font-size="10" fill="#e6edf3">③ 检测到 owner died</text>
+      <text x="565" y="200" text-anchor="middle" font-size="10" fill="#e6edf3">修复状态（可选）</text>
+      <text x="565" y="220" text-anchor="middle" font-size="10" fill="#ffa657">pthread_mutex_consistent()</text>
+      <text x="565" y="240" text-anchor="middle" font-size="9" fill="#8b949e">标记锁已恢复一致性</text>
+
+      <!-- Arrows -->
+      <line x1="190" y1="240" x2="228" y2="210" stroke="#f78166" stroke-width="1.5" stroke-dasharray="4,3" marker-end="url(#ka)"/>
+      <line x1="430" y1="220" x2="478" y2="150" stroke="#56d364" stroke-width="1.5" stroke-dasharray="4,3" marker-end="url(#ka3)"/>
+    </svg>
+    <div class="diagram-caption">图 11-1：Robust Mutex 机制 — 线程崩溃时内核自动设置 FUTEX_OWNER_DIED 标志</div>
+  </div>
+
+  <h3 class="sub-title">__lock 字段的位布局（Robust/PI Mutex）</h3>
+  <pre>
+/* linux/futex.h — futex 字的位定义 */
+#define FUTEX_WAITERS        0x80000000  /* bit 31: 有等待者 */
+#define FUTEX_OWNER_DIED     0x40000000  /* bit 30: 持有者已死亡 */
+#define FUTEX_TID_MASK       0x3fffffff  /* bit 0-29: 持有者 TID */
+
+/* 当 FUTEX_OWNER_DIED 被设置时：
+   - 任何等待者调用 pthread_mutex_lock 将返回 EOWNERDEAD
+   - 应用程序必须检查并决定是否调用 pthread_mutex_consistent() */
+  </pre>
+
+  <div class="callout callout-fp">
+    <div class="callout-title">🔭 第一性原理</div>
+    <p style="margin:0;">Robust Mutex 解决了一个根本性的分布式系统问题：<strong style="color:var(--accent5)">如何处理参与者在持有锁时崩溃？</strong> 答案是"内核担保"——将锁的存活与线程的存活绑定（通过 set_robust_list 注册），利用内核的线程终止通知机制（线程退出时遍历链表）来完成清理。TID 内嵌到锁字中是关键：使得内核能在不引入额外数据结构的情况下，在 O(n) 时间内处理所有持有的锁。这是"把状态放在数据本身中"而非"额外维护状态表"的极简主义。</p>
+  </div>
+</section>
+
+<!-- ════════════════════════════════ S12 ════════════════════════════════ -->
+<section class="section" id="s12">
+  <div class="section-label">附录</div>
+  <h2 class="section-title">12. 关键数据结构速查</h2>
+
+  <h3 class="sub-title">线程生命周期全景图</h3>
+
+  <div class="diagram-wrap">
+    <svg viewBox="0 0 720 420" width="100%" xmlns="http://www.w3.org/2000/svg" style="max-width:720px;">
+      <defs>
+        <marker id="la" markerWidth="8" markerHeight="6" refX="6" refY="3" orient="auto">
+          <path d="M0,0 L0,6 L8,3 z" fill="#58a6ff"/>
+        </marker>
+      </defs>
+
+      <!-- Timeline -->
+      <line x1="40" y1="200" x2="690" y2="200" stroke="#30363d" stroke-width="2"/>
+
+      <!-- Phases -->
+      <!-- Phase 1: Allocation -->
+      <rect x="40" y="80" width="120" height="240" rx="8" fill="rgba(88,166,255,0.07)" stroke="#58a6ff" stroke-dasharray="5,3"/>
+      <text x="100" y="70" text-anchor="middle" font-size="11" fill="#58a6ff" font-weight="600">① 分配</text>
+      <text x="100" y="120" text-anchor="middle" font-size="9" fill="#8b949e">allocate_stack()</text>
+      <text x="100" y="138" text-anchor="middle" font-size="9" fill="#8b949e">mmap / 缓存</text>
+      <text x="100" y="158" text-anchor="middle" font-size="9" fill="#8b949e">guard page</text>
+      <text x="100" y="178" text-anchor="middle" font-size="9" fill="#8b949e">TLS + TCB init</text>
+      <circle cx="100" cy="200" r="6" fill="#58a6ff"/>
+
+      <!-- Arrow -->
+      <line x1="162" y1="200" x2="178" y2="200" stroke="#58a6ff" stroke-width="1.5" marker-end="url(#la)"/>
+
+      <!-- Phase 2: Creation -->
+      <rect x="180" y="80" width="120" height="240" rx="8" fill="rgba(210,168,255,0.07)" stroke="#d2a8ff" stroke-dasharray="5,3"/>
+      <text x="240" y="70" text-anchor="middle" font-size="11" fill="#d2a8ff" font-weight="600">② 创建</text>
+      <text x="240" y="120" text-anchor="middle" font-size="9" fill="#8b949e">pthread_create()</text>
+      <text x="240" y="138" text-anchor="middle" font-size="9" fill="#8b949e">init pd fields</text>
+      <text x="240" y="158" text-anchor="middle" font-size="9" fill="#8b949e">block signals</text>
+      <text x="240" y="178" text-anchor="middle" font-size="9" fill="#d2a8ff" font-weight="600">ARCH_CLONE()</text>
+      <circle cx="240" cy="200" r="6" fill="#d2a8ff"/>
+
+      <!-- Arrow -->
+      <line x1="302" y1="200" x2="318" y2="200" stroke="#58a6ff" stroke-width="1.5" marker-end="url(#la)"/>
+
+      <!-- Phase 3: Startup -->
+      <rect x="320" y="80" width="120" height="240" rx="8" fill="rgba(255,166,87,0.07)" stroke="#ffa657" stroke-dasharray="5,3"/>
+      <text x="380" y="70" text-anchor="middle" font-size="11" fill="#ffa657" font-weight="600">③ 启动</text>
+      <text x="380" y="120" text-anchor="middle" font-size="9" fill="#8b949e">start_thread()</text>
+      <text x="380" y="138" text-anchor="middle" font-size="9" fill="#8b949e">robust_list reg</text>
+      <text x="380" y="158" text-anchor="middle" font-size="9" fill="#8b949e">setjmp 取消点</text>
+      <text x="380" y="178" text-anchor="middle" font-size="9" fill="#ffa657" font-weight="600">用户函数执行</text>
+      <circle cx="380" cy="200" r="6" fill="#ffa657"/>
+
+      <!-- Arrow -->
+      <line x1="442" y1="200" x2="458" y2="200" stroke="#58a6ff" stroke-width="1.5" marker-end="url(#la)"/>
+
+      <!-- Phase 4: Termination -->
+      <rect x="460" y="80" width="120" height="240" rx="8" fill="rgba(247,129,102,0.07)" stroke="#f78166" stroke-dasharray="5,3"/>
+      <text x="520" y="70" text-anchor="middle" font-size="11" fill="#f78166" font-weight="600">④ 终止</text>
+      <text x="520" y="120" text-anchor="middle" font-size="9" fill="#8b949e">pthread_exit()</text>
+      <text x="520" y="138" text-anchor="middle" font-size="9" fill="#8b949e">TLS/TSD析构</text>
+      <text x="520" y="158" text-anchor="middle" font-size="9" fill="#8b949e">设 EXITING bit</text>
+      <text x="520" y="178" text-anchor="middle" font-size="9" fill="#f78166" font-weight="600">exit(0) 系统调用</text>
+      <circle cx="520" cy="200" r="6" fill="#f78166"/>
+
+      <!-- Arrow -->
+      <line x1="582" y1="200" x2="598" y2="200" stroke="#58a6ff" stroke-width="1.5" marker-end="url(#la)"/>
+
+      <!-- Phase 5: Reaping -->
+      <rect x="600" y="80" width="90" height="240" rx="8" fill="rgba(86,211,100,0.07)" stroke="#56d364" stroke-dasharray="5,3"/>
+      <text x="645" y="70" text-anchor="middle" font-size="11" fill="#56d364" font-weight="600">⑤ 回收</text>
+      <text x="645" y="120" text-anchor="middle" font-size="9" fill="#8b949e">pthread_join()</text>
+      <text x="645" y="138" text-anchor="middle" font-size="9" fill="#8b949e">futex_wait</text>
+      <text x="645" y="158" text-anchor="middle" font-size="9" fill="#8b949e">tid→0</text>
+      <text x="645" y="178" text-anchor="middle" font-size="9" fill="#56d364" font-weight="600">free_tcb()</text>
+      <circle cx="645" cy="200" r="6" fill="#56d364"/>
+
+      <!-- Key components below -->
+      <!-- clone flags -->
+      <rect x="40" y="360" width="155" height="50" rx="5" fill="rgba(88,166,255,0.08)" stroke="#58a6ff"/>
+      <text x="117" y="381" text-anchor="middle" font-size="10" fill="#58a6ff" font-weight="600">clone() 标志</text>
+      <text x="117" y="397" text-anchor="middle" font-size="9" fill="#8b949e">VM|FS|FILES|SIGHAND|THREAD</text>
+      <text x="117" y="408" text-anchor="middle" font-size="9" fill="#8b949e">SETTLS|PARENT_SETTID|CHILD_CLEARTID</text>
+
+      <rect x="210" y="360" width="140" height="50" rx="5" fill="rgba(210,168,255,0.08)" stroke="#d2a8ff"/>
+      <text x="280" y="381" text-anchor="middle" font-size="10" fill="#d2a8ff" font-weight="600">struct pthread 核心</text>
+      <text x="280" y="397" text-anchor="middle" font-size="9" fill="#8b949e">tid / joinid / joinstate</text>
+      <text x="280" y="408" text-anchor="middle" font-size="9" fill="#8b949e">start_routine / robust_head</text>
+
+      <rect x="365" y="360" width="140" height="50" rx="5" fill="rgba(255,166,87,0.08)" stroke="#ffa657"/>
+      <text x="435" y="381" text-anchor="middle" font-size="10" fill="#ffa657" font-weight="600">pthread_mutex_t 核心</text>
+      <text x="435" y="397" text-anchor="middle" font-size="9" fill="#8b949e">__lock (0/1/2)</text>
+      <text x="435" y="408" text-anchor="middle" font-size="9" fill="#8b949e">FUTEX_WAIT / FUTEX_WAKE</text>
+
+      <rect x="520" y="360" width="140" height="50" rx="5" fill="rgba(86,211,100,0.08)" stroke="#56d364"/>
+      <text x="590" y="381" text-anchor="middle" font-size="10" fill="#56d364" font-weight="600">资源回收</text>
+      <text x="590" y="397" text-anchor="middle" font-size="9" fill="#8b949e">stack cache / munmap</text>
+      <text x="590" y="408" text-anchor="middle" font-size="9" fill="#8b949e">free_tcb = reuse</text>
+    </svg>
+    <div class="diagram-caption">图 12-1：线程完整生命周期全景图（从分配到回收）</div>
+  </div>
+
+  <h3 class="sub-title">关键系统调用汇总</h3>
+  <table>
+    <tr><th>系统调用</th><th>用途</th><th>关键参数</th></tr>
+    <tr><td><code>clone(2)</code></td><td>创建新线程（内核 LWP）</td><td>CLONE_VM|CLONE_THREAD|CLONE_SETTLS 等</td></tr>
+    <tr><td><code>futex(2)</code></td><td>用户态快速互斥/条件等待</td><td>FUTEX_WAIT / FUTEX_WAKE / FUTEX_WAKE_OP</td></tr>
+    <tr><td><code>mmap(2)</code></td><td>分配线程栈</td><td>MAP_PRIVATE|MAP_ANONYMOUS|MAP_STACK</td></tr>
+    <tr><td><code>mprotect(2)</code></td><td>设置 Guard Page</td><td>PROT_NONE</td></tr>
+    <tr><td><code>arch_prctl(2)</code></td><td>设置 TLS 段寄存器</td><td>ARCH_SET_FS（x86-64）</td></tr>
+    <tr><td><code>set_robust_list(2)</code></td><td>注册 Robust Mutex 链表</td><td>robust_head 指针</td></tr>
+    <tr><td><code>sched_setscheduler(2)</code></td><td>设置线程调度策略</td><td>SCHED_FIFO / SCHED_RR / SCHED_OTHER</td></tr>
+    <tr><td><code>exit(2)</code></td><td>线程退出（非进程 exit）</td><td>CLONE_CHILD_CLEARTID 触发 futex_wake</td></tr>
+  </table>
+
+  <h3 class="sub-title">性能关键路径对比</h3>
+  <table>
+    <tr><th>操作</th><th>快速路径（无系统调用）</th><th>慢速路径（有系统调用）</th><th>典型延迟</th></tr>
+    <tr>
+      <td>pthread_mutex_lock</td>
+      <td>1x CAS（LOCK CMPXCHG）</td>
+      <td>futex(FUTEX_WAIT)</td>
+      <td>~10ns / ~1μs</td>
+    </tr>
+    <tr>
+      <td>pthread_mutex_unlock</td>
+      <td>1x atomic_dec</td>
+      <td>write+futex(FUTEX_WAKE)</td>
+      <td>~5ns / ~1μs</td>
+    </tr>
+    <tr>
+      <td>pthread_create</td>
+      <td>栈缓存命中（链表查找）</td>
+      <td>mmap + clone</td>
+      <td>~5μs / ~30μs</td>
+    </tr>
+    <tr>
+      <td>pthread_join</td>
+      <td>目标已退出（load acquire）</td>
+      <td>futex(FUTEX_WAIT)</td>
+      <td>~10ns / 视目标</td>
+    </tr>
+  </table>
+
+  <h3 class="sub-title">参考资料（官方权威来源）</h3>
+  <ul style="margin-left:20px;line-height:2.2;">
+    <li><a href="https://codebrowser.dev/glibc/glibc/nptl/pthread_create.c.html" target="_blank" style="color:var(--accent)">glibc/nptl/pthread_create.c — Codebrowser（带交叉引用）</a></li>
+    <li><a href="https://codebrowser.dev/glibc/glibc/nptl/pthread_join_common.c.html" target="_blank" style="color:var(--accent)">glibc/nptl/pthread_join_common.c — Codebrowser</a></li>
+    <li><a href="https://github.com/bminor/glibc/blob/master/nptl/pthread_create.c" target="_blank" style="color:var(--accent)">bminor/glibc — GitHub 官方镜像</a></li>
+    <li><a href="https://github.com/lattera/glibc/blob/master/nptl/descr.h" target="_blank" style="color:var(--accent)">glibc/nptl/descr.h — struct pthread 完整定义</a></li>
+    <li><a href="https://github.com/lattera/glibc/blob/master/nptl/pthread_mutex_lock.c" target="_blank" style="color:var(--accent)">glibc/nptl/pthread_mutex_lock.c — 互斥锁加锁源码</a></li>
+    <li><a href="https://man7.org/linux/man-pages/man7/pthreads.7.html" target="_blank" style="color:var(--accent)">pthreads(7) — Linux 手册页（NPTL vs LinuxThreads）</a></li>
+    <li><a href="https://lwn.net/Articles/10465/" target="_blank" style="color:var(--accent)">NPTL 0.1 发布公告 — LWN.net（Ulrich Drepper 原文）</a></li>
+    <li><a href="https://chao-tic.github.io/blog/2018/12/25/tls" target="_blank" style="color:var(--accent)">A Deep dive into (implicit) Thread Local Storage</a></li>
+    <li><a href="https://eorlov.org/posts/2023/basics-of-futexes/" target="_blank" style="color:var(--accent)">Basics of Futexes — 深度解析</a></li>
+  </ul>
+
+  <div class="callout callout-fp">
+    <div class="callout-title">🔭 总结：第一性原理视角下的 NPTL</div>
+    <p style="margin:0 0 12px;">
+      NPTL 的设计哲学可归纳为三个第一性原理：
+    </p>
+    <p style="margin:0 0 8px;">
+      <strong style="color:var(--accent)">1. 最小化系统调用次数</strong>：通过用户态原子操作（CAS）实现快速路径，只在绝对必要时（竞争发生）才进入内核。这使得无竞争的锁操作降至纳秒级。
+    </p>
+    <p style="margin:0 0 8px;">
+      <strong style="color:var(--accent3)">2. 委托内核处理不可避免的内核操作</strong>：线程退出通知（CLONE_CHILD_CLEARTID）、Robust Mutex 清理（set_robust_list）、调度（SCHED_*）——凡是必须在内核态完成的操作，设计优雅的接口让内核一次性完成，避免用户态轮询。
+    </p>
+    <p style="margin:0;">
+      <strong style="color:var(--accent5)">3. 资源复用胜于资源新建</strong>：栈缓存池将线程创建成本从 mmap 系统调用降至链表查找；TCB 中的自引用（%fs 寄存器）使线程自我识别的代价为零；TLS 与栈共同分配，节省内存映射。整个 NPTL 是一个"在正确的层次上做正确的事"的工程典范。
+    </p>
+  </div>
+</section>
+
+</div><!-- /content -->
+</main>
+
+<script>
+// ── Section definitions ──
+const sections = [
+  's0','s1','s2','s3','s4','s5','s6','s7','s8','s9','s10','s11','s12'
+];
+let currentIdx = 0;
+
+// ── Progress Bar ──
+window.addEventListener('scroll', () => {
+  const docH = document.documentElement.scrollHeight - window.innerHeight;
+  const pct = docH > 0 ? (window.scrollY / docH) * 100 : 0;
+  document.getElementById('progress-bar').style.width = pct + '%';
+  updateActiveNav();
+});
+
+// ── Update active nav item based on scroll position ──
+function updateActiveNav() {
+  const hdrH = 48 + 3 + 16;
+  let active = sections[0];
+  for (let i = sections.length - 1; i >= 0; i--) {
+    const el = document.getElementById(sections[i]);
+    if (el && el.getBoundingClientRect().top <= hdrH + 40) {
+      active = sections[i];
+      currentIdx = i;
+      break;
+    }
+  }
+  document.querySelectorAll('.nav-item').forEach(a => {
+    a.classList.toggle('active', a.dataset.section === active);
+  });
+}
+
+// ── Navigate to section ──
+function navTo(id) {
+  const el = document.getElementById(id);
+  if (!el) return;
+  currentIdx = sections.indexOf(id);
+  el.scrollIntoView({ behavior: 'smooth' });
+  // Close mobile sidebar
+  if (window.innerWidth <= 768) {
+    document.getElementById('sidebar').classList.remove('open');
+    document.getElementById('overlay').classList.remove('open');
+  }
+}
+
+// ── Keyboard navigation ──
+document.addEventListener('keydown', (e) => {
+  if (e.target.tagName === 'INPUT' || e.target.tagName === 'TEXTAREA') return;
+  if (e.key === 'ArrowRight' || e.key === 'ArrowDown') {
+    e.preventDefault();
+    if (currentIdx < sections.length - 1) {
+      currentIdx++;
+      navTo(sections[currentIdx]);
+    }
+  } else if (e.key === 'ArrowLeft' || e.key === 'ArrowUp') {
+    e.preventDefault();
+    if (currentIdx > 0) {
+      currentIdx--;
+      navTo(sections[currentIdx]);
+    }
+  }
+});
+
+// ── Hamburger / Sidebar toggle ──
+function toggleSidebar() {
+  const sb = document.getElementById('sidebar');
+  const ov = document.getElementById('overlay');
+  sb.classList.toggle('open');
+  ov.classList.toggle('open');
+}
+
+// ── Initial active update ──
+updateActiveNav();
+
+// ── Smooth scroll polyfill for Safari ──
+document.querySelectorAll('.nav-item').forEach(a => {
+  a.addEventListener('click', (e) => {
+    e.preventDefault();
+  });
+});
+</script>
+</body>
+</html>

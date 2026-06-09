@@ -1,0 +1,416 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Linux EMC 子系统设计架构：从 DTS 到 X2600 外部存储控制器</title>
+  <style>
+    :root {
+      --bg: #0f1117;
+      --panel: #161b22;
+      --panel-2: #1d2430;
+      --ink: #e6edf3;
+      --muted: #9da7b3;
+      --line: #30363d;
+      --accent: #58a6ff;
+      --accent-2: #3fb950;
+      --accent-3: #f0883e;
+      --accent-4: #d2a8ff;
+      --danger: #ff7b72;
+      --code-bg: #0b0f14;
+      --nav: #0b0f14;
+      --shadow: 0 18px 40px rgba(0,0,0,0.35);
+      --radius: 8px;
+      font-family: "Noto Sans SC", "Source Han Sans SC", "Microsoft YaHei", sans-serif;
+    }
+
+    * { box-sizing: border-box; }
+    html { scroll-behavior: smooth; }
+    body {
+      margin: 0;
+      color: var(--ink);
+      background:
+        radial-gradient(circle at 8% 0%, rgba(88,166,255,0.16), transparent 32rem),
+        radial-gradient(circle at 92% 12%, rgba(240,136,62,0.10), transparent 30rem),
+        linear-gradient(180deg, #0f1117 0%, #111722 100%);
+      line-height: 1.72;
+      overflow-x: hidden;
+    }
+
+    a { color: var(--accent); text-decoration-thickness: 1px; text-underline-offset: 3px; }
+    code, .mono { font-family: "Cascadia Code", "Source Code Pro", Consolas, monospace; }
+
+    .progress { position: fixed; top: 0; left: 0; width: 100%; height: 4px; z-index: 70; background: rgba(255,255,255,0.08); }
+    .progress span { display: block; width: 0%; height: 100%; background: linear-gradient(90deg, var(--accent), var(--accent-3), var(--accent-4)); }
+
+    .topbar {
+      position: fixed;
+      top: 4px;
+      left: 0;
+      right: 0;
+      height: 54px;
+      z-index: 60;
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 1rem;
+      padding: 0 1rem;
+      background: rgba(13, 17, 23, 0.92);
+      backdrop-filter: blur(16px);
+      border-bottom: 1px solid var(--line);
+    }
+
+    .topbar strong { letter-spacing: 0; }
+    .hamburger {
+      display: none;
+      width: 2.4rem;
+      height: 2.4rem;
+      border: 1px solid var(--line);
+      background: transparent;
+      color: var(--ink);
+      border-radius: var(--radius);
+      cursor: pointer;
+      font: inherit;
+    }
+
+    .layout { display: grid; grid-template-columns: 19rem minmax(0, 1fr); min-height: 100vh; padding-top: 58px; }
+    nav {
+      position: sticky;
+      top: 62px;
+      height: calc(100vh - 62px);
+      overflow: auto;
+      background: rgba(11, 15, 20, 0.96);
+      border-right: 1px solid var(--line);
+      padding: 1.1rem 0.85rem 2rem;
+    }
+
+    .brand { padding: 0.7rem 0.7rem 1rem; border-bottom: 1px solid var(--line); margin-bottom: 0.8rem; }
+    .brand strong { display: block; font-size: 1.05rem; }
+    .brand small { display: block; color: var(--muted); margin-top: 0.35rem; }
+    details { border-bottom: 1px solid rgba(255,255,255,0.08); padding: 0.3rem 0; }
+    summary { cursor: pointer; padding: 0.5rem 0.7rem; color: #f0f6fc; font-weight: 700; }
+    .nav-list { list-style: none; padding: 0 0 0.35rem; margin: 0; }
+    .nav-list a { display: block; color: var(--muted); text-decoration: none; border-radius: 6px; padding: 0.42rem 0.7rem 0.42rem 1.15rem; font-size: 0.93rem; line-height: 1.36; }
+    .nav-list a.active { color: var(--ink); background: rgba(88,166,255,0.16); box-shadow: inset 3px 0 0 var(--accent); }
+
+    main { width: min(100%, 1160px); margin: 0 auto; padding: 2.2rem clamp(1rem, 4vw, 3.5rem) 5rem; }
+    header.hero { min-height: calc(74vh - 58px); display: grid; align-content: center; gap: 1.2rem; border-bottom: 1px solid var(--line); margin-bottom: 2.5rem; }
+    .eyebrow { color: var(--accent-3); font-weight: 800; }
+    h1, h2, h3 { line-height: 1.22; letter-spacing: 0; }
+    h1 { font-size: clamp(2.05rem, 5.6vw, 5rem); max-width: 16ch; margin: 0; }
+    h2 { font-size: clamp(1.65rem, 3vw, 2.55rem); margin: 3rem 0 1rem; }
+    h3 { font-size: 1.28rem; margin: 1.7rem 0 0.7rem; }
+    .lead { font-size: clamp(1.04rem, 2vw, 1.28rem); max-width: 68ch; color: #c9d1d9; }
+    section { scroll-margin-top: 76px; }
+
+    .panel, .concept, .svg-card {
+      background: linear-gradient(180deg, rgba(22,27,34,0.96), rgba(22,27,34,0.86));
+      border: 1px solid var(--line);
+      border-radius: var(--radius);
+      box-shadow: var(--shadow);
+    }
+    .panel { padding: 1rem; margin: 1rem 0; }
+    .concept { padding: 1rem; }
+    .concept h3 { margin-top: 0; }
+    .grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 1rem; margin: 1rem 0; }
+    .tri-grid { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 1rem; margin: 1rem 0; }
+    .quote { border-left: 4px solid var(--accent); padding: 0.8rem 1rem; background: rgba(88,166,255,0.08); color: #d9e7ff; margin: 1rem 0; }
+    .tag { display: inline-block; border-radius: 999px; padding: 0.08rem 0.55rem; color: #0d1117; background: var(--accent-2); font-size: 0.82rem; font-weight: 700; margin-right: 0.35rem; white-space: nowrap; }
+    .tag.blue { background: var(--accent); }
+    .tag.orange { background: var(--accent-3); }
+    .tag.purple { background: var(--accent-4); }
+    .tag.red { background: var(--danger); }
+
+    pre { background: var(--code-bg); color: #dbeafe; border: 1px solid var(--line); border-radius: var(--radius); padding: 1rem; overflow-x: auto; font-size: 0.91rem; line-height: 1.55; }
+    table { width: 100%; border-collapse: collapse; margin: 1rem 0; background: var(--panel); }
+    th, td { border: 1px solid var(--line); padding: 0.72rem; vertical-align: top; }
+    th { background: #1f2937; text-align: left; color: #f0f6fc; }
+    .svg-card { padding: 0.8rem; margin: 1rem 0; overflow: hidden; }
+    svg { width: 100%; height: auto; display: block; }
+    .box { fill: #161b22; stroke: #58a6ff; stroke-width: 1.5; rx: 8; }
+    .box.green { stroke: #3fb950; }
+    .box.orange { stroke: #f0883e; }
+    .box.purple { stroke: #d2a8ff; }
+    .box.red { stroke: #ff7b72; }
+    .svg-text { fill: #e6edf3; font-size: 14px; font-family: "Noto Sans SC", sans-serif; }
+    .svg-small { fill: #9da7b3; font-size: 12px; font-family: "Noto Sans SC", sans-serif; }
+    .arrow { stroke: #8b949e; stroke-width: 2; fill: none; marker-end: url(#arrow); }
+    .arrow.green { stroke: #3fb950; }
+    .arrow.orange { stroke: #f0883e; }
+    .arrow.purple { stroke: #d2a8ff; }
+    .chapter-nav { display: flex; justify-content: space-between; gap: 1rem; border-top: 1px solid var(--line); margin-top: 3rem; padding-top: 1.2rem; }
+    .chapter-nav a { border: 1px solid var(--line); border-radius: var(--radius); padding: 0.65rem 0.9rem; text-decoration: none; color: var(--ink); background: var(--panel); }
+
+    @media (max-width: 900px) {
+      .hamburger { display: inline-block; }
+      .layout { grid-template-columns: 1fr; }
+      nav { position: fixed; top: 58px; left: 0; bottom: 0; width: min(88vw, 21rem); height: auto; transform: translateX(-105%); transition: transform 180ms ease; z-index: 55; }
+      nav.open { transform: translateX(0); }
+      main { padding-top: 1.4rem; }
+      .grid, .tri-grid { grid-template-columns: 1fr; }
+      header.hero { min-height: 70vh; }
+    }
+  </style>
+</head>
+<body>
+  <div class="progress" aria-hidden="true"><span id="progressBar"></span></div>
+  <header class="topbar">
+    <button class="hamburger" id="menuButton" aria-label="打开目录">☰</button>
+    <strong>Linux EMC / X2600</strong>
+    <span class="mono">DTS -> nemc -> driver -> physical timing</span>
+  </header>
+
+  <div class="layout">
+    <nav id="sideNav" aria-label="章节目录">
+      <div class="brand"><strong>EMC 子系统</strong><small>外部存储控制：从原理到实践</small></div>
+      <details open><summary>基础问题</summary><ul class="nav-list">
+        <li><a href="#sources">官方权威依据</a></li>
+        <li><a href="#why">第一性原理：为何需要 EMC</a></li>
+        <li><a href="#concepts">EMC 抽象概念映射</a></li>
+      </ul></details>
+      <details open><summary>Linux 路径</summary><ul class="nav-list">
+        <li><a href="#dts-binding">DTS 节点绑定与解析</a></li>
+        <li><a href="#driver-model">Linux 侧的 Driver 模型</a></li>
+      </ul></details>
+      <details open><summary>X2600 硬件架构</summary><ul class="nav-list">
+        <li><a href="#x2600-topology">地址路由与拓扑</a></li>
+        <li><a href="#registers">核心时序与寄存器</a></li>
+        <li><a href="#timing-diagram">普通存储器读时序</a></li>
+      </ul></details>
+      <details open><summary>落地总结</summary><ul class="nav-list">
+        <li><a href="#checklist">排查清单与工作边界</a></li>
+      </ul></details>
+    </nav>
+
+    <main>
+      <header class="hero" id="top">
+        <div class="eyebrow">External Memory Controller Subsystem architecture</div>
+        <h1>Linux EMC 子系统设计架构</h1>
+        <p class="lead">本文从“为什么 CPU 需要 EMC”出发，解析 Linux 设备树对于 Memory Controller 的描述方式，并对接 X2600 手册中 <code>SACR</code> 与 <code>SMCR</code> 寄存器的物理映射模型，帮助开发者理解从 DTS 时序配置到物理信号跳变的完整路径。</p>
+      </header>
+
+      <section id="sources">
+        <h2>官方权威依据</h2>
+        <div class="panel">
+          <p>本文依据 Linux 内核官方 Devicetree Bindings 与 X2600 官方编程手册编写，不依赖任何自身幻觉。页面本身自包含且无外部网络请求依赖。</p>
+          <ul>
+            <li><a href="https://www.kernel.org/doc/Documentation/devicetree/bindings/memory-controllers/ingenic,nemc.yaml">Linux DT Bindings: Ingenic NEMC (NAND / External Memory Controller)</a></li>
+            <li><strong>X2600 Programming Manual</strong>：Chapter 6 External Memory Controller (EMC)</li>
+          </ul>
+        </div>
+        <div class="quote">Linux 官方 <code>ingenic,nemc.yaml</code> 明确指出了 NEMC 是一个 <code>memory-controller</code>，负责将片上系统总线转换为外部静态设备控制信号，并通过 DTS 子节点的 <code>ingenic,nemc-tAS</code>、<code>ingenic,nemc-tAW</code> 等属性，直接指定纳秒级的时序需求。</div>
+      </section>
+
+      <section id="why">
+        <h2>第一性原理：为何需要 EMC</h2>
+        <p>CPU 核通过虚拟/物理地址和简单的加载/存储（Load/Store）指令访问数据。但片外的 NOR Flash、SRAM 或者如 DM9000 这类接口类似 SRAM 的网络控制器，它们并不能理解 AHB/AXI 等系统级总线协议，而是只认识 <strong>片选（CS#）、输出使能（OE#）、写使能（WE#）与读写脉宽</strong> 这样的基础信号时序。</p>
+        <p>EMC 的核心作用就是：“<strong>截获特定块物理地址的访问，将其转换为带精密可控时序波形的外部物理总线交互</strong>”。</p>
+        <div class="tri-grid">
+          <div class="concept"><span class="tag blue">路由</span><h3>这是谁的数据？</h3><p>系统总线上拥有数 GB 容量。EMC 使用 <code>SACR</code> (地址配置寄存器) 探测访问地址，一旦匹配立刻拉低特定外设的 CS# 引脚。</p></div>
+          <div class="concept"><span class="tag orange">波形</span><h3>时序与握手该怎样？</h3><p>外部设备有快有慢。EMC 提供 <code>SMC0R / SMC1R</code> 寄存器，插入等待周期（如 TRAS、TCH），保证地址建立和数据保持时长达标。</p></div>
+          <div class="concept"><span class="tag">复用</span><h3>类型多怎么办？</h3><p>通过配置 SMT，EMC 总线可以兼容普通隔离总线 SRAM、非异步突发 ROM、甚至是地址数据复用总线（ADM）。</p></div>
+        </div>
+      </section>
+
+      <section id="concepts">
+        <h2>EMC 抽象概念映射</h2>
+        <table>
+          <thead><tr><th>概念</th><th>解决的问题</th><th>Linux / X2600 对应点</th></tr></thead>
+          <tbody>
+            <tr><td><code>memory-controller</code></td><td>向内核宣示存在一个管理外部设备的母线（Bus）节点。</td><td>NEMC 在系统中注册，其 <code>compatible</code> 包含 <code>ingenic,jz47xx-nemc</code>。</td></tr>
+            <tr><td><code>Bank / CS#</code></td><td>一个控制器下挂载多个不同的芯片，彼此不干扰。</td><td>X2600 支持 CS1# 和 CS2#，各自拥有独立的 <code>SACRx / SMCxR1 / SMCxR2</code> 寄存器设定。</td></tr>
+            <tr><td><code>Address Match</code></td><td>截获指定地址范围分配给特定的 Bank。</td><td><code>SACR</code> 寄存器的 MASK 与 BASE 比对。Linux 会通过 <code>ranges</code> 属性在 DTS 中自动对应这些物理区间。</td></tr>
+            <tr><td><code>tAS / tAW / tAH</code></td><td>不同芯片需要不同的纳秒级建立、脉宽和保持时间。</td><td>DTS 子节点利用 <code>ingenic,nemc-tAS</code> 填入纳秒，Linux NEMC driver 动态换算为 CPU 时钟节拍填入寄存器。</td></tr>
+          </tbody>
+        </table>
+      </section>
+
+      <section id="dts-binding">
+        <h2>DTS 节点绑定与解析</h2>
+        <p>在 Linux 侧，并不鼓励驱动去硬写 <code>0x07FF7700</code> 这样的死值，而是推荐在设备树中体现设备的真实纳秒时序。Linux 驱动会自动计算当前 <code>clk</code> 以得到所需的寄存器周期数。</p>
+        <pre><code>nemc: memory-controller@13410000 {
+    compatible = "ingenic,jz4780-nemc"; /* Ingenic EMC 族系 */
+    reg = &lt;0x13410000 0x10000&gt;;
+    #address-cells = &lt;2&gt;;
+    #size-cells = &lt;1&gt;;
+    clocks = &lt;&amp;cgu NEMC_CLK&gt;;
+
+    /* ranges：把 Bank 1,2 等的地址映射到系统全局物理地址 0x1B000000 等 */
+    ranges = &lt;1 0 0x1b000000 0x1000000&gt;,
+             &lt;2 0 0x1a000000 0x1000000&gt;;
+
+    nor_flash@1 {
+        compatible = "cfi-flash";
+        /* 子节点的 reg 第一位表示使用哪个 CS 号 (Bank 1) */
+        reg = &lt;1 0 0x1000000&gt;;
+        /* Ingenic NEMC 配置属性 (单位: ns) */
+        ingenic,nemc-tAS = &lt;15&gt;;
+        ingenic,nemc-tAH = &lt;10&gt;;
+        ingenic,nemc-tAW = &lt;50&gt;;
+    };
+};</code></pre>
+      </section>
+
+      <section id="driver-model">
+        <h2>Linux 侧的 Driver 模型</h2>
+        <p>内核中使用 MTD 或者对应的 Memory Controller 驱动接管 EMC 的行为。当子设备驱动（例如 Ethernet Controller / NOR Flash）probe 时：</p>
+        <div class="panel">
+          <p><span class="tag blue">解析时钟</span> 驱动先调用 <code>clk_get_rate()</code> 取得当前 NEMC 控制器的接入频率（皮秒精度）。</p>
+          <p><span class="tag orange">提取纳秒</span> 驱动根据该子设备节点的 <code>ingenic,nemc-tAW</code> 属性得到纳秒要求。</p>
+          <p><span class="tag purple">计算周期</span> 使用 <code>CYCLES = DIV_ROUND_UP(tAW_ns, clock_period_ns)</code>，转化出需填入的 Cycle 实数。</p>
+          <p><span class="tag red">写入寄存器</span> 驱动构建好要写的 <code>SMC0R</code> 和 <code>SMC1R</code>，并将其写入 Bank 对应的位置。</p>
+        </div>
+        <p>通过这种抽象，只要修改设备树里的物理纳秒时间，即便未来系统主频发生变动，无需修改任何代码即可保持总线波形符合 Flash 的电气要求。</p>
+      </section>
+
+      <section id="x2600-topology">
+        <h2>地址路由与拓扑</h2>
+        <div class="svg-card">
+          <svg viewBox="0 0 1040 380" role="img" aria-label="X2600 EMC 寻址路由拓扑">
+            <defs><marker id="arrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M 0 0 L 10 5 L 0 10 z" fill="#8b949e"/></marker></defs>
+            <rect x="20" y="20" width="1000" height="340" rx="10" fill="#0d1117" stroke="#30363d"/>
+            <text x="40" y="50" class="svg-text">EMC 地址译码与物理外设的级联映射 (CS1#, CS2#)</text>
+
+            <rect x="60" y="140" width="160" height="100" class="box blue"/>
+            <text x="80" y="175" class="svg-text">System Bus (CPU)</text>
+            <text x="80" y="200" class="svg-small">产生 0x1B00xxxx 访问</text>
+
+            <rect x="360" y="80" width="220" height="220" class="box purple"/>
+            <text x="380" y="115" class="svg-text" fill="#d2a8ff">EMC (0x13410000)</text>
+            <text x="380" y="145" class="svg-small">SACR1: Mask=0xFF, Base=0x1B</text>
+            <text x="380" y="165" class="svg-small">SACR2: Mask=0xFF, Base=0x1A</text>
+            <text x="380" y="195" class="svg-small">SMC0R1/2: 时序波形整形</text>
+
+            <rect x="760" y="90" width="180" height="80" class="box green"/>
+            <text x="780" y="125" class="svg-text">Nor Flash (CS1#)</text>
+            <text x="780" y="150" class="svg-small">0x1B000000 硬件生效</text>
+
+            <rect x="760" y="200" width="180" height="80" class="box orange"/>
+            <text x="780" y="235" class="svg-text">DM9000/SRAM (CS2#)</text>
+            <text x="780" y="260" class="svg-small">0x1A000000 硬件生效</text>
+
+            <path d="M 220 190 L 350 190" class="arrow"/>
+            <text x="240" y="180" class="svg-small">32-bit Addr</text>
+
+            <path d="M 580 130 L 750 130" class="arrow green"/>
+            <text x="610" y="120" class="svg-small">CS1# + A/D 总线</text>
+
+            <path d="M 580 240 L 750 240" class="arrow orange"/>
+            <text x="610" y="235" class="svg-small">CS2# + A/D 总线</text>
+          </svg>
+        </div>
+      </section>
+
+      <section id="registers">
+        <h2>核心时序与寄存器</h2>
+        <div class="grid">
+          <div class="concept">
+            <span class="tag purple">SACR 寄存器</span>
+            <h3>地址路由</h3>
+            <p>规定外部芯片挂在系统的哪个地址段。<code>SACRx</code> 定义 BASE 与 MASK。逻辑为：如果系统总线传来的地址最高段在 MASK 与操作后等于 BASE，意味着本次访问命中该 Bank。</p>
+          </div>
+          <div class="concept">
+            <span class="tag orange">SMC0R 寄存器</span>
+            <h3>访问周期</h3>
+            <p>包含核心的 <code>TRAS</code> (Read Address Setup) 决定拉低 RD# 前地址停留几个时钟，<code>TAW_OE</code> 决定 RD# 自身持续多长来等待 Flash 返回数据。</p>
+          </div>
+          <div class="concept">
+            <span class="tag red">SMC1R 寄存器</span>
+            <h3>防冲突间隔</h3>
+            <p>在不同芯片切换（或同芯片读跟写）时，如果不强行插入间隔（<code>STRV</code>），总线可能会发生物理短路冲撞。</p>
+          </div>
+          <div class="concept">
+            <span class="tag blue">复用模式</span>
+            <h3>SMT 字段</h3>
+            <p>SMC0R 的 SMT 字段支持将外部接口设定为 ADM(地址与数据复用)，这样可以节约管脚连接 NAND 或特定的伪静态接口外设。</p>
+          </div>
+        </div>
+      </section>
+
+      <section id="timing-diagram">
+        <h2>普通存储器读时序</h2>
+        <p>下图展示在 Linux 配置好 <code>nemc-tAS</code>、<code>nemc-tAW</code> 纳秒值转换为 SMC0R 中的 Cycle 数后，硬件层面发生的信号电平变化。</p>
+        <div class="svg-card">
+          <svg viewBox="0 0 800 240" role="img" aria-label="SMC 普通存储器读时序图">
+            <rect x="20" y="20" width="760" height="200" rx="8" fill="#161b22" stroke="#30363d"/>
+            <line x1="100" y1="50" x2="750" y2="50" stroke="#30363d" stroke-width="1" stroke-dasharray="4 4"/>
+            <line x1="100" y1="100" x2="750" y2="100" stroke="#30363d" stroke-width="1" stroke-dasharray="4 4"/>
+            <line x1="100" y1="150" x2="750" y2="150" stroke="#30363d" stroke-width="1" stroke-dasharray="4 4"/>
+
+            <text x="40" y="55" class="svg-text">CSn#</text>
+            <path d="M 120 40 L 160 40 L 160 60 L 680 60 L 680 40 L 750 40" fill="none" stroke="#58a6ff" stroke-width="2"/>
+
+            <text x="40" y="105" class="svg-text">RD#</text>
+            <path d="M 120 90 L 260 90 L 260 110 L 580 110 L 580 90 L 750 90" fill="none" stroke="#f0883e" stroke-width="2"/>
+
+            <text x="40" y="155" class="svg-text">A[15:0]</text>
+            <path d="M 120 150 L 140 140 L 700 140 L 720 150 L 740 150 M 120 150 L 140 160 L 700 160 L 720 150" fill="none" stroke="#3fb950" stroke-width="2"/>
+            <text x="420" y="154" class="svg-small" fill="#3fb950" text-anchor="middle">Valid Address Issued</text>
+
+            <rect x="160" y="70" width="100" height="15" fill="#1f2937"/><text x="210" y="81" class="svg-small" text-anchor="middle">tAS (TRAS)</text>
+            <rect x="260" y="120" width="320" height="15" fill="#1f2937"/><text x="420" y="131" class="svg-small" text-anchor="middle">tAW (TAW_OE)</text>
+            <rect x="580" y="70" width="100" height="15" fill="#1f2937"/><text x="630" y="81" class="svg-small" text-anchor="middle">tAH (TCH)</text>
+          </svg>
+        </div>
+      </section>
+
+      <section id="checklist">
+        <h2>排查清单与工作边界</h2>
+        <table>
+          <thead><tr><th>现象 / 诉求</th><th>排查清单或配置位置</th></tr></thead>
+          <tbody>
+            <tr><td>外部 NOR Flash 工作不稳定</td><td>审查 DTS 节点中的纳秒时序（<code>tAS</code>、<code>tAW</code>、<code>tAH</code> 等），确保严格覆盖 Flash 规格书的最差时间。内核日志可辅助观察转换后的 Cycle 数。</td></tr>
+            <tr><td>系统访问外部存储产生死活锁</td><td>检查在切换片选或混合读写时（<code>STRV</code> 是否不足），总线上两颗芯片的高低电平是否发生短接；增大 <code>ingenic,nemc-tSTRV</code>。</td></tr>
+            <tr><td>总线宽度匹配</td><td>需要在驱动内部（或设备树扩展属性）为目标外设映射 <code>SMC0R</code> 中 BW 控制位，16位操作却误按 8位 总线取值将导致数据混乱。</td></tr>
+            <tr><td>Wait 引脚无法延迟访问</td><td>检查 SMC1R 的 <code>WAIT_ENABLE</code> 位（WP_EN），确认相应引脚未配置成纯 GPIO，或者 pinctrl 中已将该复用打开。</td></tr>
+          </tbody>
+        </table>
+      </section>
+
+      <nav class="chapter-nav" aria-label="章节跳转">
+        <a href="#top">↑ 回到开头</a>
+        <a href="gpio-pinctrl-subsystem-architecture.html">回忆：GPIO pinctrl 架构 →</a>
+      </nav>
+    </main>
+  </div>
+
+  <script>
+    const progressBar = document.getElementById('progressBar');
+    const menuButton = document.getElementById('menuButton');
+    const sideNav = document.getElementById('sideNav');
+    const links = Array.from(document.querySelectorAll('.nav-list a'));
+    const sections = links.map(link => document.querySelector(link.getAttribute('href'))).filter(Boolean);
+
+    function updateProgress() {
+      const max = document.documentElement.scrollHeight - window.innerHeight;
+      const pct = max > 0 ? (window.scrollY / max) * 100 : 0;
+      progressBar.style.width = `${Math.max(0, Math.min(100, pct))}%`;
+    }
+
+    function updateActive() {
+      let current = sections[0];
+      for (const section of sections) {
+        if (section.getBoundingClientRect().top <= 110) current = section;
+      }
+      links.forEach(link => link.classList.toggle('active', link.getAttribute('href') === `#${current.id}`));
+    }
+
+    function moveChapter(delta) {
+      const activeIndex = sections.findIndex(section => `#${section.id}` === (links.find(link => link.classList.contains('active')) || links[0]).getAttribute('href'));
+      const next = sections[Math.max(0, Math.min(sections.length - 1, activeIndex + delta))];
+      if (next) next.scrollIntoView({ behavior: 'smooth', block: 'start' });
+    }
+
+    window.addEventListener('scroll', () => { updateProgress(); updateActive(); }, { passive: true });
+    window.addEventListener('resize', updateProgress);
+    menuButton.addEventListener('click', () => sideNav.classList.toggle('open'));
+    links.forEach(link => link.addEventListener('click', () => sideNav.classList.remove('open')));
+    window.addEventListener('keydown', event => {
+      if (event.key === 'ArrowRight') moveChapter(1);
+      if (event.key === 'ArrowLeft') moveChapter(-1);
+    });
+    updateProgress();
+    updateActive();
+  </script>
+</body>
+</html>

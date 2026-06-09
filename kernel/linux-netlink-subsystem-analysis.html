@@ -1,0 +1,2104 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Linux Netlink 子系统深度解析 — 基于内核 5.10.186</title>
+<style>
+  :root {
+    --bg: #0d1117;
+    --sidebar-bg: #161b22;
+    --card-bg: #1c2128;
+    --border: #30363d;
+    --accent: #58a6ff;
+    --accent2: #3fb950;
+    --accent3: #f0883e;
+    --accent4: #bc8cff;
+    --text: #c9d1d9;
+    --text-dim: #8b949e;
+    --text-head: #f0f6fc;
+    --code-bg: #161b22;
+    --progress-h: 3px;
+    --sidebar-w: 280px;
+    --header-h: 52px;
+    --transition: 0.25s ease;
+  }
+  *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+  html { scroll-behavior: smooth; font-size: 16px; }
+  body {
+    background: var(--bg);
+    color: var(--text);
+    font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', 'PingFang SC', 'Hiragino Sans GB', sans-serif;
+    line-height: 1.75;
+    overflow-x: hidden;
+  }
+
+  /* ── PROGRESS BAR ── */
+  #progress-bar {
+    position: fixed; top: 0; left: 0; width: 0;
+    height: var(--progress-h);
+    background: linear-gradient(90deg, var(--accent), var(--accent2));
+    z-index: 9999;
+    transition: width 0.1s linear;
+  }
+
+  /* ── TOP HEADER ── */
+  header {
+    position: fixed; top: var(--progress-h); left: 0; right: 0;
+    height: var(--header-h);
+    background: var(--sidebar-bg);
+    border-bottom: 1px solid var(--border);
+    display: flex; align-items: center;
+    padding: 0 1.25rem;
+    z-index: 200;
+    gap: 1rem;
+  }
+  #burger {
+    display: none; flex-direction: column; gap: 5px;
+    background: none; border: none; cursor: pointer; padding: 4px;
+  }
+  #burger span {
+    display: block; width: 22px; height: 2px;
+    background: var(--text);
+    border-radius: 2px;
+    transition: var(--transition);
+  }
+  .header-title {
+    font-size: 0.85rem; color: var(--text-dim);
+    white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+    flex: 1;
+  }
+  .header-title strong { color: var(--accent); }
+
+  /* ── LAYOUT ── */
+  .layout {
+    display: flex;
+    padding-top: calc(var(--header-h) + var(--progress-h));
+    min-height: 100vh;
+  }
+
+  /* ── SIDEBAR ── */
+  #sidebar {
+    position: fixed;
+    top: calc(var(--header-h) + var(--progress-h));
+    left: 0; bottom: 0;
+    width: var(--sidebar-w);
+    background: var(--sidebar-bg);
+    border-right: 1px solid var(--border);
+    overflow-y: auto;
+    overflow-x: hidden;
+    z-index: 100;
+    transition: transform var(--transition);
+    padding-bottom: 2rem;
+  }
+  #sidebar::-webkit-scrollbar { width: 4px; }
+  #sidebar::-webkit-scrollbar-track { background: transparent; }
+  #sidebar::-webkit-scrollbar-thumb { background: var(--border); border-radius: 2px; }
+
+  .nav-group { padding: 0.6rem 0.5rem 0.2rem; }
+  .nav-group-label {
+    font-size: 0.68rem; font-weight: 700; letter-spacing: 0.1em;
+    color: var(--text-dim); text-transform: uppercase;
+    padding: 0.2rem 0.75rem;
+  }
+  .nav-item {
+    display: block; padding: 0.38rem 0.75rem 0.38rem 1rem;
+    font-size: 0.82rem; color: var(--text-dim);
+    text-decoration: none; border-radius: 6px;
+    border-left: 2px solid transparent;
+    transition: all var(--transition);
+    cursor: pointer;
+    white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+  }
+  .nav-item:hover { color: var(--text); background: rgba(88,166,255,0.07); }
+  .nav-item.active {
+    color: var(--accent);
+    background: rgba(88,166,255,0.12);
+    border-left-color: var(--accent);
+    font-weight: 600;
+  }
+
+  /* ── MAIN CONTENT ── */
+  main {
+    margin-left: var(--sidebar-w);
+    flex: 1; min-width: 0;
+    padding: 2.5rem 2rem 4rem;
+    max-width: 900px;
+  }
+
+  /* ── SECTIONS ── */
+  section { margin-bottom: 4rem; }
+  section[id] { scroll-margin-top: calc(var(--header-h) + var(--progress-h) + 1.5rem); }
+
+  h1 {
+    font-size: 1.9rem; font-weight: 700;
+    color: var(--text-head);
+    margin-bottom: 0.5rem;
+    line-height: 1.3;
+  }
+  h2 {
+    font-size: 1.35rem; font-weight: 700;
+    color: var(--text-head);
+    margin: 2rem 0 1rem;
+    padding-bottom: 0.4rem;
+    border-bottom: 1px solid var(--border);
+  }
+  h3 {
+    font-size: 1.05rem; font-weight: 600;
+    color: var(--accent3);
+    margin: 1.5rem 0 0.5rem;
+  }
+  h4 { font-size: 0.95rem; font-weight: 600; color: var(--accent4); margin: 1rem 0 0.3rem; }
+  p { margin-bottom: 0.85rem; }
+  ul, ol { margin: 0.5rem 0 0.85rem 1.5rem; }
+  li { margin-bottom: 0.3rem; }
+  strong { color: var(--text-head); }
+  a { color: var(--accent); text-decoration: none; }
+  a:hover { text-decoration: underline; }
+
+  /* ── CODE ── */
+  code {
+    font-family: 'JetBrains Mono', 'Fira Code', 'SF Mono', Consolas, monospace;
+    font-size: 0.82em;
+    background: var(--code-bg);
+    color: #e06c75;
+    padding: 0.1em 0.35em;
+    border-radius: 4px;
+    border: 1px solid var(--border);
+  }
+  pre {
+    background: var(--code-bg);
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    padding: 1.1rem 1.25rem;
+    overflow-x: auto;
+    margin: 0.75rem 0 1.25rem;
+    position: relative;
+  }
+  pre code {
+    background: none; border: none; padding: 0;
+    font-size: 0.83rem; color: #abb2bf;
+    display: block;
+    white-space: pre;
+  }
+  .kw { color: #c678dd; }
+  .ty { color: #e5c07b; }
+  .fn { color: #61afef; }
+  .cm { color: #5c6370; font-style: italic; }
+  .st { color: #98c379; }
+  .nu { color: #d19a66; }
+  .pp { color: #e06c75; }
+
+  /* ── CARDS ── */
+  .card {
+    background: var(--card-bg);
+    border: 1px solid var(--border);
+    border-radius: 10px;
+    padding: 1.25rem 1.5rem;
+    margin: 1rem 0;
+  }
+  .card-title {
+    font-size: 0.75rem; font-weight: 700; letter-spacing: 0.08em;
+    text-transform: uppercase; color: var(--accent2);
+    margin-bottom: 0.5rem;
+  }
+
+  /* ── FIRST-PRINCIPLE BOX ── */
+  .fp-box {
+    background: linear-gradient(135deg, rgba(188,140,255,0.08), rgba(63,185,80,0.06));
+    border: 1px solid rgba(188,140,255,0.3);
+    border-radius: 10px;
+    padding: 1.25rem 1.5rem;
+    margin: 2rem 0 0.5rem;
+    position: relative;
+  }
+  .fp-box::before {
+    content: '⚛ 第一性原理';
+    display: block;
+    font-size: 0.72rem; font-weight: 700; letter-spacing: 0.1em;
+    text-transform: uppercase; color: var(--accent4);
+    margin-bottom: 0.5rem;
+  }
+  .fp-box p { color: #d2bfff; margin-bottom: 0; }
+
+  /* ── TABLES ── */
+  .tbl-wrap { overflow-x: auto; margin: 1rem 0 1.25rem; }
+  table {
+    width: 100%; border-collapse: collapse;
+    font-size: 0.84rem;
+  }
+  th {
+    background: rgba(88,166,255,0.12);
+    color: var(--accent);
+    font-weight: 700;
+    padding: 0.6rem 0.9rem;
+    text-align: left;
+    border: 1px solid var(--border);
+    white-space: nowrap;
+  }
+  td {
+    padding: 0.55rem 0.9rem;
+    border: 1px solid var(--border);
+    vertical-align: top;
+  }
+  tr:nth-child(even) td { background: rgba(255,255,255,0.02); }
+
+  /* ── BADGE ── */
+  .badge {
+    display: inline-block;
+    padding: 0.15em 0.55em;
+    border-radius: 100px;
+    font-size: 0.72em; font-weight: 700;
+    letter-spacing: 0.04em;
+    vertical-align: middle;
+  }
+  .badge-blue { background: rgba(88,166,255,0.18); color: var(--accent); }
+  .badge-green { background: rgba(63,185,80,0.18); color: var(--accent2); }
+  .badge-orange { background: rgba(240,136,62,0.18); color: var(--accent3); }
+  .badge-purple { background: rgba(188,140,255,0.18); color: var(--accent4); }
+
+  /* ── NOTE BOX ── */
+  .note {
+    display: flex; gap: 0.75rem;
+    background: rgba(88,166,255,0.07);
+    border: 1px solid rgba(88,166,255,0.25);
+    border-radius: 8px;
+    padding: 0.85rem 1rem;
+    margin: 1rem 0;
+    font-size: 0.88rem;
+    align-items: flex-start;
+  }
+  .note-icon { font-size: 1rem; flex-shrink: 0; margin-top: 0.1rem; }
+
+  /* ── CHAPTER NAV ── */
+  .chapter-nav {
+    display: flex; gap: 1rem; margin-top: 2.5rem;
+    padding-top: 1.5rem;
+    border-top: 1px solid var(--border);
+  }
+  .chapter-nav a {
+    display: flex; align-items: center; gap: 0.4rem;
+    padding: 0.65rem 1rem;
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    font-size: 0.84rem; color: var(--text);
+    transition: all var(--transition);
+    flex: 1;
+    text-decoration: none;
+  }
+  .chapter-nav a:hover { border-color: var(--accent); color: var(--accent); }
+  .chapter-nav .prev { justify-content: flex-start; }
+  .chapter-nav .next { justify-content: flex-end; text-align: right; }
+  .chapter-nav .nav-label { font-size: 0.72rem; color: var(--text-dim); display: block; }
+
+  /* ── SVG DIAGRAMS ── */
+  .svg-wrap {
+    background: var(--card-bg);
+    border: 1px solid var(--border);
+    border-radius: 10px;
+    padding: 1rem;
+    margin: 1.25rem 0;
+    overflow-x: auto;
+    text-align: center;
+  }
+  .svg-cap {
+    text-align: center; font-size: 0.78rem;
+    color: var(--text-dim); margin-top: 0.5rem; margin-bottom: 0.5rem;
+  }
+
+  /* ── HERO INTRO ── */
+  .hero {
+    padding: 1.5rem 0 0.5rem;
+    border-bottom: 1px solid var(--border);
+    margin-bottom: 2.5rem;
+  }
+  .hero-sub { color: var(--text-dim); font-size: 0.9rem; margin-top: 0.5rem; }
+  .hero-tags { margin-top: 0.75rem; display: flex; flex-wrap: wrap; gap: 0.5rem; }
+
+  /* ── OVERLAY ── */
+  #overlay {
+    display: none; position: fixed;
+    inset: 0; background: rgba(0,0,0,0.5);
+    z-index: 99;
+  }
+  #overlay.show { display: block; }
+
+  /* ── KEYBOARD HINT ── */
+  .kb-hint {
+    position: fixed; bottom: 1.5rem; right: 1.5rem;
+    background: var(--card-bg); border: 1px solid var(--border);
+    border-radius: 8px; padding: 0.5rem 0.85rem;
+    font-size: 0.72rem; color: var(--text-dim);
+    opacity: 0; transition: opacity 0.4s;
+    pointer-events: none;
+  }
+  .kb-hint.show { opacity: 1; }
+
+  /* ── RESPONSIVE ── */
+  @media (max-width: 768px) {
+    :root { --sidebar-w: 260px; }
+    #burger { display: flex; }
+    #sidebar { transform: translateX(-100%); }
+    #sidebar.open { transform: translateX(0); }
+    main { margin-left: 0; padding: 1.5rem 1rem 3rem; max-width: 100%; }
+    h1 { font-size: 1.4rem; }
+    h2 { font-size: 1.15rem; }
+    .chapter-nav { flex-direction: column; }
+    .kb-hint { display: none; }
+  }
+</style>
+</head>
+<body>
+
+<div id="progress-bar"></div>
+
+<header>
+  <button id="burger" aria-label="菜单">
+    <span></span><span></span><span></span>
+  </button>
+  <div class="header-title">
+    <strong>Linux Netlink</strong> 子系统深度解析 · 内核 5.10.186
+  </div>
+</header>
+
+<div id="overlay"></div>
+
+<div class="layout">
+  <!-- ── SIDEBAR ── -->
+  <nav id="sidebar">
+    <div class="nav-group">
+      <div class="nav-group-label">概述</div>
+      <a class="nav-item" data-target="intro">§1 引言与背景</a>
+      <a class="nav-item" data-target="design">§2 设计原理</a>
+    </div>
+    <div class="nav-group">
+      <div class="nav-group-label">消息体系</div>
+      <a class="nav-item" data-target="msg-format">§3 消息格式</a>
+      <a class="nav-item" data-target="protocol-model">§4 协议模型</a>
+    </div>
+    <div class="nav-group">
+      <div class="nav-group-label">核心实现</div>
+      <a class="nav-item" data-target="sock-internals">§5 内核数据结构</a>
+      <a class="nav-item" data-target="socket-ops">§6 Socket 操作层</a>
+      <a class="nav-item" data-target="send-recv">§7 收发路径</a>
+      <a class="nav-item" data-target="multicast">§8 多播与通知</a>
+    </div>
+    <div class="nav-group">
+      <div class="nav-group-label">协议族</div>
+      <a class="nav-item" data-target="classic-nl">§9 经典 Netlink</a>
+      <a class="nav-item" data-target="generic-nl">§10 Generic Netlink</a>
+      <a class="nav-item" data-target="rtnetlink">§11 NETLINK_ROUTE</a>
+    </div>
+    <div class="nav-group">
+      <div class="nav-group-label">进阶专题</div>
+      <a class="nav-item" data-target="dump">§12 Dump 机制</a>
+      <a class="nav-item" data-target="attributes">§13 属性 TLV 系统</a>
+      <a class="nav-item" data-target="security">§14 安全与命名空间</a>
+      <a class="nav-item" data-target="summary">§15 总结</a>
+    </div>
+    <div class="nav-group">
+      <div class="nav-group-label">参考</div>
+      <a class="nav-item" data-target="refs">参考资料</a>
+    </div>
+  </nav>
+
+  <!-- ── MAIN ── -->
+  <main id="main-content">
+
+    <!-- §1 INTRO -->
+    <section id="intro">
+      <div class="hero">
+        <h1>Linux Netlink 子系统深度解析</h1>
+        <p class="hero-sub">基于内核版本 <strong>5.10.186 (LTS)</strong> · 源码路径：<code>net/netlink/</code></p>
+        <div class="hero-tags">
+          <span class="badge badge-blue">内核空间</span>
+          <span class="badge badge-green">用户空间 IPC</span>
+          <span class="badge badge-orange">网络子系统</span>
+          <span class="badge badge-purple">RFC 3549</span>
+        </div>
+      </div>
+
+      <h2>§1 引言与背景</h2>
+      <p>
+        Netlink 是 Linux 内核提供的一种 <strong>套接字（socket）基础的进程间通信（IPC）机制</strong>，
+        专门用于内核空间与用户空间进程之间，以及不同用户空间进程之间交换信息。
+        它诞生于对 <code>ioctl()</code> 接口的不满——ioctl 使用固定格式的 C 结构体，
+        难以扩展，而 Netlink 则引入了可扩展的 TLV（Type-Length-Value）属性格式。
+      </p>
+
+      <h3>1.1 历史沿革</h3>
+      <div class="tbl-wrap">
+        <table>
+          <thead><tr><th>年份</th><th>事件</th><th>内核版本</th></tr></thead>
+          <tbody>
+            <tr><td>1995</td><td>Alan Cox 实现了最早的字符设备版本 "Skiplink"</td><td>1.3.31</td></tr>
+            <tr><td>1997</td><td>Alexey Kuznetsov 重构为完整 socket 接口</td><td>2.1.68</td></tr>
+            <tr><td>1999</td><td>稳定的 socket 版本并入主线</td><td>2.2</td></tr>
+            <tr><td>2003</td><td>IETF 发布 RFC 3549，正式描述 Netlink 协议</td><td>—</td></tr>
+            <tr><td>2005</td><td>Generic Netlink（NETLINK_GENERIC）引入，支持动态注册</td><td>2.6.15</td></tr>
+            <tr><td>2021</td><td>5.10.186 LTS 版本，本文分析基准</td><td>5.10.186</td></tr>
+          </tbody>
+        </table>
+      </div>
+
+      <h3>1.2 Netlink 与 ioctl 的对比</h3>
+      <div class="tbl-wrap">
+        <table>
+          <thead><tr><th>维度</th><th>ioctl</th><th>Netlink</th></tr></thead>
+          <tbody>
+            <tr><td>消息格式</td><td>固定结构体</td><td>TLV 可扩展</td></tr>
+            <tr><td>异步通知</td><td>不支持</td><td>支持（多播组）</td></tr>
+            <tr><td>双向通信</td><td>请求-响应只能单次</td><td>全双工，可异步</td></tr>
+            <tr><td>多播</td><td>不支持</td><td>支持（最多32组/协议）</td></tr>
+            <tr><td>版本兼容</td><td>难以扩展</td><td>可向后兼容地添加新属性</td></tr>
+            <tr><td>用户接口</td><td>系统调用</td><td>标准 socket API</td></tr>
+          </tbody>
+        </table>
+      </div>
+
+      <div class="note">
+        <span class="note-icon">📌</span>
+        <span>Netlink 不是可靠协议。内存不足时消息可能被丢弃。发送方可设置 <code>NLM_F_ACK</code> 标志请求确认，接收方需处理 <code>ENOBUFS</code> 错误进行重同步。</span>
+      </div>
+
+      <div class="fp-box">
+        <p>
+          <strong>本质：</strong>一切内核配置接口的问题，都归结于「如何在不破坏既有 ABI 的前提下传递结构化数据」。
+          ioctl 用固定宽度结构体，每次扩展都要新增 ioctl 号，是「静态合同」；
+          Netlink 用带长度字段的 TLV，相当于「自描述的动态合同」——双方只需约定 Type，
+          不理解的 Type 直接跳过，从而天然支持向前和向后兼容。
+        </p>
+      </div>
+    </section>
+
+    <!-- §2 DESIGN PRINCIPLES -->
+    <section id="design">
+      <h2>§2 设计原理</h2>
+
+      <h3>2.1 FEC/CPC 模型（RFC 3549）</h3>
+      <p>
+        RFC 3549 将 Linux 网络栈抽象为 <strong>转发引擎组件（FEC, Forwarding Engine Component）</strong>
+        和 <strong>控制平面组件（CPC, Control Plane Component）</strong> 两类角色：
+      </p>
+
+      <div class="svg-wrap">
+        <svg viewBox="0 0 680 320" width="100%" style="max-width:680px" font-family="monospace" font-size="12">
+          <!-- CPC row -->
+          <rect x="30" y="30" width="130" height="50" rx="8" fill="#1c2128" stroke="#58a6ff" stroke-width="1.5"/>
+          <text x="95" y="52" text-anchor="middle" fill="#58a6ff" font-size="11" font-weight="bold">CPC</text>
+          <text x="95" y="68" text-anchor="middle" fill="#8b949e" font-size="10">iproute2 / ss</text>
+
+          <rect x="200" y="30" width="130" height="50" rx="8" fill="#1c2128" stroke="#58a6ff" stroke-width="1.5"/>
+          <text x="265" y="52" text-anchor="middle" fill="#58a6ff" font-size="11" font-weight="bold">CPC</text>
+          <text x="265" y="68" text-anchor="middle" fill="#8b949e" font-size="10">NetworkManager</text>
+
+          <rect x="370" y="30" width="130" height="50" rx="8" fill="#1c2128" stroke="#58a6ff" stroke-width="1.5"/>
+          <text x="435" y="52" text-anchor="middle" fill="#58a6ff" font-size="11" font-weight="bold">CPC</text>
+          <text x="435" y="68" text-anchor="middle" fill="#8b949e" font-size="10">自定义程序</text>
+
+          <!-- Netlink bus -->
+          <rect x="20" y="125" width="640" height="40" rx="6" fill="rgba(63,185,80,0.1)" stroke="#3fb950" stroke-width="1.5" stroke-dasharray="6,3"/>
+          <text x="340" y="150" text-anchor="middle" fill="#3fb950" font-size="12" font-weight="bold">Netlink 广播总线（AF_NETLINK Socket）</text>
+
+          <!-- Arrows CPC → bus -->
+          <line x1="95" y1="80" x2="95" y2="125" stroke="#58a6ff" stroke-width="1.5" marker-end="url(#arrowB)"/>
+          <line x1="265" y1="80" x2="265" y2="125" stroke="#58a6ff" stroke-width="1.5" marker-end="url(#arrowB)"/>
+          <line x1="435" y1="80" x2="435" y2="125" stroke="#58a6ff" stroke-width="1.5" marker-end="url(#arrowB)"/>
+
+          <!-- FEC row -->
+          <rect x="30" y="215" width="130" height="60" rx="8" fill="#1c2128" stroke="#f0883e" stroke-width="1.5"/>
+          <text x="95" y="240" text-anchor="middle" fill="#f0883e" font-size="11" font-weight="bold">FEC</text>
+          <text x="95" y="256" text-anchor="middle" fill="#8b949e" font-size="10">路由子系统</text>
+          <text x="95" y="268" text-anchor="middle" fill="#8b949e" font-size="10">NETLINK_ROUTE</text>
+
+          <rect x="200" y="215" width="130" height="60" rx="8" fill="#1c2128" stroke="#f0883e" stroke-width="1.5"/>
+          <text x="265" y="240" text-anchor="middle" fill="#f0883e" font-size="11" font-weight="bold">FEC</text>
+          <text x="265" y="256" text-anchor="middle" fill="#8b949e" font-size="10">netfilter/nftables</text>
+          <text x="265" y="268" text-anchor="middle" fill="#8b949e" font-size="10">NETLINK_NETFILTER</text>
+
+          <rect x="370" y="215" width="130" height="60" rx="8" fill="#1c2128" stroke="#f0883e" stroke-width="1.5"/>
+          <text x="435" y="240" text-anchor="middle" fill="#f0883e" font-size="11" font-weight="bold">FEC</text>
+          <text x="435" y="256" text-anchor="middle" fill="#8b949e" font-size="10">审计子系统</text>
+          <text x="435" y="268" text-anchor="middle" fill="#8b949e" font-size="10">NETLINK_AUDIT</text>
+
+          <rect x="540" y="215" width="120" height="60" rx="8" fill="#1c2128" stroke="#bc8cff" stroke-width="1.5"/>
+          <text x="600" y="240" text-anchor="middle" fill="#bc8cff" font-size="11" font-weight="bold">Generic NL</text>
+          <text x="600" y="256" text-anchor="middle" fill="#8b949e" font-size="10">动态注册</text>
+          <text x="600" y="268" text-anchor="middle" fill="#8b949e" font-size="10">NETLINK_GENERIC</text>
+
+          <!-- Arrows bus → FEC -->
+          <line x1="95" y1="165" x2="95" y2="215" stroke="#f0883e" stroke-width="1.5" marker-end="url(#arrowO)"/>
+          <line x1="265" y1="165" x2="265" y2="215" stroke="#f0883e" stroke-width="1.5" marker-end="url(#arrowO)"/>
+          <line x1="435" y1="165" x2="435" y2="215" stroke="#f0883e" stroke-width="1.5" marker-end="url(#arrowO)"/>
+          <line x1="600" y1="165" x2="600" y2="215" stroke="#bc8cff" stroke-width="1.5" marker-end="url(#arrowP)"/>
+
+          <defs>
+            <marker id="arrowB" markerWidth="8" markerHeight="8" refX="6" refY="3" orient="auto">
+              <path d="M0,0 L0,6 L8,3 Z" fill="#58a6ff"/>
+            </marker>
+            <marker id="arrowO" markerWidth="8" markerHeight="8" refX="6" refY="3" orient="auto">
+              <path d="M0,0 L0,6 L8,3 Z" fill="#f0883e"/>
+            </marker>
+            <marker id="arrowP" markerWidth="8" markerHeight="8" refX="6" refY="3" orient="auto">
+              <path d="M0,0 L0,6 L8,3 Z" fill="#bc8cff"/>
+            </marker>
+          </defs>
+        </svg>
+        <p class="svg-cap">图 1：RFC 3549 FEC/CPC 广播总线模型 — CPC（用户态控制程序）通过 Netlink 总线与多个 FEC（内核功能组件）通信</p>
+      </div>
+
+      <h3>2.2 三层消息结构</h3>
+      <p>RFC 3549 定义了 Netlink 消息的三层结构：</p>
+      <div class="svg-wrap">
+        <svg viewBox="0 0 560 130" width="100%" style="max-width:560px" font-family="monospace" font-size="12">
+          <rect x="10" y="15" width="540" height="40" rx="6" fill="rgba(88,166,255,0.15)" stroke="#58a6ff" stroke-width="1.5"/>
+          <text x="280" y="40" text-anchor="middle" fill="#58a6ff" font-weight="bold">通用 Netlink 消息头（nlmsghdr）— 16 字节，所有协议共用</text>
+
+          <rect x="10" y="63" width="260" height="35" rx="6" fill="rgba(240,136,62,0.15)" stroke="#f0883e" stroke-width="1.5"/>
+          <text x="140" y="85" text-anchor="middle" fill="#f0883e" font-weight="bold">IP 服务模板头（协议专用）</text>
+
+          <rect x="280" y="63" width="270" height="35" rx="6" fill="rgba(63,185,80,0.15)" stroke="#3fb950" stroke-width="1.5"/>
+          <text x="415" y="85" text-anchor="middle" fill="#3fb950" font-weight="bold">TLV 属性载荷（IP 服务数据）</text>
+
+          <text x="10" y="120" fill="#8b949e" font-size="10">← 固定头部，协议无关</text>
+          <text x="280" y="120" fill="#8b949e" font-size="10">← 协议特定头，如 rtmsg/ifinfomsg/genlmsghdr</text>
+        </svg>
+        <p class="svg-cap">图 2：Netlink 消息三层分层结构（源自 RFC 3549 §2.2）</p>
+      </div>
+
+      <h3>2.3 通信模式</h3>
+      <div class="tbl-wrap">
+        <table>
+          <thead><tr><th>模式</th><th>方向</th><th>标志</th><th>典型场景</th></tr></thead>
+          <tbody>
+            <tr><td><strong>单播 Do</strong></td><td>用户→内核→用户</td><td><code>NLM_F_REQUEST | NLM_F_ACK</code></td><td>设置路由、添加地址</td></tr>
+            <tr><td><strong>Dump</strong></td><td>用户→内核→用户（多消息）</td><td><code>NLM_F_REQUEST | NLM_F_DUMP</code></td><td>枚举所有路由、接口</td></tr>
+            <tr><td><strong>多播通知</strong></td><td>内核→多个用户</td><td>无（异步推送）</td><td>链路状态变化、路由更新</td></tr>
+          </tbody>
+        </table>
+      </div>
+
+      <div class="fp-box">
+        <p>
+          <strong>本质：</strong>Netlink 的核心设计原理是「<strong>协议族复用 + 消息驱动 + 发布订阅</strong>」。
+          用一个 <code>AF_NETLINK</code> 地址族承载多达 32 个不同协议子系统（用 protocol 字段区分），
+          每个子系统内部再用消息类型（nlmsg_type）路由到具体处理函数；
+          多播组机制则把「主动推送」变成标准能力，无需轮询。
+          这是「事件驱动架构」在内核 IPC 层的体现。
+        </p>
+      </div>
+    </section>
+
+    <!-- §3 MSG FORMAT -->
+    <section id="msg-format">
+      <h2>§3 消息格式</h2>
+
+      <h3>3.1 nlmsghdr — 通用消息头</h3>
+      <p>
+        定义于 <code>include/uapi/linux/netlink.h</code>，是所有 Netlink 消息的统一入口，长度固定 <strong>16 字节</strong>：
+      </p>
+      <pre><code><span class="kw">struct</span> <span class="ty">nlmsghdr</span> {
+    <span class="ty">__u32</span>  nlmsg_len;   <span class="cm">/* 消息总长度，含本头部 */</span>
+    <span class="ty">__u16</span>  nlmsg_type;  <span class="cm">/* 消息类型/操作类型 */</span>
+    <span class="ty">__u16</span>  nlmsg_flags; <span class="cm">/* 附加标志位 */</span>
+    <span class="ty">__u32</span>  nlmsg_seq;   <span class="cm">/* 序列号，用于匹配请求/响应 */</span>
+    <span class="ty">__u32</span>  nlmsg_pid;   <span class="cm">/* 发送端 Port ID（非进程 PID）*/</span>
+};</code></pre>
+
+      <div class="svg-wrap">
+        <svg viewBox="0 0 640 90" width="100%" style="max-width:640px" font-family="monospace" font-size="11">
+          <!-- bit ruler -->
+          <text x="0" y="12" fill="#5c6370">bit:</text>
+          <text x="70" y="12" fill="#5c6370">0</text>
+          <text x="220" y="12" fill="#5c6370">15</text>
+          <text x="370" y="12" fill="#5c6370">31</text>
+
+          <rect x="50" y="20" width="570" height="28" rx="0" fill="none" stroke="#30363d" stroke-width="1"/>
+
+          <!-- nlmsg_len 0-31 -->
+          <rect x="50" y="20" width="570" height="28" rx="0" fill="rgba(88,166,255,0.12)" stroke="#58a6ff" stroke-width="1"/>
+          <text x="335" y="38" text-anchor="middle" fill="#58a6ff" font-weight="bold">nlmsg_len (32-bit)</text>
+
+          <!-- second row -->
+          <rect x="50" y="52" width="285" height="28" rx="0" fill="rgba(240,136,62,0.12)" stroke="#f0883e" stroke-width="1"/>
+          <text x="192" y="70" text-anchor="middle" fill="#f0883e" font-weight="bold">nlmsg_type (16-bit)</text>
+
+          <rect x="335" y="52" width="285" height="28" rx="0" fill="rgba(63,185,80,0.12)" stroke="#3fb950" stroke-width="1"/>
+          <text x="477" y="70" text-anchor="middle" fill="#3fb950" font-weight="bold">nlmsg_flags (16-bit)</text>
+        </svg>
+        <p class="svg-cap">图 3：nlmsghdr 字段位布局（前两行，每行 32 bit）</p>
+      </div>
+
+      <h3>3.2 nlmsg_type 保留类型</h3>
+      <div class="tbl-wrap">
+        <table>
+          <thead><tr><th>类型值</th><th>常量</th><th>含义</th></tr></thead>
+          <tbody>
+            <tr><td><code>0x01</code></td><td><code>NLMSG_NOOP</code></td><td>忽略，无实际用途</td></tr>
+            <tr><td><code>0x02</code></td><td><code>NLMSG_ERROR</code></td><td>错误响应，携带 <code>nlmsgerr</code></td></tr>
+            <tr><td><code>0x03</code></td><td><code>NLMSG_DONE</code></td><td>多部分消息结束标记</td></tr>
+            <tr><td><code>0x04</code></td><td><code>NLMSG_OVERRUN</code></td><td>缓冲区溢出（实践中未使用）</td></tr>
+            <tr><td><code>≥0x10</code></td><td><code>NLMSG_MIN_TYPE</code></td><td>各子系统自定义消息类型起点</td></tr>
+          </tbody>
+        </table>
+      </div>
+
+      <h3>3.3 nlmsg_flags 标志位</h3>
+      <pre><code><span class="cm">/* 标准标志 */</span>
+<span class="pp">#define</span> <span class="fn">NLM_F_REQUEST</span>   <span class="nu">0x01</span>  <span class="cm">/* 所有请求必须设置 */</span>
+<span class="pp">#define</span> <span class="fn">NLM_F_MULTI</span>     <span class="nu">0x02</span>  <span class="cm">/* 多部分消息 */</span>
+<span class="pp">#define</span> <span class="fn">NLM_F_ACK</span>       <span class="nu">0x04</span>  <span class="cm">/* 成功时也请求 ACK */</span>
+<span class="pp">#define</span> <span class="fn">NLM_F_ECHO</span>      <span class="nu">0x08</span>  <span class="cm">/* 回显通知到请求者 */</span>
+
+<span class="cm">/* GET 请求额外标志 */</span>
+<span class="pp">#define</span> <span class="fn">NLM_F_ROOT</span>      <span class="nu">0x100</span> <span class="cm">/* 返回完整表 */</span>
+<span class="pp">#define</span> <span class="fn">NLM_F_MATCH</span>     <span class="nu">0x200</span> <span class="cm">/* 返回匹配项 */</span>
+<span class="pp">#define</span> <span class="fn">NLM_F_DUMP</span>      <span class="cm">/* = NLM_F_ROOT|NLM_F_MATCH */</span>
+
+<span class="cm">/* NEW 请求额外标志 */</span>
+<span class="pp">#define</span> <span class="fn">NLM_F_REPLACE</span>   <span class="nu">0x100</span> <span class="cm">/* 替换已有对象 */</span>
+<span class="pp">#define</span> <span class="fn">NLM_F_EXCL</span>      <span class="nu">0x200</span> <span class="cm">/* 对象已存在则失败 */</span>
+<span class="pp">#define</span> <span class="fn">NLM_F_CREATE</span>    <span class="nu">0x400</span> <span class="cm">/* 不存在则创建 */</span>
+<span class="pp">#define</span> <span class="fn">NLM_F_APPEND</span>    <span class="nu">0x800</span> <span class="cm">/* 追加到列表末尾 */</span></code></pre>
+
+      <h3>3.4 错误消息格式（nlmsgerr）</h3>
+      <pre><code><span class="kw">struct</span> <span class="ty">nlmsgerr</span> {
+    <span class="kw">int</span>            error;  <span class="cm">/* 负 errno，成功为 0 */</span>
+    <span class="kw">struct</span> <span class="ty">nlmsghdr</span> msg;   <span class="cm">/* 导致错误的原始请求头 */</span>
+    <span class="cm">/* 可选：Extended ACK TLV 属性（需 NETLINK_EXT_ACK setsockopt）*/</span>
+};</code></pre>
+
+      <div class="svg-wrap">
+        <svg viewBox="0 0 500 240" width="100%" style="max-width:500px" font-family="monospace" font-size="11">
+          <rect x="30" y="10" width="440" height="32" rx="4" fill="rgba(88,166,255,0.12)" stroke="#58a6ff" stroke-width="1.5"/>
+          <text x="250" y="30" text-anchor="middle" fill="#c9d1d9">struct nlmsghdr — 响应头（type=NLMSG_ERROR）</text>
+
+          <rect x="30" y="47" width="440" height="32" rx="4" fill="rgba(240,136,62,0.12)" stroke="#f0883e" stroke-width="1.5"/>
+          <text x="250" y="67" text-anchor="middle" fill="#c9d1d9">int error（负 errno 或 0）</text>
+
+          <rect x="30" y="84" width="440" height="32" rx="4" fill="rgba(63,185,80,0.12)" stroke="#3fb950" stroke-width="1.5"/>
+          <text x="250" y="104" text-anchor="middle" fill="#c9d1d9">struct nlmsghdr — 原始请求头拷贝</text>
+
+          <rect x="30" y="121" width="440" height="32" rx="4" fill="rgba(188,140,255,0.10)" stroke="#bc8cff" stroke-width="1" stroke-dasharray="5,3"/>
+          <text x="250" y="141" text-anchor="middle" fill="#bc8cff">** 可选：原始请求 payload（未设 NETLINK_CAP_ACK 时）</text>
+
+          <rect x="30" y="158" width="440" height="32" rx="4" fill="rgba(188,140,255,0.10)" stroke="#bc8cff" stroke-width="1" stroke-dasharray="5,3"/>
+          <text x="250" y="178" text-anchor="middle" fill="#bc8cff">** 可选：Extended ACK TLV 属性</text>
+
+          <text x="30" y="215" fill="#5c6370" font-size="10">注：NLM_F_CAPPED 标志表示无 payload 拷贝；NLM_F_ACK_TLVS 表示有扩展 ACK</text>
+        </svg>
+        <p class="svg-cap">图 4：NLMSG_ERROR 消息内存布局</p>
+      </div>
+
+      <div class="fp-box">
+        <p>
+          <strong>本质：</strong>消息格式的核心约束是「头部固定 + 载荷可变」。
+          固定头部提供路由信息（去哪、谁发、类型是什么），
+          可变载荷承载内容。对齐到 4 字节边界（<code>NLMSG_ALIGN</code>）是性能与 ABI 稳定的工程权衡——
+          统一对齐让内核解析路径可以零拷贝地直接操作指针，无需字段拷贝。
+        </p>
+      </div>
+    </section>
+
+    <!-- §4 PROTOCOL MODEL -->
+    <section id="protocol-model">
+      <h2>§4 协议模型与寻址</h2>
+
+      <h3>4.1 地址格式（sockaddr_nl）</h3>
+      <pre><code><span class="kw">struct</span> <span class="ty">sockaddr_nl</span> {
+    <span class="ty">sa_family_t</span>  nl_family;  <span class="cm">/* AF_NETLINK */</span>
+    <span class="ty">unsigned short</span> nl_pad;  <span class="cm">/* 置零 */</span>
+    <span class="ty">pid_t</span>        nl_pid;    <span class="cm">/* Port ID（非进程PID）*/</span>
+    <span class="ty">__u32</span>        nl_groups; <span class="cm">/* 多播组掩码 */</span>
+};</code></pre>
+      <div class="card">
+        <div class="card-title">nl_pid 规则</div>
+        <ul>
+          <li><code>nl_pid = 0</code>：目标为内核；或让内核自动分配</li>
+          <li>内核自动分配：第一个 socket 分配为进程 PID，后续分配唯一 ID</li>
+          <li>应用可 <code>bind()</code> 时手动指定，需保证唯一性</li>
+          <li><strong>注意</strong>：nl_pid 标识 socket，不是进程</li>
+        </ul>
+      </div>
+
+      <h3>4.2 协议族枚举</h3>
+      <p>定义于 <code>include/uapi/linux/netlink.h</code>，5.10.186 中常用协议：</p>
+      <div class="tbl-wrap">
+        <table>
+          <thead><tr><th>常量</th><th>值</th><th>用途</th></tr></thead>
+          <tbody>
+            <tr><td><code>NETLINK_ROUTE</code></td><td>0</td><td>路由、链路、地址管理（rtnetlink）</td></tr>
+            <tr><td><code>NETLINK_USERSOCK</code></td><td>2</td><td>用户空间之间通信保留</td></tr>
+            <tr><td><code>NETLINK_FIREWALL</code></td><td>3</td><td>已废弃的防火墙队列</td></tr>
+            <tr><td><code>NETLINK_SOCK_DIAG</code></td><td>4</td><td>Socket 状态诊断（ss 工具）</td></tr>
+            <tr><td><code>NETLINK_NFLOG</code></td><td>5</td><td>Netfilter/iptables 日志</td></tr>
+            <tr><td><code>NETLINK_XFRM</code></td><td>6</td><td>IPsec/XFRM 框架</td></tr>
+            <tr><td><code>NETLINK_AUDIT</code></td><td>9</td><td>审计子系统</td></tr>
+            <tr><td><code>NETLINK_KOBJECT_UEVENT</code></td><td>15</td><td>udev 设备事件（uevent）</td></tr>
+            <tr><td><code>NETLINK_GENERIC</code></td><td>16</td><td>Generic Netlink 复用总线</td></tr>
+            <tr><td><code>NETLINK_ISCSI</code></td><td>8</td><td>iSCSI 协议</td></tr>
+            <tr><td><code>NETLINK_CRYPTO</code></td><td>21</td><td>内核加密 API</td></tr>
+          </tbody>
+        </table>
+      </div>
+      <div class="note">
+        <span class="note-icon">💡</span>
+        <span>协议 ID 范围 0–31（MAX_LINKS = 32）。已无计划新增经典 Netlink 协议，扩展应使用 Generic Netlink。</span>
+      </div>
+
+      <h3>4.3 多播组机制</h3>
+      <p>每个协议族最多支持 <strong>32 个多播组</strong>（经典 Netlink）。订阅通过 <code>bind()</code> 设置 <code>nl_groups</code> 位掩码，或 <code>setsockopt(NETLINK_ADD_MEMBERSHIP)</code>：</p>
+      <pre><code><span class="cm">/* 订阅组，需 CAP_NET_ADMIN 或 root */</span>
+<span class="ty">unsigned int</span> group_id = RTNLGRP_LINK; <span class="cm">/* 链路状态变化组 */</span>
+<span class="fn">setsockopt</span>(fd, SOL_NETLINK, NETLINK_ADD_MEMBERSHIP,
+           &amp;group_id, <span class="kw">sizeof</span>(group_id));</code></pre>
+
+      <div class="fp-box">
+        <p>
+          <strong>本质：</strong>Netlink 的寻址模型本质上是「<strong>协议族 × 端口ID × 多播组</strong>」三元组。
+          协议族做一级分流（路由到正确的内核子系统），端口ID做单播寻址，多播组位掩码做一对多分发。
+          这与 UDP 多播类似，只不过「网络」换成了内核内部的消息总线，
+          无需额外的网络栈开销，直接操作 sk_buff。
+        </p>
+      </div>
+    </section>
+
+    <!-- §5 SOCK INTERNALS -->
+    <section id="sock-internals">
+      <h2>§5 内核核心数据结构</h2>
+
+      <h3>5.1 netlink_sock — 扩展 socket 结构</h3>
+      <p>定义于 <code>net/netlink/af_netlink.h</code>，在通用 <code>struct sock</code> 基础上扩展：</p>
+      <pre><code><span class="kw">struct</span> <span class="ty">netlink_sock</span> {
+    <span class="cm">/* struct sock 必须是第一个成员，用于 container_of */</span>
+    <span class="kw">struct</span> <span class="ty">sock</span>           sk;
+
+    <span class="ty">unsigned long</span>         flags;        <span class="cm">/* NETLINK_F_* 标志位 */</span>
+    <span class="ty">u32</span>                   portid;       <span class="cm">/* 本 socket 的 Port ID */</span>
+    <span class="ty">u32</span>                   dst_portid;   <span class="cm">/* 对端 Port ID */</span>
+    <span class="ty">u32</span>                   dst_group;    <span class="cm">/* 目标多播组 */</span>
+    <span class="ty">u32</span>                   subscriptions;<span class="cm">/* 已订阅组数量 */</span>
+    <span class="ty">u32</span>                   ngroups;      <span class="cm">/* 总多播组数 */</span>
+    <span class="ty">unsigned long</span>        *groups;       <span class="cm">/* 已订阅组位图 */</span>
+    <span class="ty">unsigned long</span>         state;        <span class="cm">/* 状态位 */</span>
+    <span class="ty">size_t</span>                max_recvmsg_len;
+
+    <span class="ty">wait_queue_head_t</span>     wait;
+    <span class="ty">bool</span>                  bound;        <span class="cm">/* 是否已 bind() */</span>
+    <span class="ty">bool</span>                  cb_running;   <span class="cm">/* dump 回调运行中 */</span>
+    <span class="kw">int</span>                   dump_done_errno;
+    <span class="kw">struct</span> <span class="ty">netlink_callback</span> cb;         <span class="cm">/* dump 回调上下文 */</span>
+    <span class="kw">struct</span> <span class="ty">mutex</span>          nl_cb_mutex;
+
+    <span class="cm">/* 内核 socket 回调钩子 */</span>
+    <span class="ty">void</span>  (*netlink_rcv)(<span class="kw">struct</span> <span class="ty">sk_buff</span> *skb);
+    <span class="kw">int</span>   (*netlink_bind)(<span class="kw">struct</span> <span class="ty">net</span> *net, <span class="kw">int</span> group);
+    <span class="ty">void</span>  (*netlink_unbind)(<span class="kw">struct</span> <span class="ty">net</span> *net, <span class="kw">int</span> group);
+    <span class="ty">void</span>  (*netlink_release)(<span class="kw">struct</span> <span class="ty">sock</span> *sk,
+                             <span class="ty">unsigned long</span> *groups);
+
+    <span class="kw">struct</span> <span class="ty">module</span>        *module;
+    <span class="kw">struct</span> <span class="ty">rhash_head</span>    node;         <span class="cm">/* rhashtable 节点 */</span>
+    <span class="kw">struct</span> <span class="ty">rcu_head</span>      rcu;          <span class="cm">/* RCU 释放 */</span>
+};</code></pre>
+
+      <h3>5.2 netlink_table — 全局协议表</h3>
+      <p>
+        定义于 <code>net/netlink/af_netlink.h</code>，全局数组 <code>nl_table[]</code> 共 <code>MAX_LINKS (32)</code> 个槽：
+      </p>
+      <pre><code><span class="kw">struct</span> <span class="ty">netlink_table</span> {
+    <span class="kw">struct</span> <span class="ty">rhashtable</span>    hash;       <span class="cm">/* portid → sock 哈希表 */</span>
+    <span class="kw">struct</span> <span class="ty">hlist_head</span>   mc_list;    <span class="cm">/* 多播成员链表 */</span>
+    <span class="kw">struct</span> <span class="ty">listeners</span> __rcu *listeners;<span class="cm">/* 监听组位图 */</span>
+    <span class="ty">unsigned int</span>         flags;
+    <span class="ty">unsigned int</span>         groups;     <span class="cm">/* 多播组数 */</span>
+    <span class="kw">struct</span> <span class="ty">mutex</span>        *cb_mutex;
+    <span class="kw">struct</span> <span class="ty">module</span>       *module;
+    <span class="kw">int</span> (*bind)(<span class="kw">struct</span> <span class="ty">net</span> *net, <span class="kw">int</span> group);
+    <span class="ty">void</span> (*unbind)(<span class="kw">struct</span> <span class="ty">net</span> *net, <span class="kw">int</span> group);
+    <span class="ty">void</span> (*release)(<span class="kw">struct</span> <span class="ty">sock</span> *sk, <span class="ty">unsigned long</span> *groups);
+    <span class="kw">int</span>                  registered; <span class="cm">/* 是否已注册 */</span>
+};
+
+<span class="cm">/* 全局协议表，由 netlink_proto_init() 初始化 */</span>
+<span class="kw">extern</span> <span class="kw">struct</span> <span class="ty">netlink_table</span> *nl_table;
+<span class="kw">extern</span> <span class="ty">rwlock_t</span> nl_table_lock;</code></pre>
+
+      <div class="svg-wrap">
+        <svg viewBox="0 0 660 380" width="100%" style="max-width:660px" font-family="monospace" font-size="11">
+          <!-- nl_table array -->
+          <text x="30" y="22" fill="#8b949e" font-size="10">nl_table[MAX_LINKS]（全局数组，index = protocol）</text>
+          <rect x="30" y="30" width="100" height="280" rx="4" fill="rgba(88,166,255,0.08)" stroke="#58a6ff" stroke-width="1.5"/>
+          <text x="80" y="52" text-anchor="middle" fill="#58a6ff" font-size="10" font-weight="bold">[0] ROUTE</text>
+          <line x1="30" y1="60" x2="130" y2="60" stroke="#30363d" stroke-width="1"/>
+          <text x="80" y="80" text-anchor="middle" fill="#8b949e" font-size="10">[2] USERSOCK</text>
+          <line x1="30" y1="88" x2="130" y2="88" stroke="#30363d" stroke-width="1"/>
+          <text x="80" y="108" text-anchor="middle" fill="#8b949e" font-size="10">[4] SOCK_DIAG</text>
+          <line x1="30" y1="116" x2="130" y2="116" stroke="#30363d" stroke-width="1"/>
+          <text x="80" y="160" text-anchor="middle" fill="#8b949e" font-size="10">... ...</text>
+          <text x="80" y="200" text-anchor="middle" fill="#bc8cff" font-size="10">[16] GENERIC</text>
+          <line x1="30" y1="208" x2="130" y2="208" stroke="#30363d" stroke-width="1"/>
+          <text x="80" y="240" text-anchor="middle" fill="#8b949e" font-size="10">[21] CRYPTO</text>
+          <line x1="30" y1="248" x2="130" y2="248" stroke="#30363d" stroke-width="1"/>
+          <text x="80" y="290" text-anchor="middle" fill="#8b949e" font-size="10">[31]</text>
+
+          <!-- ROUTE table detail -->
+          <rect x="180" y="28" width="200" height="140" rx="6" fill="rgba(63,185,80,0.08)" stroke="#3fb950" stroke-width="1.5"/>
+          <text x="280" y="48" text-anchor="middle" fill="#3fb950" font-weight="bold">netlink_table[0]</text>
+          <text x="185" y="68" fill="#c9d1d9" font-size="10">hash: rhashtable</text>
+          <text x="185" y="85" fill="#c9d1d9" font-size="10">  portid 1001 → sock_A</text>
+          <text x="185" y="100" fill="#c9d1d9" font-size="10">  portid 1234 → sock_B</text>
+          <text x="185" y="118" fill="#c9d1d9" font-size="10">mc_list: [sock_C, sock_D]</text>
+          <text x="185" y="135" fill="#c9d1d9" font-size="10">listeners: [组0b0011]</text>
+          <text x="185" y="152" fill="#c9d1d9" font-size="10">groups: 32</text>
+
+          <line x1="130" y1="52" x2="180" y2="52" stroke="#3fb950" stroke-width="1.5" stroke-dasharray="4,2" marker-end="url(#arrowG)"/>
+
+          <!-- sock_A detail -->
+          <rect x="430" y="28" width="210" height="120" rx="6" fill="rgba(240,136,62,0.08)" stroke="#f0883e" stroke-width="1.5"/>
+          <text x="535" y="48" text-anchor="middle" fill="#f0883e" font-weight="bold">netlink_sock (sock_A)</text>
+          <text x="435" y="66" fill="#c9d1d9" font-size="10">sk: struct sock</text>
+          <text x="435" y="82" fill="#c9d1d9" font-size="10">portid: 1001</text>
+          <text x="435" y="98" fill="#c9d1d9" font-size="10">groups: 0b0010 (组1)</text>
+          <text x="435" y="114" fill="#c9d1d9" font-size="10">netlink_rcv: rtnetlink_rcv</text>
+          <text x="435" y="130" fill="#c9d1d9" font-size="10">node: rhash_head</text>
+
+          <line x1="380" y1="85" x2="430" y2="70" stroke="#f0883e" stroke-width="1.5" stroke-dasharray="4,2" marker-end="url(#arrowO2)"/>
+
+          <!-- sk_buff flow -->
+          <rect x="180" y="220" width="200" height="80" rx="6" fill="rgba(88,166,255,0.08)" stroke="#58a6ff" stroke-width="1.5"/>
+          <text x="280" y="243" text-anchor="middle" fill="#58a6ff" font-weight="bold">sk_buff (Netlink消息)</text>
+          <text x="185" y="263" fill="#c9d1d9" font-size="10">data → nlmsghdr</text>
+          <text x="185" y="278" fill="#c9d1d9" font-size="10">cb[] → netlink_skb_parms</text>
+          <text x="185" y="293" fill="#c9d1d9" font-size="10">sk → netlink_sock</text>
+
+          <!-- NETLINK_CB -->
+          <rect x="430" y="210" width="210" height="60" rx="6" fill="rgba(188,140,255,0.08)" stroke="#bc8cff" stroke-width="1.5"/>
+          <text x="535" y="232" text-anchor="middle" fill="#bc8cff" font-weight="bold">netlink_skb_parms (CB)</text>
+          <text x="435" y="252" fill="#c9d1d9" font-size="10">portid, dst_group, creds</text>
+          <text x="435" y="266" fill="#c9d1d9" font-size="10">存储于 skb-&gt;cb[48字节]</text>
+
+          <line x1="380" y1="260" x2="430" y2="245" stroke="#bc8cff" stroke-width="1.5" stroke-dasharray="4,2" marker-end="url(#arrowP2)"/>
+
+          <defs>
+            <marker id="arrowG" markerWidth="8" markerHeight="8" refX="6" refY="3" orient="auto">
+              <path d="M0,0 L0,6 L8,3 Z" fill="#3fb950"/>
+            </marker>
+            <marker id="arrowO2" markerWidth="8" markerHeight="8" refX="6" refY="3" orient="auto">
+              <path d="M0,0 L0,6 L8,3 Z" fill="#f0883e"/>
+            </marker>
+            <marker id="arrowP2" markerWidth="8" markerHeight="8" refX="6" refY="3" orient="auto">
+              <path d="M0,0 L0,6 L8,3 Z" fill="#bc8cff"/>
+            </marker>
+          </defs>
+
+          <text x="30" y="360" fill="#5c6370" font-size="10">注：NETLINK_CB(skb) 宏访问存储在 skb-&gt;cb[] 中的 netlink_skb_parms 控制块</text>
+        </svg>
+        <p class="svg-cap">图 5：nl_table 全局协议表与 netlink_sock、sk_buff 的关系</p>
+      </div>
+
+      <h3>5.3 锁机制</h3>
+      <div class="tbl-wrap">
+        <table>
+          <thead><tr><th>锁</th><th>类型</th><th>保护对象</th></tr></thead>
+          <tbody>
+            <tr><td><code>nl_table_lock</code></td><td><code>rwlock_t</code></td><td>nl_table 数组整体读写</td></tr>
+            <tr><td><code>rhashtable</code> 内部锁</td><td>bucket 级别</td><td>portid 哈希桶，支持并发插入/删除</td></tr>
+            <tr><td><code>nl_cb_mutex</code></td><td><code>mutex</code></td><td>dump 回调串行化</td></tr>
+            <tr><td>RCU</td><td>读-复制-更新</td><td>监听器列表（listeners）、多播列表遍历</td></tr>
+          </tbody>
+        </table>
+      </div>
+
+      <div class="fp-box">
+        <p>
+          <strong>本质：</strong>内核数据结构设计遵循「<strong>继承复用 + 控制块内联</strong>」原则。
+          <code>netlink_sock</code> 把 <code>struct sock</code> 作为第一个成员，
+          通过 <code>container_of</code> 在通用 sock 指针和 netlink_sock 之间零开销转换。
+          <code>NETLINK_CB(skb)</code> 把控制信息内联进 <code>skb->cb[]</code> 48 字节控制块，
+          避免额外内存分配——这是在「性能」和「抽象」之间取得极致平衡的经典内核技法。
+        </p>
+      </div>
+    </section>
+
+    <!-- §6 SOCKET OPS -->
+    <section id="socket-ops">
+      <h2>§6 Socket 操作层</h2>
+
+      <h3>6.1 协议族注册与初始化</h3>
+      <p>Netlink 通过 <code>netlink_proto_init()</code> 在内核启动时注册，位于 <code>net/netlink/af_netlink.c</code> 底部：</p>
+      <pre><code><span class="cm">/* Netlink 注册到网络协议栈 */</span>
+<span class="kw">static const</span> <span class="kw">struct</span> <span class="ty">net_proto_family</span> netlink_family_ops = {
+    .family = <span class="fn">PF_NETLINK</span>,
+    .create = <span class="fn">netlink_create</span>,  <span class="cm">/* 创建 socket 时调用 */</span>
+    .owner  = <span class="fn">THIS_MODULE</span>,
+};
+
+<span class="kw">static int</span> __init <span class="fn">netlink_proto_init</span>(<span class="ty">void</span>)
+{
+    <span class="kw">int</span> i;
+    <span class="kw">int</span> err = <span class="fn">proto_register</span>(&amp;netlink_proto, <span class="nu">0</span>);
+    <span class="kw">if</span> (err != <span class="nu">0</span>) <span class="kw">goto</span> out;
+
+    <span class="cm">/* 分配并初始化 MAX_LINKS(32) 个协议槽的哈希表 */</span>
+    nl_table = <span class="fn">kcalloc</span>(<span class="fn">MAX_LINKS</span>, <span class="kw">sizeof</span>(*nl_table), <span class="fn">GFP_KERNEL</span>);
+
+    <span class="kw">for</span> (i = <span class="nu">0</span>; i &lt; <span class="fn">MAX_LINKS</span>; i++)
+        <span class="fn">rhashtable_init</span>(&amp;nl_table[i].hash,
+                         &amp;netlink_rhashtable_params);
+
+    <span class="fn">netlink_add_usersock_entry</span>();
+    <span class="fn">sock_register</span>(&amp;netlink_family_ops); <span class="cm">/* 注册 AF_NETLINK */</span>
+    <span class="fn">register_pernet_subsys</span>(&amp;netlink_net_ops);
+    <span class="cm">/* ... */</span>
+}
+<span class="fn">core_initcall</span>(netlink_proto_init);</code></pre>
+
+      <h3>6.2 内核侧创建 Netlink Socket</h3>
+      <p>内核子系统调用 <code>netlink_kernel_create()</code> 创建内核侧的 netlink socket：</p>
+      <pre><code><span class="kw">struct</span> <span class="ty">netlink_kernel_cfg</span> cfg = {
+    .input  = <span class="fn">rtnetlink_rcv</span>,  <span class="cm">/* 消息接收回调 */</span>
+    .groups = <span class="fn">RTNLGRP_MAX</span>,    <span class="cm">/* 多播组数 */</span>
+    .cb_mutex = &amp;rtnl_mutex,   <span class="cm">/* 串行化锁 */</span>
+};
+
+<span class="cm">/* 示例：rtnetlink 在 net/core/rtnetlink.c 中初始化 */</span>
+<span class="kw">struct</span> <span class="ty">sock</span> *sk = <span class="fn">netlink_kernel_create</span>(net, NETLINK_ROUTE, &amp;cfg);
+net-&gt;rtnl = sk;</code></pre>
+
+      <h3>6.3 用户态 Socket 操作流程</h3>
+      <div class="svg-wrap">
+        <svg viewBox="0 0 680 360" width="100%" style="max-width:680px" font-family="monospace" font-size="11">
+          <!-- User Space -->
+          <rect x="10" y="10" width="300" height="340" rx="8" fill="rgba(88,166,255,0.05)" stroke="#58a6ff" stroke-width="1"/>
+          <text x="160" y="32" text-anchor="middle" fill="#58a6ff" font-size="12" font-weight="bold">用户空间</text>
+
+          <rect x="30" y="48" width="260" height="32" rx="5" fill="rgba(88,166,255,0.15)" stroke="#58a6ff" stroke-width="1"/>
+          <text x="160" y="68" text-anchor="middle" fill="#c9d1d9">socket(AF_NETLINK, SOCK_RAW, proto)</text>
+
+          <rect x="30" y="100" width="260" height="32" rx="5" fill="rgba(88,166,255,0.15)" stroke="#58a6ff" stroke-width="1"/>
+          <text x="160" y="120" text-anchor="middle" fill="#c9d1d9">bind(&amp;sockaddr_nl{nl_pid, nl_groups})</text>
+
+          <rect x="30" y="152" width="260" height="32" rx="5" fill="rgba(63,185,80,0.15)" stroke="#3fb950" stroke-width="1"/>
+          <text x="160" y="172" text-anchor="middle" fill="#c9d1d9">sendmsg(fd, nlmsghdr+payload)</text>
+
+          <rect x="30" y="204" width="260" height="32" rx="5" fill="rgba(240,136,62,0.15)" stroke="#f0883e" stroke-width="1"/>
+          <text x="160" y="224" text-anchor="middle" fill="#c9d1d9">recvmsg(fd, buf) — 阻塞等待响应</text>
+
+          <rect x="30" y="256" width="260" height="32" rx="5" fill="rgba(188,140,255,0.15)" stroke="#bc8cff" stroke-width="1"/>
+          <text x="160" y="276" text-anchor="middle" fill="#c9d1d9">setsockopt(NETLINK_ADD_MEMBERSHIP)</text>
+
+          <!-- Kernel Space -->
+          <rect x="370" y="10" width="300" height="340" rx="8" fill="rgba(240,136,62,0.05)" stroke="#f0883e" stroke-width="1"/>
+          <text x="520" y="32" text-anchor="middle" fill="#f0883e" font-size="12" font-weight="bold">内核空间</text>
+
+          <rect x="390" y="48" width="260" height="32" rx="5" fill="rgba(240,136,62,0.15)" stroke="#f0883e" stroke-width="1"/>
+          <text x="520" y="68" text-anchor="middle" fill="#c9d1d9">netlink_create() → netlink_sock 分配</text>
+
+          <rect x="390" y="100" width="260" height="32" rx="5" fill="rgba(240,136,62,0.15)" stroke="#f0883e" stroke-width="1"/>
+          <text x="520" y="120" text-anchor="middle" fill="#c9d1d9">netlink_bind() → 插入 rhashtable</text>
+
+          <rect x="390" y="152" width="260" height="32" rx="5" fill="rgba(63,185,80,0.15)" stroke="#3fb950" stroke-width="1"/>
+          <text x="520" y="172" text-anchor="middle" fill="#c9d1d9">netlink_sendmsg() → 构建 sk_buff</text>
+
+          <rect x="390" y="204" width="260" height="32" rx="5" fill="rgba(240,136,62,0.15)" stroke="#f0883e" stroke-width="1"/>
+          <text x="520" y="224" text-anchor="middle" fill="#c9d1d9">netlink_recvmsg() → 从 sk→sk_receive_queue</text>
+
+          <rect x="390" y="256" width="260" height="32" rx="5" fill="rgba(188,140,255,0.15)" stroke="#bc8cff" stroke-width="1"/>
+          <text x="520" y="276" text-anchor="middle" fill="#c9d1d9">netlink_setsockopt() → 更新 groups 位图</text>
+
+          <!-- arrows -->
+          <line x1="290" y1="64" x2="390" y2="64" stroke="#c9d1d9" stroke-width="1.5" marker-end="url(#arr1)"/>
+          <line x1="290" y1="116" x2="390" y2="116" stroke="#c9d1d9" stroke-width="1.5" marker-end="url(#arr1)"/>
+          <line x1="290" y1="168" x2="390" y2="168" stroke="#3fb950" stroke-width="1.5" marker-end="url(#arr1)"/>
+          <line x1="390" y1="220" x2="290" y2="220" stroke="#f0883e" stroke-width="1.5" marker-end="url(#arr2)"/>
+          <line x1="290" y1="272" x2="390" y2="272" stroke="#c9d1d9" stroke-width="1.5" marker-end="url(#arr1)"/>
+
+          <defs>
+            <marker id="arr1" markerWidth="7" markerHeight="7" refX="5" refY="3" orient="auto">
+              <path d="M0,0 L0,6 L7,3 Z" fill="#c9d1d9"/>
+            </marker>
+            <marker id="arr2" markerWidth="7" markerHeight="7" refX="5" refY="3" orient="auto">
+              <path d="M0,0 L0,6 L7,3 Z" fill="#f0883e"/>
+            </marker>
+          </defs>
+        </svg>
+        <p class="svg-cap">图 6：用户态 Socket 操作与内核处理函数对应关系</p>
+      </div>
+
+      <h3>6.4 关键操作函数映射</h3>
+      <div class="tbl-wrap">
+        <table>
+          <thead><tr><th>用户态系统调用</th><th>内核处理函数（af_netlink.c）</th></tr></thead>
+          <tbody>
+            <tr><td><code>socket(AF_NETLINK,...)</code></td><td><code>netlink_create()</code></td></tr>
+            <tr><td><code>bind()</code></td><td><code>netlink_bind()</code></td></tr>
+            <tr><td><code>sendmsg()</code></td><td><code>netlink_sendmsg()</code></td></tr>
+            <tr><td><code>recvmsg()</code></td><td><code>netlink_recvmsg()</code></td></tr>
+            <tr><td><code>setsockopt()</code></td><td><code>netlink_setsockopt()</code></td></tr>
+            <tr><td><code>getsockopt()</code></td><td><code>netlink_getsockopt()</code></td></tr>
+            <tr><td><code>close()</code></td><td><code>netlink_release()</code></td></tr>
+            <tr><td><code>connect()</code></td><td><code>netlink_connect()</code></td></tr>
+          </tbody>
+        </table>
+      </div>
+
+      <div class="fp-box">
+        <p>
+          <strong>本质：</strong>Linux Socket 子系统通过 <code>proto_ops</code> 和 <code>proto</code> 两层函数指针表
+          实现「协议无关的 VFS 层 → 协议相关层」的分发。
+          Netlink 只需填充这两张表，其余（文件描述符管理、epoll、poll）全部由通用 socket 层免费获得。
+          这是「接口分离原则」在内核架构中的完美体现。
+        </p>
+      </div>
+    </section>
+
+    <!-- §7 SEND/RECV -->
+    <section id="send-recv">
+      <h2>§7 消息收发路径</h2>
+
+      <h3>7.1 发送路径（用户→内核）</h3>
+      <pre><code><span class="cm">/* net/netlink/af_netlink.c: netlink_sendmsg() 关键路径 */</span>
+<span class="kw">static int</span> <span class="fn">netlink_sendmsg</span>(<span class="kw">struct</span> <span class="ty">socket</span> *sock, <span class="kw">struct</span> <span class="ty">msghdr</span> *msg,
+                           <span class="ty">size_t</span> len)
+{
+    <span class="kw">struct</span> <span class="ty">sock</span> *sk = sock-&gt;sk;
+    <span class="kw">struct</span> <span class="ty">netlink_sock</span> *nlk = <span class="fn">nlk_sk</span>(sk);
+    <span class="kw">struct</span> <span class="ty">sockaddr_nl</span> *addr = ...;
+    <span class="kw">struct</span> <span class="ty">sk_buff</span> *skb;
+
+    <span class="cm">/* 1. 分配 skb，将用户态数据拷贝进来 */</span>
+    skb = <span class="fn">netlink_alloc_large_skb</span>(len, ...);
+    <span class="kw">if</span> (<span class="fn">memcpy_from_msg</span>(skb_put(skb, len), msg, len) &lt; <span class="nu">0</span>) ...
+
+    <span class="cm">/* 2. 设置 NETLINK_CB 控制块 */</span>
+    <span class="fn">NETLINK_CB</span>(skb).portid    = nlk-&gt;portid;
+    <span class="fn">NETLINK_CB</span>(skb).dst_group = dst_group;
+
+    <span class="cm">/* 3. 单播/多播分发 */</span>
+    <span class="kw">if</span> (dst_group)
+        <span class="kw">return</span> <span class="fn">netlink_broadcast</span>(sk, skb, ...);
+    <span class="kw">else</span>
+        <span class="kw">return</span> <span class="fn">netlink_unicast</span>(sk, skb, dst_portid, ...);
+}</code></pre>
+
+      <h3>7.2 单播发送（内核→用户）</h3>
+      <pre><code><span class="cm">/* 内核子系统向特定用户进程回复 */</span>
+<span class="kw">struct</span> <span class="ty">sk_buff</span> *skb_out = <span class="fn">nlmsg_new</span>(payload_size, <span class="fn">GFP_KERNEL</span>);
+
+<span class="cm">/* 填写 nlmsghdr */</span>
+<span class="kw">struct</span> <span class="ty">nlmsghdr</span> *nlh = <span class="fn">nlmsg_put</span>(skb_out, <span class="nu">0</span>, seq,
+                              NLMSG_DONE, payload_size, <span class="nu">0</span>);
+<span class="fn">NETLINK_CB</span>(skb_out).dst_group = <span class="nu">0</span>; <span class="cm">/* 单播 */</span>
+
+<span class="cm">/* 填充 payload ... */</span>
+
+<span class="cm">/* 发送给特定 portid */</span>
+<span class="kw">int</span> ret = <span class="fn">nlmsg_unicast</span>(nl_sk, skb_out, dst_portid);</code></pre>
+
+      <h3>7.3 接收路径（内核调用回调）</h3>
+      <div class="svg-wrap">
+        <svg viewBox="0 0 620 260" width="100%" style="max-width:620px" font-family="monospace" font-size="11">
+          <rect x="10" y="10" width="140" height="40" rx="6" fill="rgba(88,166,255,0.12)" stroke="#58a6ff" stroke-width="1.5"/>
+          <text x="80" y="34" text-anchor="middle" fill="#c9d1d9">用户 sendmsg()</text>
+
+          <line x1="150" y1="30" x2="200" y2="30" stroke="#58a6ff" stroke-width="1.5" marker-end="url(#arr3)"/>
+
+          <rect x="200" y="10" width="160" height="40" rx="6" fill="rgba(63,185,80,0.12)" stroke="#3fb950" stroke-width="1.5"/>
+          <text x="280" y="34" text-anchor="middle" fill="#c9d1d9">netlink_sendmsg()</text>
+
+          <line x1="360" y1="30" x2="410" y2="30" stroke="#3fb950" stroke-width="1.5" marker-end="url(#arr3)"/>
+
+          <rect x="410" y="10" width="180" height="40" rx="6" fill="rgba(240,136,62,0.12)" stroke="#f0883e" stroke-width="1.5"/>
+          <text x="500" y="28" text-anchor="middle" fill="#c9d1d9">netlink_unicast()</text>
+          <text x="500" y="44" text-anchor="middle" fill="#8b949e" font-size="10">skb 入 sk→sk_receive_queue</text>
+
+          <line x1="500" y1="50" x2="500" y2="90" stroke="#f0883e" stroke-width="1.5" marker-end="url(#arr4)"/>
+
+          <rect x="350" y="90" width="300" height="40" rx="6" fill="rgba(188,140,255,0.12)" stroke="#bc8cff" stroke-width="1.5"/>
+          <text x="500" y="108" text-anchor="middle" fill="#c9d1d9">sk→sk_data_ready() 唤醒</text>
+          <text x="500" y="122" text-anchor="middle" fill="#8b949e" font-size="10">（通知内核接收方有新消息）</text>
+
+          <line x1="500" y1="130" x2="500" y2="165" stroke="#bc8cff" stroke-width="1.5" marker-end="url(#arr4)"/>
+
+          <rect x="350" y="165" width="300" height="40" rx="6" fill="rgba(240,136,62,0.12)" stroke="#f0883e" stroke-width="1.5"/>
+          <text x="500" y="183" text-anchor="middle" fill="#c9d1d9">netlink_rcv() → 子系统 input()</text>
+          <text x="500" y="197" text-anchor="middle" fill="#8b949e" font-size="10">如: rtnetlink_rcv() / genl_rcv()</text>
+
+          <line x1="500" y1="205" x2="500" y2="235" stroke="#3fb950" stroke-width="1.5" marker-end="url(#arr4)"/>
+
+          <rect x="350" y="235" width="300" height="25" rx="5" fill="rgba(63,185,80,0.12)" stroke="#3fb950" stroke-width="1.5"/>
+          <text x="500" y="251" text-anchor="middle" fill="#c9d1d9">处理请求，构造响应 → netlink_unicast() 回复</text>
+
+          <defs>
+            <marker id="arr3" markerWidth="7" markerHeight="7" refX="5" refY="3" orient="auto">
+              <path d="M0,0 L0,6 L7,3 Z" fill="#58a6ff"/>
+            </marker>
+            <marker id="arr4" markerWidth="7" markerHeight="7" refX="3" refY="5" orient="auto">
+              <path d="M0,0 L6,0 L3,7 Z" fill="#f0883e"/>
+            </marker>
+          </defs>
+        </svg>
+        <p class="svg-cap">图 7：Netlink 消息从用户态到内核子系统的接收处理路径</p>
+      </div>
+
+      <div class="fp-box">
+        <p>
+          <strong>本质：</strong>内核的消息收发路径本质上是「<strong>生产者-消费者 + 回调</strong>」模式。
+          发送方把 sk_buff 放入目标 socket 的接收队列（生产），通过 <code>sk_data_ready</code> 唤醒消费者；
+          内核侧 socket 无需轮询，回调函数在有数据时被直接调用（消费）。
+          整个流程无需系统调用上下文切换的额外开销，是零拷贝异步 IPC 的体现。
+        </p>
+      </div>
+    </section>
+
+    <!-- §8 MULTICAST -->
+    <section id="multicast">
+      <h2>§8 多播与内核通知机制</h2>
+
+      <h3>8.1 多播发送（内核→多用户）</h3>
+      <pre><code><span class="cm">/* 内核向所有订阅特定组的用户广播通知 */</span>
+<span class="ty">void</span> <span class="fn">netlink_broadcast</span>(<span class="kw">struct</span> <span class="ty">sock</span> *ssk,
+                        <span class="kw">struct</span> <span class="ty">sk_buff</span> *skb,
+                        <span class="ty">u32</span> portid,    <span class="cm">/* 排除该 portid */</span>
+                        <span class="ty">u32</span> group,     <span class="cm">/* 目标组掩码   */</span>
+                        <span class="ty">gfp_t</span> allocation);
+
+<span class="cm">/* 使用示例：rtnetlink 通知链路状态变化 */</span>
+<span class="fn">rtnl_notify</span>(skb, net, <span class="nu">0</span>, RTNLGRP_LINK, nlh, <span class="fn">GFP_KERNEL</span>);
+<span class="cm">/* 最终调用 nlmsg_multicast() → netlink_broadcast() */</span></code></pre>
+
+      <h3>8.2 多播机制原理</h3>
+      <div class="svg-wrap">
+        <svg viewBox="0 0 600 300" width="100%" style="max-width:600px" font-family="monospace" font-size="11">
+          <!-- Kernel source -->
+          <rect x="220" y="15" width="160" height="40" rx="6" fill="rgba(240,136,62,0.15)" stroke="#f0883e" stroke-width="1.5"/>
+          <text x="300" y="33" text-anchor="middle" fill="#f0883e" font-weight="bold">内核子系统</text>
+          <text x="300" y="48" text-anchor="middle" fill="#8b949e" font-size="10">（如链路变化事件）</text>
+
+          <!-- netlink_broadcast -->
+          <rect x="220" y="90" width="160" height="40" rx="6" fill="rgba(63,185,80,0.15)" stroke="#3fb950" stroke-width="1.5"/>
+          <text x="300" y="108" text-anchor="middle" fill="#3fb950" font-weight="bold">netlink_broadcast()</text>
+          <text x="300" y="122" text-anchor="middle" fill="#8b949e" font-size="10">遍历 nl_table[proto].mc_list</text>
+
+          <line x1="300" y1="55" x2="300" y2="90" stroke="#f0883e" stroke-width="1.5" marker-end="url(#arrM)"/>
+
+          <!-- subscribers -->
+          <rect x="30" y="185" width="130" height="50" rx="6" fill="rgba(88,166,255,0.12)" stroke="#58a6ff" stroke-width="1.5"/>
+          <text x="95" y="205" text-anchor="middle" fill="#58a6ff">用户进程 A</text>
+          <text x="95" y="222" text-anchor="middle" fill="#8b949e" font-size="10">订阅: RTNLGRP_LINK</text>
+
+          <rect x="185" y="185" width="130" height="50" rx="6" fill="rgba(88,166,255,0.12)" stroke="#58a6ff" stroke-width="1.5"/>
+          <text x="250" y="205" text-anchor="middle" fill="#58a6ff">用户进程 B</text>
+          <text x="250" y="222" text-anchor="middle" fill="#8b949e" font-size="10">订阅: RTNLGRP_LINK</text>
+
+          <rect x="340" y="185" width="130" height="50" rx="6" fill="rgba(88,166,255,0.12)" stroke="#58a6ff" stroke-width="1.5"/>
+          <text x="405" y="205" text-anchor="middle" fill="#58a6ff">用户进程 C</text>
+          <text x="405" y="222" text-anchor="middle" fill="#8b949e" font-size="10">订阅: RTNLGRP_IPV4_ROUTE</text>
+
+          <!-- skb clone arrows -->
+          <line x1="255" y1="130" x2="95" y2="185" stroke="#3fb950" stroke-width="1.5" stroke-dasharray="5,3" marker-end="url(#arrM)"/>
+          <text x="130" y="163" fill="#3fb950" font-size="10">skb_clone</text>
+
+          <line x1="300" y1="130" x2="250" y2="185" stroke="#3fb950" stroke-width="1.5" stroke-dasharray="5,3" marker-end="url(#arrM)"/>
+          <text x="260" y="163" fill="#3fb950" font-size="10">skb_clone</text>
+
+          <line x1="345" y1="130" x2="405" y2="185" stroke="#8b949e" stroke-width="1" stroke-dasharray="3,3"/>
+          <text x="370" y="163" fill="#5c6370" font-size="10">组不匹配，跳过</text>
+
+          <text x="30" y="265" fill="#5c6370" font-size="10">注：netlink_broadcast 为每个匹配订阅者 clone 一份 skb，防止不同消费者干扰同一 skb</text>
+
+          <defs>
+            <marker id="arrM" markerWidth="7" markerHeight="7" refX="5" refY="3" orient="auto">
+              <path d="M0,0 L0,6 L7,3 Z" fill="#3fb950"/>
+            </marker>
+          </defs>
+        </svg>
+        <p class="svg-cap">图 8：netlink_broadcast 多播机制 — 按组掩码匹配，per-subscriber skb_clone</p>
+      </div>
+
+      <h3>8.3 通知链（Notification Chain）与 Netlink 联动</h3>
+      <p>
+        许多内核子系统（如网络设备、路由）用 <strong>内核通知链</strong>（<code>notifier_call_chain</code>）
+        通知内部模块，rtnetlink 则将这些事件"转换"为 Netlink 多播消息发给用户态：
+      </p>
+      <pre><code><span class="cm">/* net/core/rtnetlink.c — 网络设备变化通知 */</span>
+<span class="kw">static int</span> <span class="fn">rtnetlink_event</span>(<span class="kw">struct</span> <span class="ty">notifier_block</span> *this,
+                            <span class="ty">unsigned long</span> event, <span class="ty">void</span> *ptr)
+{
+    <span class="kw">struct</span> <span class="ty">net_device</span> *dev = <span class="fn">netdev_notifier_info_to_dev</span>(ptr);
+    <span class="kw">switch</span> (event) {
+    <span class="kw">case</span> NETDEV_UP:
+    <span class="kw">case</span> NETDEV_DOWN:
+        <span class="fn">rtmsg_ifinfo</span>(RTM_NEWLINK, dev, <span class="nu">0</span>, <span class="fn">GFP_KERNEL</span>);
+        <span class="cm">/* 最终调用 nlmsg_multicast 发给 RTNLGRP_LINK 组 */</span>
+        <span class="kw">break</span>;
+    }
+    <span class="kw">return</span> NOTIFY_DONE;
+}</code></pre>
+
+      <div class="fp-box">
+        <p>
+          <strong>本质：</strong>Netlink 多播的核心是「<strong>发布-订阅 + 按需克隆</strong>」。
+          内核事件只生成一个 skb（生产一次），
+          <code>netlink_broadcast</code> 遍历订阅者列表，对每个匹配者做 <code>skb_clone</code>（引用计数+1）而非完整复制，
+          最后每个消费者释放自己的 clone，当所有引用归零时原 skb 才被释放。
+          这是写时复制（COW）思想在 IPC 多播场景中的经典实现。
+        </p>
+      </div>
+    </section>
+
+    <!-- §9 CLASSIC NL -->
+    <section id="classic-nl">
+      <h2>§9 经典 Netlink 协议</h2>
+
+      <h3>9.1 特点与局限</h3>
+      <p>
+        早期 Netlink（经典 Netlink）的特点是：
+      </p>
+      <ul>
+        <li><strong>静态 ID 分配</strong>：协议号在头文件中硬编码，最多 32 个</li>
+        <li><strong>无内省能力</strong>：用户无法查询内核支持哪些消息类型</li>
+        <li><strong>混合格式</strong>：消息中大量使用固定宽度结构体（如 <code>ifinfomsg</code>、<code>rtmsg</code>），与 TLV 混用</li>
+        <li><strong>严格检查选项</strong>：<code>NETLINK_GET_STRICT_CHK</code> setsockopt 选项（5.2 引入）用于向后兼容地开启字段校验</li>
+      </ul>
+
+      <h3>9.2 请求类型模式（NETLINK_ROUTE）</h3>
+      <p>NETLINK_ROUTE 将操作分为四类，消息类型低 2 bit 编码操作类型（步长为 4）：</p>
+      <div class="tbl-wrap">
+        <table>
+          <thead><tr><th>操作</th><th>低2位</th><th>示例</th></tr></thead>
+          <tbody>
+            <tr><td>NEW</td><td>00</td><td><code>RTM_NEWLINK</code>, <code>RTM_NEWROUTE</code></td></tr>
+            <tr><td>DEL</td><td>01</td><td><code>RTM_DELLINK</code>, <code>RTM_DELROUTE</code></td></tr>
+            <tr><td>GET</td><td>10</td><td><code>RTM_GETLINK</code>, <code>RTM_GETROUTE</code></td></tr>
+            <tr><td>SET</td><td>11</td><td><code>RTM_SETLINK</code></td></tr>
+          </tbody>
+        </table>
+      </div>
+
+      <h3>9.3 经典使用示例（获取路由表）</h3>
+      <pre><code><span class="cm">/* 用户空间：发起路由表 dump 请求 */</span>
+<span class="kw">struct</span> {
+    <span class="kw">struct</span> <span class="ty">nlmsghdr</span>  nlh;
+    <span class="kw">struct</span> <span class="ty">rtmsg</span>     rtm;
+} request;
+
+request.nlh.nlmsg_type  = <span class="fn">RTM_GETROUTE</span>;
+request.nlh.nlmsg_flags = <span class="fn">NLM_F_REQUEST</span> | <span class="fn">NLM_F_DUMP</span>;
+request.nlh.nlmsg_len   = <span class="kw">sizeof</span>(request);
+request.nlh.nlmsg_seq   = <span class="fn">time</span>(<span class="kw">NULL</span>);
+request.rtm.rtm_family  = <span class="fn">AF_INET</span>;
+
+<span class="fn">send</span>(nl_sock, &amp;request, <span class="kw">sizeof</span>(request), <span class="nu">0</span>);</code></pre>
+
+      <div class="fp-box">
+        <p>
+          <strong>本质：</strong>经典 Netlink 的设计教训在于「协议 ID 空间是有限资源，静态分配会枯竭」。
+          MAX_LINKS=32 在 2005 年前后就已接近满额，迫使引入 Generic Netlink 进行二级复用。
+          这正是「过早优化资源会阻碍扩展性」的工程案例——
+          Generic Netlink 本质上就是在 Netlink 协议 ID 16 上实现了一个「元协议」（协议的协议）。
+        </p>
+      </div>
+    </section>
+
+    <!-- §10 GENERIC NL -->
+    <section id="generic-nl">
+      <h2>§10 Generic Netlink（NETLINK_GENERIC）</h2>
+
+      <h3>10.1 设计动机与架构</h3>
+      <p>
+        Generic Netlink（2005 年，2.6.15）是对经典 Netlink 协议 ID 耗尽问题的解决方案。
+        它在 <code>NETLINK_GENERIC（ID=16）</code> 上实现了一个<strong>动态多路复用层</strong>，
+        允许任意数量的子系统（Family）注册，Family ID 由内核动态分配。
+      </p>
+
+      <div class="svg-wrap">
+        <svg viewBox="0 0 640 320" width="100%" style="max-width:640px" font-family="monospace" font-size="11">
+          <!-- User -->
+          <rect x="10" y="10" width="100" height="40" rx="5" fill="rgba(88,166,255,0.12)" stroke="#58a6ff" stroke-width="1.5"/>
+          <text x="60" y="35" text-anchor="middle" fill="#58a6ff">用户应用</text>
+
+          <line x1="110" y1="30" x2="175" y2="30" stroke="#58a6ff" stroke-width="1.5" marker-end="url(#arrGN)"/>
+
+          <!-- AF_NETLINK -->
+          <rect x="175" y="10" width="170" height="40" rx="5" fill="rgba(63,185,80,0.12)" stroke="#3fb950" stroke-width="1.5"/>
+          <text x="260" y="35" text-anchor="middle" fill="#3fb950">AF_NETLINK socket(GENERIC)</text>
+
+          <line x1="345" y1="30" x2="410" y2="30" stroke="#3fb950" stroke-width="1.5" marker-end="url(#arrGN)"/>
+
+          <!-- genl_rcv -->
+          <rect x="410" y="10" width="200" height="40" rx="5" fill="rgba(240,136,62,0.12)" stroke="#f0883e" stroke-width="1.5"/>
+          <text x="510" y="28" text-anchor="middle" fill="#f0883e">genl_rcv() → genl_family_rcv_msg()</text>
+          <text x="510" y="44" text-anchor="middle" fill="#8b949e" font-size="10">按 nlmsg_type（Family ID）路由</text>
+
+          <line x1="510" y1="50" x2="510" y2="90" stroke="#f0883e" stroke-width="1.5" marker-end="url(#arrGN2)"/>
+
+          <!-- genl_families hash -->
+          <rect x="350" y="90" width="320" height="50" rx="5" fill="rgba(188,140,255,0.12)" stroke="#bc8cff" stroke-width="1.5"/>
+          <text x="510" y="112" text-anchor="middle" fill="#bc8cff">genl_families[] 哈希表</text>
+          <text x="510" y="128" text-anchor="middle" fill="#8b949e" font-size="10">Family ID → genl_family → ops[] → doit/dumpit</text>
+
+          <!-- Family boxes -->
+          <line x1="430" y1="140" x2="150" y2="190" stroke="#bc8cff" stroke-width="1" stroke-dasharray="4,2" marker-end="url(#arrGN)"/>
+          <line x1="490" y1="140" x2="340" y2="190" stroke="#bc8cff" stroke-width="1" stroke-dasharray="4,2" marker-end="url(#arrGN)"/>
+          <line x1="560" y1="140" x2="530" y2="190" stroke="#bc8cff" stroke-width="1" stroke-dasharray="4,2" marker-end="url(#arrGN)"/>
+
+          <rect x="60" y="190" width="160" height="55" rx="5" fill="rgba(88,166,255,0.08)" stroke="#58a6ff" stroke-width="1"/>
+          <text x="140" y="210" text-anchor="middle" fill="#58a6ff">nl80211 (WiFi)</text>
+          <text x="140" y="226" text-anchor="middle" fill="#8b949e" font-size="10">Family: "nl80211"</text>
+          <text x="140" y="240" text-anchor="middle" fill="#8b949e" font-size="10">ops: NEW_KEY, GET_STATION...</text>
+
+          <rect x="250" y="190" width="160" height="55" rx="5" fill="rgba(88,166,255,0.08)" stroke="#58a6ff" stroke-width="1"/>
+          <text x="330" y="210" text-anchor="middle" fill="#58a6ff">taskstats</text>
+          <text x="330" y="226" text-anchor="middle" fill="#8b949e" font-size="10">Family: "TASKSTATS"</text>
+          <text x="330" y="240" text-anchor="middle" fill="#8b949e" font-size="10">ops: GET, NEW</text>
+
+          <rect x="440" y="190" width="160" height="55" rx="5" fill="rgba(88,166,255,0.08)" stroke="#58a6ff" stroke-width="1"/>
+          <text x="520" y="210" text-anchor="middle" fill="#58a6ff">ethtool</text>
+          <text x="520" y="226" text-anchor="middle" fill="#8b949e" font-size="10">Family: "ethtool"</text>
+          <text x="520" y="240" text-anchor="middle" fill="#8b949e" font-size="10">ops: GET_CHANNELS, GET_RINGS...</text>
+
+          <defs>
+            <marker id="arrGN" markerWidth="7" markerHeight="7" refX="5" refY="3" orient="auto">
+              <path d="M0,0 L0,6 L7,3 Z" fill="#58a6ff"/>
+            </marker>
+            <marker id="arrGN2" markerWidth="7" markerHeight="7" refX="3" refY="5" orient="auto">
+              <path d="M0,0 L6,0 L3,7 Z" fill="#f0883e"/>
+            </marker>
+          </defs>
+        </svg>
+        <p class="svg-cap">图 9：Generic Netlink 多路复用架构 — 单一协议号承载无限 Family</p>
+      </div>
+
+      <h3>10.2 消息格式（增加 genlmsghdr）</h3>
+      <pre><code><span class="cm">/* Generic Netlink 在 nlmsghdr 后追加协议头 */</span>
+<span class="kw">struct</span> <span class="ty">genlmsghdr</span> {
+    <span class="ty">__u8</span>    cmd;       <span class="cm">/* 命令 ID（Family 内部定义）*/</span>
+    <span class="ty">__u8</span>    version;   <span class="cm">/* 版本号（通常置 1）*/</span>
+    <span class="ty">__u16</span>   reserved;  <span class="cm">/* 置零 */</span>
+};
+
+<span class="cm">/* 消息布局: nlmsghdr → genlmsghdr → nlattr TLV... */</span></code></pre>
+
+      <h3>10.3 Family 注册与操作定义</h3>
+      <pre><code><span class="cm">/* 定义 Family（include/net/genetlink.h）*/</span>
+<span class="kw">static struct</span> <span class="ty">genl_family</span> doc_exmpl_gnl_family = {
+    .id      = <span class="fn">GENL_ID_GENERATE</span>, <span class="cm">/* 0 = 内核自动分配 ID */</span>
+    .hdrsize = <span class="nu">0</span>,
+    .name    = <span class="st">"DOC_EXMPL"</span>,
+    .version = <span class="nu">1</span>,
+    .maxattr = <span class="fn">DOC_EXMPL_A_MAX</span>,
+};
+
+<span class="cm">/* 定义操作（struct genl_ops）*/</span>
+<span class="kw">static struct</span> <span class="ty">genl_ops</span> doc_exmpl_gnl_ops_echo = {
+    .cmd    = <span class="fn">DOC_EXMPL_C_ECHO</span>,
+    .flags  = <span class="nu">0</span>,
+    .policy = doc_exmpl_genl_policy,
+    .doit   = <span class="fn">doc_exmpl_echo</span>,   <span class="cm">/* 单次操作回调 */</span>
+    .dumpit = <span class="kw">NULL</span>,              <span class="cm">/* dump 回调 */</span>
+};
+
+<span class="cm">/* 注册（模块 init 中）*/</span>
+<span class="fn">genl_register_family</span>(&amp;doc_exmpl_gnl_family);
+<span class="fn">genl_register_ops</span>(&amp;doc_exmpl_gnl_family, &amp;doc_exmpl_gnl_ops_echo);</code></pre>
+
+      <h3>10.4 Family ID 发现流程</h3>
+      <p>用户程序需要先查询 <code>CTRL_CMD_GETFAMILY</code> 获取动态 Family ID：</p>
+      <pre><code><span class="cm">/* 向 GENL_ID_CTRL（固定 ID=16）发送查询 */</span>
+struct nlmsghdr → nlmsg_type = GENL_ID_CTRL
+struct genlmsghdr → cmd = CTRL_CMD_GETFAMILY
+struct nlattr → nla_type = CTRL_ATTR_FAMILY_NAME
+                 data = "DOC_EXMPL\0"
+
+<span class="cm">/* 内核返回：*/</span>
+struct nlattr → nla_type = CTRL_ATTR_FAMILY_ID
+                 data = 123  <span class="cm">/* 动态分配的 Family ID */</span></code></pre>
+
+      <h3>10.5 genl_ops 结构（5.10.186）</h3>
+      <pre><code><span class="cm">/* include/net/genetlink.h */</span>
+<span class="kw">struct</span> <span class="ty">genl_ops</span> {
+    <span class="kw">int</span>  (*doit)(<span class="kw">struct</span> <span class="ty">sk_buff</span> *skb, <span class="kw">struct</span> <span class="ty">genl_info</span> *info);
+    <span class="kw">int</span>  (*start)(<span class="kw">struct</span> <span class="ty">netlink_callback</span> *cb);
+    <span class="kw">int</span>  (*dumpit)(<span class="kw">struct</span> <span class="ty">sk_buff</span> *skb, <span class="kw">struct</span> <span class="ty">netlink_callback</span> *cb);
+    <span class="kw">int</span>  (*done)(<span class="kw">struct</span> <span class="ty">netlink_callback</span> *cb);
+    <span class="kw">const struct</span> <span class="ty">nla_policy</span> *policy;
+    <span class="ty">unsigned int</span>  maxattr;
+    <span class="ty">u8</span>            cmd;
+    <span class="ty">u8</span>            internal_flags;
+    <span class="ty">u8</span>            flags;
+    <span class="ty">u8</span>            validate;
+};</code></pre>
+
+      <div class="fp-box">
+        <p>
+          <strong>本质：</strong>Generic Netlink 的本质是「<strong>在有限资源上实现无限扩展性</strong>」的元编程技术。
+          用一个固定协议号（16）承载"协议注册协议"（CTRL），
+          其余所有 Family 动态申请 ID，并通过"名字解析"（CTRL_CMD_GETFAMILY）实现运行时发现。
+          这与 DNS 将域名解析为 IP 的思想完全一致——
+          字符串名称比数字 ID 更具可读性和可扩展性，数字 ID 只在通信时才有意义。
+        </p>
+      </div>
+    </section>
+
+    <!-- §11 RTNETLINK -->
+    <section id="rtnetlink">
+      <h2>§11 NETLINK_ROUTE（rtnetlink）</h2>
+
+      <h3>11.1 功能覆盖范围</h3>
+      <p><code>NETLINK_ROUTE</code> 是最重要的经典 Netlink 协议，由 <code>net/core/rtnetlink.c</code> 实现：</p>
+      <div class="tbl-wrap">
+        <table>
+          <thead><tr><th>对象</th><th>消息类型</th><th>多播组</th></tr></thead>
+          <tbody>
+            <tr><td>网络接口（link）</td><td>RTM_NEWLINK/DELLINK/GETLINK/SETLINK</td><td>RTNLGRP_LINK</td></tr>
+            <tr><td>IP 地址</td><td>RTM_NEWADDR/DELADDR/GETADDR</td><td>RTNLGRP_IPV4_IFADDR</td></tr>
+            <tr><td>路由</td><td>RTM_NEWROUTE/DELROUTE/GETROUTE</td><td>RTNLGRP_IPV4_ROUTE</td></tr>
+            <tr><td>ARP 邻居</td><td>RTM_NEWNEIGH/DELNEIGH/GETNEIGH</td><td>RTNLGRP_NEIGH</td></tr>
+            <tr><td>流量控制（TC）</td><td>RTM_NEWQDISC/DELTCLASS/GETTFILTER</td><td>RTNLGRP_TC</td></tr>
+            <tr><td>策略路由规则</td><td>RTM_NEWRULE/DELRULE/GETRULE</td><td>RTNLGRP_IPV4_RULE</td></tr>
+          </tbody>
+        </table>
+      </div>
+
+      <h3>11.2 rtnl_register — 处理函数注册</h3>
+      <pre><code><span class="cm">/* net/core/rtnetlink.c: rtnetlink_init() */</span>
+<span class="kw">void</span> __init <span class="fn">rtnetlink_init</span>(<span class="ty">void</span>)
+{
+    <span class="fn">register_pernet_subsys</span>(&amp;rtnetlink_net_ops);
+    <span class="fn">register_netdevice_notifier</span>(&amp;rtnetlink_dev_notifier);
+
+    <span class="cm">/* 注册各对象的 NEW/DEL/GET 处理函数 */</span>
+    <span class="fn">rtnl_register</span>(<span class="fn">PF_UNSPEC</span>, RTM_GETLINK, rtnl_getlink,
+                   rtnl_dump_ifinfo, rtnl_calcit);
+    <span class="fn">rtnl_register</span>(<span class="fn">PF_UNSPEC</span>, RTM_SETLINK, rtnl_setlink, NULL, NULL);
+    <span class="fn">rtnl_register</span>(<span class="fn">PF_UNSPEC</span>, RTM_NEWLINK, rtnl_newlink, NULL, NULL);
+    <span class="fn">rtnl_register</span>(<span class="fn">PF_UNSPEC</span>, RTM_DELLINK, rtnl_dellink, NULL, NULL);
+    <span class="fn">rtnl_register</span>(<span class="fn">PF_UNSPEC</span>, RTM_GETADDR, NULL, rtnl_dump_all, NULL);
+    <span class="fn">rtnl_register</span>(<span class="fn">PF_UNSPEC</span>, RTM_GETROUTE, NULL, rtnl_dump_all, NULL);
+    <span class="cm">/* ... 更多注册 ... */</span>
+}
+
+<span class="cm">/* rtnl_register 签名：*/</span>
+<span class="ty">void</span> <span class="fn">rtnl_register</span>(<span class="kw">int</span> protocol, <span class="kw">int</span> msgtype,
+                    <span class="fn">rtnl_doit_func</span>   doit,
+                    <span class="fn">rtnl_dumpit_func</span> dumpit,
+                    <span class="fn">rtnl_calcit_func</span> calcit);</code></pre>
+
+      <h3>11.3 接口信息消息（ifinfomsg）</h3>
+      <pre><code><span class="cm">/* include/uapi/linux/rtnetlink.h */</span>
+<span class="kw">struct</span> <span class="ty">ifinfomsg</span> {
+    <span class="ty">unsigned char</span>  ifi_family;   <span class="cm">/* AF_UNSPEC */</span>
+    <span class="ty">unsigned char</span>  __ifi_pad;
+    <span class="ty">unsigned short</span> ifi_type;    <span class="cm">/* ARPHRD_* 类型 */</span>
+    <span class="kw">int</span>            ifi_index;   <span class="cm">/* 接口索引 */</span>
+    <span class="ty">unsigned int</span>   ifi_flags;   <span class="cm">/* IFF_* 标志 */</span>
+    <span class="ty">unsigned int</span>   ifi_change;  <span class="cm">/* 变化标志 */</span>
+};
+
+<span class="cm">/* RTM_GETLINK 响应布局：*/</span>
+<span class="cm">/* nlmsghdr → ifinfomsg → IFLA_* 属性链 */</span></code></pre>
+
+      <div class="fp-box">
+        <p>
+          <strong>本质：</strong>rtnetlink 的设计体现了「<strong>面向对象的内核 API</strong>」思想——
+          每种网络对象（link/addr/route）都有标准的 CRUD 接口（NEW/DEL/GET/SET），
+          多播组对应"观察者模式"。
+          <code>rtnl_register</code> 是一种依赖注入，让各子系统自己注册处理函数，
+          核心调度器（<code>rtnetlink_rcv_msg</code>）只负责路由，不关心具体实现。
+        </p>
+      </div>
+    </section>
+
+    <!-- §12 DUMP -->
+    <section id="dump">
+      <h2>§12 Dump 机制</h2>
+
+      <h3>12.1 Dump 工作原理</h3>
+      <p>
+        Dump 用于枚举内核中所有某类对象（如所有路由、所有接口）。
+        由于对象可能很多，无法在单个消息中返回，Netlink 使用<strong>多部分消息（multipart）</strong>机制：
+      </p>
+      <div class="svg-wrap">
+        <svg viewBox="0 0 580 280" width="100%" style="max-width:580px" font-family="monospace" font-size="11">
+          <!-- User sends dump request -->
+          <rect x="10" y="10" width="180" height="35" rx="5" fill="rgba(88,166,255,0.12)" stroke="#58a6ff" stroke-width="1.5"/>
+          <text x="100" y="32" text-anchor="middle" fill="#c9d1d9">用户: NLM_F_REQUEST|NLM_F_DUMP</text>
+
+          <line x1="190" y1="27" x2="280" y2="27" stroke="#58a6ff" stroke-width="1.5" marker-end="url(#arrD)"/>
+
+          <rect x="280" y="10" width="290" height="35" rx="5" fill="rgba(240,136,62,0.12)" stroke="#f0883e" stroke-width="1.5"/>
+          <text x="425" y="32" text-anchor="middle" fill="#c9d1d9">内核: 触发 netlink_dump() 循环</text>
+
+          <!-- Kernel responses (multi-part) -->
+          <line x1="425" y1="45" x2="425" y2="75" stroke="#f0883e" stroke-width="1" stroke-dasharray="3,2"/>
+
+          <rect x="280" y="75" width="290" height="28" rx="4" fill="rgba(63,185,80,0.10)" stroke="#3fb950" stroke-width="1"/>
+          <text x="425" y="93" text-anchor="middle" fill="#c9d1d9">响应 msg #1 (NLM_F_MULTI | 对象A)</text>
+
+          <line x1="425" y1="103" x2="425" y2="115" stroke="#3fb950" stroke-width="1"/>
+          <rect x="280" y="115" width="290" height="28" rx="4" fill="rgba(63,185,80,0.10)" stroke="#3fb950" stroke-width="1"/>
+          <text x="425" y="133" text-anchor="middle" fill="#c9d1d9">响应 msg #2 (NLM_F_MULTI | 对象B)</text>
+
+          <line x1="425" y1="143" x2="425" y2="155" stroke="#3fb950" stroke-width="1"/>
+          <rect x="280" y="155" width="290" height="28" rx="4" fill="rgba(63,185,80,0.10)" stroke="#3fb950" stroke-width="1"/>
+          <text x="425" y="173" text-anchor="middle" fill="#c9d1d9">响应 msg #3 (NLM_F_MULTI | 对象C)</text>
+
+          <line x1="425" y1="183" x2="425" y2="195" stroke="#3fb950" stroke-width="1"/>
+          <rect x="280" y="195" width="290" height="28" rx="4" fill="rgba(88,166,255,0.15)" stroke="#58a6ff" stroke-width="1.5"/>
+          <text x="425" y="213" text-anchor="middle" fill="#58a6ff" font-weight="bold">NLMSG_DONE（结束标记）</text>
+
+          <!-- User recv loop -->
+          <rect x="10" y="75" width="240" height="148" rx="5" fill="rgba(88,166,255,0.07)" stroke="#58a6ff" stroke-width="1" stroke-dasharray="5,3"/>
+          <text x="130" y="98" text-anchor="middle" fill="#58a6ff">用户 recv() 循环</text>
+          <text x="130" y="118" text-anchor="middle" fill="#8b949e" font-size="10">while (1) {</text>
+          <text x="130" y="134" text-anchor="middle" fill="#8b949e" font-size="10">  n = recvmsg(fd, buf, ...);</text>
+          <text x="130" y="150" text-anchor="middle" fill="#8b949e" font-size="10">  for each msg in buf:</text>
+          <text x="130" y="166" text-anchor="middle" fill="#8b949e" font-size="10">    if type==NLMSG_DONE: break;</text>
+          <text x="130" y="182" text-anchor="middle" fill="#8b949e" font-size="10">    process(msg);</text>
+          <text x="130" y="198" text-anchor="middle" fill="#8b949e" font-size="10">}</text>
+
+          <!-- arrows response → user -->
+          <line x1="280" y1="90" x2="250" y2="105" stroke="#3fb950" stroke-width="1" marker-end="url(#arrD)"/>
+          <line x1="280" y1="130" x2="250" y2="145" stroke="#3fb950" stroke-width="1" marker-end="url(#arrD)"/>
+          <line x1="280" y1="170" x2="250" y2="185" stroke="#3fb950" stroke-width="1" marker-end="url(#arrD)"/>
+
+          <defs>
+            <marker id="arrD" markerWidth="7" markerHeight="7" refX="5" refY="3" orient="auto">
+              <path d="M0,0 L0,6 L7,3 Z" fill="#58a6ff"/>
+            </marker>
+          </defs>
+        </svg>
+        <p class="svg-cap">图 10：Netlink Dump 多部分消息序列</p>
+      </div>
+
+      <h3>12.2 netlink_callback 结构</h3>
+      <pre><code><span class="cm">/* include/linux/netlink.h — Dump 状态上下文 */</span>
+<span class="kw">struct</span> <span class="ty">netlink_callback</span> {
+    <span class="kw">struct</span> <span class="ty">sk_buff</span>    *skb;      <span class="cm">/* 原始请求 skb */</span>
+    <span class="kw">const struct</span> <span class="ty">nlmsghdr</span> *nlh;  <span class="cm">/* 原始请求头 */</span>
+    <span class="kw">int</span> (*start)(<span class="kw">struct</span> <span class="ty">netlink_callback</span> *);
+    <span class="kw">int</span> (*dump)(<span class="kw">struct</span> <span class="ty">sk_buff</span> *skb, <span class="kw">struct</span> <span class="ty">netlink_callback</span> *);
+    <span class="kw">int</span> (*done)(<span class="kw">struct</span> <span class="ty">netlink_callback</span> *);
+    <span class="ty">void</span>    *data;                <span class="cm">/* 子系统私有数据 */</span>
+    <span class="ty">long</span>    args[6];             <span class="cm">/* 状态跟踪（已枚举到哪里）*/</span>
+};
+
+<span class="cm">/* dumpit 回调模式：每次调用填充尽可能多的消息，
+   返回 0 表示完成，返回负值或 skb 被填满则继续 */</span></code></pre>
+
+      <h3>12.3 Dump 一致性</h3>
+      <div class="note">
+        <span class="note-icon">⚠️</span>
+        <span>某些内核数据结构（如路由表）在 dump 期间可能被修改，导致 dump 不一致。内核会在消息头设置 <code>NLM_F_DUMP_INTR</code> 标志，用户空间收到此标志应重新发起 dump。</span>
+      </div>
+
+      <div class="fp-box">
+        <p>
+          <strong>本质：</strong>Dump 机制本质上是「<strong>有状态的分页迭代器</strong>」。
+          <code>netlink_callback.args[]</code> 保存迭代器状态（已遍历到第几个对象），
+          每次内核被唤醒时从上次断点继续，类似数据库游标。
+          不同之处在于内核无法阻止迭代期间的写入，所以 <code>NLM_F_DUMP_INTR</code> 实现了
+          「乐观并发」——先读，发现脏了再重试，避免长时间持锁阻塞写路径。
+        </p>
+      </div>
+    </section>
+
+    <!-- §13 ATTRIBUTES TLV -->
+    <section id="attributes">
+      <h2>§13 属性 TLV 系统</h2>
+
+      <h3>13.1 nlattr 结构</h3>
+      <pre><code><span class="cm">/* include/uapi/linux/netlink.h */</span>
+<span class="kw">struct</span> <span class="ty">nlattr</span> {
+    <span class="ty">__u16</span>   nla_len;   <span class="cm">/* 含本头部的属性总长度 */</span>
+    <span class="ty">__u16</span>   nla_type;  <span class="cm">/* 属性类型（子系统定义）*/</span>
+};
+<span class="cm">/* payload 紧随其后，按 NLA_ALIGNTO(4) 字节对齐 */</span></code></pre>
+
+      <div class="svg-wrap">
+        <svg viewBox="0 0 580 100" width="100%" style="max-width:580px" font-family="monospace" font-size="11">
+          <!-- nlattr header -->
+          <rect x="10" y="20" width="80" height="45" rx="4" fill="rgba(240,136,62,0.15)" stroke="#f0883e" stroke-width="1.5"/>
+          <text x="50" y="39" text-anchor="middle" fill="#f0883e">nla_len</text>
+          <text x="50" y="55" text-anchor="middle" fill="#8b949e" font-size="10">16 bit</text>
+
+          <rect x="90" y="20" width="80" height="45" rx="4" fill="rgba(240,136,62,0.15)" stroke="#f0883e" stroke-width="1.5"/>
+          <text x="130" y="39" text-anchor="middle" fill="#f0883e">nla_type</text>
+          <text x="130" y="55" text-anchor="middle" fill="#8b949e" font-size="10">16 bit</text>
+
+          <!-- payload -->
+          <rect x="170" y="20" width="200" height="45" rx="4" fill="rgba(63,185,80,0.12)" stroke="#3fb950" stroke-width="1.5"/>
+          <text x="270" y="39" text-anchor="middle" fill="#3fb950">payload data</text>
+          <text x="270" y="55" text-anchor="middle" fill="#8b949e" font-size="10">(nla_len - NLA_HDRLEN) 字节</text>
+
+          <!-- padding -->
+          <rect x="370" y="20" width="60" height="45" rx="4" fill="rgba(88,166,255,0.08)" stroke="#58a6ff" stroke-width="1" stroke-dasharray="3,3"/>
+          <text x="400" y="39" text-anchor="middle" fill="#8b949e">pad</text>
+          <text x="400" y="55" text-anchor="middle" fill="#5c6370" font-size="10">4B 对齐</text>
+
+          <!-- next attr -->
+          <rect x="440" y="20" width="80" height="45" rx="4" fill="rgba(240,136,62,0.15)" stroke="#f0883e" stroke-width="1" stroke-dasharray="3,3"/>
+          <text x="480" y="39" text-anchor="middle" fill="#f0883e">下一个 attr</text>
+          <text x="480" y="55" text-anchor="middle" fill="#8b949e" font-size="10">...</text>
+
+          <text x="10" y="90" fill="#8b949e" font-size="10">←── nla_len 含 header ──→  ←── 填充到 NLA_ALIGNTO(4) ──→</text>
+        </svg>
+        <p class="svg-cap">图 11：nlattr TLV 内存布局与对齐</p>
+      </div>
+
+      <h3>13.2 属性类型系统（5.10 新增 strict validation）</h3>
+      <div class="tbl-wrap">
+        <table>
+          <thead><tr><th>类型常量</th><th>语义</th></tr></thead>
+          <tbody>
+            <tr><td><code>NL_ATTR_TYPE_U8/U16/U32/U64</code></td><td>无符号整数</td></tr>
+            <tr><td><code>NL_ATTR_TYPE_S8/S16/S32/S64</code></td><td>有符号整数</td></tr>
+            <tr><td><code>NL_ATTR_TYPE_STRING</code></td><td>字符串（可设最大长度）</td></tr>
+            <tr><td><code>NL_ATTR_TYPE_NUL_STRING</code></td><td>以 NUL 结尾的字符串</td></tr>
+            <tr><td><code>NL_ATTR_TYPE_BINARY</code></td><td>二进制数据</td></tr>
+            <tr><td><code>NL_ATTR_TYPE_NESTED</code></td><td>嵌套属性（TLV 内含 TLV）</td></tr>
+            <tr><td><code>NL_ATTR_TYPE_NESTED_ARRAY</code></td><td>嵌套数组</td></tr>
+            <tr><td><code>NL_ATTR_TYPE_FLAG</code></td><td>布尔标志（存在=true）</td></tr>
+            <tr><td><code>NL_ATTR_TYPE_BITFIELD32</code></td><td>32位位域</td></tr>
+          </tbody>
+        </table>
+      </div>
+
+      <h3>13.3 属性策略（nla_policy）验证</h3>
+      <pre><code><span class="cm">/* 定义属性校验策略 */</span>
+<span class="kw">static const struct</span> <span class="ty">nla_policy</span> example_policy[__ATTR_MAX] = {
+    [ATTR_NAME]   = { .type = NLA_NUL_STRING, .len = IFNAMSIZ-1 },
+    [ATTR_INDEX]  = { .type = NLA_U32 },
+    [ATTR_FLAGS]  = { .type = NLA_U32 },
+    [ATTR_NESTED] = { .type = NLA_NESTED },
+};
+
+<span class="cm">/* 解析时自动校验 */</span>
+<span class="kw">struct</span> <span class="ty">nlattr</span> *tb[__ATTR_MAX];
+err = <span class="fn">nla_parse_nested</span>(tb, ATTR_MAX, nlattr_head,
+                        example_policy, extack);
+<span class="kw">if</span> (err &lt; <span class="nu">0</span>) <span class="kw">return</span> err;
+
+<span class="cm">/* 使用属性 */</span>
+<span class="kw">if</span> (tb[ATTR_INDEX])
+    idx = <span class="fn">nla_get_u32</span>(tb[ATTR_INDEX]);</code></pre>
+
+      <h3>13.4 嵌套属性示例</h3>
+      <div class="svg-wrap">
+        <svg viewBox="0 0 560 160" width="100%" style="max-width:560px" font-family="monospace" font-size="11">
+          <rect x="10" y="10" width="540" height="30" rx="4" fill="rgba(88,166,255,0.12)" stroke="#58a6ff" stroke-width="1.5"/>
+          <text x="280" y="29" text-anchor="middle" fill="#c9d1d9">nlmsghdr (16B) + 协议头</text>
+
+          <rect x="10" y="48" width="100" height="30" rx="4" fill="rgba(240,136,62,0.15)" stroke="#f0883e" stroke-width="1.5"/>
+          <text x="60" y="67" text-anchor="middle" fill="#f0883e">attr A (u32)</text>
+
+          <rect x="120" y="48" width="80" height="30" rx="4" fill="rgba(240,136,62,0.15)" stroke="#f0883e" stroke-width="1.5"/>
+          <text x="160" y="67" text-anchor="middle" fill="#f0883e">attr B (str)</text>
+
+          <!-- Nested attr -->
+          <rect x="210" y="48" width="340" height="100" rx="4" fill="rgba(188,140,255,0.08)" stroke="#bc8cff" stroke-width="1.5"/>
+          <text x="380" y="70" text-anchor="middle" fill="#bc8cff">attr C (NESTED)</text>
+
+          <rect x="225" y="78" width="90" height="28" rx="4" fill="rgba(63,185,80,0.12)" stroke="#3fb950" stroke-width="1"/>
+          <text x="270" y="96" text-anchor="middle" fill="#3fb950">sub-attr C1</text>
+
+          <rect x="325" y="78" width="90" height="28" rx="4" fill="rgba(63,185,80,0.12)" stroke="#3fb950" stroke-width="1"/>
+          <text x="370" y="96" text-anchor="middle" fill="#3fb950">sub-attr C2</text>
+
+          <rect x="425" y="78" width="110" height="28" rx="4" fill="rgba(63,185,80,0.12)" stroke="#3fb950" stroke-width="1"/>
+          <text x="480" y="96" text-anchor="middle" fill="#3fb950">sub-attr C3 (nested)</text>
+
+          <text x="10" y="155" fill="#5c6370" font-size="10">嵌套属性内的 sub-attr 仍为 nlattr 格式，递归结构，对应 JSON 对象概念</text>
+        </svg>
+        <p class="svg-cap">图 12：Netlink TLV 嵌套属性结构</p>
+      </div>
+
+      <div class="fp-box">
+        <p>
+          <strong>本质：</strong>TLV 属性系统的本质是「<strong>自描述的二进制 JSON</strong>」。
+          Type 提供语义标识，Length 提供边界信息，Value 承载数据，
+          不理解某个 Type 的接收方可以直接跳过（按 Length 跳转），实现天然的前向兼容。
+          嵌套属性对应 JSON 对象，数组属性对应 JSON 数组。
+          相比 protobuf 等格式，Netlink TLV 没有 schema 文件，
+          内核通过 <code>nla_policy</code> 在运行时自动校验——这是运行时类型安全的体现。
+        </p>
+      </div>
+    </section>
+
+    <!-- §14 SECURITY -->
+    <section id="security">
+      <h2>§14 安全与网络命名空间</h2>
+
+      <h3>14.1 权限控制</h3>
+      <div class="tbl-wrap">
+        <table>
+          <thead><tr><th>操作</th><th>权限要求</th></tr></thead>
+          <tbody>
+            <tr><td>发送/接收多播</td><td>某些协议族需要 <code>CAP_NET_ADMIN</code> 或 effective UID 0</td></tr>
+            <tr><td>修改路由/地址</td><td><code>CAP_NET_ADMIN</code></td></tr>
+            <tr><td>读取 dump</td><td>通常无需特权（协议族可配置 <code>NL_CFG_F_NONROOT_SEND</code>）</td></tr>
+            <tr><td>内核 socket（<code>NETLINK_F_KERNEL_SOCKET</code>）</td><td>内核内部创建，用户不可直接访问</td></tr>
+          </tbody>
+        </table>
+      </div>
+
+      <h3>14.2 网络命名空间（Net Namespace）</h3>
+      <p>
+        Linux 5.10 中，Netlink socket 与创建它的<strong>网络命名空间（net ns）</strong>绑定。
+        <code>nl_table</code> 通过 <code>struct net</code> 隔离，不同 ns 中的 socket 不能互相通信：
+      </p>
+      <pre><code><span class="cm">/* sockaddr_nl 的 portid 在 net namespace 中唯一 */</span>
+<span class="kw">static struct</span> <span class="ty">sock</span> *<span class="fn">__netlink_lookup</span>(<span class="kw">struct</span> <span class="ty">netlink_table</span> *table,
+                                        <span class="ty">u32</span> portid,
+                                        <span class="kw">struct</span> <span class="ty">net</span> *net)
+{
+    <span class="kw">struct</span> <span class="ty">netlink_compare_arg</span> arg;
+    <span class="fn">netlink_compare_arg_init</span>(&amp;arg, net, portid);
+    <span class="cm">/* 以 (net, portid) 二元组作为哈希键 */</span>
+    <span class="kw">return</span> <span class="fn">rhashtable_lookup_fast</span>(&amp;table-&gt;hash, &amp;arg,
+                                    netlink_rhashtable_params);
+}</code></pre>
+
+      <div class="svg-wrap">
+        <svg viewBox="0 0 560 220" width="100%" style="max-width:560px" font-family="monospace" font-size="11">
+          <rect x="10" y="10" width="250" height="180" rx="8" fill="rgba(88,166,255,0.05)" stroke="#58a6ff" stroke-width="1.5"/>
+          <text x="135" y="35" text-anchor="middle" fill="#58a6ff" font-weight="bold">Net NS: default</text>
+          <text x="135" y="52" text-anchor="middle" fill="#8b949e">nl_table[ROUTE].hash:</text>
+          <text x="135" y="70" text-anchor="middle" fill="#c9d1d9">(default, portid=1000) → sock_A</text>
+          <text x="135" y="88" text-anchor="middle" fill="#c9d1d9">(default, portid=1001) → sock_B</text>
+          <text x="135" y="120" text-anchor="middle" fill="#8b949e">net→rtnl (内核 sock)</text>
+
+          <rect x="300" y="10" width="250" height="180" rx="8" fill="rgba(63,185,80,0.05)" stroke="#3fb950" stroke-width="1.5"/>
+          <text x="425" y="35" text-anchor="middle" fill="#3fb950" font-weight="bold">Net NS: container</text>
+          <text x="425" y="52" text-anchor="middle" fill="#8b949e">nl_table[ROUTE].hash:</text>
+          <text x="425" y="70" text-anchor="middle" fill="#c9d1d9">(container, portid=1000) → sock_C</text>
+          <text x="425" y="88" text-anchor="middle" fill="#8b949e">（与 default 的 portid=1000 完全隔离）</text>
+          <text x="425" y="120" text-anchor="middle" fill="#8b949e">net→rtnl (独立内核 sock)</text>
+
+          <!-- isolation indicator -->
+          <line x1="260" y1="100" x2="300" y2="100" stroke="#f0883e" stroke-width="2"/>
+          <text x="280" y="95" text-anchor="middle" fill="#f0883e" font-size="14">⊗</text>
+          <text x="280" y="115" text-anchor="middle" fill="#f0883e" font-size="9">隔离</text>
+        </svg>
+        <p class="svg-cap">图 13：Netlink 与网络命名空间隔离 — (net, portid) 二元组唯一寻址</p>
+      </div>
+
+      <h3>14.3 扩展 ACK（Extended ACK）</h3>
+      <p>
+        5.2 版本引入，通过 <code>setsockopt(NETLINK_EXT_ACK, 1)</code> 启用，
+        在错误时返回更详细的诊断信息：
+      </p>
+      <pre><code><span class="cm">/* 启用扩展 ACK */</span>
+<span class="kw">int</span> val = <span class="nu">1</span>;
+<span class="fn">setsockopt</span>(fd, SOL_NETLINK, NETLINK_EXT_ACK, &amp;val, <span class="kw">sizeof</span>(val));
+
+<span class="cm">/* 内核在 NLMSG_ERROR 后追加：
+   NLMSGERR_ATTR_MSG  → 人类可读错误字符串
+   NLMSGERR_ATTR_OFFS → 出错属性在消息中的偏移
+   NLMSGERR_ATTR_MISS_TYPE → 缺少的必需属性类型 */</span></code></pre>
+
+      <div class="fp-box">
+        <p>
+          <strong>本质：</strong>Netlink 安全模型遵循「<strong>能力最小化原则</strong>」——
+          读操作通常不需要特权（任何进程都可以查询路由表），
+          写操作才需要 <code>CAP_NET_ADMIN</code>。
+          网络命名空间隔离是「容器化」的基石，Netlink 的 (net, portid) 二元键设计确保不同 ns 中相同 portid 不会冲突，
+          是「地址空间分离」原则在 IPC 层的应用。
+        </p>
+      </div>
+    </section>
+
+    <!-- §15 SUMMARY -->
+    <section id="summary">
+      <h2>§15 总结与架构全景</h2>
+
+      <h3>15.1 分层架构全景图</h3>
+      <div class="svg-wrap">
+        <svg viewBox="0 0 680 480" width="100%" style="max-width:680px" font-family="monospace" font-size="11">
+
+          <!-- Layer: User Space -->
+          <rect x="10" y="10" width="660" height="80" rx="8" fill="rgba(88,166,255,0.06)" stroke="#58a6ff" stroke-width="1.5"/>
+          <text x="340" y="32" text-anchor="middle" fill="#58a6ff" font-weight="bold" font-size="13">用户空间 (User Space)</text>
+
+          <rect x="25" y="45" width="130" height="35" rx="5" fill="rgba(88,166,255,0.15)" stroke="#58a6ff" stroke-width="1"/>
+          <text x="90" y="66" text-anchor="middle" fill="#c9d1d9">iproute2 / ip</text>
+
+          <rect x="170" y="45" width="130" height="35" rx="5" fill="rgba(88,166,255,0.15)" stroke="#58a6ff" stroke-width="1"/>
+          <text x="235" y="66" text-anchor="middle" fill="#c9d1d9">NetworkManager</text>
+
+          <rect x="315" y="45" width="130" height="35" rx="5" fill="rgba(88,166,255,0.15)" stroke="#58a6ff" stroke-width="1"/>
+          <text x="380" y="66" text-anchor="middle" fill="#c9d1d9">wpa_supplicant</text>
+
+          <rect x="460" y="45" width="130" height="35" rx="5" fill="rgba(88,166,255,0.15)" stroke="#58a6ff" stroke-width="1"/>
+          <text x="525" y="66" text-anchor="middle" fill="#c9d1d9">自定义应用</text>
+
+          <!-- Layer: Socket API -->
+          <rect x="10" y="105" width="660" height="40" rx="6" fill="rgba(63,185,80,0.10)" stroke="#3fb950" stroke-width="1.5"/>
+          <text x="340" y="130" text-anchor="middle" fill="#3fb950" font-weight="bold">标准 Socket API (socket/bind/send/recv/setsockopt)</text>
+
+          <!-- Layer: AF_NETLINK -->
+          <rect x="10" y="160" width="660" height="60" rx="6" fill="rgba(240,136,62,0.08)" stroke="#f0883e" stroke-width="1.5"/>
+          <text x="340" y="182" text-anchor="middle" fill="#f0883e" font-weight="bold">AF_NETLINK 协议族 (net/netlink/af_netlink.c)</text>
+          <text x="340" y="200" text-anchor="middle" fill="#8b949e" font-size="10">netlink_create / netlink_bind / netlink_sendmsg / netlink_recvmsg / netlink_unicast / netlink_broadcast</text>
+          <text x="340" y="214" text-anchor="middle" fill="#8b949e" font-size="10">nl_table[MAX_LINKS] · rhashtable (portid→sock) · RCU 锁机制</text>
+
+          <!-- Layer: Protocol Dispatch -->
+          <rect x="10" y="235" width="660" height="50" rx="6" fill="rgba(188,140,255,0.08)" stroke="#bc8cff" stroke-width="1.5"/>
+          <text x="340" y="258" text-anchor="middle" fill="#bc8cff" font-weight="bold">协议子系统分发层</text>
+          <text x="340" y="275" text-anchor="middle" fill="#8b949e" font-size="10">按 socket protocol ID 路由 → netlink_sock.netlink_rcv(skb)</text>
+
+          <!-- Classic NL protocols -->
+          <rect x="10" y="300" width="310" height="80" rx="6" fill="rgba(240,136,62,0.06)" stroke="#f0883e" stroke-width="1"/>
+          <text x="165" y="322" text-anchor="middle" fill="#f0883e" font-weight="bold">经典 Netlink 协议</text>
+          <text x="60" y="345" text-anchor="middle" fill="#8b949e">ROUTE/rtnetlink</text>
+          <text x="165" y="345" text-anchor="middle" fill="#8b949e">AUDIT</text>
+          <text x="265" y="345" text-anchor="middle" fill="#8b949e">XFRM/IPsec</text>
+          <text x="60" y="368" text-anchor="middle" fill="#8b949e">NETFILTER</text>
+          <text x="165" y="368" text-anchor="middle" fill="#8b949e">KOBJECT_UEVENT</text>
+          <text x="265" y="368" text-anchor="middle" fill="#8b949e">SOCK_DIAG</text>
+
+          <!-- Generic NL -->
+          <rect x="330" y="300" width="340" height="80" rx="6" fill="rgba(188,140,255,0.06)" stroke="#bc8cff" stroke-width="1"/>
+          <text x="500" y="322" text-anchor="middle" fill="#bc8cff" font-weight="bold">Generic Netlink (genetlink.c)</text>
+          <text x="380" y="345" text-anchor="middle" fill="#8b949e">nl80211 (WiFi)</text>
+          <text x="500" y="345" text-anchor="middle" fill="#8b949e">ethtool</text>
+          <text x="630" y="345" text-anchor="middle" fill="#8b949e">taskstats</text>
+          <text x="380" y="368" text-anchor="middle" fill="#8b949e">nfnetlink</text>
+          <text x="500" y="368" text-anchor="middle" fill="#8b949e">devlink</text>
+          <text x="630" y="368" text-anchor="middle" fill="#8b949e">用户自定义</text>
+
+          <!-- Layer: kernel data -->
+          <rect x="10" y="395" width="660" height="40" rx="6" fill="rgba(63,185,80,0.08)" stroke="#3fb950" stroke-width="1.5"/>
+          <text x="340" y="420" text-anchor="middle" fill="#3fb950" font-weight="bold">内核数据层（路由表、接口列表、防火墙规则、Socket 状态...）</text>
+
+          <!-- arrows between layers -->
+          <line x1="340" y1="145" x2="340" y2="160" stroke="#c9d1d9" stroke-width="1" marker-end="url(#arrS)"/>
+          <line x1="340" y1="220" x2="340" y2="235" stroke="#c9d1d9" stroke-width="1" marker-end="url(#arrS)"/>
+          <line x1="340" y1="285" x2="340" y2="300" stroke="#c9d1d9" stroke-width="1" marker-end="url(#arrS)"/>
+          <line x1="340" y1="380" x2="340" y2="395" stroke="#c9d1d9" stroke-width="1" marker-end="url(#arrS)"/>
+
+          <defs>
+            <marker id="arrS" markerWidth="7" markerHeight="7" refX="3" refY="5" orient="auto">
+              <path d="M0,0 L6,0 L3,7 Z" fill="#c9d1d9"/>
+            </marker>
+          </defs>
+        </svg>
+        <p class="svg-cap">图 14：Linux Netlink 子系统完整分层架构（基于 5.10.186）</p>
+      </div>
+
+      <h3>15.2 关键特性对比</h3>
+      <div class="tbl-wrap">
+        <table>
+          <thead><tr><th>特性</th><th>经典 Netlink</th><th>Generic Netlink</th></tr></thead>
+          <tbody>
+            <tr><td>协议 ID</td><td>静态，0-31</td><td>动态分配，16 起</td></tr>
+            <tr><td>内省能力</td><td>无</td><td>CTRL_CMD_GETFAMILY</td></tr>
+            <tr><td>消息格式</td><td>固定结构+TLV混合</td><td>纯 TLV（推荐）</td></tr>
+            <tr><td>属性验证</td><td>手动</td><td>nla_policy 自动验证</td></tr>
+            <tr><td>扩展性</td><td>受限</td><td>无限 Family</td></tr>
+            <tr><td>典型用例</td><td>网络配置（iproute2）</td><td>WiFi（iw）、ethtool</td></tr>
+          </tbody>
+        </table>
+      </div>
+
+      <h3>15.3 5.10.186 重要特性</h3>
+      <div class="card">
+        <div class="card-title">5.10 LTS 中 Netlink 的关键特性</div>
+        <ul>
+          <li><strong>rhashtable</strong>：portid 查找使用并发友好的 RCU 哈希表，替代旧的 nl_pid_hash</li>
+          <li><strong>Extended ACK</strong>：详细的错误诊断 TLV（NLMSGERR_ATTR_MSG/OFFS/MISS）</li>
+          <li><strong>NETLINK_GET_STRICT_CHK</strong>：NETLINK_ROUTE 严格输入校验模式</li>
+          <li><strong>Net Namespace 完整支持</strong>：(net, portid) 二元键寻址</li>
+          <li><strong>BPF 集成</strong>：BPF 迭代器可遍历 netlink socket 状态</li>
+          <li><strong>NLM_F_DUMP_INTR</strong>：Dump 一致性中断检测</li>
+        </ul>
+      </div>
+
+      <div class="fp-box">
+        <p>
+          <strong>终极第一性原理：</strong>Netlink 解决的根本问题是
+          「如何在内核保护域与用户保护域之间建立一个<strong>可扩展、异步、类型安全</strong>的通信通道」。
+          它的每一个设计决策都回归到这个问题：
+          socket API 复用（利用已有的 VFS/epoll 基础设施）、TLV 格式（可扩展性）、
+          多播组（异步推送）、nla_policy（类型安全）、网络命名空间（隔离性）。
+          没有任何一个设计是偶然的——它们都是对「用最小新增机制，满足最大功能需求」这一原则的实践。
+        </p>
+      </div>
+    </section>
+
+    <!-- §REFS -->
+    <section id="refs">
+      <h2>参考资料</h2>
+      <div class="card">
+        <div class="card-title">官方文档与规范</div>
+        <ul>
+          <li>
+            <strong>RFC 3549</strong> — Linux Netlink as an IP Services Protocol (Salim, Khosravi, Kleen, 2003)<br>
+            <a href="https://www.rfc-editor.org/rfc/rfc3549" target="_blank">https://www.rfc-editor.org/rfc/rfc3549</a>
+          </li>
+          <li>
+            <strong>内核文档：Introduction to Netlink</strong><br>
+            <a href="https://www.kernel.org/doc/html/latest/userspace-api/netlink/intro.html" target="_blank">https://www.kernel.org/doc/html/latest/userspace-api/netlink/intro.html</a>
+          </li>
+          <li>
+            <strong>Man Page: netlink(7)</strong><br>
+            <a href="https://manpages.ubuntu.com/manpages/bionic/man7/netlink.7.html" target="_blank">https://manpages.ubuntu.com/manpages/bionic/man7/netlink.7.html</a>
+          </li>
+        </ul>
+      </div>
+      <div class="card">
+        <div class="card-title">内核源码（5.10.186）</div>
+        <ul>
+          <li><code>net/netlink/af_netlink.c</code> — Netlink 核心实现</li>
+          <li><code>net/netlink/af_netlink.h</code> — 内部数据结构定义</li>
+          <li><code>net/netlink/genetlink.c</code> — Generic Netlink 实现</li>
+          <li><code>net/core/rtnetlink.c</code> — NETLINK_ROUTE 实现</li>
+          <li><code>include/uapi/linux/netlink.h</code> — 用户 API 消息格式</li>
+          <li><code>include/net/netlink.h</code> — 内核 API 辅助函数</li>
+          <li><code>include/net/genetlink.h</code> — Generic Netlink 内核 API</li>
+          <li><code>include/uapi/linux/rtnetlink.h</code> — NETLINK_ROUTE 消息类型</li>
+        </ul>
+      </div>
+      <div class="card">
+        <div class="card-title">延伸阅读</div>
+        <ul>
+          <li>
+            Generic Netlink HOW-TO (LWN.net, 2006)<br>
+            <a href="https://lwn.net/Articles/211209/" target="_blank">https://lwn.net/Articles/211209/</a>
+          </li>
+          <li>
+            Why and How to Use Netlink Socket (Netlink Examples)<br>
+            <a href="https://github.com/mwarning/netlink-examples/blob/master/articles/Why_and_How_to_Use_Netlink_Socket.md" target="_blank">GitHub: mwarning/netlink-examples</a>
+          </li>
+          <li>
+            Getting Linux routing table using netlink (Oleg Kutkov)<br>
+            <a href="https://olegkutkov.me/2019/03/24/getting-linux-routing-table-using-netlink/" target="_blank">https://olegkutkov.me/2019/03/24/getting-linux-routing-table-using-netlink/</a>
+          </li>
+        </ul>
+      </div>
+    </section>
+
+  </main>
+</div>
+
+<div class="kb-hint" id="kb-hint">← → 键导航章节</div>
+
+<script>
+  // ── SECTION IDs (ordered) ──
+  const SECTIONS = [
+    'intro','design','msg-format','protocol-model',
+    'sock-internals','socket-ops','send-recv','multicast',
+    'classic-nl','generic-nl','rtnetlink',
+    'dump','attributes','security','summary','refs'
+  ];
+
+  // ── PROGRESS BAR ──
+  const progressBar = document.getElementById('progress-bar');
+  function updateProgress() {
+    const scrollTop = window.scrollY || document.documentElement.scrollTop;
+    const docH = document.documentElement.scrollHeight - document.documentElement.clientHeight;
+    const pct = docH > 0 ? (scrollTop / docH) * 100 : 0;
+    progressBar.style.width = pct + '%';
+  }
+
+  // ── SIDEBAR NAV ITEMS ──
+  const navItems = document.querySelectorAll('.nav-item[data-target]');
+  navItems.forEach(item => {
+    item.addEventListener('click', () => {
+      const target = item.dataset.target;
+      const el = document.getElementById(target);
+      if (el) {
+        el.scrollIntoView({ behavior: 'smooth' });
+        // close sidebar on mobile
+        if (window.innerWidth <= 768) closeSidebar();
+      }
+    });
+  });
+
+  // ── ACTIVE NAV HIGHLIGHT (IntersectionObserver) ──
+  const observerOpts = {
+    rootMargin: '-20% 0px -70% 0px',
+    threshold: 0
+  };
+  const observer = new IntersectionObserver((entries) => {
+    entries.forEach(entry => {
+      if (entry.isIntersecting) {
+        const id = entry.target.id;
+        navItems.forEach(n => n.classList.remove('active'));
+        const active = document.querySelector(`.nav-item[data-target="${id}"]`);
+        if (active) {
+          active.classList.add('active');
+          active.scrollIntoView({ block: 'nearest', behavior: 'smooth' });
+        }
+      }
+    });
+  }, observerOpts);
+
+  SECTIONS.forEach(id => {
+    const el = document.getElementById(id);
+    if (el) observer.observe(el);
+  });
+
+  // ── KEYBOARD NAVIGATION ──
+  document.addEventListener('keydown', (e) => {
+    if (e.target.tagName === 'INPUT' || e.target.tagName === 'TEXTAREA') return;
+    const activeItem = document.querySelector('.nav-item.active');
+    const currentIndex = activeItem
+      ? SECTIONS.indexOf(activeItem.dataset.target)
+      : -1;
+
+    if (e.key === 'ArrowRight' || e.key === 'ArrowDown') {
+      e.preventDefault();
+      const next = SECTIONS[Math.min(currentIndex + 1, SECTIONS.length - 1)];
+      document.getElementById(next)?.scrollIntoView({ behavior: 'smooth' });
+    } else if (e.key === 'ArrowLeft' || e.key === 'ArrowUp') {
+      e.preventDefault();
+      const prev = SECTIONS[Math.max(currentIndex - 1, 0)];
+      document.getElementById(prev)?.scrollIntoView({ behavior: 'smooth' });
+    }
+  });
+
+  // ── KEYBOARD HINT ──
+  const kbHint = document.getElementById('kb-hint');
+  let hintTimer;
+  document.addEventListener('keydown', (e) => {
+    if (['ArrowLeft','ArrowRight','ArrowUp','ArrowDown'].includes(e.key)) {
+      kbHint.classList.add('show');
+      clearTimeout(hintTimer);
+      hintTimer = setTimeout(() => kbHint.classList.remove('show'), 1800);
+    }
+  });
+
+  // ── BURGER / MOBILE SIDEBAR ──
+  const burger = document.getElementById('burger');
+  const sidebar = document.getElementById('sidebar');
+  const overlay = document.getElementById('overlay');
+
+  function openSidebar() {
+    sidebar.classList.add('open');
+    overlay.classList.add('show');
+  }
+  function closeSidebar() {
+    sidebar.classList.remove('open');
+    overlay.classList.remove('show');
+  }
+
+  burger.addEventListener('click', () => {
+    sidebar.classList.contains('open') ? closeSidebar() : openSidebar();
+  });
+  overlay.addEventListener('click', closeSidebar);
+
+  // ── SCROLL ──
+  window.addEventListener('scroll', updateProgress, { passive: true });
+  updateProgress();
+
+  // ── INITIAL ACTIVE ──
+  if (SECTIONS.length > 0) {
+    const firstItem = document.querySelector(`.nav-item[data-target="${SECTIONS[0]}"]`);
+    if (firstItem) firstItem.classList.add('active');
+  }
+</script>
+</body>
+</html>

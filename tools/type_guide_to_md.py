@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Convert program/c-type-guide.html to markdown sections for ch5 integration."""
+"""Convert program/spec/c-type-guide.html to markdown sections for ch5 integration."""
 
 from __future__ import annotations
 
@@ -8,7 +8,7 @@ import re
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
-TYPE_GUIDE_PATH = ROOT / "program" / "c-type-guide.html"
+TYPE_GUIDE_PATH = ROOT / "program" / "spec" / "c-type-guide.html"
 
 # Section id -> (5.x number, title without emoji for anchor)
 TYPE_GUIDE_SECTIONS: list[tuple[str, str, str]] = [

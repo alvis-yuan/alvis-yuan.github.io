@@ -1,0 +1,2186 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Linux 5.4 蓝牙 SMP 实现深度解析</title>
+<style>
+  :root {
+    --bg: #0f1117;
+    --sidebar-bg: #161b22;
+    --sidebar-border: #30363d;
+    --content-bg: #0d1117;
+    --card-bg: #161b22;
+    --card-border: #21262d;
+    --accent: #58a6ff;
+    --accent2: #3fb950;
+    --accent3: #f78166;
+    --accent4: #d2a8ff;
+    --accent5: #ffa657;
+    --text: #e6edf3;
+    --text-muted: #8b949e;
+    --text-dim: #6e7681;
+    --code-bg: #161b22;
+    --inline-code-bg: #1f2937;
+    --progress-h: 3px;
+    --sidebar-w: 280px;
+    --header-h: 52px;
+  }
+
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+
+  html { scroll-behavior: smooth; font-size: 15px; }
+
+  body {
+    background: var(--bg);
+    color: var(--text);
+    font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', 'Noto Sans SC', sans-serif;
+    line-height: 1.7;
+    display: flex;
+    min-height: 100vh;
+  }
+
+  /* Progress bar */
+  #progress-bar {
+    position: fixed;
+    top: 0; left: 0;
+    height: var(--progress-h);
+    width: 0%;
+    background: linear-gradient(90deg, #58a6ff, #3fb950, #d2a8ff);
+    z-index: 1000;
+    transition: width 0.1s linear;
+  }
+
+  /* Sidebar */
+  #sidebar {
+    position: fixed;
+    top: 0; left: 0;
+    width: var(--sidebar-w);
+    height: 100vh;
+    background: var(--sidebar-bg);
+    border-right: 1px solid var(--sidebar-border);
+    overflow-y: auto;
+    z-index: 200;
+    display: flex;
+    flex-direction: column;
+    transition: transform 0.3s ease;
+  }
+
+  #sidebar::-webkit-scrollbar { width: 4px; }
+  #sidebar::-webkit-scrollbar-thumb { background: #30363d; border-radius: 2px; }
+
+  .sidebar-header {
+    padding: 18px 16px 14px;
+    border-bottom: 1px solid var(--sidebar-border);
+    position: sticky;
+    top: 0;
+    background: var(--sidebar-bg);
+    z-index: 1;
+  }
+
+  .sidebar-header h2 {
+    font-size: 0.78rem;
+    font-weight: 700;
+    color: var(--accent);
+    letter-spacing: 0.08em;
+    text-transform: uppercase;
+  }
+
+  .sidebar-header p {
+    font-size: 0.7rem;
+    color: var(--text-muted);
+    margin-top: 4px;
+  }
+
+  .nav-group {
+    padding: 10px 0 4px;
+    border-bottom: 1px solid var(--sidebar-border);
+  }
+
+  .nav-group:last-child { border-bottom: none; }
+
+  .nav-group-title {
+    font-size: 0.65rem;
+    font-weight: 700;
+    color: var(--text-dim);
+    text-transform: uppercase;
+    letter-spacing: 0.1em;
+    padding: 6px 16px 6px;
+  }
+
+  .nav-item {
+    display: flex;
+    align-items: center;
+    padding: 7px 16px 7px 20px;
+    font-size: 0.82rem;
+    color: var(--text-muted);
+    cursor: pointer;
+    border-left: 2px solid transparent;
+    transition: all 0.15s;
+    text-decoration: none;
+    gap: 8px;
+    line-height: 1.4;
+  }
+
+  .nav-item:hover { color: var(--text); background: rgba(255,255,255,0.04); }
+  .nav-item.active {
+    color: var(--accent);
+    border-left-color: var(--accent);
+    background: rgba(88,166,255,0.07);
+    font-weight: 600;
+  }
+
+  .nav-num {
+    font-size: 0.68rem;
+    color: var(--text-dim);
+    min-width: 22px;
+    font-variant-numeric: tabular-nums;
+  }
+
+  /* Main content */
+  #main {
+    margin-left: var(--sidebar-w);
+    flex: 1;
+    min-width: 0;
+    padding-top: var(--progress-h);
+  }
+
+  #content {
+    max-width: 860px;
+    margin: 0 auto;
+    padding: 40px 32px 80px;
+  }
+
+  /* Section */
+  .section {
+    margin-bottom: 72px;
+    scroll-margin-top: 24px;
+  }
+
+  .section-badge {
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+    font-size: 0.68rem;
+    font-weight: 700;
+    text-transform: uppercase;
+    letter-spacing: 0.1em;
+    padding: 3px 10px;
+    border-radius: 20px;
+    margin-bottom: 14px;
+  }
+
+  .badge-blue { background: rgba(88,166,255,0.15); color: var(--accent); }
+  .badge-green { background: rgba(63,185,80,0.15); color: var(--accent2); }
+  .badge-orange { background: rgba(255,166,87,0.15); color: var(--accent5); }
+  .badge-purple { background: rgba(210,168,255,0.15); color: var(--accent4); }
+  .badge-red { background: rgba(247,129,102,0.15); color: var(--accent3); }
+
+  .section h1 {
+    font-size: 1.9rem;
+    font-weight: 800;
+    color: var(--text);
+    margin-bottom: 8px;
+    line-height: 1.3;
+  }
+
+  .section h2 {
+    font-size: 1.4rem;
+    font-weight: 700;
+    color: var(--text);
+    margin-bottom: 8px;
+    line-height: 1.4;
+  }
+
+  .section h3 {
+    font-size: 1.05rem;
+    font-weight: 700;
+    color: var(--accent4);
+    margin: 28px 0 10px;
+  }
+
+  .section h4 {
+    font-size: 0.92rem;
+    font-weight: 700;
+    color: var(--accent5);
+    margin: 20px 0 8px;
+  }
+
+  .section p { margin-bottom: 14px; font-size: 0.93rem; color: #c9d1d9; }
+
+  .section-divider {
+    height: 1px;
+    background: linear-gradient(90deg, var(--card-border), transparent);
+    margin: 18px 0 22px;
+  }
+
+  /* Cards */
+  .card {
+    background: var(--card-bg);
+    border: 1px solid var(--card-border);
+    border-radius: 10px;
+    padding: 20px 24px;
+    margin: 20px 0;
+  }
+
+  .card-title {
+    font-size: 0.78rem;
+    font-weight: 700;
+    color: var(--text-muted);
+    text-transform: uppercase;
+    letter-spacing: 0.08em;
+    margin-bottom: 14px;
+    display: flex;
+    align-items: center;
+    gap: 8px;
+  }
+
+  .card-title::before {
+    content: '';
+    width: 3px; height: 14px;
+    background: var(--accent);
+    border-radius: 2px;
+  }
+
+  /* Code */
+  pre {
+    background: var(--code-bg);
+    border: 1px solid var(--card-border);
+    border-radius: 8px;
+    padding: 16px 20px;
+    overflow-x: auto;
+    margin: 16px 0;
+    font-size: 0.82rem;
+    line-height: 1.6;
+  }
+
+  code {
+    font-family: 'JetBrains Mono', 'Fira Code', 'Consolas', monospace;
+    font-size: 0.88em;
+    background: var(--inline-code-bg);
+    padding: 2px 6px;
+    border-radius: 4px;
+    color: #f0883e;
+  }
+
+  pre code {
+    background: none;
+    padding: 0;
+    color: #e6edf3;
+    font-size: inherit;
+  }
+
+  .kw { color: #ff7b72; }
+  .type { color: #ffa657; }
+  .comment { color: #8b949e; font-style: italic; }
+  .str { color: #a5d6ff; }
+  .num { color: #79c0ff; }
+  .fn { color: #d2a8ff; }
+  .macro { color: #3fb950; }
+
+  /* Tables */
+  table {
+    width: 100%;
+    border-collapse: collapse;
+    margin: 16px 0;
+    font-size: 0.85rem;
+  }
+
+  th {
+    background: rgba(88,166,255,0.12);
+    color: var(--accent);
+    padding: 10px 14px;
+    text-align: left;
+    font-weight: 600;
+    font-size: 0.8rem;
+    border-bottom: 1px solid var(--card-border);
+  }
+
+  td {
+    padding: 9px 14px;
+    border-bottom: 1px solid rgba(33,38,45,0.8);
+    color: #c9d1d9;
+    vertical-align: top;
+  }
+
+  tr:hover td { background: rgba(255,255,255,0.02); }
+
+  /* Lists */
+  ul, ol {
+    padding-left: 22px;
+    margin: 10px 0 14px;
+    font-size: 0.92rem;
+  }
+
+  li { margin-bottom: 6px; color: #c9d1d9; }
+  li strong { color: var(--text); }
+
+  /* First principles box */
+  .first-principle {
+    background: linear-gradient(135deg, rgba(88,166,255,0.08) 0%, rgba(210,168,255,0.08) 100%);
+    border: 1px solid rgba(88,166,255,0.25);
+    border-left: 4px solid var(--accent4);
+    border-radius: 0 8px 8px 0;
+    padding: 18px 20px;
+    margin: 28px 0 8px;
+  }
+
+  .first-principle .fp-title {
+    font-size: 0.72rem;
+    font-weight: 800;
+    letter-spacing: 0.12em;
+    text-transform: uppercase;
+    color: var(--accent4);
+    margin-bottom: 10px;
+    display: flex;
+    align-items: center;
+    gap: 8px;
+  }
+
+  .first-principle p {
+    font-size: 0.88rem;
+    color: #d2a8ff;
+    margin: 0;
+    line-height: 1.7;
+  }
+
+  /* SVG containers */
+  .svg-wrap {
+    background: var(--card-bg);
+    border: 1px solid var(--card-border);
+    border-radius: 10px;
+    padding: 20px;
+    margin: 20px 0;
+    overflow-x: auto;
+  }
+
+  .svg-caption {
+    text-align: center;
+    font-size: 0.75rem;
+    color: var(--text-dim);
+    margin-top: 10px;
+  }
+
+  /* Source link */
+  .source-link {
+    display: inline-flex;
+    align-items: center;
+    gap: 5px;
+    font-size: 0.75rem;
+    color: var(--text-muted);
+    text-decoration: none;
+    background: rgba(255,255,255,0.04);
+    border: 1px solid var(--card-border);
+    border-radius: 6px;
+    padding: 4px 10px;
+    margin: 4px 0 16px;
+    transition: all 0.15s;
+  }
+  .source-link:hover { color: var(--accent); border-color: var(--accent); }
+
+  /* Header bar (mobile) */
+  #header-bar {
+    display: none;
+    position: fixed;
+    top: 0; left: 0; right: 0;
+    height: var(--header-h);
+    background: var(--sidebar-bg);
+    border-bottom: 1px solid var(--sidebar-border);
+    z-index: 300;
+    align-items: center;
+    padding: 0 16px;
+    gap: 12px;
+  }
+
+  #hamburger {
+    background: none;
+    border: 1px solid var(--sidebar-border);
+    border-radius: 6px;
+    color: var(--text);
+    cursor: pointer;
+    padding: 6px 8px;
+    line-height: 1;
+    font-size: 1.1rem;
+  }
+
+  #header-bar h3 {
+    font-size: 0.85rem;
+    font-weight: 700;
+    color: var(--accent);
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+  }
+
+  /* Overlay */
+  #overlay {
+    display: none;
+    position: fixed;
+    inset: 0;
+    background: rgba(0,0,0,0.65);
+    z-index: 150;
+  }
+
+  /* Nav controls */
+  #nav-controls {
+    position: fixed;
+    bottom: 28px;
+    right: 28px;
+    display: flex;
+    gap: 8px;
+    z-index: 100;
+  }
+
+  .nav-btn {
+    background: var(--card-bg);
+    border: 1px solid var(--card-border);
+    color: var(--text-muted);
+    border-radius: 8px;
+    padding: 8px 14px;
+    cursor: pointer;
+    font-size: 0.82rem;
+    font-weight: 600;
+    transition: all 0.15s;
+    display: flex;
+    align-items: center;
+    gap: 5px;
+  }
+
+  .nav-btn:hover { background: rgba(88,166,255,0.1); color: var(--accent); border-color: var(--accent); }
+  .nav-btn:disabled { opacity: 0.3; cursor: default; }
+  .nav-btn:disabled:hover { background: var(--card-bg); color: var(--text-muted); border-color: var(--card-border); }
+
+  /* Alert/note */
+  .note {
+    background: rgba(255,166,87,0.08);
+    border-left: 3px solid var(--accent5);
+    border-radius: 0 6px 6px 0;
+    padding: 12px 16px;
+    margin: 14px 0;
+    font-size: 0.86rem;
+    color: #d8b36a;
+  }
+
+  .note strong { color: var(--accent5); }
+
+  /* Highlight row */
+  .hl-row td:first-child { color: var(--accent2); font-weight: 600; }
+
+  /* Tag chips */
+  .chip {
+    display: inline-block;
+    font-size: 0.7rem;
+    padding: 2px 8px;
+    border-radius: 12px;
+    font-weight: 600;
+    margin: 0 2px;
+  }
+  .chip-blue { background: rgba(88,166,255,0.15); color: var(--accent); }
+  .chip-green { background: rgba(63,185,80,0.15); color: var(--accent2); }
+  .chip-red { background: rgba(247,129,102,0.15); color: var(--accent3); }
+  .chip-purple { background: rgba(210,168,255,0.15); color: var(--accent4); }
+  .chip-orange { background: rgba(255,166,87,0.15); color: var(--accent5); }
+
+  /* Responsive */
+  @media (max-width: 768px) {
+    :root { --sidebar-w: 268px; }
+    #sidebar { transform: translateX(-100%); }
+    #sidebar.open { transform: translateX(0); }
+    #overlay.show { display: block; }
+    #header-bar { display: flex; }
+    #main { margin-left: 0; padding-top: var(--header-h); }
+    #content { padding: 24px 16px 80px; }
+    #nav-controls { bottom: 16px; right: 12px; }
+    .nav-btn { padding: 8px 10px; font-size: 0.78rem; }
+    h1 { font-size: 1.5rem !important; }
+    h2 { font-size: 1.2rem !important; }
+    table { font-size: 0.78rem; }
+    th, td { padding: 7px 10px; }
+  }
+
+  @media (max-width: 480px) {
+    #content { padding: 16px 12px 80px; }
+    pre { font-size: 0.75rem; padding: 12px 14px; }
+  }
+</style>
+</head>
+<body>
+
+<div id="progress-bar"></div>
+
+<!-- Mobile header -->
+<div id="header-bar">
+  <button id="hamburger" onclick="toggleSidebar()" aria-label="菜单">☰</button>
+  <h3>Linux 5.4 蓝牙 SMP 解析</h3>
+</div>
+
+<!-- Overlay -->
+<div id="overlay" onclick="closeSidebar()"></div>
+
+<!-- Sidebar -->
+<nav id="sidebar">
+  <div class="sidebar-header">
+    <h2>Linux 5.4 · Bluetooth SMP</h2>
+    <p>蓝牙安全管理协议深度解析</p>
+  </div>
+
+  <div class="nav-group">
+    <div class="nav-group-title">基础</div>
+    <a class="nav-item" onclick="goTo('s0')"><span class="nav-num">00</span>概述与参考资料</a>
+    <a class="nav-item" onclick="goTo('s1')"><span class="nav-num">01</span>设计原理与架构</a>
+  </div>
+
+  <div class="nav-group">
+    <div class="nav-group-title">密码学工具箱</div>
+    <a class="nav-item" onclick="goTo('s2')"><span class="nav-num">02</span>密码学基础函数</a>
+    <a class="nav-item" onclick="goTo('s3')"><span class="nav-num">03</span>安全连接密钥推导</a>
+  </div>
+
+  <div class="nav-group">
+    <div class="nav-group-title">配对模式</div>
+    <a class="nav-item" onclick="goTo('s4')"><span class="nav-num">04</span>I/O能力与配对方法选择</a>
+    <a class="nav-item" onclick="goTo('s5')"><span class="nav-num">05</span>LE Legacy 配对流程</a>
+    <a class="nav-item" onclick="goTo('s6')"><span class="nav-num">06</span>LE Secure Connections 配对</a>
+  </div>
+
+  <div class="nav-group">
+    <div class="nav-group-title">内核实现</div>
+    <a class="nav-item" onclick="goTo('s7')"><span class="nav-num">07</span>内核数据结构</a>
+    <a class="nav-item" onclick="goTo('s8')"><span class="nav-num">08</span>L2CAP信道与回调</a>
+    <a class="nav-item" onclick="goTo('s9')"><span class="nav-num">09</span>配对流程实现</a>
+    <a class="nav-item" onclick="goTo('s10')"><span class="nav-num">10</span>密钥分发实现</a>
+  </div>
+
+  <div class="nav-group">
+    <div class="nav-group-title">安全与边界</div>
+    <a class="nav-item" onclick="goTo('s11')"><span class="nav-num">11</span>安全级别与跨传输</a>
+    <a class="nav-item" onclick="goTo('s12')"><span class="nav-num">12</span>已知安全问题</a>
+  </div>
+</nav>
+
+<!-- Main content -->
+<div id="main">
+<div id="content">
+
+<!-- ===================== SECTION 0 ===================== -->
+<div class="section" id="s0">
+  <div class="section-badge badge-blue">📋 总览</div>
+  <h1>Linux 5.4 蓝牙 SMP 实现深度解析</h1>
+  <p style="color:var(--text-muted); font-size:0.9rem; margin-bottom:20px;">
+    基于 Linux Kernel v5.4 · Bluetooth Core Specification 5.x · BlueZ 协议栈
+  </p>
+
+  <a class="source-link" href="https://git.kernel.org/pub/scm/linux/kernel/git/stable/linux.git/tree/net/bluetooth/smp.c?h=v5.4.290" target="_blank">
+    ⬡ 源码：net/bluetooth/smp.c (v5.4)
+  </a>
+  <a class="source-link" href="https://www.bluetooth.com/wp-content/uploads/Files/Specification/HTML/Core-54/out/en/host/security-manager-specification.html" target="_blank">
+    ⬡ 官方规范：Bluetooth Core Spec Part H — Security Manager
+  </a>
+
+  <div class="section-divider"></div>
+
+  <h2>文档说明</h2>
+  <p>
+    本文以 <strong>Linux 内核 5.4 版本</strong>（<code>net/bluetooth/smp.c</code>）为基准，结合蓝牙官方核心规范（Bluetooth Core Specification, Part H — Security Manager），从设计原理出发，逐步深入到具体的 C 语言实现，系统性讲解蓝牙低功耗（LE）安全管理协议（SMP）的全貌。
+  </p>
+
+  <div class="card">
+    <div class="card-title">SMP 在蓝牙协议栈中的位置</div>
+    <div class="svg-wrap" style="border:none; padding:0; background:none;">
+      <svg viewBox="0 0 700 320" xmlns="http://www.w3.org/2000/svg" style="width:100%; max-width:700px; display:block; margin:auto;">
+        <defs>
+          <linearGradient id="g1" x1="0" y1="0" x2="1" y2="0">
+            <stop offset="0%" stop-color="#58a6ff" stop-opacity="0.3"/>
+            <stop offset="100%" stop-color="#3fb950" stop-opacity="0.3"/>
+          </linearGradient>
+          <linearGradient id="g2" x1="0" y1="0" x2="1" y2="0">
+            <stop offset="0%" stop-color="#d2a8ff" stop-opacity="0.25"/>
+            <stop offset="100%" stop-color="#58a6ff" stop-opacity="0.25"/>
+          </linearGradient>
+          <linearGradient id="g3" x1="0" y1="0" x2="1" y2="0">
+            <stop offset="0%" stop-color="#ffa657" stop-opacity="0.25"/>
+            <stop offset="100%" stop-color="#f78166" stop-opacity="0.25"/>
+          </linearGradient>
+        </defs>
+        <!-- Layer labels -->
+        <text x="20" y="44" fill="#8b949e" font-size="10" font-family="monospace">应用层</text>
+        <text x="20" y="110" fill="#8b949e" font-size="10" font-family="monospace">Host层</text>
+        <text x="20" y="210" fill="#8b949e" font-size="10" font-family="monospace">HCI</text>
+        <text x="20" y="270" fill="#8b949e" font-size="10" font-family="monospace">Controller</text>
+
+        <!-- App layer -->
+        <rect x="80" y="20" width="580" height="40" rx="6" fill="url(#g3)" stroke="#ffa657" stroke-width="1"/>
+        <text x="370" y="45" text-anchor="middle" fill="#ffa657" font-size="13" font-weight="600">应用程序 / BlueZ UserSpace Agent</text>
+
+        <!-- Host layer -->
+        <rect x="80" y="76" width="180" height="40" rx="6" fill="url(#g2)" stroke="#d2a8ff" stroke-width="1"/>
+        <text x="170" y="101" text-anchor="middle" fill="#d2a8ff" font-size="12" font-weight="600">GATT / ATT</text>
+
+        <rect x="270" y="76" width="180" height="40" rx="6" fill="url(#g1)" stroke="#58a6ff" stroke-width="1.5"/>
+        <text x="360" y="96" text-anchor="middle" fill="#58a6ff" font-size="12" font-weight="700">SMP</text>
+        <text x="360" y="110" text-anchor="middle" fill="#58a6ff" font-size="9" opacity="0.8">Security Manager Protocol</text>
+
+        <rect x="460" y="76" width="200" height="40" rx="6" fill="url(#g2)" stroke="#d2a8ff" stroke-width="1"/>
+        <text x="560" y="101" text-anchor="middle" fill="#d2a8ff" font-size="12" font-weight="600">GAP / L2CAP</text>
+
+        <!-- Arrow to L2CAP channel -->
+        <line x1="360" y1="116" x2="360" y2="148" stroke="#58a6ff" stroke-width="1.5" stroke-dasharray="4,2" marker-end="url(#arr)"/>
+        <defs>
+          <marker id="arr" markerWidth="8" markerHeight="8" refX="4" refY="4" orient="auto">
+            <path d="M0,0 L8,4 L0,8 Z" fill="#58a6ff"/>
+          </marker>
+        </defs>
+
+        <!-- L2CAP channel label -->
+        <rect x="280" y="148" width="160" height="26" rx="5" fill="rgba(88,166,255,0.1)" stroke="rgba(88,166,255,0.3)" stroke-width="1"/>
+        <text x="360" y="165" text-anchor="middle" fill="#58a6ff" font-size="10">L2CAP CID 0x0006 (LE SMP)</text>
+
+        <!-- HCI -->
+        <rect x="80" y="188" width="580" height="36" rx="6" fill="rgba(63,185,80,0.1)" stroke="#3fb950" stroke-width="1"/>
+        <text x="370" y="210" text-anchor="middle" fill="#3fb950" font-size="12" font-weight="600">HCI (Host Controller Interface)</text>
+
+        <!-- Controller -->
+        <rect x="80" y="238" width="580" height="40" rx="6" fill="rgba(255,166,87,0.1)" stroke="#ffa657" stroke-width="1"/>
+        <text x="370" y="263" text-anchor="middle" fill="#ffa657" font-size="12" font-weight="600">Link Layer · 物理层 (LE Radio)</text>
+
+        <!-- Crypto note -->
+        <rect x="500" y="148" width="160" height="32" rx="5" fill="rgba(210,168,255,0.1)" stroke="rgba(210,168,255,0.3)" stroke-width="1"/>
+        <text x="580" y="161" text-anchor="middle" fill="#d2a8ff" font-size="9">Crypto API:</text>
+        <text x="580" y="174" text-anchor="middle" fill="#d2a8ff" font-size="9">cmac(aes) / ecdh-nist-p256</text>
+      </svg>
+    </div>
+    <div class="svg-caption">图 0.1：SMP 在 Linux 蓝牙协议栈中的位置（L2CAP 固定信道 0x0006）</div>
+  </div>
+
+  <div class="first-principle">
+    <div class="fp-title">⚛ 第一性原理</div>
+    <p>SMP 存在的根本原因：无线信道天然是公开的广播介质，任何人都能监听。要在公开信道上建立"只有通信双方能解读"的加密通道，必须先通过某种形式的带外（OOB）或可验证的方式协商出共同的秘密。SMP 就是这个"协商过程"在蓝牙 LE 上的标准化定义——它解决的核心问题只有一个：<strong>在不可信信道上安全地生成、交换、存储加密密钥</strong>。</p>
+  </div>
+</div>
+
+<!-- ===================== SECTION 1 ===================== -->
+<div class="section" id="s1">
+  <div class="section-badge badge-blue">🏗 架构</div>
+  <h2>01 · 设计原理与总体架构</h2>
+
+  <a class="source-link" href="https://www.bluetooth.com/wp-content/uploads/Files/Specification/HTML/Core-54/out/en/host/security-manager-specification.html" target="_blank">
+    ⬡ Bluetooth Core Spec Part H § 2.1 Introduction
+  </a>
+
+  <p>蓝牙规范将安全管理器（Security Manager，SM）定义为：一套管理 LE 设备之间配对（Pairing）、认证（Authentication）和加密（Encryption）的协议与行为规范。官方规范原文指出：</p>
+
+  <div class="card">
+    <div class="card-title">官方规范核心设计原则</div>
+    <ul>
+      <li><strong>密钥分发模型（Key Distribution）</strong>：每台设备负责生成并控制自己分发的密钥，没有任何其他设备能影响这些密钥的生成过程。密钥的强度完全由分发设备内部实现的算法决定。</li>
+      <li><strong>非对称内存/计算需求</strong>：安全架构特意设计为响应设备（Responding Device）的内存和计算需求低于发起设备（Initiating Device）。</li>
+      <li><strong>三阶段配对</strong>：配对是一个三阶段的过程，前两个阶段始终执行，第三阶段（密钥分发）可选。</li>
+    </ul>
+  </div>
+
+  <h3>三阶段配对模型</h3>
+  <div class="svg-wrap">
+    <svg viewBox="0 0 680 380" xmlns="http://www.w3.org/2000/svg" style="width:100%; max-width:680px; display:block; margin:auto;">
+      <!-- Timeline -->
+      <line x1="160" y1="40" x2="160" y2="360" stroke="#30363d" stroke-width="1.5"/>
+      <line x1="520" y1="40" x2="520" y2="360" stroke="#30363d" stroke-width="1.5"/>
+      <text x="160" y="26" text-anchor="middle" fill="#58a6ff" font-size="12" font-weight="700">Initiator (Central)</text>
+      <text x="520" y="26" text-anchor="middle" fill="#3fb950" font-size="12" font-weight="700">Responder (Peripheral)</text>
+
+      <!-- Phase 1 box -->
+      <rect x="30" y="46" width="620" height="88" rx="7" fill="rgba(88,166,255,0.06)" stroke="rgba(88,166,255,0.3)" stroke-width="1"/>
+      <text x="40" y="65" fill="#58a6ff" font-size="10" font-weight="700">PHASE 1 · 配对特性交换 (Pairing Feature Exchange)</text>
+
+      <!-- Pairing Request arrow -->
+      <line x1="165" y1="86" x2="515" y2="86" stroke="#58a6ff" stroke-width="1.5" marker-end="url(#a1)"/>
+      <defs>
+        <marker id="a1" markerWidth="8" markerHeight="7" refX="7" refY="3.5" orient="auto">
+          <polygon points="0 0, 8 3.5, 0 7" fill="#58a6ff"/>
+        </marker>
+        <marker id="a2" markerWidth="8" markerHeight="7" refX="1" refY="3.5" orient="auto">
+          <polygon points="8 0, 0 3.5, 8 7" fill="#3fb950"/>
+        </marker>
+      </defs>
+      <rect x="228" y="74" width="128" height="18" rx="4" fill="#0d1117"/>
+      <text x="292" y="87" text-anchor="middle" fill="#58a6ff" font-size="10.5" font-weight="600">Pairing Request (0x01)</text>
+
+      <line x1="515" y1="110" x2="165" y2="110" stroke="#3fb950" stroke-width="1.5" marker-end="url(#a2)"/>
+      <rect x="228" y="98" width="128" height="18" rx="4" fill="#0d1117"/>
+      <text x="292" y="111" text-anchor="middle" fill="#3fb950" font-size="10.5" font-weight="600">Pairing Response (0x02)</text>
+
+      <!-- Phase 2 box -->
+      <rect x="30" y="146" width="620" height="130" rx="7" fill="rgba(210,168,255,0.06)" stroke="rgba(210,168,255,0.3)" stroke-width="1"/>
+      <text x="40" y="165" fill="#d2a8ff" font-size="10" font-weight="700">PHASE 2 · 密钥生成 (STK / LTK Generation)</text>
+
+      <!-- Branch labels -->
+      <rect x="50" y="172" width="140" height="22" rx="4" fill="rgba(255,166,87,0.15)" stroke="rgba(255,166,87,0.4)" stroke-width="1"/>
+      <text x="120" y="187" text-anchor="middle" fill="#ffa657" font-size="10" font-weight="600">LE Legacy Pairing</text>
+      <text x="120" y="204" text-anchor="middle" fill="#8b949e" font-size="9">c1 + s1 + AES-128</text>
+      <text x="120" y="217" text-anchor="middle" fill="#8b949e" font-size="9">生成 STK</text>
+      <text x="120" y="230" text-anchor="middle" fill="#ffa657" font-size="9">TK → Confirm → Random</text>
+      <text x="120" y="245" text-anchor="middle" fill="#ffa657" font-size="9">→ STK → 加密链路</text>
+      <text x="120" y="262" text-anchor="middle" fill="#8b949e" font-size="9">⚠ 易受被动监听攻击</text>
+
+      <!-- divider -->
+      <line x1="220" y1="172" x2="220" y2="268" stroke="#30363d" stroke-width="1" stroke-dasharray="3,2"/>
+      <text x="258" y="180" fill="#8b949e" font-size="8">OR</text>
+
+      <rect x="280" y="172" width="148" height="22" rx="4" fill="rgba(63,185,80,0.15)" stroke="rgba(63,185,80,0.4)" stroke-width="1"/>
+      <text x="354" y="187" text-anchor="middle" fill="#3fb950" font-size="10" font-weight="600">LE Secure Connections</text>
+      <text x="354" y="204" text-anchor="middle" fill="#8b949e" font-size="9">ECDH P-256 + f4/f5/f6</text>
+      <text x="354" y="217" text-anchor="middle" fill="#8b949e" font-size="9">生成 LTK</text>
+      <text x="354" y="230" text-anchor="middle" fill="#3fb950" font-size="9">Public Key → DHKey</text>
+      <text x="354" y="245" text-anchor="middle" fill="#3fb950" font-size="9">→ LTK + MacKey</text>
+      <text x="354" y="262" text-anchor="middle" fill="#3fb950" font-size="9">✓ 前向安全，抗被动监听</text>
+
+      <!-- Phase 3 box -->
+      <rect x="30" y="288" width="620" height="64" rx="7" fill="rgba(63,185,80,0.06)" stroke="rgba(63,185,80,0.3)" stroke-width="1"/>
+      <text x="40" y="308" fill="#3fb950" font-size="10" font-weight="700">PHASE 3 · 密钥分发 (Transport Specific Key Distribution)  [可选，仅绑定时]</text>
+      <text x="100" y="328" fill="#8b949e" font-size="10">Initiator distributes: LTK / EDIV / Rand / IRK / CSRK / BD_ADDR</text>
+      <text x="100" y="344" fill="#8b949e" font-size="10">Responder distributes: LTK / EDIV / Rand / IRK / CSRK / BD_ADDR</text>
+    </svg>
+    <div class="svg-caption">图 1.1：SMP 三阶段配对模型（源自 Bluetooth Core Spec Part H §2.1）</div>
+  </div>
+
+  <h3>SMP 提供的安全服务</h3>
+  <table>
+    <thead><tr><th>安全服务</th><th>描述</th><th>依赖机制</th></tr></thead>
+    <tbody>
+      <tr><td><strong>设备认证</strong></td><td>验证通信对端是否为声称的设备</td><td>Passkey / OOB / Numeric Comparison</td></tr>
+      <tr><td><strong>数据保密性</strong></td><td>防止第三方读取通信内容</td><td>AES-CCM 链路层加密</td></tr>
+      <tr><td><strong>数据完整性</strong></td><td>防止数据被篡改</td><td>CSRK 签名机制</td></tr>
+      <tr><td><strong>隐私保护</strong></td><td>防止设备被追踪（Tracking）</td><td>IRK + 可解析私有地址（RPA）</td></tr>
+      <tr><td><strong>前向安全</strong></td><td>历史会话密钥不因当前密钥泄露而暴露</td><td>LE Secure Connections ECDH</td></tr>
+    </tbody>
+  </table>
+
+  <div class="first-principle">
+    <div class="fp-title">⚛ 第一性原理</div>
+    <p>三阶段设计的根本逻辑：<strong>阶段一</strong>解决"我们能做到什么安全等级"（能力协商），<strong>阶段二</strong>解决"如何在不可信信道上生成双方共知的秘密"（密钥建立），<strong>阶段三</strong>解决"下次如何跳过繁琐配对直接恢复安全连接"（密钥持久化）。缺少任何一个阶段，整个安全体系都无法完整运作。</p>
+  </div>
+</div>
+
+<!-- ===================== SECTION 2 ===================== -->
+<div class="section" id="s2">
+  <div class="section-badge badge-purple">🔐 密码学</div>
+  <h2>02 · 密码学基础函数</h2>
+
+  <a class="source-link" href="https://www.bluetooth.com/wp-content/uploads/Files/Specification/HTML/Core-54/out/en/host/security-manager-specification.html" target="_blank">
+    ⬡ Bluetooth Core Spec Part H § 2.2 Cryptographic Toolbox
+  </a>
+  <a class="source-link" href="https://git.kernel.org/pub/scm/linux/kernel/git/stable/linux.git/tree/net/bluetooth/smp.c?h=v5.4.290" target="_blank">
+    ⬡ net/bluetooth/smp.c — 密码函数实现
+  </a>
+
+  <p>SMP 的密码学工具箱以 <strong>AES-128</strong> 为基础构建，规范定义了两套函数体系：Legacy 体系用 AES-128 直接加密，Secure Connections 体系用 AES-CMAC（RFC 4493）作为构建块。</p>
+
+  <h3>Legacy 体系函数</h3>
+
+  <div class="card">
+    <div class="card-title">安全函数 e — 底层 AES-128 加密</div>
+    <p style="font-size:0.85rem; color:#8b949e; margin-bottom:10px;">所有 Legacy 函数的构建基础。可在 Host 实现或通过 <code>HCI_LE_Encrypt</code> 命令在 Controller 执行。</p>
+    <pre><code><span class="comment">/* 规范定义 */</span>
+encryptedData = e(key, plaintextData)
+<span class="comment">/* AES-128 块加密，key 和 plaintextData 均为 128 bit */</span>
+
+<span class="comment">/* Linux 5.4 内核实现（smp.c）*/</span>
+<span class="kw">static</span> <span class="type">int</span> <span class="fn">smp_e</span>(<span class="kw">struct</span> <span class="type">crypto_cipher</span> *tfm, <span class="kw">const</span> <span class="type">u8</span> *k, <span class="type">u8</span> *r)
+{
+    <span class="type">int</span> err;
+    crypto_cipher_setkey(tfm, k, <span class="num">16</span>);
+    err = crypto_cipher_encrypt_one(tfm, r, r);
+    <span class="kw">return</span> err;
+}</code></pre>
+  </div>
+
+  <div class="card">
+    <div class="card-title">函数 c1 — Legacy 确认值生成</div>
+    <p style="font-size:0.85rem; color:#8b949e; margin-bottom:10px;">用于 LE Legacy 配对过程中生成 Confirm 值。</p>
+    <pre><code><span class="comment">/* 规范定义：
+   p1 = pres || preq || rat' || iat'
+   p2 = padding || ia || ra
+   c1(k,r,preq,pres,iat,rat,ia,ra) = e(k, e(k, r XOR p1) XOR p2) */</span>
+
+<span class="kw">static</span> <span class="type">int</span> <span class="fn">smp_c1</span>(<span class="kw">struct</span> <span class="type">smp_chan</span> *smp, <span class="kw">const</span> <span class="type">u8</span> k[<span class="num">16</span>],
+               <span class="kw">const</span> <span class="type">u8</span> r[<span class="num">16</span>], <span class="kw">const</span> <span class="type">u8</span> pres[<span class="num">7</span>], <span class="kw">const</span> <span class="type">u8</span> preq[<span class="num">7</span>],
+               <span class="type">u8</span> _iat, <span class="kw">const</span> <span class="type">bdaddr_t</span> *ia,
+               <span class="type">u8</span> _rat, <span class="kw">const</span> <span class="type">bdaddr_t</span> *ra, <span class="type">u8</span> res[<span class="num">16</span>])</code></pre>
+  </div>
+
+  <div class="card">
+    <div class="card-title">函数 s1 — Legacy STK 生成</div>
+    <pre><code><span class="comment">/* 规范定义：
+   r1' = r1 的低 64 位，r2' = r2 的低 64 位
+   r' = r1' || r2'
+   s1(k, r1, r2) = e(k, r') */</span>
+
+<span class="kw">static</span> <span class="type">int</span> <span class="fn">smp_s1</span>(<span class="kw">struct</span> <span class="type">smp_chan</span> *smp, <span class="kw">const</span> <span class="type">u8</span> k[<span class="num">16</span>],
+               <span class="kw">const</span> <span class="type">u8</span> r1[<span class="num">16</span>], <span class="kw">const</span> <span class="type">u8</span> r2[<span class="num">16</span>], <span class="type">u8</span> _r[<span class="num">16</span>])</code></pre>
+  </div>
+
+  <h3>随机地址哈希函数 ah</h3>
+  <div class="card">
+    <div class="card-title">函数 ah — 可解析私有地址哈希</div>
+    <p style="font-size:0.85rem; color:#8b949e;">用于生成和解析 Resolvable Private Address（RPA）。IRK 持有方可以对 RPA 的 prand 部分运行 <code>ah(IRK, prand)</code> 并与 hash 部分比对，以识别设备身份。</p>
+    <pre><code><span class="comment">/* ah(k, r) = e(k, r') mod 2^24
+   其中 r' = 0x000...0 || r  (r 为 24 位，pad 到 128 位) */</span>
+<span class="kw">static</span> <span class="type">int</span> <span class="fn">smp_ah</span>(<span class="kw">struct</span> <span class="type">crypto_cipher</span> *tfm, <span class="kw">const</span> <span class="type">u8</span> irk[<span class="num">16</span>],
+               <span class="kw">const</span> <span class="type">u8</span> r[<span class="num">3</span>], <span class="type">u8</span> res[<span class="num">3</span>])</code></pre>
+  </div>
+
+  <div class="first-principle">
+    <div class="fp-title">⚛ 第一性原理</div>
+    <p>Legacy 体系的本质缺陷：c1 和 s1 依赖 TK（Temporary Key）作为种子，而 TK 的熵值取决于配对方法——Just Works 下 TK 为全零（128 位均为 0），攻击者只需被动抓包即可离线暴力破解 STK。这是 Legacy Pairing 最根本的安全弱点，Secure Connections 体系正是为解决此问题而设计。</p>
+  </div>
+</div>
+
+<!-- ===================== SECTION 3 ===================== -->
+<div class="section" id="s3">
+  <div class="section-badge badge-purple">🔑 SC密钥推导</div>
+  <h2>03 · 安全连接密钥推导函数</h2>
+
+  <a class="source-link" href="https://www.bluetooth.com/wp-content/uploads/Files/Specification/HTML/Core-54/out/en/host/security-manager-specification.html" target="_blank">
+    ⬡ Bluetooth Core Spec Part H § 2.2.5–2.2.9
+  </a>
+
+  <p>LE Secure Connections（LESC）引入了基于 <strong>AES-CMAC</strong> 的五个高级密码函数（f4、f5、f6、g2、h6/h7）和 <strong>ECDH P-256</strong> 密钥交换，彻底消除了 Legacy Pairing 的被动监听漏洞。</p>
+
+  <h3>AES-CMAC — SC 体系核心构建块</h3>
+  <pre><code><span class="comment">/* RFC 4493 — Cipher-based MAC using AES-128
+   Linux 5.4 使用内核 crypto API */</span>
+<span class="comment">/* smp_chan_create() 中分配 CMAC 上下文 */</span>
+smp->tfm_cmac = <span class="fn">crypto_alloc_shash</span>(<span class="str">"cmac(aes)"</span>, <span class="num">0</span>, <span class="num">0</span>);
+
+<span class="comment">/* 通用 AES-CMAC 调用封装 */</span>
+<span class="kw">static</span> <span class="type">int</span> <span class="fn">aes_cmac</span>(<span class="kw">struct</span> <span class="type">crypto_shash</span> *tfm, <span class="kw">const</span> <span class="type">u8</span> k[<span class="num">16</span>],
+                    <span class="kw">const</span> <span class="type">u8</span> *m, <span class="type">size_t</span> mlen, <span class="type">u8</span> mac[<span class="num">16</span>])</code></pre>
+
+  <h3>函数 f4 — SC Confirm 值生成</h3>
+  <div class="card">
+    <div class="card-title">f4 详细说明</div>
+    <table>
+      <thead><tr><th>参数</th><th>大小</th><th>含义</th></tr></thead>
+      <tbody>
+        <tr><td><code>U</code></td><td>256 bit</td><td>PKax（发起方公钥 x 坐标）</td></tr>
+        <tr><td><code>V</code></td><td>256 bit</td><td>PKbx（响应方公钥 x 坐标）</td></tr>
+        <tr><td><code>X</code></td><td>128 bit</td><td>随机数 Na 或 Nb</td></tr>
+        <tr><td><code>Z</code></td><td>8 bit</td><td>Numeric/Just Works=0；Passkey=0x80/0x81（bit 为 passkey 位）</td></tr>
+      </tbody>
+    </table>
+    <pre><code><span class="comment">/* f4(U, V, X, Z) = AES-CMAC_X(U || V || Z) */</span>
+<span class="kw">static</span> <span class="type">int</span> <span class="fn">smp_f4</span>(<span class="kw">struct</span> <span class="type">crypto_shash</span> *tfm_cmac,
+               <span class="kw">const</span> <span class="type">u8</span> u[<span class="num">32</span>], <span class="kw">const</span> <span class="type">u8</span> v[<span class="num">32</span>],
+               <span class="kw">const</span> <span class="type">u8</span> x[<span class="num">16</span>], <span class="type">u8</span> z, <span class="type">u8</span> res[<span class="num">16</span>])
+{
+    <span class="type">u8</span> m[<span class="num">65</span>];   <span class="comment">/* 32 + 32 + 1 = 65 bytes */</span>
+    memcpy(m, u, <span class="num">32</span>);
+    memcpy(m + <span class="num">32</span>, v, <span class="num">32</span>);
+    m[<span class="num">64</span>] = z;
+    <span class="kw">return</span> <span class="fn">aes_cmac</span>(tfm_cmac, x, m, <span class="kw">sizeof</span>(m), res);
+}</code></pre>
+  </div>
+
+  <h3>函数 f5 — LTK 与 MacKey 生成</h3>
+  <div class="card">
+    <div class="card-title">f5：最关键的密钥推导函数</div>
+    <p style="font-size:0.85rem; color:#8b949e; margin-bottom:12px;">f5 从 ECDH 共享秘密（DHKey）推导出 LTK 和 MacKey。这是安全连接安全性的核心。</p>
+    <pre><code><span class="comment">/* 规范定义：
+   T = AES-CMAC_SALT(W)    SALT = 0x6C888391_AAF5A538_60370BDB_5A6083BE
+   MacKey || LTK = f5(DHKey, Nc, Np, BD_ADDR_C, BD_ADDR_P)
+   LTK  = AES-CMAC_T(Counter=1 || keyID || N1 || N2 || A1 || A2 || Length=256)
+   MacKey = AES-CMAC_T(Counter=0 || keyID || ...) */</span>
+<span class="kw">static</span> <span class="type">int</span> <span class="fn">smp_f5</span>(<span class="kw">struct</span> <span class="type">crypto_shash</span> *tfm_cmac, <span class="kw">const</span> <span class="type">u8</span> w[<span class="num">32</span>],
+               <span class="kw">const</span> <span class="type">u8</span> n1[<span class="num">16</span>], <span class="kw">const</span> <span class="type">u8</span> n2[<span class="num">16</span>],
+               <span class="kw">const</span> <span class="type">u8</span> a1[<span class="num">7</span>], <span class="kw">const</span> <span class="type">u8</span> a2[<span class="num">7</span>],
+               <span class="type">u8</span> mackey[<span class="num">16</span>], <span class="type">u8</span> ltk[<span class="num">16</span>])</code></pre>
+    <div class="svg-wrap" style="border:none; padding:0; background:none; margin:10px 0 0;">
+      <svg viewBox="0 0 640 160" xmlns="http://www.w3.org/2000/svg" style="width:100%; max-width:640px; display:block; margin:auto;">
+        <!-- f5 flow -->
+        <rect x="10" y="20" width="100" height="36" rx="5" fill="rgba(88,166,255,0.15)" stroke="#58a6ff" stroke-width="1"/>
+        <text x="60" y="34" text-anchor="middle" fill="#58a6ff" font-size="10" font-weight="600">DHKey (W)</text>
+        <text x="60" y="48" text-anchor="middle" fill="#8b949e" font-size="9">256 bit ECDH</text>
+
+        <path d="M110,38 L160,38" stroke="#58a6ff" stroke-width="1.5" marker-end="url(#a3)"/>
+        <defs><marker id="a3" markerWidth="7" markerHeight="7" refX="6" refY="3.5" orient="auto"><polygon points="0 0, 7 3.5, 0 7" fill="#58a6ff"/></marker></defs>
+
+        <rect x="160" y="20" width="110" height="36" rx="5" fill="rgba(210,168,255,0.15)" stroke="#d2a8ff" stroke-width="1"/>
+        <text x="215" y="34" text-anchor="middle" fill="#d2a8ff" font-size="10" font-weight="600">T = AES-CMAC</text>
+        <text x="215" y="48" text-anchor="middle" fill="#8b949e" font-size="9">_SALT(W)</text>
+
+        <path d="M270,38 L320,38" stroke="#d2a8ff" stroke-width="1.5" marker-end="url(#a4)"/>
+        <defs><marker id="a4" markerWidth="7" markerHeight="7" refX="6" refY="3.5" orient="auto"><polygon points="0 0, 7 3.5, 0 7" fill="#d2a8ff"/></marker></defs>
+
+        <rect x="320" y="10" width="140" height="58" rx="5" fill="rgba(210,168,255,0.1)" stroke="#d2a8ff" stroke-width="1"/>
+        <text x="390" y="30" text-anchor="middle" fill="#d2a8ff" font-size="10" font-weight="600">AES-CMAC_T</text>
+        <text x="390" y="44" text-anchor="middle" fill="#8b949e" font-size="8.5">Counter=0 → MacKey</text>
+        <text x="390" y="58" text-anchor="middle" fill="#8b949e" font-size="8.5">Counter=1 → LTK</text>
+
+        <path d="M460,30 L520,30" stroke="#3fb950" stroke-width="1.5" marker-end="url(#a5)"/>
+        <defs><marker id="a5" markerWidth="7" markerHeight="7" refX="6" refY="3.5" orient="auto"><polygon points="0 0, 7 3.5, 0 7" fill="#3fb950"/></marker></defs>
+        <rect x="520" y="14" width="100" height="22" rx="5" fill="rgba(63,185,80,0.15)" stroke="#3fb950" stroke-width="1"/>
+        <text x="570" y="29" text-anchor="middle" fill="#3fb950" font-size="10" font-weight="600">MacKey (128b)</text>
+
+        <path d="M460,50 L520,50" stroke="#ffa657" stroke-width="1.5" marker-end="url(#a6)"/>
+        <defs><marker id="a6" markerWidth="7" markerHeight="7" refX="6" refY="3.5" orient="auto"><polygon points="0 0, 7 3.5, 0 7" fill="#ffa657"/></marker></defs>
+        <rect x="520" y="38" width="100" height="22" rx="5" fill="rgba(255,166,87,0.15)" stroke="#ffa657" stroke-width="1"/>
+        <text x="570" y="53" text-anchor="middle" fill="#ffa657" font-size="10" font-weight="600">LTK (128b)</text>
+
+        <!-- inputs -->
+        <text x="60" y="90" text-anchor="middle" fill="#8b949e" font-size="9">输入：</text>
+        <text x="200" y="90" text-anchor="middle" fill="#8b949e" font-size="9">N1(Nc) · N2(Np) · A1(BD_ADDR_C) · A2(BD_ADDR_P)</text>
+        <text x="200" y="104" text-anchor="middle" fill="#8b949e" font-size="9">keyID=0x62746C65 ("btle") · Length=256</text>
+      </svg>
+    </div>
+  </div>
+
+  <h3>函数 f6 / g2 — 认证检查与数字比对</h3>
+  <table>
+    <thead><tr><th>函数</th><th>用途</th><th>关键输入</th><th>输出</th></tr></thead>
+    <tbody>
+      <tr>
+        <td><code>f6</code></td>
+        <td>生成 DHKey Check 值（认证阶段 2）</td>
+        <td>MacKey, Na, Nb, R, IOcap, A1, A2</td>
+        <td>16 字节 Ea/Eb</td>
+      </tr>
+      <tr>
+        <td><code>g2</code></td>
+        <td>生成 6 位数字比对值（Numeric Comparison）</td>
+        <td>PKax, PKbx, Na, Nb</td>
+        <td>g2 mod 2³² → 6 位十进制</td>
+      </tr>
+      <tr>
+        <td><code>h6/h7</code></td>
+        <td>跨传输（LE↔BR/EDR）密钥转换</td>
+        <td>LTK 或 BR/EDR Link Key</td>
+        <td>转换后的等效密钥</td>
+      </tr>
+    </tbody>
+  </table>
+
+  <h3>ECDH P-256 密钥交换</h3>
+  <pre><code><span class="comment">/* Linux 5.4 使用内核 crypto KPP API */</span>
+smp->tfm_ecdh = <span class="fn">crypto_alloc_kpp</span>(<span class="str">"ecdh-nist-p256"</span>, <span class="num">0</span>, <span class="num">0</span>);
+
+<span class="comment">/* 公私钥对生成 (ecdh_helper.c) */</span>
+<span class="kw">int</span> <span class="fn">generate_ecdh_keys</span>(<span class="kw">struct</span> <span class="type">crypto_kpp</span> *tfm, <span class="type">u8</span> public_key[<span class="num">64</span>]);
+
+<span class="comment">/* DHKey 计算 */</span>
+<span class="kw">int</span> <span class="fn">compute_ecdh_secret</span>(<span class="kw">struct</span> <span class="type">crypto_kpp</span> *tfm, <span class="kw">const</span> <span class="type">u8</span> remote_pk[<span class="num">64</span>],
+                        <span class="type">u8</span> secret[<span class="num">32</span>]); <span class="comment">/* 输出 DHKey (只用 x 坐标) */</span></code></pre>
+
+  <div class="note">
+    <strong>调试密钥（Debug Key）：</strong>规范定义了一对固定的调试公私钥（debug_pk / debug_sk），在 Linux 5.4 的 smp.c 中硬编码。若双方均使用调试密钥，连接可被 Wireshark 等工具解密。内核通过 <code>SMP_FLAG_DEBUG_KEY</code> 标志跟踪此状态并在上层告警。
+  </div>
+
+  <div class="first-principle">
+    <div class="fp-title">⚛ 第一性原理</div>
+    <p>ECDH 的本质是离散对数难题在椭圆曲线上的应用：给定点 G 和 kG，计算 k 在计算上不可行。两方各持私钥 a/b，交换公钥 aG/bG，各自计算 a(bG) = b(aG) = abG。第三方即使看到 aG 和 bG，也无法在多项式时间内还原 abG。配合 f5 的 SALT 和 keyID 混入，最终推导出的 LTK 具有密码学意义上的不可伪造性。</p>
+  </div>
+</div>
+
+<!-- ===================== SECTION 4 ===================== -->
+<div class="section" id="s4">
+  <div class="section-badge badge-orange">🔀 配对选择</div>
+  <h2>04 · I/O 能力与配对方法选择</h2>
+
+  <a class="source-link" href="https://www.bluetooth.com/wp-content/uploads/Files/Specification/HTML/Core-54/out/en/host/security-manager-specification.html" target="_blank">
+    ⬡ Bluetooth Core Spec Part H § 2.3.5.1 Mapping IO capabilities
+  </a>
+
+  <p>配对方法由 <strong>双方的 I/O 能力</strong>（IO Capability）和 <strong>OOB 标志</strong>、<strong>MITM 标志</strong>共同决定。Linux 5.4 中通过 <code>get_auth_method()</code> 函数实现此选择逻辑。</p>
+
+  <h3>I/O 能力枚举</h3>
+  <table>
+    <thead><tr><th>值</th><th>名称</th><th>含义</th></tr></thead>
+    <tbody>
+      <tr><td><code>0x00</code></td><td>DisplayOnly</td><td>只能显示数字（无用户输入）</td></tr>
+      <tr><td><code>0x01</code></td><td>DisplayYesNo</td><td>能显示数字，且用户能确认/否认</td></tr>
+      <tr><td><code>0x02</code></td><td>KeyboardOnly</td><td>只有键盘，无显示</td></tr>
+      <tr><td><code>0x03</code></td><td>NoInputNoOutput</td><td>无输入无输出（Just Works 专用）</td></tr>
+      <tr><td><code>0x04</code></td><td>KeyboardDisplay</td><td>既有键盘又有显示</td></tr>
+    </tbody>
+  </table>
+
+  <h3>LE Legacy 配对方法矩阵</h3>
+  <div class="card">
+    <div class="card-title">Legacy Pairing — get_auth_method() 决策矩阵</div>
+    <table>
+      <thead>
+        <tr>
+          <th>Initiator \ Responder</th>
+          <th>DisplayOnly</th>
+          <th>DisplayYesNo</th>
+          <th>KeyboardOnly</th>
+          <th>NoInputNoOutput</th>
+          <th>KeyboardDisplay</th>
+        </tr>
+      </thead>
+      <tbody>
+        <tr><td><strong>DisplayOnly</strong></td><td class="chip chip-red">Just Works</td><td class="chip chip-red">Just Works</td><td class="chip chip-green">Passkey</td><td class="chip chip-red">Just Works</td><td class="chip chip-green">Passkey</td></tr>
+        <tr><td><strong>DisplayYesNo</strong></td><td class="chip chip-red">Just Works</td><td class="chip chip-red">Just Works</td><td class="chip chip-green">Passkey</td><td class="chip chip-red">Just Works</td><td class="chip chip-green">Passkey</td></tr>
+        <tr><td><strong>KeyboardOnly</strong></td><td class="chip chip-green">Passkey</td><td class="chip chip-green">Passkey</td><td class="chip chip-green">Passkey</td><td class="chip chip-red">Just Works</td><td class="chip chip-green">Passkey</td></tr>
+        <tr><td><strong>NoInputNoOutput</strong></td><td class="chip chip-red">Just Works</td><td class="chip chip-red">Just Works</td><td class="chip chip-red">Just Works</td><td class="chip chip-red">Just Works</td><td class="chip chip-red">Just Works</td></tr>
+        <tr><td><strong>KeyboardDisplay</strong></td><td class="chip chip-green">Passkey</td><td class="chip chip-green">Passkey</td><td class="chip chip-green">Passkey</td><td class="chip chip-red">Just Works</td><td class="chip chip-green">Passkey</td></tr>
+      </tbody>
+    </table>
+  </div>
+
+  <h3>LE Secure Connections 配对方法矩阵</h3>
+  <div class="card">
+    <div class="card-title">SC Pairing — 额外支持 Numeric Comparison</div>
+    <table>
+      <thead>
+        <tr>
+          <th>Initiator \ Responder</th>
+          <th>DisplayOnly</th>
+          <th>DisplayYesNo</th>
+          <th>KeyboardOnly</th>
+          <th>NoInputNoOutput</th>
+          <th>KeyboardDisplay</th>
+        </tr>
+      </thead>
+      <tbody>
+        <tr><td><strong>DisplayOnly</strong></td><td class="chip chip-red">Just Works</td><td class="chip chip-red">Just Works</td><td class="chip chip-green">Passkey</td><td class="chip chip-red">Just Works</td><td class="chip chip-green">Passkey</td></tr>
+        <tr><td><strong>DisplayYesNo</strong></td><td class="chip chip-red">Just Works</td><td class="chip chip-blue">Numeric Cmp</td><td class="chip chip-green">Passkey</td><td class="chip chip-red">Just Works</td><td class="chip chip-blue">Numeric Cmp</td></tr>
+        <tr><td><strong>KeyboardOnly</strong></td><td class="chip chip-green">Passkey</td><td class="chip chip-green">Passkey</td><td class="chip chip-green">Passkey</td><td class="chip chip-red">Just Works</td><td class="chip chip-green">Passkey</td></tr>
+        <tr><td><strong>NoInputNoOutput</strong></td><td class="chip chip-red">Just Works</td><td class="chip chip-red">Just Works</td><td class="chip chip-red">Just Works</td><td class="chip chip-red">Just Works</td><td class="chip chip-red">Just Works</td></tr>
+        <tr><td><strong>KeyboardDisplay</strong></td><td class="chip chip-green">Passkey</td><td class="chip chip-blue">Numeric Cmp</td><td class="chip chip-green">Passkey</td><td class="chip chip-red">Just Works</td><td class="chip chip-blue">Numeric Cmp</td></tr>
+      </tbody>
+    </table>
+    <p style="font-size:0.8rem; margin-top:10px; color:#8b949e;">Numeric Comparison 仅在 LE Secure Connections 中可用，且要求双方均具备 DisplayYesNo 或 KeyboardDisplay 能力。</p>
+  </div>
+
+  <h3>内核实现：get_auth_method()</h3>
+  <pre><code><span class="comment">/* net/bluetooth/smp.c — Linux 5.4 */</span>
+<span class="comment">/* Legacy 方法查表 */</span>
+<span class="kw">static const</span> <span class="type">u8</span> gen_method[<span class="num">5</span>][<span class="num">5</span>] = {
+    { JUST_WORKS, JUST_WORKS, JUST_CFM, JUST_WORKS, JUST_CFM },
+    { JUST_WORKS, JUST_WORKS, JUST_CFM, JUST_WORKS, JUST_CFM },
+    { CFM_PASSKEY, CFM_PASSKEY, REQ_PASSKEY, JUST_WORKS, CFM_PASSKEY },
+    { JUST_WORKS, JUST_WORKS, JUST_CFM, JUST_WORKS, JUST_CFM },
+    { CFM_PASSKEY, CFM_PASSKEY, REQ_PASSKEY, JUST_WORKS, JUST_CFM },
+};
+
+<span class="comment">/* SC 方法查表（增加 Numeric Comparison） */</span>
+<span class="kw">static const</span> <span class="type">u8</span> sc_method[<span class="num">5</span>][<span class="num">5</span>] = {
+    { JUST_WORKS, JUST_WORKS, REQ_PASSKEY, JUST_WORKS, REQ_PASSKEY },
+    { JUST_WORKS, CFM_PASSKEY, REQ_PASSKEY, JUST_WORKS, CFM_PASSKEY },
+    { DSP_PASSKEY, DSP_PASSKEY, REQ_PASSKEY, JUST_WORKS, DSP_PASSKEY },
+    { JUST_WORKS, JUST_WORKS, JUST_WORKS,  JUST_WORKS, JUST_WORKS  },
+    { DSP_PASSKEY, CFM_PASSKEY, REQ_PASSKEY, JUST_WORKS, CFM_PASSKEY },
+};
+
+<span class="kw">static</span> <span class="type">u8</span> <span class="fn">get_auth_method</span>(<span class="kw">struct</span> <span class="type">smp_chan</span> *smp, <span class="type">u8</span> local_io, <span class="type">u8</span> remote_io)
+{
+    <span class="comment">/* SC 标志已设置则使用 sc_method，否则使用 gen_method */</span>
+    <span class="kw">if</span> (test_bit(<span class="macro">SMP_FLAG_SC</span>, &smp->flags))
+        <span class="kw">return</span> sc_method[remote_io][local_io];
+    <span class="kw">return</span> gen_method[remote_io][local_io];
+}</code></pre>
+
+  <div class="first-principle">
+    <div class="fp-title">⚛ 第一性原理</div>
+    <p>配对方法选择的本质：用通道外（Out-of-Band）的人类认知能力来弥补无线信道缺乏身份验证的缺陷。Just Works 不借助人类判断（零带外信道），无法防御 MITM；Passkey 借助人类读数/输数（6 位数字带外信道，约 20 位熵）；Numeric Comparison 让人类在双屏上对照相同数字（视觉带外信道）；OOB 完全依赖独立安全信道（NFC、二维码等）。安全强度正比于带外信道的安全性和熵值。</p>
+  </div>
+</div>
+
+<!-- ===================== SECTION 5 ===================== -->
+<div class="section" id="s5">
+  <div class="section-badge badge-orange">🔄 Legacy配对</div>
+  <h2>05 · LE Legacy 配对流程</h2>
+
+  <a class="source-link" href="https://www.bluetooth.com/wp-content/uploads/Files/Specification/HTML/Core-54/out/en/host/security-manager-specification.html" target="_blank">
+    ⬡ Bluetooth Core Spec Part H § 2.3.5 LE Legacy Pairing
+  </a>
+
+  <p>LE Legacy 配对在 Bluetooth 4.0–4.1 时代被广泛使用，其核心是基于 TK 的 Confirm/Random 交换机制。</p>
+
+  <div class="svg-wrap">
+    <svg viewBox="0 0 680 520" xmlns="http://www.w3.org/2000/svg" style="width:100%; max-width:680px; display:block; margin:auto;">
+      <!-- Lifelines -->
+      <line x1="160" y1="30" x2="160" y2="510" stroke="#30363d" stroke-width="1.5"/>
+      <line x1="520" y1="30" x2="520" y2="510" stroke="#30363d" stroke-width="1.5"/>
+      <rect x="80" y="10" width="160" height="28" rx="5" fill="#161b22" stroke="#58a6ff" stroke-width="1.5"/>
+      <text x="160" y="28" text-anchor="middle" fill="#58a6ff" font-size="11" font-weight="700">Initiator</text>
+      <rect x="440" y="10" width="160" height="28" rx="5" fill="#161b22" stroke="#3fb950" stroke-width="1.5"/>
+      <text x="520" y="28" text-anchor="middle" fill="#3fb950" font-size="11" font-weight="700">Responder</text>
+
+      <defs>
+        <marker id="ai" markerWidth="8" markerHeight="7" refX="7" refY="3.5" orient="auto"><polygon points="0 0, 8 3.5, 0 7" fill="#58a6ff"/></marker>
+        <marker id="ar" markerWidth="8" markerHeight="7" refX="1" refY="3.5" orient="auto"><polygon points="8 0, 0 3.5, 8 7" fill="#3fb950"/></marker>
+        <marker id="ao" markerWidth="8" markerHeight="7" refX="7" refY="3.5" orient="auto"><polygon points="0 0, 8 3.5, 0 7" fill="#ffa657"/></marker>
+      </defs>
+
+      <!-- Phase 1 -->
+      <rect x="50" y="48" width="580" height="12" rx="3" fill="rgba(88,166,255,0.1)"/>
+      <text x="340" y="58" text-anchor="middle" fill="#58a6ff" font-size="9" font-weight="700">Phase 1: Feature Exchange</text>
+
+      <line x1="165" y1="76" x2="515" y2="76" stroke="#58a6ff" stroke-width="1.5" marker-end="url(#ai)"/>
+      <rect x="232" y="64" width="150" height="18" rx="3" fill="#0d1117"/>
+      <text x="307" y="77" text-anchor="middle" fill="#58a6ff" font-size="10">SMP_CMD_PAIRING_REQ</text>
+      <text x="307" y="96" text-anchor="middle" fill="#8b949e" font-size="8.5">IO Cap, OOB flag, AuthReq, MaxKeySize, KeyDist</text>
+
+      <line x1="515" y1="108" x2="165" y2="108" stroke="#3fb950" stroke-width="1.5" marker-end="url(#ar)"/>
+      <rect x="232" y="96" width="150" height="18" rx="3" fill="#0d1117"/>
+      <text x="307" y="109" text-anchor="middle" fill="#3fb950" font-size="10">SMP_CMD_PAIRING_RSP</text>
+      <text x="307" y="126" text-anchor="middle" fill="#8b949e" font-size="8.5">协商 → 确定配对方法 &amp; TK 生成方式</text>
+
+      <!-- Phase 2 TK -->
+      <rect x="50" y="136" width="580" height="12" rx="3" fill="rgba(255,166,87,0.1)"/>
+      <text x="340" y="146" text-anchor="middle" fill="#ffa657" font-size="9" font-weight="700">Phase 2: STK Generation</text>
+
+      <!-- TK generation note -->
+      <rect x="60" y="156" width="140" height="44" rx="5" fill="rgba(255,166,87,0.08)" stroke="rgba(255,166,87,0.3)" stroke-width="1"/>
+      <text x="130" y="172" text-anchor="middle" fill="#ffa657" font-size="9" font-weight="600">Initiator: 生成 TK</text>
+      <text x="130" y="185" text-anchor="middle" fill="#8b949e" font-size="8">Just Works: TK=0</text>
+      <text x="130" y="196" text-anchor="middle" fill="#8b949e" font-size="8">Passkey: TK=PIN(0-999999)</text>
+
+      <rect x="480" y="156" width="140" height="44" rx="5" fill="rgba(255,166,87,0.08)" stroke="rgba(255,166,87,0.3)" stroke-width="1"/>
+      <text x="550" y="172" text-anchor="middle" fill="#ffa657" font-size="9" font-weight="600">Responder: 生成 TK</text>
+      <text x="550" y="185" text-anchor="middle" fill="#8b949e" font-size="8">Just Works: TK=0</text>
+      <text x="550" y="196" text-anchor="middle" fill="#8b949e" font-size="8">Passkey: TK=PIN(user input)</text>
+
+      <!-- Confirm exchange -->
+      <rect x="60" y="210" width="140" height="30" rx="4" fill="rgba(210,168,255,0.08)" stroke="rgba(210,168,255,0.3)" stroke-width="1"/>
+      <text x="130" y="222" text-anchor="middle" fill="#d2a8ff" font-size="8.5">生成 LP_RAND_I (随机数)</text>
+      <text x="130" y="234" text-anchor="middle" fill="#d2a8ff" font-size="8.5">LP_CONFIRM_I = c1(TK, RAND_I,...)</text>
+
+      <line x1="165" y1="252" x2="515" y2="252" stroke="#d2a8ff" stroke-width="1.5" marker-end="url(#ao)"/>
+      <rect x="232" y="240" width="150" height="18" rx="3" fill="#0d1117"/>
+      <text x="307" y="253" text-anchor="middle" fill="#d2a8ff" font-size="10">SMP_CMD_PAIRING_CONFIRM</text>
+      <text x="307" y="270" text-anchor="middle" fill="#8b949e" font-size="8.5">LP_CONFIRM_I (128 bit)</text>
+
+      <rect x="480" y="272" width="140" height="24" rx="4" fill="rgba(210,168,255,0.08)" stroke="rgba(210,168,255,0.3)" stroke-width="1"/>
+      <text x="550" y="282" text-anchor="middle" fill="#d2a8ff" font-size="8.5">LP_CONFIRM_R = c1(TK, RAND_R,...)</text>
+      <text x="550" y="292" text-anchor="middle" fill="#8b949e" font-size="8">同样用 RAND_R 计算</text>
+
+      <line x1="515" y1="308" x2="165" y2="308" stroke="#3fb950" stroke-width="1.5" marker-end="url(#ar)"/>
+      <rect x="232" y="296" width="150" height="18" rx="3" fill="#0d1117"/>
+      <text x="307" y="309" text-anchor="middle" fill="#3fb950" font-size="10">SMP_CMD_PAIRING_CONFIRM</text>
+
+      <!-- Random exchange -->
+      <line x1="165" y1="336" x2="515" y2="336" stroke="#58a6ff" stroke-width="1.5" marker-end="url(#ai)"/>
+      <rect x="232" y="324" width="150" height="18" rx="3" fill="#0d1117"/>
+      <text x="307" y="337" text-anchor="middle" fill="#58a6ff" font-size="10">SMP_CMD_PAIRING_RANDOM (LP_RAND_I)</text>
+
+      <rect x="480" y="348" width="140" height="20" rx="4" fill="rgba(63,185,80,0.08)" stroke="rgba(63,185,80,0.3)" stroke-width="1"/>
+      <text x="550" y="362" text-anchor="middle" fill="#3fb950" font-size="8.5">验证: c1(TK,RAND_I,...) == CONFIRM_I?</text>
+
+      <line x1="515" y1="380" x2="165" y2="380" stroke="#3fb950" stroke-width="1.5" marker-end="url(#ar)"/>
+      <rect x="232" y="368" width="150" height="18" rx="3" fill="#0d1117"/>
+      <text x="307" y="381" text-anchor="middle" fill="#3fb950" font-size="10">SMP_CMD_PAIRING_RANDOM (LP_RAND_R)</text>
+
+      <rect x="60" y="392" width="140" height="20" rx="4" fill="rgba(63,185,80,0.08)" stroke="rgba(63,185,80,0.3)" stroke-width="1"/>
+      <text x="130" y="406" text-anchor="middle" fill="#3fb950" font-size="8.5">验证: c1(TK,RAND_R,...) == CONFIRM_R?</text>
+
+      <!-- STK -->
+      <rect x="60" y="424" width="140" height="32" rx="4" fill="rgba(255,166,87,0.08)" stroke="rgba(255,166,87,0.3)" stroke-width="1"/>
+      <text x="130" y="437" text-anchor="middle" fill="#ffa657" font-size="8.5">STK = s1(TK, RAND_R, RAND_I)</text>
+      <text x="130" y="450" text-anchor="middle" fill="#ffa657" font-size="8.5">用 STK 加密链路</text>
+
+      <rect x="480" y="424" width="140" height="32" rx="4" fill="rgba(255,166,87,0.08)" stroke="rgba(255,166,87,0.3)" stroke-width="1"/>
+      <text x="550" y="437" text-anchor="middle" fill="#ffa657" font-size="8.5">STK = s1(TK, RAND_R, RAND_I)</text>
+      <text x="550" y="450" text-anchor="middle" fill="#ffa657" font-size="8.5">用 STK 加密链路</text>
+
+      <text x="340" y="490" text-anchor="middle" fill="#3fb950" font-size="9" font-weight="600">→ 链路加密成功，进入 Phase 3 密钥分发</text>
+    </svg>
+    <div class="svg-caption">图 5.1：LE Legacy Pairing 完整消息流（Just Works / Passkey Entry）</div>
+  </div>
+
+  <h3>TK 值的决定规则</h3>
+  <table>
+    <thead><tr><th>方法</th><th>TK 值</th><th>安全性</th></tr></thead>
+    <tbody>
+      <tr class="hl-row"><td>Just Works</td><td><code>0x000...000</code>（全零 128 bit）</td><td class="chip chip-red">无 MITM 保护，被动监听可破解</td></tr>
+      <tr><td>Passkey Entry</td><td><code>0x000...PPPPPP</code>（6位PIN，0~999999）</td><td class="chip chip-orange">约 20 bit 熵，有限保护</td></tr>
+      <tr><td>OOB</td><td>带外信道传递的 128 bit 随机数</td><td class="chip chip-green">取决于 OOB 信道安全性</td></tr>
+    </tbody>
+  </table>
+
+  <div class="first-principle">
+    <div class="fp-title">⚛ 第一性原理</div>
+    <p>Legacy Pairing 的 Confirm-then-Random 流程是一个"承诺-揭示"（Commit-Reveal）协议：先承诺（发送加密后的 Confirm），再揭示（发送 Random），对方在收到 Random 后才能验证 Confirm 是否一致，从而防止一方在看到另一方随机数后伪造自己的 Confirm。然而该协议的安全性完全依赖 TK 的熵——TK 为零时，整个承诺体系形同虚设。</p>
+  </div>
+</div>
+
+<!-- ===================== SECTION 6 ===================== -->
+<div class="section" id="s6">
+  <div class="section-badge badge-green">🔒 安全连接</div>
+  <h2>06 · LE Secure Connections 配对</h2>
+
+  <a class="source-link" href="https://www.bluetooth.com/wp-content/uploads/Files/Specification/HTML/Core-54/out/en/host/security-manager-specification.html" target="_blank">
+    ⬡ Bluetooth Core Spec Part H § 2.3.5.6 LE Secure Connections
+  </a>
+
+  <p>LE Secure Connections（引入自 Bluetooth 4.2）彻底重构了 Phase 2，引入 <strong>ECDH P-256</strong> 密钥交换，消除了被动监听攻击面。</p>
+
+  <div class="svg-wrap">
+    <svg viewBox="0 0 680 620" xmlns="http://www.w3.org/2000/svg" style="width:100%; max-width:680px; display:block; margin:auto;">
+      <line x1="160" y1="30" x2="160" y2="610" stroke="#30363d" stroke-width="1.5"/>
+      <line x1="520" y1="30" x2="520" y2="610" stroke="#30363d" stroke-width="1.5"/>
+      <rect x="80" y="10" width="160" height="28" rx="5" fill="#161b22" stroke="#58a6ff" stroke-width="1.5"/>
+      <text x="160" y="28" text-anchor="middle" fill="#58a6ff" font-size="11" font-weight="700">Initiator</text>
+      <rect x="440" y="10" width="160" height="28" rx="5" fill="#161b22" stroke="#3fb950" stroke-width="1.5"/>
+      <text x="520" y="28" text-anchor="middle" fill="#3fb950" font-size="11" font-weight="700">Responder</text>
+
+      <defs>
+        <marker id="bi" markerWidth="8" markerHeight="7" refX="7" refY="3.5" orient="auto"><polygon points="0 0, 8 3.5, 0 7" fill="#58a6ff"/></marker>
+        <marker id="br" markerWidth="8" markerHeight="7" refX="1" refY="3.5" orient="auto"><polygon points="8 0, 0 3.5, 8 7" fill="#3fb950"/></marker>
+        <marker id="bo" markerWidth="8" markerHeight="7" refX="7" refY="3.5" orient="auto"><polygon points="0 0, 8 3.5, 0 7" fill="#ffa657"/></marker>
+      </defs>
+
+      <!-- Phase 1 -->
+      <rect x="50" y="46" width="580" height="12" rx="3" fill="rgba(88,166,255,0.1)"/>
+      <text x="340" y="56" text-anchor="middle" fill="#58a6ff" font-size="9" font-weight="700">Phase 1: Feature Exchange (同 Legacy)</text>
+
+      <line x1="165" y1="74" x2="515" y2="74" stroke="#58a6ff" stroke-width="1.5" marker-end="url(#bi)"/>
+      <rect x="232" y="62" width="150" height="18" rx="3" fill="#0d1117"/>
+      <text x="307" y="75" text-anchor="middle" fill="#58a6ff" font-size="10">Pairing Request (AuthReq.SC=1)</text>
+
+      <line x1="515" y1="96" x2="165" y2="96" stroke="#3fb950" stroke-width="1.5" marker-end="url(#br)"/>
+      <rect x="232" y="84" width="150" height="18" rx="3" fill="#0d1117"/>
+      <text x="307" y="97" text-anchor="middle" fill="#3fb950" font-size="10">Pairing Response (AuthReq.SC=1)</text>
+
+      <!-- Phase 2 SC -->
+      <rect x="50" y="110" width="580" height="12" rx="3" fill="rgba(63,185,80,0.1)"/>
+      <text x="340" y="120" text-anchor="middle" fill="#3fb950" font-size="9" font-weight="700">Phase 2 (SC): Public Key Exchange + Authentication</text>
+
+      <!-- ECDH key gen -->
+      <rect x="60" y="128" width="145" height="24" rx="4" fill="rgba(88,166,255,0.08)" stroke="rgba(88,166,255,0.3)" stroke-width="1"/>
+      <text x="132" y="140" text-anchor="middle" fill="#58a6ff" font-size="8.5">ECDH keygen: (SKa, PKa)</text>
+      <text x="132" y="150" text-anchor="middle" fill="#8b949e" font-size="7.5">ecdh-nist-p256</text>
+
+      <rect x="475" y="128" width="145" height="24" rx="4" fill="rgba(63,185,80,0.08)" stroke="rgba(63,185,80,0.3)" stroke-width="1"/>
+      <text x="547" y="140" text-anchor="middle" fill="#3fb950" font-size="8.5">ECDH keygen: (SKb, PKb)</text>
+      <text x="547" y="150" text-anchor="middle" fill="#8b949e" font-size="7.5">ecdh-nist-p256</text>
+
+      <line x1="165" y1="168" x2="515" y2="168" stroke="#58a6ff" stroke-width="1.5" marker-end="url(#bi)"/>
+      <rect x="220" y="156" width="164" height="18" rx="3" fill="#0d1117"/>
+      <text x="302" y="169" text-anchor="middle" fill="#58a6ff" font-size="10">SMP_CMD_PUBLIC_KEY (PKa 64B)</text>
+
+      <line x1="515" y1="192" x2="165" y2="192" stroke="#3fb950" stroke-width="1.5" marker-end="url(#br)"/>
+      <rect x="220" y="180" width="164" height="18" rx="3" fill="#0d1117"/>
+      <text x="302" y="193" text-anchor="middle" fill="#3fb950" font-size="10">SMP_CMD_PUBLIC_KEY (PKb 64B)</text>
+
+      <!-- DHKey computation -->
+      <rect x="60" y="206" width="145" height="22" rx="4" fill="rgba(210,168,255,0.08)" stroke="rgba(210,168,255,0.3)" stroke-width="1"/>
+      <text x="132" y="220" text-anchor="middle" fill="#d2a8ff" font-size="8.5">DHKey = SKa × PKb (x-coord)</text>
+
+      <rect x="475" y="206" width="145" height="22" rx="4" fill="rgba(210,168,255,0.08)" stroke="rgba(210,168,255,0.3)" stroke-width="1"/>
+      <text x="547" y="220" text-anchor="middle" fill="#d2a8ff" font-size="8.5">DHKey = SKb × PKa (x-coord)</text>
+
+      <!-- Auth Stage 1 -->
+      <rect x="50" y="238" width="580" height="10" rx="3" fill="rgba(255,166,87,0.08)"/>
+      <text x="340" y="246" text-anchor="middle" fill="#ffa657" font-size="8.5" font-weight="700">Authentication Stage 1 (Numeric Comparison / Just Works)</text>
+
+      <rect x="60" y="254" width="145" height="24" rx="4" fill="rgba(255,166,87,0.08)" stroke="rgba(255,166,87,0.3)" stroke-width="1"/>
+      <text x="132" y="264" text-anchor="middle" fill="#ffa657" font-size="8.5">生成 Na (随机数)</text>
+      <text x="132" y="276" text-anchor="middle" fill="#8b949e" font-size="7.5">Ca = f4(PKax, PKbx, Na, 0)</text>
+
+      <line x1="165" y1="294" x2="515" y2="294" stroke="#ffa657" stroke-width="1.5" marker-end="url(#bo)"/>
+      <rect x="220" y="282" width="164" height="18" rx="3" fill="#0d1117"/>
+      <text x="302" y="295" text-anchor="middle" fill="#ffa657" font-size="10">SMP_CMD_PAIRING_CONFIRM (Ca)</text>
+
+      <rect x="475" y="304" width="145" height="24" rx="4" fill="rgba(63,185,80,0.08)" stroke="rgba(63,185,80,0.3)" stroke-width="1"/>
+      <text x="547" y="314" text-anchor="middle" fill="#3fb950" font-size="8.5">生成 Nb (随机数)</text>
+      <text x="547" y="326" text-anchor="middle" fill="#8b949e" font-size="7.5">Cb = f4(PKbx, PKax, Nb, 0)</text>
+
+      <line x1="515" y1="344" x2="165" y2="344" stroke="#3fb950" stroke-width="1.5" marker-end="url(#br)"/>
+      <rect x="220" y="332" width="164" height="18" rx="3" fill="#0d1117"/>
+      <text x="302" y="345" text-anchor="middle" fill="#3fb950" font-size="10">SMP_CMD_PAIRING_CONFIRM (Cb)</text>
+
+      <!-- Random exchange -->
+      <line x1="165" y1="368" x2="515" y2="368" stroke="#58a6ff" stroke-width="1.5" marker-end="url(#bi)"/>
+      <rect x="220" y="356" width="164" height="18" rx="3" fill="#0d1117"/>
+      <text x="302" y="369" text-anchor="middle" fill="#58a6ff" font-size="10">SMP_CMD_PAIRING_RANDOM (Na)</text>
+
+      <rect x="475" y="378" width="145" height="16" rx="4" fill="rgba(63,185,80,0.08)" stroke="rgba(63,185,80,0.3)" stroke-width="1"/>
+      <text x="547" y="389" text-anchor="middle" fill="#3fb950" font-size="8">验证: f4(PKax,PKbx,Na,0) == Ca ✓</text>
+
+      <line x1="515" y1="406" x2="165" y2="406" stroke="#3fb950" stroke-width="1.5" marker-end="url(#br)"/>
+      <rect x="220" y="394" width="164" height="18" rx="3" fill="#0d1117"/>
+      <text x="302" y="407" text-anchor="middle" fill="#3fb950" font-size="10">SMP_CMD_PAIRING_RANDOM (Nb)</text>
+
+      <rect x="60" y="416" width="145" height="16" rx="4" fill="rgba(88,166,255,0.08)" stroke="rgba(88,166,255,0.3)" stroke-width="1"/>
+      <text x="132" y="427" text-anchor="middle" fill="#58a6ff" font-size="8">验证: f4(PKbx,PKax,Nb,0) == Cb ✓</text>
+
+      <!-- Numeric comparison hint -->
+      <rect x="220" y="436" width="244" height="14" rx="3" fill="rgba(255,166,87,0.1)"/>
+      <text x="342" y="447" text-anchor="middle" fill="#ffa657" font-size="8">g2(PKax,PKbx,Na,Nb) → 展示 6 位数字给用户确认</text>
+
+      <!-- f5 -->
+      <rect x="50" y="460" width="580" height="10" rx="3" fill="rgba(210,168,255,0.08)"/>
+      <text x="340" y="468" text-anchor="middle" fill="#d2a8ff" font-size="8.5" font-weight="700">LTK 计算 (f5)</text>
+
+      <rect x="60" y="476" width="560" height="20" rx="4" fill="rgba(210,168,255,0.05)" stroke="rgba(210,168,255,0.2)" stroke-width="1"/>
+      <text x="340" y="490" text-anchor="middle" fill="#d2a8ff" font-size="8.5">MacKey || LTK = f5(DHKey, Na, Nb, BD_ADDR_I, BD_ADDR_R)</text>
+
+      <!-- DHKey check -->
+      <line x1="165" y1="512" x2="515" y2="512" stroke="#58a6ff" stroke-width="1.5" marker-end="url(#bi)"/>
+      <rect x="220" y="500" width="164" height="18" rx="3" fill="#0d1117"/>
+      <text x="302" y="513" text-anchor="middle" fill="#58a6ff" font-size="10">SMP_CMD_DHKEY_CHECK (Ea)</text>
+
+      <line x1="515" y1="534" x2="165" y2="534" stroke="#3fb950" stroke-width="1.5" marker-end="url(#br)"/>
+      <rect x="220" y="522" width="164" height="18" rx="3" fill="#0d1117"/>
+      <text x="302" y="535" text-anchor="middle" fill="#3fb950" font-size="10">SMP_CMD_DHKEY_CHECK (Eb)</text>
+
+      <text x="340" y="562" text-anchor="middle" fill="#d2a8ff" font-size="8.5">Ea = f6(MacKey, Na, Nb, 0, IOcapA, A, B)</text>
+      <text x="340" y="576" text-anchor="middle" fill="#d2a8ff" font-size="8.5">Eb = f6(MacKey, Nb, Na, 0, IOcapB, B, A)</text>
+      <text x="340" y="596" text-anchor="middle" fill="#3fb950" font-size="9" font-weight="600">→ 双方验证通过，用 LTK 加密链路，进入 Phase 3</text>
+    </svg>
+    <div class="svg-caption">图 6.1：LE Secure Connections 完整配对流程（Numeric Comparison / Just Works）</div>
+  </div>
+
+  <h3>SC 与 Legacy 的关键差异</h3>
+  <table>
+    <thead><tr><th>维度</th><th>LE Legacy</th><th>LE Secure Connections</th></tr></thead>
+    <tbody>
+      <tr><td>密钥交换</td><td>无（依赖 TK）</td><td>ECDH P-256</td></tr>
+      <tr><td>生成密钥</td><td>STK（临时密钥）</td><td>LTK（直接生成长期密钥）</td></tr>
+      <tr><td>前向安全</td><td>❌ 无</td><td>✅ 有（每次配对独立 DHKey）</td></tr>
+      <tr><td>被动监听</td><td>❌ 可破解（Just Works TK=0）</td><td>✅ 无法破解</td></tr>
+      <tr><td>MITM 保护</td><td>Passkey 有限保护</td><td>Numeric Comparison + Passkey</td></tr>
+      <tr><td>加密算法</td><td>AES-128（c1/s1）</td><td>AES-CMAC（f4/f5/f6/g2）</td></tr>
+      <tr><td>内核标志</td><td>—</td><td><code>SMP_FLAG_SC</code></td></tr>
+    </tbody>
+  </table>
+
+  <div class="first-principle">
+    <div class="fp-title">⚛ 第一性原理</div>
+    <p>Secure Connections 的安全边界在于 ECDH 的计算不可逆性：即使攻击者完整录制了所有空口报文（包括 PKa、PKb、Ca、Cb、Na、Nb、DHKey Check），在当前计算能力下也无法推导 DHKey，从而无法计算 LTK。这是 Legacy Pairing 无法做到的根本改变——Legacy 的安全性是"信息论意义上的不安全"（TK 熵值有限），而 SC 的安全性是"计算复杂度意义上的安全"（ECDH 难题）。</p>
+  </div>
+</div>
+
+<!-- ===================== SECTION 7 ===================== -->
+<div class="section" id="s7">
+  <div class="section-badge badge-red">⚙ 内核结构</div>
+  <h2>07 · 内核数据结构</h2>
+
+  <a class="source-link" href="https://git.kernel.org/pub/scm/linux/kernel/git/stable/linux.git/tree/net/bluetooth/smp.c?h=v5.4.290" target="_blank">
+    ⬡ net/bluetooth/smp.c — struct smp_chan / smp_dev
+  </a>
+
+  <p>Linux 5.4 的 SMP 实现围绕两个核心数据结构展开：<code>smp_dev</code>（每适配器设备级状态）和 <code>smp_chan</code>（每连接会话状态）。</p>
+
+  <h3>smp_dev — 设备级状态</h3>
+  <pre><code><span class="comment">/* net/bluetooth/smp.c — Linux 5.4 */</span>
+<span class="kw">struct</span> <span class="type">smp_dev</span> {
+    <span class="comment">/* Secure Connections OOB 数据 */</span>
+    <span class="type">bool</span>  local_oob;           <span class="comment">/* 是否有本地 OOB 数据 */</span>
+    <span class="type">u8</span>    local_pk[<span class="num">64</span>];        <span class="comment">/* 本地 ECDH 公钥 (x||y 各32B) */</span>
+    <span class="type">u8</span>    local_rand[<span class="num">16</span>];      <span class="comment">/* OOB 随机数 */</span>
+    <span class="type">bool</span>  debug_key;           <span class="comment">/* 是否使用规范定义的调试密钥对 */</span>
+
+    <span class="kw">struct</span> <span class="type">crypto_shash</span> *tfm_cmac;  <span class="comment">/* AES-CMAC 变换上下文 */</span>
+    <span class="kw">struct</span> <span class="type">crypto_kpp</span>  *tfm_ecdh;  <span class="comment">/* ECDH P-256 变换上下文 */</span>
+};</code></pre>
+
+  <h3>smp_chan — 连接级会话状态</h3>
+  <pre><code><span class="kw">struct</span> <span class="type">smp_chan</span> {
+    <span class="kw">struct</span> <span class="type">l2cap_conn</span>      *conn;          <span class="comment">/* 关联的 L2CAP 连接 */</span>
+    <span class="kw">struct</span> <span class="type">delayed_work</span>    security_timer; <span class="comment">/* 30 秒超时看门狗 */</span>
+    <span class="type">unsigned long</span>          allow_cmd;      <span class="comment">/* 位图: 当前允许接收的命令 */</span>
+
+    <span class="comment">/* ---- 配对协商数据 ---- */</span>
+    <span class="type">u8</span>  preq[<span class="num">7</span>];  <span class="comment">/* Pairing Request 原始报文 */</span>
+    <span class="type">u8</span>  prsp[<span class="num">7</span>];  <span class="comment">/* Pairing Response 原始报文 */</span>
+    <span class="type">u8</span>  prnd[<span class="num">16</span>]; <span class="comment">/* 本地随机数 (Na 或 Nb) */</span>
+    <span class="type">u8</span>  rrnd[<span class="num">16</span>]; <span class="comment">/* 远端随机数 */</span>
+    <span class="type">u8</span>  pcnf[<span class="num">16</span>]; <span class="comment">/* 远端 Confirm 值 */</span>
+    <span class="type">u8</span>  tk[<span class="num">16</span>];   <span class="comment">/* Temporary Key (Legacy) */</span>
+    <span class="type">u8</span>  rr[<span class="num">16</span>];   <span class="comment">/* Remote OOB ra/rb */</span>
+    <span class="type">u8</span>  lr[<span class="num">16</span>];   <span class="comment">/* Local OOB ra/rb */</span>
+
+    <span class="comment">/* ---- 密钥信息 ---- */</span>
+    <span class="type">u8</span>   enc_key_size;      <span class="comment">/* 协商的加密密钥长度 (7–16 字节) */</span>
+    <span class="type">u8</span>   remote_key_dist;   <span class="comment">/* 远端待分发密钥位图 */</span>
+    <span class="type">bdaddr_t</span>  id_addr;      <span class="comment">/* 远端身份地址 */</span>
+    <span class="type">u8</span>   id_addr_type;
+    <span class="type">u8</span>   irk[<span class="num">16</span>];           <span class="comment">/* 远端 IRK */</span>
+
+    <span class="kw">struct</span> <span class="type">smp_ltk</span>  *ltk;            <span class="comment">/* 本地 LTK */</span>
+    <span class="kw">struct</span> <span class="type">smp_ltk</span>  *slave_ltk;      <span class="comment">/* 远端 LTK (Legacy) */</span>
+    <span class="kw">struct</span> <span class="type">smp_csrk</span> *csrk;           <span class="comment">/* 本地 CSRK */</span>
+    <span class="kw">struct</span> <span class="type">smp_csrk</span> *slave_csrk;     <span class="comment">/* 远端 CSRK */</span>
+    <span class="kw">struct</span> <span class="type">smp_irk</span>  *remote_irk;     <span class="comment">/* 远端 IRK 数据库条目 */</span>
+    <span class="type">u8</span>              *link_key;        <span class="comment">/* BR/EDR 链路密钥 (跨传输) */</span>
+
+    <span class="comment">/* ---- 状态标志 ---- */</span>
+    <span class="type">unsigned long</span>  flags;            <span class="comment">/* SMP_FLAG_* 位图 */</span>
+    <span class="type">u8</span>             method;           <span class="comment">/* 当前配对方法 */</span>
+    <span class="type">u8</span>             passkey_round;    <span class="comment">/* SC Passkey 轮次计数 (0–19) */</span>
+
+    <span class="comment">/* ---- SC 专用字段 ---- */</span>
+    <span class="type">u8</span>  local_pk[<span class="num">64</span>];   <span class="comment">/* 本次连接本地公钥 */</span>
+    <span class="type">u8</span>  remote_pk[<span class="num">64</span>];  <span class="comment">/* 远端公钥 */</span>
+    <span class="type">u8</span>  dhkey[<span class="num">32</span>];      <span class="comment">/* ECDH 共享秘密 */</span>
+    <span class="type">u8</span>  mackey[<span class="num">16</span>];     <span class="comment">/* f5 输出的 MacKey */</span>
+
+    <span class="kw">struct</span> <span class="type">crypto_shash</span> *tfm_cmac;   <span class="comment">/* 每连接 CMAC 上下文 */</span>
+    <span class="kw">struct</span> <span class="type">crypto_kpp</span>  *tfm_ecdh;   <span class="comment">/* 每连接 ECDH 上下文 */</span>
+};</code></pre>
+
+  <h3>SMP_FLAG_* 状态标志详解</h3>
+  <table>
+    <thead><tr><th>标志</th><th>含义</th><th>触发条件</th></tr></thead>
+    <tbody>
+      <tr><td><code>SMP_FLAG_TK_VALID</code></td><td>TK 已就绪（Legacy）</td><td>用户输入 Passkey 或 Just Works 直接置位</td></tr>
+      <tr><td><code>SMP_FLAG_CFM_PENDING</code></td><td>Confirm 等待 TK</td><td>TK 尚未就绪时收到对端 Confirm</td></tr>
+      <tr><td><code>SMP_FLAG_MITM_AUTH</code></td><td>需要 MITM 保护</td><td>AuthReq.MITM 位为 1</td></tr>
+      <tr><td><code>SMP_FLAG_COMPLETE</code></td><td>配对完成</td><td>密钥分发完毕</td></tr>
+      <tr><td><code>SMP_FLAG_INITIATOR</code></td><td>本端是发起方</td><td>由本端发起 Pairing Request</td></tr>
+      <tr><td><code>SMP_FLAG_SC</code></td><td>使用 SC 模式</td><td>双方 AuthReq.SC=1 且均支持</td></tr>
+      <tr><td><code>SMP_FLAG_REMOTE_PK</code></td><td>已收到远端公钥</td><td>处理 SMP_CMD_PUBLIC_KEY 后</td></tr>
+      <tr><td><code>SMP_FLAG_DEBUG_KEY</code></td><td>使用调试密钥对</td><td>远端发送规范定义的 debug_pk</td></tr>
+      <tr><td><code>SMP_FLAG_WAIT_USER</code></td><td>等待用户输入/确认</td><td>Passkey 或 Numeric Comparison</td></tr>
+      <tr><td><code>SMP_FLAG_DHKEY_PENDING</code></td><td>DHKey 计算中</td><td>异步计算 ECDH 共享秘密期间</td></tr>
+      <tr><td><code>SMP_FLAG_CT2</code></td><td>使用 h7 进行跨传输转换</td><td>双方均支持 CT2</td></tr>
+    </tbody>
+  </table>
+
+  <div class="svg-wrap">
+    <svg viewBox="0 0 660 200" xmlns="http://www.w3.org/2000/svg" style="width:100%; max-width:660px; display:block; margin:auto;">
+      <text x="330" y="20" text-anchor="middle" fill="#8b949e" font-size="11" font-weight="600">数据结构关系图</text>
+
+      <!-- hci_dev -->
+      <rect x="10" y="36" width="120" height="54" rx="6" fill="rgba(255,166,87,0.1)" stroke="#ffa657" stroke-width="1.5"/>
+      <text x="70" y="57" text-anchor="middle" fill="#ffa657" font-size="10" font-weight="700">hci_dev</text>
+      <text x="70" y="72" text-anchor="middle" fill="#8b949e" font-size="8.5">→ smp_data</text>
+      <text x="70" y="83" text-anchor="middle" fill="#8b949e" font-size="8.5">(l2cap_chan*)</text>
+
+      <path d="M130,63 L170,63" stroke="#ffa657" stroke-width="1.2" marker-end="url(#c1)"/>
+      <defs><marker id="c1" markerWidth="6" markerHeight="6" refX="5" refY="3" orient="auto"><polygon points="0 0, 6 3, 0 6" fill="#ffa657"/></marker></defs>
+
+      <!-- smp_dev -->
+      <rect x="170" y="36" width="130" height="70" rx="6" fill="rgba(88,166,255,0.1)" stroke="#58a6ff" stroke-width="1.5"/>
+      <text x="235" y="57" text-anchor="middle" fill="#58a6ff" font-size="10" font-weight="700">smp_dev</text>
+      <text x="235" y="72" text-anchor="middle" fill="#8b949e" font-size="8">local_pk[64]</text>
+      <text x="235" y="84" text-anchor="middle" fill="#8b949e" font-size="8">tfm_cmac</text>
+      <text x="235" y="96" text-anchor="middle" fill="#8b949e" font-size="8">tfm_ecdh</text>
+
+      <!-- hci_conn -->
+      <rect x="10" y="120" width="120" height="54" rx="6" fill="rgba(210,168,255,0.1)" stroke="#d2a8ff" stroke-width="1.5"/>
+      <text x="70" y="141" text-anchor="middle" fill="#d2a8ff" font-size="10" font-weight="700">hci_conn</text>
+      <text x="70" y="156" text-anchor="middle" fill="#8b949e" font-size="8.5">→ l2cap_conn</text>
+      <text x="70" y="167" text-anchor="middle" fill="#8b949e" font-size="8.5">sec_level / flags</text>
+
+      <path d="M130,147 L170,147" stroke="#d2a8ff" stroke-width="1.2" marker-end="url(#c2)"/>
+      <defs><marker id="c2" markerWidth="6" markerHeight="6" refX="5" refY="3" orient="auto"><polygon points="0 0, 6 3, 0 6" fill="#d2a8ff"/></marker></defs>
+
+      <!-- l2cap_conn -->
+      <rect x="170" y="120" width="130" height="54" rx="6" fill="rgba(210,168,255,0.08)" stroke="#d2a8ff" stroke-width="1"/>
+      <text x="235" y="141" text-anchor="middle" fill="#d2a8ff" font-size="10" font-weight="700">l2cap_conn</text>
+      <text x="235" y="156" text-anchor="middle" fill="#8b949e" font-size="8.5">→ smp (l2cap_chan*)</text>
+      <text x="235" y="167" text-anchor="middle" fill="#8b949e" font-size="8.5">→ hcon (hci_conn*)</text>
+
+      <path d="M300,147 L340,147" stroke="#d2a8ff" stroke-width="1.2" marker-end="url(#c3)"/>
+      <defs><marker id="c3" markerWidth="6" markerHeight="6" refX="5" refY="3" orient="auto"><polygon points="0 0, 6 3, 0 6" fill="#d2a8ff"/></marker></defs>
+
+      <!-- l2cap_chan (smp) -->
+      <rect x="340" y="120" width="120" height="38" rx="6" fill="rgba(63,185,80,0.1)" stroke="#3fb950" stroke-width="1.5"/>
+      <text x="400" y="136" text-anchor="middle" fill="#3fb950" font-size="10" font-weight="700">l2cap_chan</text>
+      <text x="400" y="150" text-anchor="middle" fill="#8b949e" font-size="8.5">→ data (smp_chan*)</text>
+
+      <path d="M460,139 L510,100" stroke="#3fb950" stroke-width="1.2" marker-end="url(#c4)"/>
+      <defs><marker id="c4" markerWidth="6" markerHeight="6" refX="5" refY="3" orient="auto"><polygon points="0 0, 6 3, 0 6" fill="#3fb950"/></marker></defs>
+
+      <!-- smp_chan -->
+      <rect x="510" y="30" width="140" height="160" rx="6" fill="rgba(63,185,80,0.08)" stroke="#3fb950" stroke-width="1.5"/>
+      <text x="580" y="52" text-anchor="middle" fill="#3fb950" font-size="10" font-weight="700">smp_chan</text>
+      <text x="580" y="68" text-anchor="middle" fill="#8b949e" font-size="7.5">preq/prsp[7]</text>
+      <text x="580" y="80" text-anchor="middle" fill="#8b949e" font-size="7.5">prnd/rrnd[16]</text>
+      <text x="580" y="92" text-anchor="middle" fill="#8b949e" font-size="7.5">tk/pcnf[16]</text>
+      <text x="580" y="104" text-anchor="middle" fill="#8b949e" font-size="7.5">flags / method</text>
+      <text x="580" y="116" text-anchor="middle" fill="#8b949e" font-size="7.5">local_pk/remote_pk[64]</text>
+      <text x="580" y="128" text-anchor="middle" fill="#8b949e" font-size="7.5">dhkey[32] / mackey[16]</text>
+      <text x="580" y="140" text-anchor="middle" fill="#8b949e" font-size="7.5">ltk / csrk / irk *</text>
+      <text x="580" y="152" text-anchor="middle" fill="#8b949e" font-size="7.5">tfm_cmac / tfm_ecdh</text>
+      <text x="580" y="164" text-anchor="middle" fill="#8b949e" font-size="7.5">security_timer</text>
+      <text x="580" y="176" text-anchor="middle" fill="#8b949e" font-size="7.5">allow_cmd (bitmask)</text>
+    </svg>
+    <div class="svg-caption">图 7.1：Linux 5.4 SMP 核心数据结构关系</div>
+  </div>
+
+  <div class="first-principle">
+    <div class="fp-title">⚛ 第一性原理</div>
+    <p><code>smp_dev</code> vs <code>smp_chan</code> 的分离体现了"设备级共享 vs 连接级独立"的设计哲学：ECDH 密钥对的预生成（smp_dev）可以跨连接复用，降低每次配对的延迟；而每条连接的随机数、Confirm 值、密钥必须完全隔离（smp_chan），以防止跨会话的密钥混用。<code>allow_cmd</code> 位图则是一个轻量级状态机，确保 SMP 消息只能按协议规定的顺序到达——这是防止状态跳跃攻击的关键防线。</p>
+  </div>
+</div>
+
+<!-- ===================== SECTION 8 ===================== -->
+<div class="section" id="s8">
+  <div class="section-badge badge-red">📡 L2CAP信道</div>
+  <h2>08 · L2CAP 信道与回调机制</h2>
+
+  <a class="source-link" href="https://git.kernel.org/pub/scm/linux/kernel/git/stable/linux.git/tree/net/bluetooth/smp.c?h=v5.4.290" target="_blank">
+    ⬡ net/bluetooth/smp.c — smp_chan_ops / smp_register
+  </a>
+
+  <p>SMP 通过 L2CAP <strong>固定信道 CID 0x0006</strong>（LE）或 CID 0x0007（BR/EDR）传输，不需要动态信道建立，连接一旦建立即可直接使用。Linux 5.4 使用 L2CAP ops 回调表来接入协议栈。</p>
+
+  <pre><code><span class="comment">/* SMP L2CAP 操作回调表 */</span>
+<span class="kw">static const</span> <span class="kw">struct</span> <span class="type">l2cap_ops</span> smp_chan_ops = {
+    .name           = <span class="str">"Security Manager"</span>,
+    .ready          = smp_ready_cb,      <span class="comment">/* 信道就绪，绑定 conn->smp */</span>
+    .recv           = smp_recv_cb,       <span class="comment">/* 收到 SMP 报文 */</span>
+    .alloc_skb      = smp_alloc_skb_cb, <span class="comment">/* 分配 skb */</span>
+    .teardown       = smp_teardown_cb,   <span class="comment">/* 信道拆除，清理 smp_chan */</span>
+    .resume         = smp_resume_cb,     <span class="comment">/* 链路加密后恢复密钥分发 */</span>
+
+    <span class="comment">/* 以下为不支持的操作（使用占位函数） */</span>
+    .new_connection = l2cap_chan_no_new_connection,
+    .state_change   = l2cap_chan_no_state_change,
+    .close          = l2cap_chan_no_close,
+    ...
+};</code></pre>
+
+  <h3>接收路径：smp_recv_cb → smp_sig_channel</h3>
+  <pre><code><span class="kw">static int</span> <span class="fn">smp_recv_cb</span>(<span class="kw">struct</span> <span class="type">l2cap_chan</span> *chan, <span class="kw">struct</span> <span class="type">sk_buff</span> *skb)
+{
+    <span class="type">int</span> err = <span class="fn">smp_sig_channel</span>(chan, skb);
+    <span class="kw">if</span> (err) {
+        <span class="kw">struct</span> <span class="type">smp_chan</span> *smp = chan->data;
+        <span class="kw">if</span> (smp)
+            <span class="fn">cancel_delayed_work_sync</span>(&smp->security_timer);
+        <span class="fn">hci_disconnect</span>(chan->conn->hcon, HCI_ERROR_AUTH_FAILURE);
+    }
+    <span class="kw">return</span> err;
+}
+
+<span class="comment">/* smp_sig_channel: 根据命令码分发处理 */</span>
+<span class="kw">static int</span> <span class="fn">smp_sig_channel</span>(<span class="kw">struct</span> <span class="type">l2cap_chan</span> *chan, <span class="kw">struct</span> <span class="type">sk_buff</span> *skb)
+{
+    <span class="type">u8</span> code = skb->data[<span class="num">0</span>];
+    <span class="comment">/* 白名单检查：命令必须在 allow_cmd 位图中 */</span>
+    <span class="kw">if</span> (!<span class="fn">test_and_clear_bit</span>(code, &smp->allow_cmd))
+        <span class="kw">return</span> <span class="num">-EOPNOTSUPP</span>;
+
+    <span class="kw">switch</span> (code) {
+    <span class="kw">case</span> SMP_CMD_PAIRING_REQ:    <span class="kw">return</span> <span class="fn">smp_pairing_req</span>(conn, skb);
+    <span class="kw">case</span> SMP_CMD_PAIRING_RSP:    <span class="kw">return</span> <span class="fn">smp_pairing_rsp</span>(conn, skb);
+    <span class="kw">case</span> SMP_CMD_PAIRING_CONFIRM:<span class="kw">return</span> <span class="fn">smp_confirm</span>(conn, skb);
+    <span class="kw">case</span> SMP_CMD_PAIRING_RANDOM: <span class="kw">return</span> <span class="fn">smp_random</span>(conn, skb);
+    <span class="kw">case</span> SMP_CMD_PUBLIC_KEY:     <span class="kw">return</span> <span class="fn">smp_cmd_public_key</span>(conn, skb);
+    <span class="kw">case</span> SMP_CMD_DHKEY_CHECK:    <span class="kw">return</span> <span class="fn">smp_cmd_dhkey_check</span>(conn, skb);
+    <span class="kw">case</span> SMP_CMD_IDENT_INFO:     <span class="kw">return</span> <span class="fn">smp_cmd_ident_info</span>(conn, skb);
+    <span class="comment">/* ... 其他命令 ... */</span>
+    }
+}</code></pre>
+
+  <h3>SMP 命令码一览</h3>
+  <table>
+    <thead><tr><th>命令码</th><th>名称</th><th>方向</th><th>用途</th></tr></thead>
+    <tbody>
+      <tr><td><code>0x01</code></td><td>SMP_CMD_PAIRING_REQ</td><td>I→R</td><td>发起配对请求</td></tr>
+      <tr><td><code>0x02</code></td><td>SMP_CMD_PAIRING_RSP</td><td>R→I</td><td>配对响应</td></tr>
+      <tr><td><code>0x03</code></td><td>SMP_CMD_PAIRING_CONFIRM</td><td>双向</td><td>发送 Confirm 值</td></tr>
+      <tr><td><code>0x04</code></td><td>SMP_CMD_PAIRING_RANDOM</td><td>双向</td><td>发送随机数</td></tr>
+      <tr><td><code>0x05</code></td><td>SMP_CMD_PAIRING_FAIL</td><td>双向</td><td>配对失败通知</td></tr>
+      <tr><td><code>0x06</code></td><td>SMP_CMD_ENCRYPT_INFO</td><td>双向</td><td>分发 LTK（Legacy）</td></tr>
+      <tr><td><code>0x07</code></td><td>SMP_CMD_INITIATOR_IDENT</td><td>双向</td><td>分发 EDIV + Rand</td></tr>
+      <tr><td><code>0x08</code></td><td>SMP_CMD_IDENT_INFO</td><td>双向</td><td>分发 IRK</td></tr>
+      <tr><td><code>0x09</code></td><td>SMP_CMD_IDENT_ADDR_INFO</td><td>双向</td><td>分发身份地址</td></tr>
+      <tr><td><code>0x0a</code></td><td>SMP_CMD_SIGN_INFO</td><td>双向</td><td>分发 CSRK</td></tr>
+      <tr><td><code>0x0b</code></td><td>SMP_CMD_SECURITY_REQ</td><td>R→I</td><td>Peripheral 请求安全</td></tr>
+      <tr><td><code>0x0c</code></td><td>SMP_CMD_PUBLIC_KEY</td><td>双向</td><td>SC: 交换 ECDH 公钥</td></tr>
+      <tr><td><code>0x0d</code></td><td>SMP_CMD_DHKEY_CHECK</td><td>双向</td><td>SC: DHKey Check 验证</td></tr>
+      <tr><td><code>0x0e</code></td><td>SMP_CMD_KEYPRESS_NOTIFY</td><td>双向</td><td>Passkey 按键通知</td></tr>
+    </tbody>
+  </table>
+
+  <h3>超时机制</h3>
+  <pre><code><span class="macro">#define SMP_TIMEOUT</span> msecs_to_jiffies(<span class="num">30000</span>)  <span class="comment">/* 30 秒 */</span>
+
+<span class="kw">static void</span> <span class="fn">smp_timeout</span>(<span class="kw">struct</span> <span class="type">work_struct</span> *work)
+{
+    <span class="kw">struct</span> <span class="type">smp_chan</span> *smp = container_of(work, <span class="kw">struct</span> <span class="type">smp_chan</span>,
+                                        security_timer.work);
+    <span class="comment">/* 超时直接断开连接，返回 AUTH_FAILURE */</span>
+    <span class="fn">hci_disconnect</span>(smp->conn->hcon, HCI_ERROR_AUTH_FAILURE);
+}</code></pre>
+
+  <div class="first-principle">
+    <div class="fp-title">⚛ 第一性原理</div>
+    <p><code>allow_cmd</code> 位图是整个 SMP 状态机安全性的关键防线。在任意时刻，只有协议规定"下一步应当收到"的命令码才会被设置在位图中。任何乱序到来的命令都会被直接拒绝（返回错误，触发断连）。这防止了攻击者通过发送乱序 SMP 命令来跳过认证步骤或触发未定义的状态转换。30 秒超时则防止了挂起攻击（对端停止响应导致资源耗尽）。</p>
+  </div>
+</div>
+
+<!-- ===================== SECTION 9 ===================== -->
+<div class="section" id="s9">
+  <div class="section-badge badge-red">🔨 配对实现</div>
+  <h2>09 · 配对流程内核实现</h2>
+
+  <a class="source-link" href="https://git.kernel.org/pub/scm/linux/kernel/git/stable/linux.git/tree/net/bluetooth/smp.c?h=v5.4.290" target="_blank">
+    ⬡ net/bluetooth/smp.c — smp_pairing_req / smp_pairing_rsp / sc_send_public_key
+  </a>
+
+  <h3>smp_chan_create — 会话初始化</h3>
+  <pre><code><span class="kw">static struct</span> <span class="type">smp_chan</span> *<span class="fn">smp_chan_create</span>(<span class="kw">struct</span> <span class="type">l2cap_conn</span> *conn)
+{
+    <span class="kw">struct</span> <span class="type">smp_chan</span> *smp = <span class="fn">kzalloc</span>(<span class="kw">sizeof</span>(*smp), GFP_ATOMIC);
+    <span class="kw">if</span> (!smp) <span class="kw">return</span> NULL;
+
+    <span class="comment">/* 分配每连接 AES-CMAC 上下文 */</span>
+    smp->tfm_cmac = <span class="fn">crypto_alloc_shash</span>(<span class="str">"cmac(aes)"</span>, <span class="num">0</span>, <span class="num">0</span>);
+    <span class="kw">if</span> (<span class="fn">IS_ERR</span>(smp->tfm_cmac)) <span class="kw">goto</span> zfree_smp;
+
+    <span class="comment">/* 分配每连接 ECDH P-256 上下文 */</span>
+    smp->tfm_ecdh = <span class="fn">crypto_alloc_kpp</span>(<span class="str">"ecdh-nist-p256"</span>, <span class="num">0</span>, <span class="num">0</span>);
+    <span class="kw">if</span> (<span class="fn">IS_ERR</span>(smp->tfm_ecdh)) <span class="kw">goto</span> free_shash;
+
+    smp->conn = conn;
+    chan->data = smp;
+
+    <span class="comment">/* 初始只允许接收 PAIRING_FAIL（任意时刻均可） */</span>
+    <span class="macro">SMP_ALLOW_CMD</span>(smp, SMP_CMD_PAIRING_FAIL);
+
+    <span class="comment">/* 启动 30 秒看门狗 */</span>
+    <span class="fn">INIT_DELAYED_WORK</span>(&smp->security_timer, smp_timeout);
+    <span class="fn">hci_conn_hold</span>(hcon);
+    <span class="kw">return</span> smp;
+}</code></pre>
+
+  <h3>smp_pairing_req — 响应方处理配对请求</h3>
+  <pre><code><span class="kw">static</span> <span class="type">u8</span> <span class="fn">smp_pairing_req</span>(<span class="kw">struct</span> <span class="type">l2cap_conn</span> *conn, <span class="kw">struct</span> <span class="type">sk_buff</span> *skb)
+{
+    <span class="kw">struct</span> <span class="type">hci_dev</span> *hdev = conn->hcon->hdev;
+    <span class="kw">struct</span> <span class="type">smp_cmd_pairing</span> *req = (<span class="kw">void</span> *) skb->data;
+    <span class="kw">struct</span> <span class="type">smp_cmd_pairing</span> rsp;
+    <span class="type">u8</span> key_size, auth, sec_level;
+
+    <span class="comment">/* 构建 Pairing Response */</span>
+    <span class="fn">build_pairing_cmd</span>(conn, req, &rsp, auth);
+
+    <span class="comment">/* 双方均置 SC 标志则启用 Secure Connections */</span>
+    <span class="kw">if</span> (rsp.auth_req & <span class="macro">SMP_AUTH_SC</span>)
+        <span class="fn">set_bit</span>(<span class="macro">SMP_FLAG_SC</span>, &smp->flags);
+
+    <span class="comment">/* 协商加密密钥长度 (7-16 字节) */</span>
+    key_size = <span class="fn">min</span>(req->max_key_size, rsp.max_key_size);
+    <span class="kw">if</span> (<span class="fn">check_enc_key_size</span>(conn, key_size))
+        <span class="kw">return</span> SMP_ENC_KEY_SIZE;
+
+    <span class="comment">/* 生成本地随机数 */</span>
+    <span class="fn">get_random_bytes</span>(smp->prnd, <span class="kw">sizeof</span>(smp->prnd));
+
+    <span class="comment">/* 发送 Pairing Response */</span>
+    memcpy(&smp->prsp[<span class="num">1</span>], &rsp, <span class="kw">sizeof</span>(rsp));
+    <span class="fn">smp_send_cmd</span>(conn, SMP_CMD_PAIRING_RSP, <span class="kw">sizeof</span>(rsp), &rsp);
+
+    <span class="kw">if</span> (<span class="fn">test_bit</span>(<span class="macro">SMP_FLAG_SC</span>, &smp->flags)) {
+        <span class="comment">/* SC 模式：等待对端公钥 */</span>
+        <span class="macro">SMP_ALLOW_CMD</span>(smp, SMP_CMD_PUBLIC_KEY);
+        <span class="kw">return</span> <span class="num">0</span>;
+    }
+
+    <span class="comment">/* Legacy 模式：发起 TK 请求（用户输入或 Just Works） */</span>
+    <span class="kw">return</span> <span class="fn">tk_request</span>(conn, <span class="num">0</span>, auth, rsp.io_capability, req->io_capability);
+}</code></pre>
+
+  <h3>sc_send_public_key — SC 发送公钥</h3>
+  <pre><code><span class="kw">static</span> <span class="type">u8</span> <span class="fn">sc_send_public_key</span>(<span class="kw">struct</span> <span class="type">smp_chan</span> *smp)
+{
+    <span class="kw">struct</span> <span class="type">hci_dev</span> *hdev = smp->conn->hcon->hdev;
+
+    <span class="comment">/* 若有预生成的本地 OOB 公钥，直接使用 */</span>
+    <span class="kw">if</span> (<span class="fn">test_bit</span>(<span class="macro">SMP_FLAG_LOCAL_OOB</span>, &smp->flags)) {
+        <span class="kw">struct</span> <span class="type">smp_dev</span> *smp_dev = <span class="macro">SMP_DEV</span>(hdev)->data;
+        memcpy(smp->local_pk, smp_dev->local_pk, <span class="num">64</span>);
+        memcpy(smp->lr, smp_dev->local_rand, <span class="num">16</span>);
+    } <span class="kw">else</span> {
+        <span class="comment">/* 否则实时生成 ECDH 密钥对 */</span>
+        <span class="kw">if</span> (<span class="fn">generate_ecdh_keys</span>(smp->tfm_ecdh, smp->local_pk))
+            <span class="kw">return</span> SMP_UNSPECIFIED;
+        <span class="comment">/* 检测是否使用了调试密钥 */</span>
+        <span class="kw">if</span> (!memcmp(smp->local_pk, debug_pk, <span class="num">64</span>))
+            <span class="fn">set_bit</span>(<span class="macro">SMP_FLAG_DEBUG_KEY</span>, &smp->flags);
+    }
+
+    <span class="fn">smp_send_cmd</span>(smp->conn, SMP_CMD_PUBLIC_KEY, <span class="num">64</span>, smp->local_pk);
+    <span class="macro">SMP_ALLOW_CMD</span>(smp, SMP_CMD_PUBLIC_KEY);
+    <span class="kw">return</span> <span class="num">0</span>;
+}</code></pre>
+
+  <h3>sc_dhkey_check — DHKey Check 阶段</h3>
+  <pre><code><span class="kw">static</span> <span class="type">u8</span> <span class="fn">sc_dhkey_check</span>(<span class="kw">struct</span> <span class="type">smp_chan</span> *smp)
+{
+    <span class="type">u8</span> a[<span class="num">7</span>], b[<span class="num">7</span>], *local_addr, *remote_addr;
+    <span class="kw">struct</span> <span class="type">smp_cmd_dhkey_check</span> check;
+
+    <span class="comment">/* 构造地址参数 (type || BD_ADDR) */</span>
+    <span class="fn">build_local_addr</span>(hcon, a);
+    <span class="fn">build_remote_addr</span>(hcon, b);
+
+    <span class="comment">/* 计算 Ea = f6(MacKey, Na, Nb, 0, IOcapA, A, B) */</span>
+    <span class="fn">smp_f6</span>(smp->tfm_cmac, smp->mackey,
+           smp_is_le_initiator(hcon) ? smp->prnd : smp->rrnd,
+           smp_is_le_initiator(hcon) ? smp->rrnd : smp->prnd,
+           r, io_cap, a, b, check.e);
+
+    <span class="fn">smp_send_cmd</span>(smp->conn, SMP_CMD_DHKEY_CHECK,
+                 <span class="kw">sizeof</span>(check), &check);
+    <span class="kw">return</span> <span class="num">0</span>;
+}</code></pre>
+
+  <div class="first-principle">
+    <div class="fp-title">⚛ 第一性原理</div>
+    <p>DHKey Check（f6 输出的 Ea/Eb）是整个 SC 配对的"最终防线"：它将 MacKey（由 DHKey 推导）、双方随机数、IO 能力、设备地址绑定在一起，生成一个双方都能独立计算并验证的值。任何一个输入的篡改（包括 MITM 替换了某个公钥）都会导致 f6 结果不一致，从而检测到攻击。这是"承诺-揭示-验证"三步协议的最终验证步骤。</p>
+  </div>
+</div>
+
+<!-- ===================== SECTION 10 ===================== -->
+<div class="section" id="s10">
+  <div class="section-badge badge-green">🗝 密钥分发</div>
+  <h2>10 · 密钥分发实现</h2>
+
+  <a class="source-link" href="https://git.kernel.org/pub/scm/linux/kernel/git/stable/linux.git/tree/net/bluetooth/smp.c?h=v5.4.290" target="_blank">
+    ⬡ net/bluetooth/smp.c — smp_distribute_keys
+  </a>
+
+  <p>Phase 3 的密钥分发在链路加密后进行。Linux 5.4 的 <code>smp_distribute_keys()</code> 按固定顺序分发：<strong>EncKey(LTK) → IdKey(IRK) → SignKey(CSRK)</strong>。</p>
+
+  <h3>密钥类型说明</h3>
+  <table>
+    <thead><tr><th>密钥</th><th>全称</th><th>大小</th><th>用途</th></tr></thead>
+    <tbody>
+      <tr><td><code>LTK</code></td><td>Long Term Key</td><td>128 bit</td><td>未来重连时直接加密链路（免重新配对）</td></tr>
+      <tr><td><code>EDIV</code></td><td>Encrypted Diversifier</td><td>16 bit</td><td>Legacy: 与 Rand 一起用于在数据库中定位 LTK</td></tr>
+      <tr><td><code>Rand</code></td><td>Random Number</td><td>64 bit</td><td>Legacy: 与 EDIV 配合使用</td></tr>
+      <tr><td><code>IRK</code></td><td>Identity Resolving Key</td><td>128 bit</td><td>解析可解析私有地址（RPA），识别设备身份</td></tr>
+      <tr><td><code>CSRK</code></td><td>Connection Signature Resolving Key</td><td>128 bit</td><td>对 ATT 层数据进行签名，验证完整性</td></tr>
+    </tbody>
+  </table>
+
+  <pre><code><span class="kw">static void</span> <span class="fn">smp_distribute_keys</span>(<span class="kw">struct</span> <span class="type">smp_chan</span> *smp)
+{
+    <span class="kw">struct</span> <span class="type">l2cap_conn</span> *conn = smp->conn;
+    <span class="type">u8</span> *keydist;
+
+    <span class="comment">/* 确定本端应分发的密钥集合 */</span>
+    keydist = <span class="fn">test_bit</span>(<span class="macro">SMP_FLAG_INITIATOR</span>, &smp->flags)
+              ? &smp->local_key_dist : &smp->remote_key_dist;
+
+    <span class="comment">/* 1. 分发 LTK + EDIV + Rand (EncKey) */</span>
+    <span class="kw">if</span> (*keydist & <span class="macro">SMP_DIST_ENC_KEY</span>) {
+        <span class="kw">struct</span> <span class="type">smp_cmd_encrypt_info</span> enc;
+        <span class="type">u16</span> ediv; <span class="type">u64</span> rand;
+
+        <span class="fn">get_random_bytes</span>(enc.ltk, <span class="kw">sizeof</span>(enc.ltk));
+        <span class="fn">get_random_bytes</span>(&ediv, <span class="kw">sizeof</span>(ediv));
+        <span class="fn">get_random_bytes</span>(&rand, <span class="kw">sizeof</span>(rand));
+
+        <span class="fn">smp_send_cmd</span>(conn, SMP_CMD_ENCRYPT_INFO, <span class="kw">sizeof</span>(enc), &enc);
+        <span class="fn">smp_send_cmd</span>(conn, SMP_CMD_INITIATOR_IDENT, ...);
+        *keydist &= ~<span class="macro">SMP_DIST_ENC_KEY</span>;
+    }
+
+    <span class="comment">/* 2. 分发 IRK + 身份地址 (IdKey) */</span>
+    <span class="kw">if</span> (*keydist & <span class="macro">SMP_DIST_ID_KEY</span>) {
+        <span class="kw">struct</span> <span class="type">smp_cmd_ident_info</span> idinfo;
+        memcpy(idinfo.irk, hdev->irk, <span class="kw">sizeof</span>(idinfo.irk));
+        <span class="fn">smp_send_cmd</span>(conn, SMP_CMD_IDENT_INFO, <span class="kw">sizeof</span>(idinfo), &idinfo);
+        <span class="fn">smp_send_cmd</span>(conn, SMP_CMD_IDENT_ADDR_INFO, ...);
+        *keydist &= ~<span class="macro">SMP_DIST_ID_KEY</span>;
+    }
+
+    <span class="comment">/* 3. 分发 CSRK (SignKey) */</span>
+    <span class="kw">if</span> (*keydist & <span class="macro">SMP_DIST_SIGN</span>) {
+        <span class="kw">struct</span> <span class="type">smp_cmd_sign_info</span> sign;
+        <span class="fn">get_random_bytes</span>(sign.csrk, <span class="kw">sizeof</span>(sign.csrk));
+        <span class="fn">smp_send_cmd</span>(conn, SMP_CMD_SIGN_INFO, <span class="kw">sizeof</span>(sign), &sign);
+        *keydist &= ~<span class="macro">SMP_DIST_SIGN</span>;
+    }
+
+    <span class="comment">/* 等待对端分发完毕 */</span>
+    <span class="kw">if</span> (smp->remote_key_dist & <span class="macro">KEY_DIST_MASK</span>) {
+        <span class="fn">smp_allow_key_dist</span>(smp);
+        <span class="kw">return</span>;
+    }
+
+    <span class="comment">/* 双方均完成 → 通知上层，销毁 smp_chan */</span>
+    <span class="fn">set_bit</span>(<span class="macro">SMP_FLAG_COMPLETE</span>, &smp->flags);
+    <span class="fn">smp_notify_keys</span>(conn);
+    <span class="fn">smp_chan_destroy</span>(conn);
+}</code></pre>
+
+  <h3>SC 模式下密钥分发的特殊处理</h3>
+  <div class="card">
+    <div class="card-title">SMP_SC_NO_DIST 限制</div>
+    <pre><code><span class="comment">/* SC 模式下，LTK 和 Link Key 已通过 f5 生成，不再通过 Phase 3 分发 */</span>
+<span class="macro">#define SMP_SC_NO_DIST</span> (SMP_DIST_ENC_KEY | SMP_DIST_LINK_KEY)
+
+<span class="comment">/* 在协商完成后清除这些位 */</span>
+smp->remote_key_dist &= ~<span class="macro">SMP_SC_NO_DIST</span>;</code></pre>
+    <p style="font-size:0.85rem; color:#8b949e; margin-top:10px;">SC 模式下，LTK 由 f5 直接推导，双方各自计算相同的 LTK，无需在 Phase 3 中传输 LTK 明文。只有 IRK 和 CSRK 仍通过 Phase 3 分发。</p>
+  </div>
+
+  <div class="svg-wrap">
+    <svg viewBox="0 0 640 200" xmlns="http://www.w3.org/2000/svg" style="width:100%; max-width:640px; display:block; margin:auto;">
+      <text x="320" y="18" text-anchor="middle" fill="#8b949e" font-size="11" font-weight="600">密钥分发顺序与存储</text>
+
+      <!-- Step 1 -->
+      <rect x="10" y="28" width="120" height="50" rx="6" fill="rgba(88,166,255,0.1)" stroke="#58a6ff" stroke-width="1.5"/>
+      <text x="70" y="46" text-anchor="middle" fill="#58a6ff" font-size="9.5" font-weight="700">① EncKey</text>
+      <text x="70" y="60" text-anchor="middle" fill="#8b949e" font-size="8">ENCRYPT_INFO (LTK)</text>
+      <text x="70" y="72" text-anchor="middle" fill="#8b949e" font-size="8">MASTER_IDENT (EDIV+Rand)</text>
+
+      <path d="M130,53 L160,53" stroke="#58a6ff" stroke-width="1.5" marker-end="url(#d1)"/>
+      <defs><marker id="d1" markerWidth="6" markerHeight="6" refX="5" refY="3" orient="auto"><polygon points="0 0, 6 3, 0 6" fill="#58a6ff"/></marker></defs>
+
+      <!-- Step 2 -->
+      <rect x="160" y="28" width="120" height="50" rx="6" fill="rgba(210,168,255,0.1)" stroke="#d2a8ff" stroke-width="1.5"/>
+      <text x="220" y="46" text-anchor="middle" fill="#d2a8ff" font-size="9.5" font-weight="700">② IdKey</text>
+      <text x="220" y="60" text-anchor="middle" fill="#8b949e" font-size="8">IDENT_INFO (IRK)</text>
+      <text x="220" y="72" text-anchor="middle" fill="#8b949e" font-size="8">IDENT_ADDR_INFO (BD_ADDR)</text>
+
+      <path d="M280,53 L310,53" stroke="#d2a8ff" stroke-width="1.5" marker-end="url(#d2)"/>
+      <defs><marker id="d2" markerWidth="6" markerHeight="6" refX="5" refY="3" orient="auto"><polygon points="0 0, 6 3, 0 6" fill="#d2a8ff"/></marker></defs>
+
+      <!-- Step 3 -->
+      <rect x="310" y="28" width="120" height="50" rx="6" fill="rgba(63,185,80,0.1)" stroke="#3fb950" stroke-width="1.5"/>
+      <text x="370" y="46" text-anchor="middle" fill="#3fb950" font-size="9.5" font-weight="700">③ SignKey</text>
+      <text x="370" y="60" text-anchor="middle" fill="#8b949e" font-size="8">SIGN_INFO (CSRK)</text>
+      <text x="370" y="72" text-anchor="middle" fill="#8b949e" font-size="8">用于 ATT 签名</text>
+
+      <path d="M430,53 L460,53" stroke="#3fb950" stroke-width="1.5" marker-end="url(#d3)"/>
+      <defs><marker id="d3" markerWidth="6" markerHeight="6" refX="5" refY="3" orient="auto"><polygon points="0 0, 6 3, 0 6" fill="#3fb950"/></marker></defs>
+
+      <!-- Storage -->
+      <rect x="460" y="20" width="170" height="66" rx="6" fill="rgba(255,166,87,0.08)" stroke="#ffa657" stroke-width="1.5"/>
+      <text x="545" y="38" text-anchor="middle" fill="#ffa657" font-size="9.5" font-weight="700">hci_dev 持久化存储</text>
+      <text x="545" y="52" text-anchor="middle" fill="#8b949e" font-size="8">hci_add_ltk() → smp_ltk</text>
+      <text x="545" y="64" text-anchor="middle" fill="#8b949e" font-size="8">hci_add_irk() → smp_irk</text>
+      <text x="545" y="76" text-anchor="middle" fill="#8b949e" font-size="8">smp_csrk 写入 mgmt</text>
+
+      <!-- SC note -->
+      <rect x="10" y="100" width="300" height="32" rx="5" fill="rgba(247,129,102,0.08)" stroke="rgba(247,129,102,0.3)" stroke-width="1"/>
+      <text x="20" y="116" fill="#f78166" font-size="9" font-weight="600">⚠ SC 模式：</text>
+      <text x="20" y="128" fill="#8b949e" font-size="8.5">LTK 不经 Phase 3 传输，由 f5 双方独立计算；只分发 IRK + CSRK</text>
+
+      <!-- smp_notify_keys -->
+      <rect x="330" y="100" width="300" height="32" rx="5" fill="rgba(63,185,80,0.08)" stroke="rgba(63,185,80,0.3)" stroke-width="1"/>
+      <text x="340" y="116" fill="#3fb950" font-size="9" font-weight="600">smp_notify_keys():</text>
+      <text x="340" y="128" fill="#8b949e" font-size="8.5">通知 mgmt 层，触发 mgmt_new_ltk / mgmt_new_irk 事件</text>
+
+      <text x="320" y="165" text-anchor="middle" fill="#3fb950" font-size="9" font-weight="600">smp_chan_destroy() → 释放 crypto 上下文，归还 hci_conn 引用</text>
+    </svg>
+    <div class="svg-caption">图 10.1：Phase 3 密钥分发顺序与持久化</div>
+  </div>
+
+  <div class="first-principle">
+    <div class="fp-title">⚛ 第一性原理</div>
+    <p>密钥分发的本质是"密钥绑定"（Key Binding）：将本次配对生成的密钥与设备身份（IRK + BD_ADDR）绑定，写入持久化存储，使未来的重连不需要重新配对。IRK 的作用尤为关键——它使接收方能够"认出"对方使用了可解析私有地址（RPA），而不暴露真实地址，在保护隐私的同时维持身份的可验证性。这是隐私保护与便利性之间的工程权衡。</p>
+  </div>
+</div>
+
+<!-- ===================== SECTION 11 ===================== -->
+<div class="section" id="s11">
+  <div class="section-badge badge-blue">🛡 安全级别</div>
+  <h2>11 · 安全级别与跨传输密钥推导</h2>
+
+  <a class="source-link" href="https://git.kernel.org/pub/scm/linux/kernel/git/stable/linux.git/tree/net/bluetooth/smp.c?h=v5.4.290" target="_blank">
+    ⬡ net/bluetooth/smp.c — smp_sufficient_security / h6 / h7
+  </a>
+
+  <h3>LE 安全级别定义</h3>
+  <table>
+    <thead><tr><th>级别</th><th>内核常量</th><th>要求</th><th>对应配对方法</th></tr></thead>
+    <tbody>
+      <tr><td>Level 1</td><td><code>BT_SECURITY_LOW</code></td><td>无加密要求</td><td>—</td></tr>
+      <tr><td>Level 2</td><td><code>BT_SECURITY_MEDIUM</code></td><td>加密，无认证</td><td>Just Works</td></tr>
+      <tr><td>Level 3</td><td><code>BT_SECURITY_HIGH</code></td><td>加密 + 认证（MITM）</td><td>Passkey Entry / OOB</td></tr>
+      <tr><td>Level 4</td><td><code>BT_SECURITY_FIPS</code></td><td>SC + 认证 + 128-bit 密钥</td><td>SC Passkey / SC Numeric / SC OOB</td></tr>
+    </tbody>
+  </table>
+
+  <pre><code><span class="kw">static inline</span> <span class="type">u8</span> <span class="fn">authreq_to_seclevel</span>(<span class="type">u8</span> authreq)
+{
+    <span class="kw">if</span> (authreq & <span class="macro">SMP_AUTH_SC</span>) {
+        <span class="kw">if</span> (authreq & <span class="macro">SMP_AUTH_MITM</span>)
+            <span class="kw">return</span> BT_SECURITY_FIPS;   <span class="comment">/* Level 4 */</span>
+        <span class="kw">else</span>
+            <span class="kw">return</span> BT_SECURITY_MEDIUM; <span class="comment">/* Level 2 (SC Just Works) */</span>
+    }
+    <span class="kw">if</span> (authreq & <span class="macro">SMP_AUTH_MITM</span>)
+        <span class="kw">return</span> BT_SECURITY_HIGH;   <span class="comment">/* Level 3 */</span>
+    <span class="kw">return</span> BT_SECURITY_MEDIUM;     <span class="comment">/* Level 2 */</span>
+}</code></pre>
+
+  <h3>跨传输密钥推导（Cross-Transport Key Derivation, CTKD）</h3>
+  <p>当设备同时支持 LE 和 BR/EDR（双模设备），可以从一种传输的密钥推导另一种传输所需的密钥，无需分别配对。Linux 5.4 通过 <code>h6</code>/<code>h7</code> 函数实现此功能。</p>
+
+  <div class="card">
+    <div class="card-title">CTKD 推导方向</div>
+    <div class="svg-wrap" style="border:none; padding:0; background:none;">
+      <svg viewBox="0 0 580 160" xmlns="http://www.w3.org/2000/svg" style="width:100%; max-width:580px; display:block; margin:auto;">
+        <!-- LE LTK -->
+        <rect x="20" y="40" width="130" height="50" rx="6" fill="rgba(88,166,255,0.12)" stroke="#58a6ff" stroke-width="1.5"/>
+        <text x="85" y="61" text-anchor="middle" fill="#58a6ff" font-size="11" font-weight="700">LE LTK</text>
+        <text x="85" y="78" text-anchor="middle" fill="#8b949e" font-size="9">128 bit</text>
+
+        <!-- Arrow LTK to BR/EDR -->
+        <path d="M150,65 L240,65" stroke="#ffa657" stroke-width="1.5" marker-end="url(#e1)"/>
+        <defs><marker id="e1" markerWidth="6" markerHeight="6" refX="5" refY="3" orient="auto"><polygon points="0 0, 6 3, 0 6" fill="#ffa657"/></marker></defs>
+        <rect x="155" y="50" width="80" height="30" rx="4" fill="#0d1117"/>
+        <text x="195" y="62" text-anchor="middle" fill="#ffa657" font-size="9">h7(LTK)</text>
+        <text x="195" y="74" text-anchor="middle" fill="#ffa657" font-size="8">if CT2 flag</text>
+
+        <!-- BR/EDR Link Key -->
+        <rect x="240" y="40" width="130" height="50" rx="6" fill="rgba(63,185,80,0.12)" stroke="#3fb950" stroke-width="1.5"/>
+        <text x="305" y="61" text-anchor="middle" fill="#3fb950" font-size="11" font-weight="700">BR/EDR Link Key</text>
+        <text x="305" y="78" text-anchor="middle" fill="#8b949e" font-size="9">128 bit</text>
+
+        <!-- Arrow BR/EDR to LE LTK -->
+        <path d="M370,65 L460,65" stroke="#d2a8ff" stroke-width="1.5" marker-end="url(#e2)"/>
+        <defs><marker id="e2" markerWidth="6" markerHeight="6" refX="5" refY="3" orient="auto"><polygon points="0 0, 6 3, 0 6" fill="#d2a8ff"/></marker></defs>
+        <rect x="370" y="50" width="88" height="30" rx="4" fill="#0d1117"/>
+        <text x="414" y="62" text-anchor="middle" fill="#d2a8ff" font-size="9">h6/h7(LinkKey)</text>
+        <text x="414" y="74" text-anchor="middle" fill="#d2a8ff" font-size="8">CTKD</text>
+
+        <!-- Derived LE LTK -->
+        <rect x="458" y="40" width="108" height="50" rx="6" fill="rgba(88,166,255,0.08)" stroke="rgba(88,166,255,0.5)" stroke-width="1.5" stroke-dasharray="5,3"/>
+        <text x="512" y="61" text-anchor="middle" fill="#58a6ff" font-size="10" font-weight="700">LE LTK (derived)</text>
+        <text x="512" y="78" text-anchor="middle" fill="#8b949e" font-size="8">from BR/EDR SC</text>
+
+        <!-- h6 detail -->
+        <text x="290" y="120" text-anchor="middle" fill="#8b949e" font-size="9">h6(key, keyID): AES-CMAC_key(keyID)  —  keyID="brle" 或 "lebr"</text>
+        <text x="290" y="135" text-anchor="middle" fill="#8b949e" font-size="9">h7(SALT, key): AES-CMAC_SALT(key)  —  SALT=0x746D7031 (CT2=0) 或 其他</text>
+      </svg>
+    </div>
+    <div class="svg-caption">图 11.1：CTKD 跨传输密钥推导方向（h6/h7 函数）</div>
+  </div>
+
+  <pre><code><span class="comment">/* net/bluetooth/smp.c — h6 实现 */</span>
+<span class="kw">static int</span> <span class="fn">smp_h6</span>(<span class="kw">struct</span> <span class="type">crypto_shash</span> *tfm_cmac,
+               <span class="kw">const</span> <span class="type">u8</span> w[<span class="num">16</span>], <span class="kw">const</span> <span class="type">u8</span> key_id[<span class="num">4</span>], <span class="type">u8</span> res[<span class="num">16</span>])
+{
+    <span class="kw">return</span> <span class="fn">aes_cmac</span>(tfm_cmac, w, key_id, <span class="num">4</span>, res);
+}
+
+<span class="comment">/* h7: 用于 CT2=1 时的中间密钥推导 */</span>
+<span class="kw">static int</span> <span class="fn">smp_h7</span>(<span class="kw">struct</span> <span class="type">crypto_shash</span> *tfm_cmac,
+               <span class="kw">const</span> <span class="type">u8</span> w[<span class="num">16</span>], <span class="kw">const</span> <span class="type">u8</span> salt[<span class="num">16</span>], <span class="type">u8</span> res[<span class="num">16</span>])
+{
+    <span class="kw">return</span> <span class="fn">aes_cmac</span>(tfm_cmac, salt, w, <span class="num">16</span>, res);
+}
+
+<span class="comment">/* BR/EDR Link Key → LE LTK (CT2=1 路径) */</span>
+<span class="kw">static int</span> <span class="fn">sc_derive_link_key</span>(<span class="kw">struct</span> <span class="type">smp_chan</span> *smp)
+{
+    <span class="type">u8</span> tmp1[<span class="num">16</span>], tmp2[<span class="num">16</span>];
+    <span class="kw">if</span> (<span class="fn">test_bit</span>(<span class="macro">SMP_FLAG_CT2</span>, &smp->flags)) {
+        <span class="comment">/* CT2: h7(SALT="tmp1", LTK) → h6(result, "brle") */</span>
+        <span class="fn">smp_h7</span>(smp->tfm_cmac, smp->tk, salt, tmp1);
+        <span class="fn">smp_h6</span>(smp->tfm_cmac, tmp1, "<span class="str">brle</span>", link_key);
+    } <span class="kw">else</span> {
+        <span class="comment">/* CT2=0: 直接 h6(LTK, "brle") */</span>
+        <span class="fn">smp_h6</span>(smp->tfm_cmac, smp->tk, "<span class="str">brle</span>", link_key);
+    }
+}</code></pre>
+
+  <div class="first-principle">
+    <div class="fp-title">⚛ 第一性原理</div>
+    <p>安全级别体系的本质是"最低可接受安全保证"的形式化：应用程序声明它所需的最低安全等级，内核负责确保连接满足该等级后才允许数据流通。CTKD 则解决了双模设备的"配对冗余"问题——从数学上证明，如果 LE SC 配对是安全的，则从其 LTK 推导出的 BR/EDR Link Key 具有等价安全性，无需重新在 BR/EDR 上配对。</p>
+  </div>
+</div>
+
+<!-- ===================== SECTION 12 ===================== -->
+<div class="section" id="s12">
+  <div class="section-badge badge-red">⚠ 安全边界</div>
+  <h2>12 · 已知安全问题与防护措施</h2>
+
+  <a class="source-link" href="https://git.kernel.org/pub/scm/linux/kernel/git/stable/linux.git/tree/net/bluetooth/smp.c?h=v5.4.290" target="_blank">
+    ⬡ net/bluetooth/smp.c — 各防护实现
+  </a>
+  <a class="source-link" href="https://google.github.io/security-research/pocs/linux/bleedingtooth/writeup.html" target="_blank">
+    ⬡ BleedingTooth 安全研究报告
+  </a>
+
+  <h3>已知攻击向量与内核防护</h3>
+
+  <div class="card">
+    <div class="card-title">1. KNOB 攻击（Key Negotiation Of Bluetooth）</div>
+    <p>攻击者在空口篡改密钥长度协商，强迫双方使用 1 字节加密密钥，极易暴力破解。</p>
+    <table>
+      <thead><tr><th>防护措施</th><th>Linux 5.4 实现</th></tr></thead>
+      <tbody>
+        <tr><td>最小密钥长度检查</td><td><code>SMP_MIN_ENC_KEY_SIZE = 7</code>（字节），低于此值返回 <code>SMP_ENC_KEY_SIZE</code> 错误</td></tr>
+        <tr><td>默认最大密钥长度</td><td><code>SMP_MAX_ENC_KEY_SIZE = 16</code></td></tr>
+      </tbody>
+    </table>
+    <pre><code><span class="kw">static</span> <span class="type">u8</span> <span class="fn">check_enc_key_size</span>(<span class="kw">struct</span> <span class="type">l2cap_conn</span> *conn, <span class="type">u8</span> enc_key_size)
+{
+    <span class="kw">struct</span> <span class="type">hci_dev</span> *hdev = conn->hcon->hdev;
+    <span class="kw">if</span> (enc_key_size > <span class="macro">SMP_MAX_ENC_KEY_SIZE</span> ||
+        enc_key_size < hdev->le_min_key_size)
+        <span class="kw">return</span> SMP_ENC_KEY_SIZE;  <span class="comment">/* 拒绝并返回错误码 */</span>
+    <span class="kw">return</span> <span class="num">0</span>;
+}</code></pre>
+  </div>
+
+  <div class="card">
+    <div class="card-title">2. 调试密钥泄露</div>
+    <p>规范定义的调试公钥（debug_pk）是已知固定值，若设备使用调试密钥，连接可被任何人解密。</p>
+    <pre><code><span class="comment">/* smp.c 中硬编码的调试密钥（来自 Bluetooth Spec） */</span>
+<span class="kw">static const</span> <span class="type">u8</span> debug_pk[<span class="num">64</span>] = {
+    <span class="num">0xe6</span>, <span class="num">0x9d</span>, <span class="num">0x35</span>, <span class="num">0x0e</span>, <span class="num">0x48</span>, <span class="num">0x01</span>, ...
+};
+
+<span class="comment">/* 检测到调试密钥时置位，并通过 mgmt 层向用户空间告警 */</span>
+<span class="kw">if</span> (!memcmp(smp->local_pk, debug_pk, <span class="num">64</span>))
+    <span class="fn">set_bit</span>(<span class="macro">SMP_FLAG_DEBUG_KEY</span>, &smp->flags);
+
+<span class="comment">/* HCI_FORCE_DEBUG_KEYS: 调试模式标志，生产环境绝不应启用 */</span>
+<span class="kw">if</span> (!<span class="fn">hci_dev_test_flag</span>(hdev, <span class="macro">HCI_KEEP_DEBUG_KEYS</span>))
+    conn->hcon->sec_level = BT_SECURITY_LOW; <span class="comment">/* 降级安全等级 */</span></code></pre>
+  </div>
+
+  <div class="card">
+    <div class="card-title">3. SC False Positive（兼容性问题）</div>
+    <p>某些实现错误地从 Security Request 中复制了 RFU 位，导致对端误以为支持 SC，但实际不支持。Linux 5.4 有专门的 workaround：</p>
+    <pre><code><span class="comment">/* fixup_sc_false_positive() — 仅在 Responder 角色触发 */</span>
+<span class="kw">static int</span> <span class="fn">fixup_sc_false_positive</span>(<span class="kw">struct</span> <span class="type">smp_chan</span> *smp)
+{
+    <span class="comment">/* 如果我们发送了 SC 位但对端又没发公钥，
+       尝试降级回 Legacy 模式重新协商 */</span>
+    <span class="fn">clear_bit</span>(<span class="macro">SMP_FLAG_SC</span>, &smp->flags);
+    <span class="kw">return</span> <span class="fn">tk_request</span>(...);  <span class="comment">/* 重新启动 Legacy 流程 */</span>
+}</code></pre>
+  </div>
+
+  <div class="card">
+    <div class="card-title">4. 状态机防护 — allow_cmd 位图</div>
+    <p>任何乱序命令（如在未完成 Feature Exchange 前收到 DHKey Check）都会被 <code>allow_cmd</code> 检查拦截，触发断连。这防止了各类状态机跳跃攻击。</p>
+    <pre><code><span class="comment">/* SMP_ALLOW_CMD 宏：设置允许位 */</span>
+<span class="macro">#define SMP_ALLOW_CMD(smp, code)</span> set_bit(code, &smp->allow_cmd)
+
+<span class="comment">/* 接收时检查（smp_sig_channel 中）*/</span>
+<span class="kw">if</span> (!<span class="fn">test_and_clear_bit</span>(code, &smp->allow_cmd)) {
+    bt_dev_err(hcon->hdev, <span class="str">"Unexpected SMP command 0x%02x"</span>, code);
+    <span class="kw">return</span> <span class="num">-EOPNOTSUPP</span>;
+}</code></pre>
+  </div>
+
+  <h3>已知 CVE 与修复（涉及 SMP 或邻近模块）</h3>
+  <table>
+    <thead><tr><th>CVE</th><th>影响</th><th>修复版本</th><th>类型</th></tr></thead>
+    <tbody>
+      <tr><td>CVE-2020-12351</td><td>BadChoice — l2cap_core.c 堆溢出</td><td>5.9+</td><td>临近 SMP 信道的 L2CAP 漏洞</td></tr>
+      <tr><td>CVE-2020-12352</td><td>BadVibes — hci_event.c 栈信息泄露</td><td>5.9+</td><td>蓝牙协议栈信息泄露</td></tr>
+      <tr><td>CVE-2020-24490</td><td>BadKarma — hci_event.c 堆溢出</td><td>5.9+</td><td>LE 广播数据解析漏洞</td></tr>
+    </tbody>
+  </table>
+
+  <div class="note">
+    <strong>注：</strong>上述 BleedingTooth CVE 影响 Linux 5.4 之前或同期版本，主要位于 L2CAP 和 HCI 层，并非 SMP 本身的逻辑漏洞，但与 SMP 所依赖的底层基础设施密切相关。强烈建议在生产环境使用 5.4.x 的最新稳定补丁版本。
+  </div>
+
+  <div class="first-principle">
+    <div class="fp-title">⚛ 第一性原理</div>
+    <p>SMP 的安全边界来自三个层次：<strong>协议层</strong>（规范定义的密码学函数和消息顺序）、<strong>实现层</strong>（内核的状态机白名单、密钥长度检查）、<strong>使用层</strong>（用户选择的配对方法和 IO 能力）。任何一层的弱点都可能导致整体安全性下降。最根本的教训是：安全性不能依赖单点，必须在每一层都有独立的检查和防护。Just Works 模式的存在表明，有时系统会显式地用安全性换取便利性——理解这种取舍，比盲目追求最高安全配置更重要。</p>
+  </div>
+</div>
+
+<!-- End of sections -->
+
+</div><!-- /#content -->
+</div><!-- /#main -->
+
+<!-- Navigation buttons -->
+<div id="nav-controls">
+  <button class="nav-btn" id="btn-prev" onclick="navigate(-1)" disabled>← 上一章</button>
+  <button class="nav-btn" id="btn-next" onclick="navigate(1)">下一章 →</button>
+</div>
+
+<script>
+// ==================== Progress bar ====================
+function updateProgress() {
+  const el = document.documentElement;
+  const scrollTop = el.scrollTop || document.body.scrollTop;
+  const scrollHeight = el.scrollHeight - el.clientHeight;
+  const p = scrollHeight > 0 ? (scrollTop / scrollHeight) * 100 : 0;
+  document.getElementById('progress-bar').style.width = p + '%';
+}
+window.addEventListener('scroll', updateProgress, { passive: true });
+
+// ==================== Sidebar highlighting ====================
+const sections = ['s0','s1','s2','s3','s4','s5','s6','s7','s8','s9','s10','s11','s12'];
+const navItems = document.querySelectorAll('.nav-item');
+
+function setActive(id) {
+  navItems.forEach(el => {
+    el.classList.toggle('active', el.getAttribute('onclick') === `goTo('${id}')`);
+  });
+}
+
+let ticking = false;
+window.addEventListener('scroll', function() {
+  if (!ticking) {
+    requestAnimationFrame(() => {
+      const scrollY = window.scrollY || document.documentElement.scrollTop;
+      let current = sections[0];
+      for (const id of sections) {
+        const el = document.getElementById(id);
+        if (el && el.getBoundingClientRect().top <= 80) {
+          current = id;
+        }
+      }
+      setActive(current);
+      ticking = false;
+    });
+    ticking = true;
+  }
+}, { passive: true });
+
+// ==================== Navigation ====================
+let currentSection = 0;
+
+function goTo(id) {
+  const el = document.getElementById(id);
+  if (el) {
+    el.scrollIntoView({ behavior: 'smooth', block: 'start' });
+    currentSection = sections.indexOf(id);
+    updateNavBtns();
+  }
+  if (window.innerWidth <= 768) closeSidebar();
+}
+
+function navigate(dir) {
+  const next = currentSection + dir;
+  if (next >= 0 && next < sections.length) {
+    currentSection = next;
+    goTo(sections[currentSection]);
+  }
+}
+
+function updateNavBtns() {
+  document.getElementById('btn-prev').disabled = (currentSection === 0);
+  document.getElementById('btn-next').disabled = (currentSection === sections.length - 1);
+}
+
+// Keyboard navigation
+document.addEventListener('keydown', function(e) {
+  if (e.target.tagName === 'INPUT' || e.target.tagName === 'TEXTAREA') return;
+  if (e.key === 'ArrowRight' || e.key === 'ArrowDown') navigate(1);
+  if (e.key === 'ArrowLeft' || e.key === 'ArrowUp') navigate(-1);
+});
+
+// ==================== Mobile sidebar ====================
+function toggleSidebar() {
+  document.getElementById('sidebar').classList.toggle('open');
+  document.getElementById('overlay').classList.toggle('show');
+}
+
+function closeSidebar() {
+  document.getElementById('sidebar').classList.remove('open');
+  document.getElementById('overlay').classList.remove('show');
+}
+
+// Init
+setActive('s0');
+updateNavBtns();
+updateProgress();
+</script>
+</body>
+</html>

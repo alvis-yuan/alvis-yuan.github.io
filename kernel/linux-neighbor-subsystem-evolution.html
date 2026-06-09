@@ -1,0 +1,1792 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Linux 内核邻居子系统演进史</title>
+<style>
+  :root {
+    --bg: #0d1117;
+    --sidebar-bg: #161b22;
+    --card-bg: #1c2128;
+    --border: #30363d;
+    --accent: #58a6ff;
+    --accent2: #3fb950;
+    --accent3: #f78166;
+    --accent4: #d2a8ff;
+    --accent5: #ffa657;
+    --text: #e6edf3;
+    --text-muted: #8b949e;
+    --text-dim: #484f58;
+    --highlight: #1f6feb;
+    --sidebar-w: 280px;
+    --progress-h: 3px;
+    --header-h: 52px;
+  }
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  html { scroll-behavior: smooth; }
+  body {
+    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", "Noto Sans SC", sans-serif;
+    background: var(--bg);
+    color: var(--text);
+    line-height: 1.7;
+    overflow-x: hidden;
+  }
+
+  /* ===== PROGRESS BAR ===== */
+  #progress-bar {
+    position: fixed; top: 0; left: 0; z-index: 1000;
+    height: var(--progress-h);
+    width: 0%;
+    background: linear-gradient(90deg, #58a6ff, #3fb950, #f78166);
+    transition: width 0.1s linear;
+  }
+
+  /* ===== HEADER ===== */
+  #header {
+    position: fixed; top: var(--progress-h); left: 0; right: 0; z-index: 900;
+    height: var(--header-h);
+    background: rgba(13,17,23,0.95);
+    backdrop-filter: blur(12px);
+    border-bottom: 1px solid var(--border);
+    display: flex; align-items: center; padding: 0 20px; gap: 16px;
+  }
+  #hamburger {
+    display: none;
+    flex-direction: column; gap: 5px; cursor: pointer;
+    padding: 6px; border-radius: 6px; border: none;
+    background: transparent;
+  }
+  #hamburger span {
+    display: block; width: 22px; height: 2px;
+    background: var(--text); border-radius: 2px;
+    transition: all 0.3s;
+  }
+  #hamburger.open span:nth-child(1) { transform: rotate(45deg) translate(5px,5px); }
+  #hamburger.open span:nth-child(2) { opacity: 0; }
+  #hamburger.open span:nth-child(3) { transform: rotate(-45deg) translate(5px,-5px); }
+  .header-title {
+    font-size: 15px; font-weight: 600; color: var(--accent);
+    white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+  }
+  .header-sub {
+    font-size: 12px; color: var(--text-muted);
+    white-space: nowrap;
+  }
+  .nav-arrows {
+    margin-left: auto; display: flex; gap: 8px; align-items: center;
+  }
+  .nav-btn {
+    padding: 5px 12px; border-radius: 6px; border: 1px solid var(--border);
+    background: var(--card-bg); color: var(--text); cursor: pointer;
+    font-size: 13px; transition: all 0.2s;
+  }
+  .nav-btn:hover { background: var(--highlight); border-color: var(--accent); }
+  .nav-btn:disabled { opacity: 0.3; cursor: not-allowed; }
+
+  /* ===== LAYOUT ===== */
+  #layout {
+    display: flex;
+    padding-top: calc(var(--header-h) + var(--progress-h));
+    min-height: 100vh;
+  }
+
+  /* ===== SIDEBAR ===== */
+  #sidebar {
+    width: var(--sidebar-w);
+    flex-shrink: 0;
+    position: fixed;
+    top: calc(var(--header-h) + var(--progress-h));
+    bottom: 0;
+    left: 0;
+    overflow-y: auto;
+    background: var(--sidebar-bg);
+    border-right: 1px solid var(--border);
+    z-index: 800;
+    transition: transform 0.3s ease;
+    padding-bottom: 40px;
+  }
+  #sidebar::-webkit-scrollbar { width: 4px; }
+  #sidebar::-webkit-scrollbar-thumb { background: var(--border); border-radius: 2px; }
+
+  .sidebar-group {
+    padding: 14px 0 4px 0;
+  }
+  .sidebar-group-title {
+    padding: 0 16px 6px 16px;
+    font-size: 10px; font-weight: 700; letter-spacing: 0.1em;
+    color: var(--text-dim); text-transform: uppercase;
+  }
+  .sidebar-item {
+    display: flex; align-items: center; gap: 8px;
+    padding: 7px 16px;
+    cursor: pointer;
+    font-size: 13px; color: var(--text-muted);
+    text-decoration: none;
+    border-left: 3px solid transparent;
+    transition: all 0.15s;
+    border-radius: 0 6px 6px 0;
+    margin-right: 8px;
+  }
+  .sidebar-item:hover { background: var(--card-bg); color: var(--text); }
+  .sidebar-item.active {
+    background: rgba(88,166,255,0.1);
+    color: var(--accent);
+    border-left-color: var(--accent);
+    font-weight: 600;
+  }
+  .sidebar-badge {
+    font-size: 10px; padding: 1px 6px; border-radius: 10px;
+    background: var(--highlight); color: white; font-weight: 700;
+    margin-left: auto; flex-shrink: 0;
+  }
+
+  /* ===== OVERLAY ===== */
+  #overlay {
+    display: none;
+    position: fixed; inset: 0; z-index: 700;
+    background: rgba(0,0,0,0.6);
+    backdrop-filter: blur(2px);
+  }
+
+  /* ===== MAIN ===== */
+  #main {
+    margin-left: var(--sidebar-w);
+    flex: 1;
+    padding: 40px 48px 80px;
+    max-width: calc(860px + var(--sidebar-w));
+    min-width: 0;
+  }
+
+  /* ===== SECTIONS ===== */
+  .section {
+    margin-bottom: 80px;
+    scroll-margin-top: calc(var(--header-h) + var(--progress-h) + 20px);
+  }
+  .section-era {
+    font-size: 11px; font-weight: 700; letter-spacing: 0.12em;
+    text-transform: uppercase; color: var(--accent2);
+    margin-bottom: 10px;
+  }
+  .section-title {
+    font-size: 26px; font-weight: 700; color: var(--text);
+    margin-bottom: 6px; line-height: 1.3;
+  }
+  .section-subtitle {
+    font-size: 14px; color: var(--text-muted); margin-bottom: 28px;
+  }
+  .section-divider {
+    height: 1px; background: var(--border); margin-bottom: 28px;
+  }
+
+  /* ===== CARDS ===== */
+  .card {
+    background: var(--card-bg);
+    border: 1px solid var(--border);
+    border-radius: 12px;
+    padding: 24px;
+    margin-bottom: 20px;
+  }
+  .card-title {
+    font-size: 15px; font-weight: 700; color: var(--accent4);
+    margin-bottom: 12px; display: flex; align-items: center; gap: 8px;
+  }
+  .card-body { font-size: 14px; color: var(--text-muted); line-height: 1.8; }
+  .card-body p { margin-bottom: 12px; }
+  .card-body p:last-child { margin-bottom: 0; }
+
+  /* ===== TAGS ===== */
+  .tag {
+    display: inline-block; font-size: 11px; padding: 2px 8px;
+    border-radius: 20px; font-weight: 600; margin: 2px;
+  }
+  .tag-version { background: rgba(88,166,255,0.15); color: var(--accent); border: 1px solid rgba(88,166,255,0.3); }
+  .tag-rfc { background: rgba(248,118,102,0.15); color: var(--accent3); border: 1px solid rgba(248,118,102,0.3); }
+  .tag-fix { background: rgba(63,185,80,0.15); color: var(--accent2); border: 1px solid rgba(63,185,80,0.3); }
+  .tag-author { background: rgba(210,168,255,0.15); color: var(--accent4); border: 1px solid rgba(210,168,255,0.3); }
+  .tag-perf { background: rgba(255,166,87,0.15); color: var(--accent5); border: 1px solid rgba(255,166,87,0.3); }
+
+  /* ===== CODE ===== */
+  code {
+    font-family: "JetBrains Mono", "Fira Code", monospace;
+    font-size: 12px;
+    background: rgba(255,255,255,0.06);
+    padding: 2px 6px;
+    border-radius: 4px;
+    color: #c9d1d9;
+  }
+  pre {
+    background: #010409;
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    padding: 16px;
+    overflow-x: auto;
+    font-family: "JetBrains Mono", "Fira Code", monospace;
+    font-size: 12px;
+    line-height: 1.6;
+    color: #c9d1d9;
+    margin: 16px 0;
+  }
+
+  /* ===== TIMELINE ===== */
+  .timeline {
+    position: relative;
+    padding-left: 28px;
+    margin: 20px 0;
+  }
+  .timeline::before {
+    content: '';
+    position: absolute; left: 10px; top: 0; bottom: 0;
+    width: 2px; background: var(--border);
+  }
+  .timeline-item {
+    position: relative;
+    margin-bottom: 24px;
+  }
+  .timeline-dot {
+    position: absolute; left: -22px; top: 4px;
+    width: 10px; height: 10px; border-radius: 50%;
+    background: var(--accent); border: 2px solid var(--bg);
+  }
+  .timeline-dot.green { background: var(--accent2); }
+  .timeline-dot.orange { background: var(--accent5); }
+  .timeline-dot.red { background: var(--accent3); }
+  .timeline-dot.purple { background: var(--accent4); }
+  .timeline-label {
+    font-size: 12px; font-weight: 700; color: var(--accent);
+    margin-bottom: 4px;
+  }
+  .timeline-label.green { color: var(--accent2); }
+  .timeline-label.orange { color: var(--accent5); }
+  .timeline-label.red { color: var(--accent3); }
+  .timeline-label.purple { color: var(--accent4); }
+  .timeline-text { font-size: 13px; color: var(--text-muted); line-height: 1.7; }
+
+  /* ===== ALERT / CALLOUT ===== */
+  .callout {
+    border-left: 4px solid;
+    border-radius: 0 8px 8px 0;
+    padding: 14px 18px;
+    margin: 16px 0;
+    font-size: 13.5px;
+    line-height: 1.7;
+  }
+  .callout-info { border-color: var(--accent); background: rgba(88,166,255,0.08); color: #b0c4de; }
+  .callout-warn { border-color: var(--accent5); background: rgba(255,166,87,0.08); color: #d4b896; }
+  .callout-principle { border-color: var(--accent4); background: rgba(210,168,255,0.08); color: #c5b4e3; }
+  .callout-success { border-color: var(--accent2); background: rgba(63,185,80,0.08); color: #9ed59e; }
+  .callout-title {
+    font-weight: 700; font-size: 12px; letter-spacing: 0.08em;
+    text-transform: uppercase; margin-bottom: 8px;
+    display: flex; align-items: center; gap: 6px;
+  }
+
+  /* ===== GRID ===== */
+  .grid-2 { display: grid; grid-template-columns: 1fr 1fr; gap: 16px; }
+  .grid-3 { display: grid; grid-template-columns: 1fr 1fr 1fr; gap: 16px; }
+
+  /* ===== LINK ===== */
+  a { color: var(--accent); text-decoration: none; }
+  a:hover { text-decoration: underline; }
+
+  /* ===== HERO ===== */
+  .hero {
+    background: linear-gradient(135deg, rgba(31,111,235,0.15) 0%, rgba(13,17,23,0) 60%);
+    border: 1px solid var(--border);
+    border-radius: 16px;
+    padding: 36px 32px;
+    margin-bottom: 40px;
+  }
+  .hero h1 { font-size: 32px; font-weight: 800; line-height: 1.2; margin-bottom: 12px; }
+  .hero p { font-size: 15px; color: var(--text-muted); max-width: 600px; line-height: 1.8; }
+
+  /* ===== SVG CONTAINERS ===== */
+  .svg-wrap {
+    background: var(--card-bg);
+    border: 1px solid var(--border);
+    border-radius: 12px;
+    padding: 20px;
+    margin: 20px 0;
+    overflow-x: auto;
+  }
+  .svg-wrap svg { display: block; max-width: 100%; }
+
+  /* ===== RESPONSIVE ===== */
+  @media (max-width: 900px) {
+    #hamburger { display: flex; }
+    #sidebar {
+      transform: translateX(calc(-1 * var(--sidebar-w)));
+    }
+    #sidebar.open {
+      transform: translateX(0);
+      box-shadow: 4px 0 24px rgba(0,0,0,0.5);
+    }
+    #overlay.show { display: block; }
+    #main { margin-left: 0; padding: 28px 20px 60px; max-width: 100%; }
+    .grid-2 { grid-template-columns: 1fr; }
+    .grid-3 { grid-template-columns: 1fr; }
+    .hero { padding: 24px 20px; }
+    .hero h1 { font-size: 24px; }
+    .nav-arrows { gap: 4px; }
+    .nav-btn { padding: 4px 8px; font-size: 12px; }
+    .header-sub { display: none; }
+  }
+</style>
+</head>
+<body>
+
+<div id="progress-bar"></div>
+
+<header id="header">
+  <button id="hamburger" aria-label="菜单" onclick="toggleSidebar()">
+    <span></span><span></span><span></span>
+  </button>
+  <span class="header-title">Linux 邻居子系统演进史</span>
+  <span class="header-sub">net/core/neighbour.c · net/ipv4/arp.c · net/ipv6/ndisc.c</span>
+  <div class="nav-arrows">
+    <button class="nav-btn" id="btn-prev" onclick="navigate(-1)" disabled>← 上一章</button>
+    <button class="nav-btn" id="btn-next" onclick="navigate(1)">下一章 →</button>
+  </div>
+</header>
+
+<div id="overlay" onclick="toggleSidebar()"></div>
+
+<div id="layout">
+  <!-- SIDEBAR -->
+  <nav id="sidebar">
+    <div class="sidebar-group">
+      <div class="sidebar-group-title">概述</div>
+      <a class="sidebar-item active" href="#s0" onclick="closeSidebar()">
+        <span>🌐</span> 引言与背景
+      </a>
+    </div>
+    <div class="sidebar-group">
+      <div class="sidebar-group-title">第一纪元 · 奠基期</div>
+      <a class="sidebar-item" href="#s1" onclick="closeSidebar()">
+        <span>📡</span> Linux 1.x — ARP 诞生
+        <span class="sidebar-badge" style="background:#30363d;color:#8b949e">1994</span>
+      </a>
+      <a class="sidebar-item" href="#s2" onclick="closeSidebar()">
+        <span>🧱</span> Linux 2.1 — 邻居子系统
+        <span class="sidebar-badge">1997</span>
+      </a>
+    </div>
+    <div class="sidebar-group">
+      <div class="sidebar-group-title">第二纪元 · 整合期</div>
+      <a class="sidebar-item" href="#s3" onclick="closeSidebar()">
+        <span>🔗</span> Linux 2.4 — IPv6/NDP
+        <span class="sidebar-badge" style="background:#1a3a1a;color:#3fb950">2001</span>
+      </a>
+      <a class="sidebar-item" href="#s4" onclick="closeSidebar()">
+        <span>⚙️</span> Linux 2.6 — Netlink/sysfs
+        <span class="sidebar-badge" style="background:#1a3a1a;color:#3fb950">2003</span>
+      </a>
+    </div>
+    <div class="sidebar-group">
+      <div class="sidebar-group-title">第三纪元 · 扩展期</div>
+      <a class="sidebar-item" href="#s5" onclick="closeSidebar()">
+        <span>🔓</span> Linux 3.x — RCU 无锁化
+        <span class="sidebar-badge" style="background:#1a2a3a;color:#58a6ff">2012</span>
+      </a>
+      <a class="sidebar-item" href="#s6" onclick="closeSidebar()">
+        <span>🏠</span> Linux 4.x — 网络命名空间
+        <span class="sidebar-badge" style="background:#1a2a3a;color:#58a6ff">2015</span>
+      </a>
+    </div>
+    <div class="sidebar-group">
+      <div class="sidebar-group-title">第四纪元 · 云原生期</div>
+      <a class="sidebar-item" href="#s7" onclick="closeSidebar()">
+        <span>☁️</span> Linux 5.x — SDN/外部学习
+        <span class="sidebar-badge" style="background:#2a1a3a;color:#d2a8ff">2019</span>
+      </a>
+      <a class="sidebar-item" href="#s8" onclick="closeSidebar()">
+        <span>🚀</span> Linux 6.x — 现代化精炼
+        <span class="sidebar-badge" style="background:#2a1a3a;color:#d2a8ff">2022</span>
+      </a>
+    </div>
+    <div class="sidebar-group">
+      <div class="sidebar-group-title">总结</div>
+      <a class="sidebar-item" href="#s9" onclick="closeSidebar()">
+        <span>🎯</span> 第一性原理总结
+      </a>
+    </div>
+  </nav>
+
+  <!-- MAIN -->
+  <main id="main">
+
+    <!-- ===== S0: 引言 ===== -->
+    <section class="section" id="s0">
+      <div class="hero">
+        <div class="section-era">Linux Kernel Networking · 邻居子系统</div>
+        <h1>Linux 内核邻居子系统<br>演进史</h1>
+        <p>从 1994 年 Florian La Roche 的第一行 ARP 代码，到 2024 年支持 SDN/云原生的现代邻居子系统——30 年间，Linux 如何解决"IP 地址到 MAC 地址"这一看似简单却极度复杂的问题。</p>
+      </div>
+
+      <div class="card">
+        <div class="card-title">🌍 为什么需要邻居子系统？</div>
+        <div class="card-body">
+          <p>RFC 826（ARP，1982）开篇一句话道出网络的本质：<em>"The world is a jungle in general, and the networking game contributes many animals."</em>（世界本是一片丛林，而网络游戏让其中的动物更加多样。）</p>
+          <p>在以太网环境中，IP 层看到的是 IP 地址（L3），而网卡驱动需要的是 MAC 地址（L2）。每当内核要将一个 IP 数据包发送给同一链路上的邻居时，必须先解析其 MAC 地址。邻居子系统就是负责维护这一 L3→L2 映射关系的核心模块。</p>
+          <p>在 IPv4 中，该映射通过 <strong>ARP（Address Resolution Protocol）</strong>完成；在 IPv6 中，则由 <strong>NDP（Neighbor Discovery Protocol，RFC 4861）</strong>承担，同时还集成了路由器发现、无状态地址自动配置等功能。</p>
+        </div>
+      </div>
+
+      <!-- SVG: 总体架构图 -->
+      <div class="svg-wrap">
+        <svg viewBox="0 0 760 320" xmlns="http://www.w3.org/2000/svg" style="width:100%;height:auto;">
+          <defs>
+            <marker id="arr" markerWidth="8" markerHeight="6" refX="8" refY="3" orient="auto">
+              <polygon points="0 0, 8 3, 0 6" fill="#58a6ff" opacity="0.7"/>
+            </marker>
+            <marker id="arr2" markerWidth="8" markerHeight="6" refX="8" refY="3" orient="auto">
+              <polygon points="0 0, 8 3, 0 6" fill="#3fb950" opacity="0.7"/>
+            </marker>
+          </defs>
+          <!-- Title -->
+          <text x="380" y="22" fill="#e6edf3" font-size="13" font-weight="700" text-anchor="middle" font-family="sans-serif">邻居子系统在 Linux 网络栈中的位置</text>
+          <!-- Layer boxes -->
+          <!-- App -->
+          <rect x="30" y="40" width="700" height="44" rx="6" fill="#1c2128" stroke="#30363d" stroke-width="1"/>
+          <text x="380" y="67" fill="#8b949e" font-size="12" text-anchor="middle" font-family="sans-serif">应用层 (Socket API: send/recv)</text>
+          <!-- Transport -->
+          <rect x="30" y="96" width="700" height="44" rx="6" fill="#1c2128" stroke="#30363d" stroke-width="1"/>
+          <text x="380" y="123" fill="#8b949e" font-size="12" text-anchor="middle" font-family="sans-serif">传输层 (TCP / UDP)</text>
+          <!-- Network -->
+          <rect x="30" y="152" width="700" height="44" rx="6" fill="#1a2a3a" stroke="#58a6ff" stroke-width="1.5"/>
+          <text x="200" y="179" fill="#58a6ff" font-size="12" text-anchor="middle" font-family="sans-serif">网络层 (IPv4 / IPv6)</text>
+          <!-- Neighbour highlight -->
+          <rect x="360" y="148" width="200" height="52" rx="6" fill="#1f6feb" fill-opacity="0.2" stroke="#58a6ff" stroke-width="2"/>
+          <text x="460" y="171" fill="#58a6ff" font-size="12" font-weight="700" text-anchor="middle" font-family="sans-serif">邻居子系统</text>
+          <text x="460" y="188" fill="#8b949e" font-size="10" text-anchor="middle" font-family="sans-serif">net/core/neighbour.c</text>
+          <!-- ARP/NDP -->
+          <rect x="580" y="148" width="150" height="52" rx="6" fill="#1c2128" stroke="#3fb950" stroke-width="1.5"/>
+          <text x="655" y="171" fill="#3fb950" font-size="12" font-weight="700" text-anchor="middle" font-family="sans-serif">ARP / NDP</text>
+          <text x="655" y="188" fill="#8b949e" font-size="10" text-anchor="middle" font-family="sans-serif">arp.c / ndisc.c</text>
+          <!-- Link -->
+          <rect x="30" y="212" width="700" height="44" rx="6" fill="#1c2128" stroke="#30363d" stroke-width="1"/>
+          <text x="200" y="239" fill="#8b949e" font-size="12" text-anchor="middle" font-family="sans-serif">链路层驱动 (Ethernet / WiFi ...)</text>
+          <!-- Neigh table in link layer -->
+          <rect x="360" y="208" width="370" height="52" rx="6" fill="#1a3a1a" stroke="#3fb950" stroke-width="1"/>
+          <text x="545" y="232" fill="#3fb950" font-size="11" font-weight="700" text-anchor="middle" font-family="sans-serif">neigh_table: arp_tbl / nd_tbl</text>
+          <text x="545" y="248" fill="#8b949e" font-size="10" text-anchor="middle" font-family="sans-serif">IP ↔ MAC 映射缓存 (hh_cache / nud_state)</text>
+          <!-- Physical -->
+          <rect x="30" y="272" width="700" height="36" rx="6" fill="#1c2128" stroke="#30363d" stroke-width="1"/>
+          <text x="380" y="294" fill="#484f58" font-size="12" text-anchor="middle" font-family="sans-serif">物理层 (wire / radio)</text>
+          <!-- Arrows -->
+          <line x1="380" y1="84" x2="380" y2="96" stroke="#58a6ff" stroke-width="1.5" marker-end="url(#arr)" opacity="0.5"/>
+          <line x1="380" y1="140" x2="380" y2="152" stroke="#58a6ff" stroke-width="1.5" marker-end="url(#arr)" opacity="0.5"/>
+          <line x1="380" y1="200" x2="380" y2="212" stroke="#58a6ff" stroke-width="1.5" marker-end="url(#arr)" opacity="0.5"/>
+          <line x1="380" y1="260" x2="380" y2="272" stroke="#58a6ff" stroke-width="1.5" marker-end="url(#arr)" opacity="0.5"/>
+        </svg>
+      </div>
+
+      <div class="callout callout-info">
+        <div class="callout-title">📚 原始参考资料</div>
+        <strong>源码注释：</strong><a href="https://github.com/torvalds/linux/blob/master/net/ipv4/arp.c" target="_blank">net/ipv4/arp.c</a> · 
+        <a href="https://github.com/torvalds/linux/blob/master/net/core/neighbour.c" target="_blank">net/core/neighbour.c</a> · 
+        <a href="https://github.com/torvalds/linux/blob/master/include/net/neighbour.h" target="_blank">include/net/neighbour.h</a><br>
+        <strong>文档：</strong><a href="https://wiki.linuxfoundation.org/networking/neighboring_subsystem" target="_blank">Linux Foundation Wiki: Neighboring Subsystem</a> · 
+        <a href="https://www.man7.org/linux/man-pages/man8/ip-neighbour.8.html" target="_blank">ip-neighbour(8) man page</a> · 
+        <a href="https://docs.kernel.org/networking/ip-sysctl.html" target="_blank">Kernel IP sysctl 文档</a><br>
+        <strong>RFC：</strong><a href="https://www.ietf.org/rfc/rfc826.txt" target="_blank">RFC 826 (ARP)</a> · 
+        <a href="https://www.rfc-editor.org/rfc/rfc4861" target="_blank">RFC 4861 (NDP)</a>
+      </div>
+
+      <div class="callout callout-principle">
+        <div class="callout-title">🔬 第一性原理概述</div>
+        网络通信的物理本质是：数据帧在链路层流动，而链路层只认硬件地址（MAC），不认 IP。因此，凡是基于 IP 的通信，都必须在发送前解决"这个 IP 对应哪个 MAC"的问题。邻居子系统的存在，正是对这一物理约束的最小化响应——它是内核中 L3 意图与 L2 现实之间唯一的"翻译官"。
+      </div>
+    </section>
+
+    <!-- ===== S1: Linux 1.x ARP ===== -->
+    <section class="section" id="s1">
+      <div class="section-era">第一纪元 · 奠基期 · 1994</div>
+      <div class="section-title">Linux 1.x — ARP 的诞生</div>
+      <div class="section-subtitle">以太网假设、单一协议、全局锁</div>
+      <div class="section-divider"></div>
+
+      <div class="card">
+        <div class="card-title">🔴 历史背景与痛点</div>
+        <div class="card-body">
+          <p>1994 年，Florian La Roche 为 Linux 编写了第一版 ARP 实现（<code>net/ipv4/arp.c</code>），直接遵循 <span class="tag tag-rfc">RFC 826</span>。代码深度绑定以太网假设，硬编码了 6 字节 MAC 地址长度，无法支持 AX25、ATM、FDDI 等其他链路类型。</p>
+          <p>彼时整个网络栈运行在一个单一的"大内核锁（BKL）"保护下。ARP 缓存是一个简单的固定大小数组，既无高效的查找结构，也无超时回收机制。当网络设备接口 down 掉时，残留的 ARP 条目可能指向已失效的内存。</p>
+        </div>
+      </div>
+
+      <div class="grid-2">
+        <div class="card">
+          <div class="card-title">🔧 Alan Cox 的早期修复（1994–1996）</div>
+          <div class="card-body">
+            <p>Alan Cox 对原始实现进行了大量修复：</p>
+            <div class="timeline">
+              <div class="timeline-item">
+                <div class="timeline-dot"></div>
+                <div class="timeline-label">去除以太网假设</div>
+                <div class="timeline-text">移除 Florian 代码中对 6 字节 MAC 的硬编码，支持可变长度硬件地址</div>
+              </div>
+              <div class="timeline-item">
+                <div class="timeline-dot green"></div>
+                <div class="timeline-label">设备通知机制</div>
+                <div class="timeline-text">改用 <code>notifier</code> 链，当网络设备 down 时自动清除相关 ARP 条目（避免悬挂指针）</div>
+              </div>
+              <div class="timeline-item">
+                <div class="timeline-dot orange"></div>
+                <div class="timeline-label">定时器初始化</div>
+                <div class="timeline-text">引入 <code>init_timer()</code>，为 ARP 条目增加超时回收机制</div>
+              </div>
+              <div class="timeline-item">
+                <div class="timeline-dot red"></div>
+                <div class="timeline-label">双重锁修复</div>
+                <div class="timeline-text">修复多处 double-lock 竞态条件</div>
+              </div>
+            </div>
+          </div>
+        </div>
+        <div class="card">
+          <div class="card-title">📋 其他贡献者修复</div>
+          <div class="card-body">
+            <div class="timeline">
+              <div class="timeline-item">
+                <div class="timeline-dot purple"></div>
+                <div class="timeline-label">Andrew Tridgell — Proxy ARP</div>
+                <div class="timeline-text">新增 ARP netmask 代码，重新整理代理 ARP（Proxy ARP）处理逻辑</div>
+              </div>
+              <div class="timeline-item">
+                <div class="timeline-dot"></div>
+                <div class="timeline-label">Mike Shaver — RFC1122 合规</div>
+                <div class="timeline-text">增加 RFC 1122 要求的检查：重传节流、缓存超时可配置、保存未决包</div>
+              </div>
+              <div class="timeline-item">
+                <div class="timeline-dot green"></div>
+                <div class="timeline-label">Jonathan Layes — arpd 支持</div>
+                <div class="timeline-text">通过 kerneld 消息队列支持用户空间 ARP 守护进程（1996.03.14）</div>
+              </div>
+              <div class="timeline-item">
+                <div class="timeline-dot orange"></div>
+                <div class="timeline-label">Manuel Rodriguez — Gratuitous ARP</div>
+                <div class="timeline-text">新增免费 ARP（GARP）支持，用于主动宣告自身 MAC 地址变更</div>
+              </div>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <!-- SVG: 早期 ARP 缓存结构 -->
+      <div class="svg-wrap">
+        <svg viewBox="0 0 700 200" xmlns="http://www.w3.org/2000/svg" style="width:100%;height:auto;">
+          <text x="350" y="20" fill="#e6edf3" font-size="13" font-weight="700" text-anchor="middle" font-family="sans-serif">Linux 1.x ARP 缓存结构（固定数组，无状态机）</text>
+          <!-- Array boxes -->
+          <rect x="40" y="40" width="100" height="130" rx="4" fill="#1c2128" stroke="#30363d"/>
+          <text x="90" y="58" fill="#8b949e" font-size="10" text-anchor="middle" font-family="sans-serif">entry[0]</text>
+          <text x="90" y="75" fill="#58a6ff" font-size="10" text-anchor="middle" font-family="sans-serif">10.0.0.1</text>
+          <text x="90" y="90" fill="#3fb950" font-size="10" text-anchor="middle" font-family="sans-serif">AA:BB:CC:DD</text>
+          <text x="90" y="105" fill="#f78166" font-size="10" text-anchor="middle" font-family="sans-serif">flags: COMP</text>
+          <text x="90" y="155" fill="#484f58" font-size="9" text-anchor="middle" font-family="sans-serif">无 NUD 状态</text>
+          <text x="90" y="167" fill="#484f58" font-size="9" text-anchor="middle" font-family="sans-serif">无超时机制</text>
+
+          <rect x="155" y="40" width="100" height="130" rx="4" fill="#1c2128" stroke="#30363d"/>
+          <text x="205" y="58" fill="#8b949e" font-size="10" text-anchor="middle" font-family="sans-serif">entry[1]</text>
+          <text x="205" y="75" fill="#58a6ff" font-size="10" text-anchor="middle" font-family="sans-serif">10.0.0.2</text>
+          <text x="205" y="90" fill="#3fb950" font-size="10" text-anchor="middle" font-family="sans-serif">EE:FF:00:11</text>
+          <text x="205" y="105" fill="#f78166" font-size="10" text-anchor="middle" font-family="sans-serif">flags: PERM</text>
+
+          <rect x="270" y="40" width="100" height="130" rx="4" fill="#1c2128" stroke="#30363d"/>
+          <text x="320" y="58" fill="#8b949e" font-size="10" text-anchor="middle" font-family="sans-serif">entry[2]</text>
+          <text x="320" y="75" fill="#484f58" font-size="10" text-anchor="middle" font-family="sans-serif">(空)</text>
+
+          <text x="395" y="105" fill="#484f58" font-size="22" text-anchor="middle" font-family="sans-serif">···</text>
+
+          <rect x="430" y="40" width="100" height="130" rx="4" fill="#1c2128" stroke="#30363d"/>
+          <text x="480" y="58" fill="#8b949e" font-size="10" text-anchor="middle" font-family="sans-serif">entry[N]</text>
+          <text x="480" y="75" fill="#484f58" font-size="10" text-anchor="middle" font-family="sans-serif">(空)</text>
+
+          <!-- Problems -->
+          <rect x="555" y="40" width="135" height="130" rx="6" fill="#2a1a1a" stroke="#f78166" stroke-width="1.5"/>
+          <text x="622" y="58" fill="#f78166" font-size="11" font-weight="700" text-anchor="middle" font-family="sans-serif">⚠ 已知问题</text>
+          <text x="565" y="78" fill="#8b949e" font-size="10" font-family="sans-serif">• 固定大小，无 GC</text>
+          <text x="565" y="95" fill="#8b949e" font-size="10" font-family="sans-serif">• 硬编码以太网</text>
+          <text x="565" y="112" fill="#8b949e" font-size="10" font-family="sans-serif">• 全局 BKL 锁</text>
+          <text x="565" y="129" fill="#8b949e" font-size="10" font-family="sans-serif">• 无 IPv6 支持</text>
+          <text x="565" y="146" fill="#8b949e" font-size="10" font-family="sans-serif">• 无状态机</text>
+          <text x="565" y="163" fill="#8b949e" font-size="10" font-family="sans-serif">• 竞态条件多</text>
+        </svg>
+      </div>
+
+      <div class="callout callout-warn">
+        <div class="callout-title">⚠ 核心痛点</div>
+        早期实现将"以太网"视为唯一链路类型，无法运行在 AX25（业余无线电）、FDDI、ATM 等网络上。ARP 缓存是一个哑巴数组：满了就扔旧条目，不论对方是否仍然活跃；也没有"对方已下线"的探测机制，导致包会持续发往已消失的邻居。
+      </div>
+
+      <div class="callout callout-principle">
+        <div class="callout-title">🔬 第一性原理</div>
+        链路层寻址的本质需求是：<strong>用最小代价维护一张 IP→MAC 的映射表</strong>。Linux 1.x 的实现选择了"最简单可行"路径——固定数组 + 全局锁——在网络规模小、硬件单一的时代是合理的，但它把"以太网"和"IPv4"作为了隐含的公理，埋下了日后所有扩展工作的债务。
+      </div>
+    </section>
+
+    <!-- ===== S2: Linux 2.1 ===== -->
+    <section class="section" id="s2">
+      <div class="section-era">第一纪元 · 奠基期 · 1997</div>
+      <div class="section-title">Linux 2.1 — 邻居子系统的诞生</div>
+      <div class="section-subtitle">Alexey Kuznetsov 的革命性重构：NUD 状态机 + net/core/neighbour.c</div>
+      <div class="section-divider"></div>
+
+      <div class="card">
+        <div class="card-title">🚀 背景：互联网规模爆炸</div>
+        <div class="card-body">
+          <p>1996–1997 年，互联网用户数量从数百万跃升至数千万。Linux 开始被部署在真实的服务器和路由器上。原有的 ARP 实现面临严峻挑战：大型园区网中的 ARP 缓存动辄需要维护数千条目，而固定大小的数组完全不够用。更严重的是，当一台主机下线后，内核无法主动检测——只能等待条目超时，期间所有发往该主机的包都会静默丢失。</p>
+          <p>Alexey Kuznetsov（kuznet@ms2.inr.ac.ru）在内核 2.1.x 开发周期中，将 ARP 的状态管理逻辑完全从 <code>net/ipv4/arp.c</code> 中剥离，创建了全新的 <strong><code>net/core/neighbour.c</code></strong>——这正是现代邻居子系统的起点。</p>
+        </div>
+      </div>
+
+      <div class="card">
+        <div class="card-title">⚙️ 核心创新：NUD 状态机</div>
+        <div class="card-body">
+          <p>NUD（Neighbor Unreachability Detection，邻居不可达检测）状态机是这次重构的核心。它借鉴了 RFC 2461（后被 RFC 4861 替代）的概念，为每个邻居条目定义了明确的生命周期状态：</p>
+        </div>
+      </div>
+
+      <!-- SVG: NUD 状态机 -->
+      <div class="svg-wrap">
+        <svg viewBox="0 0 760 380" xmlns="http://www.w3.org/2000/svg" style="width:100%;height:auto;">
+          <defs>
+            <marker id="a1" markerWidth="8" markerHeight="6" refX="8" refY="3" orient="auto">
+              <polygon points="0 0, 8 3, 0 6" fill="#58a6ff" opacity="0.8"/>
+            </marker>
+            <marker id="a2" markerWidth="8" markerHeight="6" refX="8" refY="3" orient="auto">
+              <polygon points="0 0, 8 3, 0 6" fill="#f78166" opacity="0.8"/>
+            </marker>
+            <marker id="a3" markerWidth="8" markerHeight="6" refX="8" refY="3" orient="auto">
+              <polygon points="0 0, 8 3, 0 6" fill="#3fb950" opacity="0.8"/>
+            </marker>
+            <marker id="a4" markerWidth="8" markerHeight="6" refX="8" refY="3" orient="auto">
+              <polygon points="0 0, 8 3, 0 6" fill="#ffa657" opacity="0.8"/>
+            </marker>
+          </defs>
+          <text x="380" y="22" fill="#e6edf3" font-size="13" font-weight="700" text-anchor="middle" font-family="sans-serif">NUD 邻居状态机（Linux 2.1 引入）</text>
+
+          <!-- NONE -->
+          <ellipse cx="100" cy="80" rx="58" ry="24" fill="#1c2128" stroke="#484f58" stroke-width="1.5"/>
+          <text x="100" y="85" fill="#484f58" font-size="12" font-weight="700" text-anchor="middle" font-family="sans-serif">NUD_NONE</text>
+
+          <!-- INCOMPLETE -->
+          <ellipse cx="340" cy="80" rx="72" ry="24" fill="#1a2a3a" stroke="#58a6ff" stroke-width="1.5"/>
+          <text x="340" y="85" fill="#58a6ff" font-size="12" font-weight="700" text-anchor="middle" font-family="sans-serif">INCOMPLETE</text>
+
+          <!-- REACHABLE -->
+          <ellipse cx="580" cy="80" rx="72" ry="24" fill="#1a3a1a" stroke="#3fb950" stroke-width="2"/>
+          <text x="580" y="85" fill="#3fb950" font-size="12" font-weight="700" text-anchor="middle" font-family="sans-serif">REACHABLE</text>
+
+          <!-- STALE -->
+          <ellipse cx="580" cy="200" rx="58" ry="24" fill="#2a2a1a" stroke="#ffa657" stroke-width="1.5"/>
+          <text x="580" y="205" fill="#ffa657" font-size="12" font-weight="700" text-anchor="middle" font-family="sans-serif">STALE</text>
+
+          <!-- DELAY -->
+          <ellipse cx="380" cy="280" rx="58" ry="24" fill="#2a1a2a" stroke="#d2a8ff" stroke-width="1.5"/>
+          <text x="380" y="285" fill="#d2a8ff" font-size="12" font-weight="700" text-anchor="middle" font-family="sans-serif">DELAY</text>
+
+          <!-- PROBE -->
+          <ellipse cx="180" cy="280" rx="58" ry="24" fill="#1a2a3a" stroke="#58a6ff" stroke-width="1.5"/>
+          <text x="180" y="285" fill="#58a6ff" font-size="12" font-weight="700" text-anchor="middle" font-family="sans-serif">PROBE</text>
+
+          <!-- FAILED -->
+          <ellipse cx="100" cy="200" rx="58" ry="24" fill="#2a1a1a" stroke="#f78166" stroke-width="2"/>
+          <text x="100" y="205" fill="#f78166" font-size="12" font-weight="700" text-anchor="middle" font-family="sans-serif">FAILED</text>
+
+          <!-- Special: NOARP / PERMANENT -->
+          <rect x="620" y="280" width="120" height="44" rx="8" fill="#1c2128" stroke="#484f58" stroke-width="1" stroke-dasharray="4,3"/>
+          <text x="680" y="298" fill="#8b949e" font-size="10" font-weight="700" text-anchor="middle" font-family="sans-serif">NOARP /</text>
+          <text x="680" y="312" fill="#8b949e" font-size="10" font-weight="700" text-anchor="middle" font-family="sans-serif">PERMANENT</text>
+          <text x="680" y="338" fill="#484f58" font-size="9" text-anchor="middle" font-family="sans-serif">特殊态，不转换</text>
+
+          <!-- Arrows -->
+          <!-- NONE -> INCOMPLETE -->
+          <line x1="158" y1="80" x2="268" y2="80" stroke="#58a6ff" stroke-width="1.5" marker-end="url(#a1)"/>
+          <text x="213" y="72" fill="#8b949e" font-size="9" text-anchor="middle" font-family="sans-serif">neigh_create()</text>
+          <text x="213" y="83" fill="#8b949e" font-size="9" text-anchor="middle" font-family="sans-serif">ARP 请求发出</text>
+
+          <!-- INCOMPLETE -> REACHABLE -->
+          <line x1="412" y1="80" x2="508" y2="80" stroke="#3fb950" stroke-width="1.5" marker-end="url(#a3)"/>
+          <text x="460" y="72" fill="#8b949e" font-size="9" text-anchor="middle" font-family="sans-serif">收到 ARP 回复</text>
+
+          <!-- REACHABLE -> STALE -->
+          <line x1="580" y1="104" x2="580" y2="176" stroke="#ffa657" stroke-width="1.5" marker-end="url(#a4)"/>
+          <text x="600" y="145" fill="#8b949e" font-size="9" font-family="sans-serif">reachable_time 超时</text>
+
+          <!-- STALE -> DELAY -->
+          <line x1="522" y1="200" x2="438" y2="265" stroke="#d2a8ff" stroke-width="1.5" marker-end="url(#a1)" opacity="0.8"/>
+          <text x="500" y="242" fill="#8b949e" font-size="9" font-family="sans-serif">有流量发出</text>
+
+          <!-- DELAY -> PROBE -->
+          <line x1="322" y1="280" x2="238" y2="280" stroke="#58a6ff" stroke-width="1.5" marker-end="url(#a1)"/>
+          <text x="280" y="272" fill="#8b949e" font-size="9" text-anchor="middle" font-family="sans-serif">delay_probe_time 超时</text>
+
+          <!-- PROBE -> FAILED -->
+          <line x1="148" y1="267" x2="120" y2="224" stroke="#f78166" stroke-width="1.5" marker-end="url(#a2)"/>
+          <text x="112" y="252" fill="#8b949e" font-size="9" text-anchor="end" font-family="sans-serif">max probes 耗尽</text>
+
+          <!-- PROBE -> REACHABLE -->
+          <path d="M 220 260 Q 440 160 508 104" stroke="#3fb950" stroke-width="1.5" fill="none" marker-end="url(#a3)" stroke-dasharray="5,3"/>
+          <text x="380" y="178" fill="#8b949e" font-size="9" text-anchor="middle" font-family="sans-serif">收到确认 → REACHABLE</text>
+
+          <!-- INCOMPLETE -> FAILED -->
+          <line x1="290" y1="100" x2="150" y2="188" stroke="#f78166" stroke-width="1.2" marker-end="url(#a2)" opacity="0.7"/>
+          <text x="200" y="152" fill="#8b949e" font-size="9" text-anchor="middle" font-family="sans-serif">max_unicast_probes 耗尽</text>
+
+          <!-- L4 confirm dashed -->
+          <path d="M 580 56 Q 580 20 340 56" stroke="#3fb950" stroke-width="1" fill="none" marker-end="url(#a3)" stroke-dasharray="4,3" opacity="0.6"/>
+          <text x="440" y="28" fill="#3fb950" font-size="9" text-anchor="middle" font-family="sans-serif">L4 确认（TCP ACK）→ neigh_confirm()</text>
+
+          <!-- Legend -->
+          <rect x="30" y="330" width="560" height="42" rx="6" fill="#1c2128" stroke="#30363d"/>
+          <text x="50" y="348" fill="#8b949e" font-size="10" font-family="sans-serif">NUD_VALID = PERMANENT | NOARP | REACHABLE | PROBE | STALE | DELAY</text>
+          <text x="50" y="363" fill="#8b949e" font-size="10" font-family="sans-serif">NUD_CONNECTED = PERMANENT | NOARP | REACHABLE  |  NUD_IN_TIMER = INCOMPLETE | REACHABLE | DELAY | PROBE</text>
+        </svg>
+      </div>
+
+      <div class="grid-2">
+        <div class="card">
+          <div class="card-title">📦 struct neighbour 核心字段</div>
+          <div class="card-body">
+            <pre style="font-size:11px;line-height:1.5;">struct neighbour {
+  struct neighbour __rcu *next; /* 哈希链表 */
+  struct neigh_table  *tbl;     /* 所属表 */
+  struct neigh_parms  *parms;   /* 可调参数 */
+  unsigned long confirmed;      /* 最后确认时间 */
+  rwlock_t      lock;           /* 读写锁 */
+  __u8          nud_state;      /* NUD 状态 */
+  __u8          ha[MAX_ADDR_LEN]; /* 硬件地址 */
+  struct hh_cache  hh;          /* 头部缓存 */
+  int (*output)(...);           /* 输出函数指针 */
+  struct sk_buff_head arp_queue; /* 待发队列 */
+  struct timer_list timer;      /* 状态定时器 */
+};</pre>
+            <p><code>output()</code> 函数指针随状态变化动态切换：未解析时为 <code>neigh_resolve_output()</code>，已解析时为 <code>neigh_connected_output()</code>。</p>
+          </div>
+        </div>
+        <div class="card">
+          <div class="card-title">🧠 L4 确认机制</div>
+          <div class="card-body">
+            <p>NUD 的关键创新：上层协议（TCP/UDP）可以直接向邻居子系统反馈"可达性确认"，无需重新发 ARP 请求：</p>
+            <pre style="font-size:11px;line-height:1.5;">/* tcp_input.c */
+tcp_ack()
+  → dst_confirm()
+    → neigh_confirm()
+      /* 更新 confirmed 时间戳
+         但不改变 NUD 状态 —
+         状态只由 neigh_timer_handler()
+         负责切换 */</pre>
+            <p>这意味着：只要 TCP 连接正常，邻居条目就不会被标记为不可达，减少了不必要的 ARP 探测风暴。</p>
+          </div>
+        </div>
+      </div>
+
+      <div class="card">
+        <div class="card-title">🗑️ 垃圾回收机制（GC）</div>
+        <div class="card-body">
+          <p>Kuznetsov 引入了两级 GC 机制，这一设计一直沿用至今：</p>
+          <div class="grid-2">
+            <div>
+              <p><strong style="color:var(--accent)">周期性 GC（异步）</strong></p>
+              <p><code>neigh_periodic_timer()</code> 定期扫描表，删除 <code>NUD_FAILED</code> 状态和过期条目。仅在表内条目数超过 <code>gc_thresh1</code> 时才真正删除，避免空表时的无谓扫描。</p>
+            </div>
+            <div>
+              <p><strong style="color:var(--accent3)">强制 GC（同步）</strong></p>
+              <p><code>neigh_forced_gc()</code> 在 <code>neigh_alloc()</code> 发现条目数超过 <code>gc_thresh3</code> 时被调用，属于"背压"机制：立即释放引用计数为 1 的非永久条目。</p>
+            </div>
+          </div>
+          <div class="callout callout-info" style="margin-top:12px;">
+            <div class="callout-title">⚙️ 可调参数（/proc/sys/net/ipv4/neigh/）</div>
+            <code>gc_thresh1</code>（默认128）· <code>gc_thresh2</code>（默认512）· <code>gc_thresh3</code>（默认1024）<br>
+            <code>base_reachable_time</code> · <code>retrans_time</code> · <code>delay_probe_time</code>
+          </div>
+        </div>
+      </div>
+
+      <div class="callout callout-principle">
+        <div class="callout-title">🔬 第一性原理</div>
+        现实网络中，主机会上线、下线、迁移。任何"认为邻居永远在线"的假设都会导致包的静默丢失。NUD 状态机的本质是：<strong>将"邻居是否可达"从一个二元静态标记，升级为一个带时间衰减的动态概率估计</strong>。通过定时器驱动的状态转换，内核能够以最小的探测代价（单播 ARP）主动发现邻居失效，而不是被动等待上层报告错误。
+      </div>
+    </section>
+
+    <!-- ===== S3: IPv6 NDP ===== -->
+    <section class="section" id="s3">
+      <div class="section-era">第二纪元 · 整合期 · 2001</div>
+      <div class="section-title">Linux 2.4 — IPv6 与 NDP 的整合</div>
+      <div class="section-subtitle">一张表统治一切：ARP 与 NDP 共享同一套邻居框架</div>
+      <div class="section-divider"></div>
+
+      <div class="card">
+        <div class="card-title">🌐 背景：IPv6 时代的来临</div>
+        <div class="card-body">
+          <p>IPv6 标准化工作在 1990 年代末基本完成，RFC 2461（1998，后被 RFC 4861 取代）定义了 <strong>NDP（Neighbor Discovery Protocol）</strong>。NDP 与 IPv4 的 ARP 相比，设计上有重要区别：</p>
+          <div class="grid-2">
+            <div>
+              <p><strong style="color:var(--accent3)">ARP（IPv4）</strong></p>
+              <ul style="padding-left:16px;font-size:13px;color:var(--text-muted);line-height:2;">
+                <li>独立协议（EtherType 0x0806）</li>
+                <li>广播查询（整个链路段）</li>
+                <li>仅地址解析功能</li>
+                <li>无路由器发现</li>
+                <li>无重复地址检测（DAD）</li>
+              </ul>
+            </div>
+            <div>
+              <p><strong style="color:var(--accent2)">NDP（IPv6）</strong></p>
+              <ul style="padding-left:16px;font-size:13px;color:var(--text-muted);line-height:2;">
+                <li>嵌入 ICMPv6（类型 133-137）</li>
+                <li><strong>组播</strong>查询（仅发给目标节点组播组）</li>
+                <li>集成路由器发现（RA/RS）</li>
+                <li>集成 DAD（重复地址检测）</li>
+                <li>集成无状态地址自动配置（SLAAC）</li>
+              </ul>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <!-- SVG: ARP vs NDP -->
+      <div class="svg-wrap">
+        <svg viewBox="0 0 720 240" xmlns="http://www.w3.org/2000/svg" style="width:100%;height:auto;">
+          <text x="360" y="22" fill="#e6edf3" font-size="13" font-weight="700" text-anchor="middle" font-family="sans-serif">ARP 广播 vs NDP 组播对比</text>
+          <!-- ARP side -->
+          <text x="170" y="50" fill="#f78166" font-size="12" font-weight="700" text-anchor="middle" font-family="sans-serif">ARP（IPv4）—— 广播</text>
+          <!-- Hosts -->
+          <rect x="30" y="65" width="60" height="36" rx="6" fill="#1a2128" stroke="#58a6ff" stroke-width="2"/>
+          <text x="60" y="88" fill="#58a6ff" font-size="11" font-weight="700" text-anchor="middle" font-family="sans-serif">Host A</text>
+          <rect x="140" y="65" width="60" height="36" rx="6" fill="#1a2128" stroke="#30363d"/>
+          <text x="170" y="88" fill="#8b949e" font-size="10" text-anchor="middle" font-family="sans-serif">Host B</text>
+          <rect x="252" y="65" width="60" height="36" rx="6" fill="#1a2128" stroke="#30363d"/>
+          <text x="282" y="88" fill="#8b949e" font-size="10" text-anchor="middle" font-family="sans-serif">Host C</text>
+
+          <!-- Broadcast arrows -->
+          <line x1="90" y1="83" x2="140" y2="83" stroke="#f78166" stroke-width="2" marker-end="url(#a2)" opacity="0.8"/>
+          <line x1="90" y1="83" x2="252" y2="83" stroke="#f78166" stroke-width="2" marker-end="url(#a2)" opacity="0.8"/>
+          <text x="170" y="130" fill="#f78166" font-size="10" text-anchor="middle" font-family="sans-serif">广播 FF:FF:FF:FF:FF:FF</text>
+          <text x="170" y="145" fill="#8b949e" font-size="10" text-anchor="middle" font-family="sans-serif">所有主机都必须处理此包</text>
+          <text x="170" y="160" fill="#8b949e" font-size="10" text-anchor="middle" font-family="sans-serif">（CPU 中断风暴风险）</text>
+
+          <!-- Divider -->
+          <line x1="360" y1="40" x2="360" y2="220" stroke="#30363d" stroke-width="1" stroke-dasharray="4,4"/>
+
+          <!-- NDP side -->
+          <text x="550" y="50" fill="#3fb950" font-size="12" font-weight="700" text-anchor="middle" font-family="sans-serif">NDP（IPv6）—— 组播</text>
+          <rect x="400" y="65" width="60" height="36" rx="6" fill="#1a2128" stroke="#58a6ff" stroke-width="2"/>
+          <text x="430" y="88" fill="#58a6ff" font-size="11" font-weight="700" text-anchor="middle" font-family="sans-serif">Host A</text>
+          <rect x="510" y="65" width="60" height="36" rx="6" fill="#1a3a1a" stroke="#3fb950" stroke-width="2"/>
+          <text x="540" y="88" fill="#3fb950" font-size="10" text-anchor="middle" font-family="sans-serif">Host B</text>
+          <text x="540" y="100" fill="#484f58" font-size="8" text-anchor="middle" font-family="sans-serif">(目标)</text>
+          <rect x="622" y="65" width="60" height="36" rx="6" fill="#1a2128" stroke="#30363d"/>
+          <text x="652" y="88" fill="#8b949e" font-size="10" text-anchor="middle" font-family="sans-serif">Host C</text>
+
+          <!-- Multicast arrow only to B -->
+          <line x1="460" y1="83" x2="510" y2="83" stroke="#3fb950" stroke-width="2" marker-end="url(#a3)" opacity="0.8"/>
+          <!-- Dashed to C (not really delivered) -->
+          <line x1="460" y1="83" x2="622" y2="83" stroke="#30363d" stroke-width="1.5" stroke-dasharray="4,3"/>
+          <text x="550" y="130" fill="#3fb950" font-size="10" text-anchor="middle" font-family="sans-serif">组播 33:33:xx:xx:xx:xx</text>
+          <text x="550" y="145" fill="#8b949e" font-size="10" text-anchor="middle" font-family="sans-serif">只有订阅该组播组的主机接收</text>
+          <text x="550" y="160" fill="#8b949e" font-size="10" text-anchor="middle" font-family="sans-serif">（Host C 无需处理）</text>
+          <text x="652" y="120" fill="#484f58" font-size="9" text-anchor="middle" font-family="sans-serif">× 不处理</text>
+        </svg>
+      </div>
+
+      <div class="card">
+        <div class="card-title">🔀 架构整合：neigh_table 的统一抽象</div>
+        <div class="card-body">
+          <p>为了避免重复实现状态机，Linux 内核巧妙地让 IPv6 NDP 复用了 Kuznetsov 的邻居框架。ARP 和 NDP 共享同一套 <code>struct neigh_table</code> 机制，各自只需实现协议特定的操作：</p>
+          <pre style="font-size:11px;line-height:1.5;">/* IPv4 ARP 表 */
+struct neigh_table arp_tbl = {
+    .family     = AF_INET,
+    .key_len    = 4,          /* IPv4 地址 4 字节 */
+    .constructor = arp_constructor,
+    .solicit     = arp_solicit,       /* 发 ARP 请求 */
+    .error_report = arp_error_report,
+    ...
+};
+
+/* IPv6 NDP 表 */
+struct neigh_table nd_tbl = {
+    .family     = AF_INET6,
+    .key_len    = 16,         /* IPv6 地址 16 字节 */
+    .constructor = ndisc_constructor,
+    .solicit     = ndisc_solicit,     /* 发 NS 消息 */
+    .error_report = ndisc_error_report,
+    ...
+};</pre>
+          <p>两张表的 GC、状态机、定时器逻辑完全共用 <code>net/core/neighbour.c</code>，只有 solicit/constructor 等几个钩子不同。这是"开闭原则"在内核中的典范应用。</p>
+        </div>
+      </div>
+
+      <div class="card">
+        <div class="card-title">🔍 DAD（重复地址检测）</div>
+        <div class="card-body">
+          <p>NDP 集成了 DAD 机制（RFC 4862），在接口配置 IPv6 地址前，先以源地址 <code>::</code>（全零）发送 NS，探测该地址是否已被占用。IPv4 也通过 <code>arping -D</code> 实现了类似功能（RFC 2131），内核 <code>arp_process()</code> 中有特殊处理：</p>
+          <pre style="font-size:11px;line-height:1.5;">/* net/ipv4/arp.c */
+/* IPv4 DAD: 源 IP 为 0.0.0.0 时的特殊处理 */
+if (sip == 0) {
+    if (arp->ar_op == htons(ARPOP_REQUEST) &&
+        inet_addr_type(tip) == RTN_LOCAL &&
+        !arp_ignore(in_dev, dev, sip, tip))
+        arp_send(ARPOP_REPLY, ETH_P_ARP, tip, dev,
+                 tip, sha, dev->dev_addr, dev->dev_addr);
+    goto out;
+}</pre>
+        </div>
+      </div>
+
+      <div class="callout callout-principle">
+        <div class="callout-title">🔬 第一性原理</div>
+        ARP 广播是一个"广而告之"的设计，在小型网络中无问题；但在拥有数千台主机的数据中心，每秒数百次 ARP 广播会让所有主机的 CPU 都产生中断，这是带宽和算力的双重浪费。NDP 的组播设计是对"最小必要通知范围"原则的回归——<strong>只通知真正需要知道的节点</strong>。内核通过统一的 neigh_table 抽象，使得这两种协议的实现代码共享超过 80%，完美体现了"机制与策略分离"的设计哲学。
+      </div>
+    </section>
+
+    <!-- ===== S4: 2.6 Netlink ===== -->
+    <section class="section" id="s4">
+      <div class="section-era">第二纪元 · 整合期 · 2003–2006</div>
+      <div class="section-title">Linux 2.6 — Netlink 接口与管理能力</div>
+      <div class="section-subtitle">从 ioctl 到 rtnetlink，从 /proc 到 sysctl，从静态配置到动态管理</div>
+      <div class="section-divider"></div>
+
+      <div class="card">
+        <div class="card-title">📡 Netlink 接口：取代 ioctl</div>
+        <div class="card-body">
+          <p>早期内核使用 <code>ioctl</code> 管理 ARP 表，功能受限且难以扩展。Linux 2.6 中，邻居子系统完全接入 <strong>rtnetlink</strong> 消息框架，<code>ip neigh</code> 命令（iproute2）由此取代了传统的 <code>arp</code> 命令：</p>
+          <div class="grid-2">
+            <div>
+              <pre style="font-size:11px;line-height:1.6;"># 旧方式 (arp 命令)
+arp -s 192.168.0.1 aa:bb:cc:dd:ee:ff
+arp -d 192.168.0.1
+arp -n  # 显示（无状态信息）</pre>
+            </div>
+            <div>
+              <pre style="font-size:11px;line-height:1.6;"># 新方式 (ip neigh)
+ip neigh add 192.168.0.1 dev eth0 \
+  lladdr aa:bb:cc:dd:ee:ff nud permanent
+ip neigh del 192.168.0.1 dev eth0
+ip neigh show  # 带完整 NUD 状态</pre>
+            </div>
+          </div>
+          <p style="margin-top:12px;">rtnetlink 消息类型：<code>RTM_NEWNEIGH</code> / <code>RTM_DELNEIGH</code> / <code>RTM_GETNEIGH</code>，支持 IPv4 和 IPv6 统一接口。</p>
+        </div>
+      </div>
+
+      <div class="card">
+        <div class="card-title">📊 /proc 接口优化</div>
+        <div class="card-body">
+          <p>Arnaldo Carvalho de Melo 将 <code>/proc/net/arp</code> 从传统的单次 dump 实现转换为 <strong>seq_file</strong> 接口，解决了大型 ARP 表在 /proc 读取时的内存分配问题（原来需要一次性分配足以容纳整个表的缓冲区，<code>&gt; 4K</code> 时会失败，这是 Alan Cox 早期就注意到的 bug）。</p>
+          <p>统计接口也同步完善：</p>
+          <pre style="font-size:11px;line-height:1.6;">cat /proc/net/stat/arp_cache    # IPv4 邻居统计
+cat /proc/net/stat/ndisc_cache  # IPv6 NDP 统计
+# 统计字段：allocs, destroys, hash_grows, lookups, hits,
+#           res_failed, rcv_probes_mcast, rcv_probes_ucast,
+#           periodic_gc_runs, forced_gc_runs, table_fulls</pre>
+        </div>
+      </div>
+
+      <div class="card">
+        <div class="card-title">🔐 arp_ignore / arp_announce：精细化 ARP 行为</div>
+        <div class="card-body">
+          <p>在 LVS（Linux Virtual Server）等负载均衡场景中，多个网卡可能配置相同的 VIP（虚拟 IP）。当 ARP 广播来临时，所有网卡都会响应，导致负载均衡失效。内核引入了 <code>arp_ignore</code> 和 <code>arp_announce</code> 两个 sysctl 参数解决此问题：</p>
+          <div class="grid-2">
+            <div>
+              <p><strong style="color:var(--accent)">arp_ignore</strong>（控制回复）</p>
+              <pre style="font-size:11px;line-height:1.6;">0: 任何接口都可以回复（默认）
+1: 只有目标 IP 配置在
+   接收接口上才回复
+2: 目标 IP 必须配置在
+   接收接口的同一子网内</pre>
+            </div>
+            <div>
+              <p><strong style="color:var(--accent3)">arp_announce</strong>（控制发送）</p>
+              <pre style="font-size:11px;line-height:1.6;">0: 使用任何本地地址（默认）
+1: 尽量用属于目标子网的
+   源地址
+2: 严格使用目标接口的
+   最优本地地址</pre>
+            </div>
+          </div>
+          <p style="margin-top:12px;">LVS/DR 标准配置：在实际服务器的 lo 接口上配置 VIP，同时设置 <code>arp_ignore=1</code> 和 <code>arp_announce=2</code>，防止 VIP 被泄露到 ARP 广播中。</p>
+        </div>
+      </div>
+
+      <!-- SVG: LVS ARP 问题 -->
+      <div class="svg-wrap">
+        <svg viewBox="0 0 700 200" xmlns="http://www.w3.org/2000/svg" style="width:100%;height:auto;">
+          <text x="350" y="20" fill="#e6edf3" font-size="13" font-weight="700" text-anchor="middle" font-family="sans-serif">LVS/DR ARP 问题与 arp_ignore 解决方案</text>
+          <!-- Client -->
+          <rect x="20" y="50" width="80" height="40" rx="6" fill="#1c2128" stroke="#58a6ff" stroke-width="1.5"/>
+          <text x="60" y="75" fill="#58a6ff" font-size="11" text-anchor="middle" font-family="sans-serif">客户端</text>
+          <!-- ARP broadcast -->
+          <text x="150" y="45" fill="#f78166" font-size="10" text-anchor="middle" font-family="sans-serif">ARP: Who has VIP?</text>
+          <line x1="100" y1="70" x2="200" y2="70" stroke="#f78166" stroke-width="1.5" marker-end="url(#a2)" opacity="0.8"/>
+          <!-- Director -->
+          <rect x="200" y="50" width="90" height="40" rx="6" fill="#1a2a3a" stroke="#58a6ff" stroke-width="2"/>
+          <text x="245" y="68" fill="#58a6ff" font-size="10" font-weight="700" text-anchor="middle" font-family="sans-serif">LVS Director</text>
+          <text x="245" y="82" fill="#8b949e" font-size="9" text-anchor="middle" font-family="sans-serif">eth0: VIP</text>
+          <!-- RS1 -->
+          <rect x="380" y="30" width="90" height="50" rx="6" fill="#1a3a1a" stroke="#3fb950" stroke-width="1.5"/>
+          <text x="425" y="52" fill="#3fb950" font-size="10" font-weight="700" text-anchor="middle" font-family="sans-serif">Real Server 1</text>
+          <text x="425" y="67" fill="#8b949e" font-size="9" text-anchor="middle" font-family="sans-serif">lo: VIP (arp_ignore=1)</text>
+          <!-- RS2 -->
+          <rect x="380" y="100" width="90" height="50" rx="6" fill="#1a3a1a" stroke="#3fb950" stroke-width="1.5"/>
+          <text x="425" y="122" fill="#3fb950" font-size="10" font-weight="700" text-anchor="middle" font-family="sans-serif">Real Server 2</text>
+          <text x="425" y="137" fill="#8b949e" font-size="9" text-anchor="middle" font-family="sans-serif">lo: VIP (arp_ignore=1)</text>
+          <!-- Connection Director -> RS -->
+          <line x1="290" y1="65" x2="380" y2="55" stroke="#3fb950" stroke-width="1.5" marker-end="url(#a3)" stroke-dasharray="5,3" opacity="0.7"/>
+          <line x1="290" y1="75" x2="380" y2="125" stroke="#3fb950" stroke-width="1.5" marker-end="url(#a3)" stroke-dasharray="5,3" opacity="0.7"/>
+          <!-- Labels -->
+          <text x="200" y="115" fill="#3fb950" font-size="10" font-family="sans-serif">✓ Only Director replies to ARP</text>
+          <text x="200" y="130" fill="#8b949e" font-size="10" font-family="sans-serif">Real Servers: arp_ignore=1</text>
+          <text x="200" y="145" fill="#8b949e" font-size="10" font-family="sans-serif">（lo 上的 VIP 不响应 ARP）</text>
+          <!-- Right explanation -->
+          <rect x="490" y="40" width="200" height="120" rx="6" fill="#1c2128" stroke="#30363d"/>
+          <text x="590" y="60" fill="#ffa657" font-size="11" font-weight="700" text-anchor="middle" font-family="sans-serif">sysctl 配置</text>
+          <text x="500" y="78" fill="#8b949e" font-size="10" font-family="sans-serif">echo 1 &gt; /proc/sys/net/</text>
+          <text x="500" y="92" fill="#8b949e" font-size="10" font-family="sans-serif">  ipv4/conf/eth0/arp_ignore</text>
+          <text x="500" y="108" fill="#8b949e" font-size="10" font-family="sans-serif">echo 2 &gt; /proc/sys/net/</text>
+          <text x="500" y="122" fill="#8b949e" font-size="10" font-family="sans-serif">  ipv4/conf/eth0/arp_announce</text>
+          <text x="500" y="148" fill="#484f58" font-size="10" font-family="sans-serif">或通过 sysctl.conf 持久化</text>
+        </svg>
+      </div>
+
+      <div class="callout callout-principle">
+        <div class="callout-title">🔬 第一性原理</div>
+        ARP 的原始设计假设"每个 IP 只绑定一个接口"，但现实的负载均衡、多宿主（Multi-homing）、容器网络都在打破这一假设。<code>arp_ignore</code> 和 <code>arp_announce</code> 的本质是：<strong>允许管理员在策略层面重新定义"哪个接口有资格代表某个 IP"</strong>，这是对 ARP 设计假设的受控例外——而非修改协议本身。
+      </div>
+    </section>
+
+    <!-- ===== S5: RCU ===== -->
+    <section class="section" id="s5">
+      <div class="section-era">第三纪元 · 扩展期 · 2011–2014</div>
+      <div class="section-title">Linux 3.x — RCU 无锁化改造</div>
+      <div class="section-subtitle">多核时代的性能革命：读写锁 → RCU，哈希表线性链 → 动态扩展</div>
+      <div class="section-divider"></div>
+
+      <div class="card">
+        <div class="card-title">⚡ 背景：多核 CPU 的锁争用危机</div>
+        <div class="card-body">
+          <p>2010 年代初，x86 服务器普遍拥有 16–64 个 CPU 核心，10GbE/40GbE 网卡已经普及。邻居子系统的 <code>rwlock_t tbl->lock</code> 成为了严重的性能瓶颈：每次查找邻居条目都需要获取读锁，在高并发下多核之间的锁竞争导致 CPU 缓存行反弹（cache line bouncing），每秒数百万次的查找操作中，大量时间浪费在锁等待上。</p>
+          <p>Eric Dumazet 主导了一系列 RCU（Read-Copy-Update）改造，提交消息记录为：<em>"neigh: RCU conversion of struct neighbour"</em>（commit <code>767e97e1e0db</code>）。</p>
+        </div>
+      </div>
+
+      <!-- SVG: 锁 vs RCU 对比 -->
+      <div class="svg-wrap">
+        <svg viewBox="0 0 720 280" xmlns="http://www.w3.org/2000/svg" style="width:100%;height:auto;">
+          <text x="360" y="22" fill="#e6edf3" font-size="13" font-weight="700" text-anchor="middle" font-family="sans-serif">rwlock 读写锁 vs RCU 并发模型对比</text>
+          <!-- Left: rwlock -->
+          <rect x="20" y="35" width="320" height="230" rx="8" fill="#1c2128" stroke="#f78166" stroke-width="1.5"/>
+          <text x="180" y="55" fill="#f78166" font-size="12" font-weight="700" text-anchor="middle" font-family="sans-serif">旧方案：rwlock_t</text>
+          <!-- Timeline bars -->
+          <text x="35" y="80" fill="#8b949e" font-size="10" font-family="sans-serif">CPU0(读)</text>
+          <rect x="95" y="70" width="80" height="16" rx="3" fill="#1a3a1a" stroke="#3fb950"/>
+          <text x="135" y="82" fill="#3fb950" font-size="9" text-anchor="middle" font-family="sans-serif">持读锁</text>
+          <text x="35" y="105" fill="#8b949e" font-size="10" font-family="sans-serif">CPU1(读)</text>
+          <rect x="95" y="95" width="80" height="16" rx="3" fill="#1a3a1a" stroke="#3fb950"/>
+          <text x="135" y="107" fill="#3fb950" font-size="9" text-anchor="middle" font-family="sans-serif">持读锁</text>
+          <text x="35" y="130" fill="#8b949e" font-size="10" font-family="sans-serif">CPU2(写)</text>
+          <rect x="95" y="120" width="30" height="16" rx="3" fill="#2a1a1a" stroke="#f78166" stroke-dasharray="3,2"/>
+          <text x="110" y="132" fill="#f78166" font-size="9" text-anchor="middle" font-family="sans-serif">等待</text>
+          <rect x="175" y="120" width="80" height="16" rx="3" fill="#2a1a2a" stroke="#f78166"/>
+          <text x="215" y="132" fill="#f78166" font-size="9" text-anchor="middle" font-family="sans-serif">写锁（阻塞读者）</text>
+          <text x="35" y="155" fill="#8b949e" font-size="10" font-family="sans-serif">CPU3(读)</text>
+          <rect x="95" y="145" width="30" height="16" rx="3" fill="#2a1a1a" stroke="#f78166" stroke-dasharray="3,2"/>
+          <text x="110" y="157" fill="#f78166" font-size="9" text-anchor="middle" font-family="sans-serif">等待</text>
+          <rect x="175" y="145" width="80" height="16" rx="3" fill="#2a1a1a" stroke="#f78166" stroke-dasharray="3,2"/>
+          <text x="215" y="157" fill="#f78166" font-size="9" text-anchor="middle" font-family="sans-serif">等待</text>
+          <!-- Summary -->
+          <text x="40" y="188" fill="#f78166" font-size="10" font-family="sans-serif">× 写者阻塞所有读者</text>
+          <text x="40" y="204" fill="#f78166" font-size="10" font-family="sans-serif">× cache line 跨核反弹</text>
+          <text x="40" y="220" fill="#f78166" font-size="10" font-family="sans-serif">× O(N核) 锁竞争开销</text>
+          <text x="40" y="236" fill="#f78166" font-size="10" font-family="sans-serif">× BH 禁用导致调度延迟</text>
+          <text x="40" y="252" fill="#f78166" font-size="10" font-family="sans-serif">× 高并发下 CPU 利用率低</text>
+
+          <!-- Right: RCU -->
+          <rect x="370" y="35" width="330" height="230" rx="8" fill="#1c2128" stroke="#3fb950" stroke-width="1.5"/>
+          <text x="535" y="55" fill="#3fb950" font-size="12" font-weight="700" text-anchor="middle" font-family="sans-serif">新方案：RCU（Read-Copy-Update）</text>
+          <text x="385" y="80" fill="#8b949e" font-size="10" font-family="sans-serif">CPU0(读)</text>
+          <rect x="450" y="70" width="220" height="16" rx="3" fill="#1a3a1a" stroke="#3fb950"/>
+          <text x="560" y="82" fill="#3fb950" font-size="9" text-anchor="middle" font-family="sans-serif">rcu_read_lock() → 查找 → rcu_read_unlock()</text>
+          <text x="385" y="105" fill="#8b949e" font-size="10" font-family="sans-serif">CPU1(读)</text>
+          <rect x="450" y="95" width="220" height="16" rx="3" fill="#1a3a1a" stroke="#3fb950"/>
+          <text x="560" y="107" fill="#3fb950" font-size="9" text-anchor="middle" font-family="sans-serif">rcu_read_lock() → 并发查找，无锁！</text>
+          <text x="385" y="130" fill="#8b949e" font-size="10" font-family="sans-serif">CPU2(写)</text>
+          <rect x="450" y="120" width="100" height="16" rx="3" fill="#1a2a3a" stroke="#58a6ff"/>
+          <text x="500" y="132" fill="#58a6ff" font-size="9" text-anchor="middle" font-family="sans-serif">复制→修改→原子替换</text>
+          <rect x="555" y="120" width="115" height="16" rx="3" fill="#1a2a3a" stroke="#58a6ff" stroke-dasharray="3,2"/>
+          <text x="612" y="132" fill="#58a6ff" font-size="9" text-anchor="middle" font-family="sans-serif">call_rcu(旧条目延迟释放)</text>
+          <text x="385" y="155" fill="#8b949e" font-size="10" font-family="sans-serif">CPU3(读)</text>
+          <rect x="450" y="145" width="220" height="16" rx="3" fill="#1a3a1a" stroke="#3fb950"/>
+          <text x="560" y="157" fill="#3fb950" font-size="9" text-anchor="middle" font-family="sans-serif">同时进行！无需等待写者</text>
+          <!-- Summary -->
+          <text x="390" y="188" fill="#3fb950" font-size="10" font-family="sans-serif">✓ 读者零锁开销（只需禁抢占）</text>
+          <text x="390" y="204" fill="#3fb950" font-size="10" font-family="sans-serif">✓ 写者独立，不阻塞读者</text>
+          <text x="390" y="220" fill="#3fb950" font-size="10" font-family="sans-serif">✓ O(1) 查找，缓存友好</text>
+          <text x="390" y="236" fill="#3fb950" font-size="10" font-family="sans-serif">✓ 无需 BH 禁用（6.1内核改进）</text>
+          <text x="390" y="252" fill="#3fb950" font-size="10" font-family="sans-serif">✓ 多核线性扩展</text>
+        </svg>
+      </div>
+
+      <div class="card">
+        <div class="card-title">📐 动态哈希表：neigh_hash_table</div>
+        <div class="card-body">
+          <p>Linux 3.x 还将邻居表的哈希表从静态固定大小改为<strong>动态扩展</strong>。哈希表本身通过 RCU 保护，扩容时无需停止读者：</p>
+          <pre style="font-size:11px;line-height:1.5;">struct neigh_hash_table {
+    struct neighbour __rcu **hash_heads; /* RCU 保护的桶数组 */
+    unsigned int    hash_shift;          /* 桶数 = 1 << hash_shift */
+    __u32           hash_rnd[4];         /* 随机哈希种子（防 DoS） */
+    struct rcu_head rcu;                 /* 延迟释放 */
+};
+
+/* 当条目数超过桶数时，自动扩容 */
+if (atomic_read(&tbl->entries) > (1 << nht->hash_shift))
+    nht = neigh_hash_grow(tbl, nht->hash_shift + 1);</pre>
+          <p>哈希函数同步从简单取模改为 <strong>Jenkins Hash</strong>（Harald Welte 贡献），有效防止了恶意构造的 IP 地址导致哈希碰撞攻击（哈希洪水 DoS）。</p>
+        </div>
+      </div>
+
+      <div class="card">
+        <div class="card-title">🔏 hh_cache 与 seqlock</div>
+        <div class="card-body">
+          <p>头部缓存（<code>hh_cache</code>）存储了预构建的链路层帧头，用于加速快速路径（fast path）的包发送。在 RCU 时代，它使用 <strong>seqlock</strong> 保护：读者在读取前后检查序列号，如果不一致则重试，避免了写者持有锁时阻塞高频读者：</p>
+          <pre style="font-size:11px;line-height:1.5;">static inline int neigh_hh_output(const struct hh_cache *hh,
+                                   struct sk_buff *skb) {
+    unsigned int seq;
+    do {
+        seq = read_seqbegin(&hh->hh_lock);
+        hh_len = READ_ONCE(hh->hh_len);
+        memcpy(skb->data - hh_alen, hh->hh_data, hh_alen);
+    } while (read_seqretry(&hh->hh_lock, seq)); /* 写者修改期间重试 */
+    return dev_queue_xmit(skb);
+}</pre>
+        </div>
+      </div>
+
+      <div class="callout callout-principle">
+        <div class="callout-title">🔬 第一性原理</div>
+        邻居表查找是 IP 转发路径上的热点操作（每个 IP 包都可能触发一次）。在多核系统中，<strong>锁的竞争代价与核心数成正比</strong>，而 RCU 的读侧代价是常数（仅禁抢占，无原子操作）。RCU 的本质是用"空间换时间"——保留旧版本数据供并发读者使用，同时写者在副本上操作——这是计算机科学中"版本控制"思想在内核并发中的极致应用。
+      </div>
+    </section>
+
+    <!-- ===== S6: 网络命名空间 ===== -->
+    <section class="section" id="s6">
+      <div class="section-era">第三纪元 · 扩展期 · 2015–2018</div>
+      <div class="section-title">Linux 4.x — 网络命名空间与容器化</div>
+      <div class="section-subtitle">每个网络命名空间拥有独立的邻居表，容器网络隔离的基础</div>
+      <div class="section-divider"></div>
+
+      <div class="card">
+        <div class="card-title">🐳 背景：Docker 与容器网络爆发</div>
+        <div class="card-body">
+          <p>2013–2015 年，Docker 的普及使 Linux 网络命名空间（network namespace）从一个"存在但鲜少使用"的特性变成了基础设施的核心。每个容器拥有独立的网络栈，理应拥有独立的邻居表——但早期实现中，邻居表是全局的，这导致：</p>
+          <ul style="padding-left:20px;font-size:14px;color:var(--text-muted);line-height:2;">
+            <li>同一主机上的两个容器可能共享 ARP 缓存，造成信息泄露</li>
+            <li>容器删除时残留的邻居条目污染全局表</li>
+            <li>gc_thresh 参数无法按命名空间隔离配置</li>
+            <li>VXLAN/overlay 网络中，内外层 ARP 条目混杂</li>
+          </ul>
+        </div>
+      </div>
+
+      <!-- SVG: 网络命名空间邻居表隔离 -->
+      <div class="svg-wrap">
+        <svg viewBox="0 0 720 260" xmlns="http://www.w3.org/2000/svg" style="width:100%;height:auto;">
+          <text x="360" y="22" fill="#e6edf3" font-size="13" font-weight="700" text-anchor="middle" font-family="sans-serif">网络命名空间隔离：每个 netns 独立邻居表</text>
+          <!-- Host netns -->
+          <rect x="20" y="40" width="200" height="200" rx="8" fill="#1a2a1a" stroke="#3fb950" stroke-width="1.5"/>
+          <text x="120" y="60" fill="#3fb950" font-size="11" font-weight="700" text-anchor="middle" font-family="sans-serif">Host netns (init_net)</text>
+          <rect x="35" y="70" width="170" height="50" rx="4" fill="#1c2128" stroke="#30363d"/>
+          <text x="120" y="88" fill="#8b949e" font-size="10" text-anchor="middle" font-family="sans-serif">arp_tbl (ipv4)</text>
+          <text x="120" y="102" fill="#484f58" font-size="9" text-anchor="middle" font-family="sans-serif">10.0.0.x → MAC</text>
+          <rect x="35" y="130" width="170" height="50" rx="4" fill="#1c2128" stroke="#30363d"/>
+          <text x="120" y="148" fill="#8b949e" font-size="10" text-anchor="middle" font-family="sans-serif">nd_tbl (ipv6)</text>
+          <text x="120" y="162" fill="#484f58" font-size="9" text-anchor="middle" font-family="sans-serif">fe80::x → MAC</text>
+          <text x="120" y="220" fill="#8b949e" font-size="9" text-anchor="middle" font-family="sans-serif">gc_thresh 独立配置</text>
+
+          <!-- Container 1 netns -->
+          <rect x="260" y="40" width="200" height="200" rx="8" fill="#1a2a3a" stroke="#58a6ff" stroke-width="1.5"/>
+          <text x="360" y="60" fill="#58a6ff" font-size="11" font-weight="700" text-anchor="middle" font-family="sans-serif">Container 1 netns</text>
+          <rect x="275" y="70" width="170" height="50" rx="4" fill="#1c2128" stroke="#30363d"/>
+          <text x="360" y="88" fill="#8b949e" font-size="10" text-anchor="middle" font-family="sans-serif">arp_tbl (ipv4)</text>
+          <text x="360" y="102" fill="#484f58" font-size="9" text-anchor="middle" font-family="sans-serif">172.17.0.x → MAC</text>
+          <rect x="275" y="130" width="170" height="50" rx="4" fill="#1c2128" stroke="#30363d"/>
+          <text x="360" y="148" fill="#8b949e" font-size="10" text-anchor="middle" font-family="sans-serif">nd_tbl (ipv6)</text>
+          <text x="360" y="162" fill="#484f58" font-size="9" text-anchor="middle" font-family="sans-serif">fd00::x → MAC</text>
+          <text x="360" y="220" fill="#8b949e" font-size="9" text-anchor="middle" font-family="sans-serif">完全隔离，不可见其他 netns</text>
+
+          <!-- Container 2 netns -->
+          <rect x="500" y="40" width="200" height="200" rx="8" fill="#2a1a3a" stroke="#d2a8ff" stroke-width="1.5"/>
+          <text x="600" y="60" fill="#d2a8ff" font-size="11" font-weight="700" text-anchor="middle" font-family="sans-serif">Container 2 netns</text>
+          <rect x="515" y="70" width="170" height="50" rx="4" fill="#1c2128" stroke="#30363d"/>
+          <text x="600" y="88" fill="#8b949e" font-size="10" text-anchor="middle" font-family="sans-serif">arp_tbl (ipv4)</text>
+          <text x="600" y="102" fill="#484f58" font-size="9" text-anchor="middle" font-family="sans-serif">172.17.0.x → MAC</text>
+          <rect x="515" y="130" width="170" height="50" rx="4" fill="#1c2128" stroke="#30363d"/>
+          <text x="600" y="148" fill="#8b949e" font-size="10" text-anchor="middle" font-family="sans-serif">nd_tbl (ipv6)</text>
+          <text x="600" y="162" fill="#484f58" font-size="9" text-anchor="middle" font-family="sans-serif">fd00::y → MAC</text>
+          <text x="600" y="220" fill="#8b949e" font-size="9" text-anchor="middle" font-family="sans-serif">同 IP 不同 MAC，互不干扰</text>
+          <!-- Isolation markers -->
+          <text x="237" y="140" fill="#f78166" font-size="16" text-anchor="middle" font-family="sans-serif">🚫</text>
+          <text x="477" y="140" fill="#f78166" font-size="16" text-anchor="middle" font-family="sans-serif">🚫</text>
+        </svg>
+      </div>
+
+      <div class="card">
+        <div class="card-title">🔧 neigh_parms 的 per-device 配置</div>
+        <div class="card-body">
+          <p><code>struct neigh_parms</code> 允许为每个网络设备（<code>dev</code>）定制邻居行为参数，覆盖全局默认值：</p>
+          <pre style="font-size:11px;line-height:1.5;">struct neigh_parms {
+    possible_net_t  net;                    /* 所属网络命名空间 */
+    struct net_device *dev;                  /* 绑定设备，NULL=默认 */
+    int reachable_time;                      /* 动态计算的可达时间 */
+    int data[NEIGH_VAR_DATA_MAX];            /* 所有可调参数 */
+    DECLARE_BITMAP(data_state, NEIGH_VAR_DATA_MAX); /* 哪些被显式设置 */
+};</pre>
+          <p>这使得管理员可以针对不同接口设置不同的 ARP/NDP 行为：</p>
+          <pre style="font-size:11px;line-height:1.5;"># 为 eth0 单独设置较短的 reachable time（高流量接口）
+ip link set eth0 ... 
+sysctl net.ipv4.neigh.eth0.base_reachable_time_ms=15000
+
+# 为 eth1 设置更大的 gc_thresh（大规模 ARP 表）
+sysctl net.ipv4.neigh.eth1.gc_thresh3=8192</pre>
+        </div>
+      </div>
+
+      <div class="callout callout-principle">
+        <div class="callout-title">🔬 第一性原理</div>
+        隔离的本质是：<strong>不同租户的状态不应相互影响</strong>。网络命名空间为邻居子系统带来的隔离，是将"全局单例"分解为"每实例独立副本"的工程实践。其代价是每个命名空间需要独立维护一张表（内存开销），收益是完全的故障隔离和安全边界——这正是云计算多租户模型的物理基础。
+      </div>
+    </section>
+
+    <!-- ===== S7: SDN/外部学习 ===== -->
+    <section class="section" id="s7">
+      <div class="section-era">第四纪元 · 云原生期 · 2018–2021</div>
+      <div class="section-title">Linux 5.x — SDN 支持与外部学习条目</div>
+      <div class="section-subtitle">NTF_EXT_LEARNED、NTF_MANAGED：控制平面协同的新范式</div>
+      <div class="section-divider"></div>
+
+      <div class="card">
+        <div class="card-title">🌩️ 背景：SDN 与 EVPN 时代</div>
+        <div class="card-body">
+          <p>在 BGP EVPN（RFC 7432）、VXLAN Overlay、Kubernetes CNI 等场景中，<strong>邻居表条目不再仅由内核的 ARP/NDP 过程自动学习</strong>，而是由用户空间的控制平面（如 FRR 路由套件、Calico、Cilium）通过 rtnetlink 注入内核。</p>
+          <p>传统问题：控制平面注入的条目会被内核 GC 当作普通动态条目处理——在超时或 GC 触发时被删除，导致控制平面需要不断重新注入，造成振荡。</p>
+        </div>
+      </div>
+
+      <div class="card">
+        <div class="card-title">🏷️ NTF_EXT_LEARNED：外部学习标志</div>
+        <div class="card-body">
+          <p>Roopa Prabhu（Cumulus Networks）在 2018 年提交了 <code>NTF_EXT_LEARNED</code> 支持（<em>"neighbour: support for NTF_EXT_LEARNED flag"</em>），专为 EVPN/SDN 场景设计：</p>
+          <pre style="font-size:11px;line-height:1.5;">/* 添加外部学习条目 */
+ip neigh add 192.168.178.30 dev eth0 \
+  lladdr aa:bb:cc:dd:ee:ff extern_learn
+
+/* 内核 GC 跳过此类条目 */
+/* net/core/neighbour.c: neigh_periodic_work() */
+if ((state & (NUD_PERMANENT | NUD_IN_TIMER)) ||
+    (n->flags & NTF_EXT_LEARNED)) {  /* ← 新增判断 */
+    write_unlock(&n->lock);
+    goto next_elt;  /* GC 不删除外部学习条目 */
+}</pre>
+          <p>这使得 BGP/EVPN 控制平面可以将远端 VTEP 学习到的 MAC/IP 映射注入内核，而不用担心被 GC 清除。</p>
+        </div>
+      </div>
+
+      <div class="card">
+        <div class="card-title">🤖 NTF_MANAGED：自动刷新的托管条目</div>
+        <div class="card-body">
+          <p>进一步地，<code>NTF_MANAGED</code>（内核扩展标志）允许控制平面声明"此条目应保持 REACHABLE 状态"——内核会周期性地主动探测该条目，确保其始终有效，而无需控制平面轮询：</p>
+          <pre style="font-size:11px;line-height:1.5;">/* 托管条目：内核自动维护 REACHABLE 状态 */
+ip neigh add 192.168.1.100 dev eth0 managed
+
+/* 对应内核行为：
+   - 条目不存在时：内核主动发起 ARP 解析
+   - 条目 STALE 时：内核自动发起单播探测
+   - 解析失败时：通知用户空间（via netlink）*/</pre>
+        </div>
+      </div>
+
+      <!-- SVG: SDN 控制平面协同 -->
+      <div class="svg-wrap">
+        <svg viewBox="0 0 720 260" xmlns="http://www.w3.org/2000/svg" style="width:100%;height:auto;">
+          <text x="360" y="22" fill="#e6edf3" font-size="13" font-weight="700" text-anchor="middle" font-family="sans-serif">SDN 控制平面与内核邻居子系统协同架构</text>
+
+          <!-- Control Plane (User Space) -->
+          <rect x="20" y="40" width="680" height="80" rx="8" fill="#1c2128" stroke="#d2a8ff" stroke-width="1.5"/>
+          <text x="360" y="58" fill="#d2a8ff" font-size="11" font-weight="700" text-anchor="middle" font-family="sans-serif">用户空间控制平面</text>
+          <!-- Sub-boxes -->
+          <rect x="35" y="65" width="120" height="44" rx="4" fill="#2a1a3a" stroke="#d2a8ff" stroke-width="1"/>
+          <text x="95" y="83" fill="#d2a8ff" font-size="10" text-anchor="middle" font-family="sans-serif">FRR / Bird</text>
+          <text x="95" y="97" fill="#8b949e" font-size="9" text-anchor="middle" font-family="sans-serif">BGP EVPN</text>
+          <rect x="175" y="65" width="120" height="44" rx="4" fill="#2a1a3a" stroke="#d2a8ff" stroke-width="1"/>
+          <text x="235" y="83" fill="#d2a8ff" font-size="10" text-anchor="middle" font-family="sans-serif">Cilium / Calico</text>
+          <text x="235" y="97" fill="#8b949e" font-size="9" text-anchor="middle" font-family="sans-serif">K8s CNI</text>
+          <rect x="315" y="65" width="120" height="44" rx="4" fill="#2a1a3a" stroke="#d2a8ff" stroke-width="1"/>
+          <text x="375" y="83" fill="#d2a8ff" font-size="10" text-anchor="middle" font-family="sans-serif">OVS / OVN</text>
+          <text x="375" y="97" fill="#8b949e" font-size="9" text-anchor="middle" font-family="sans-serif">OpenFlow</text>
+          <rect x="455" y="65" width="100" height="44" rx="4" fill="#2a1a3a" stroke="#d2a8ff" stroke-width="1"/>
+          <text x="505" y="83" fill="#d2a8ff" font-size="10" text-anchor="middle" font-family="sans-serif">arpd (用户态)</text>
+          <text x="505" y="97" fill="#8b949e" font-size="9" text-anchor="middle" font-family="sans-serif">CONFIG_ARPD</text>
+
+          <!-- rtnetlink arrows -->
+          <line x1="360" y1="120" x2="360" y2="150" stroke="#58a6ff" stroke-width="2" marker-end="url(#a1)"/>
+          <text x="400" y="140" fill="#58a6ff" font-size="10" font-family="sans-serif">rtnetlink RTM_NEWNEIGH</text>
+          <text x="400" y="153" fill="#8b949e" font-size="9" font-family="sans-serif">(NTF_EXT_LEARNED / NTF_MANAGED)</text>
+
+          <!-- Kernel neigh table -->
+          <rect x="20" y="155" width="680" height="95" rx="8" fill="#1a2a3a" stroke="#58a6ff" stroke-width="1.5"/>
+          <text x="360" y="173" fill="#58a6ff" font-size="11" font-weight="700" text-anchor="middle" font-family="sans-serif">内核邻居子系统 (net/core/neighbour.c)</text>
+          <!-- Entry types -->
+          <rect x="35" y="180" width="130" height="60" rx="4" fill="#1c2128" stroke="#3fb950" stroke-width="1"/>
+          <text x="100" y="198" fill="#3fb950" font-size="10" font-weight="700" text-anchor="middle" font-family="sans-serif">NUD_PERMANENT</text>
+          <text x="100" y="212" fill="#8b949e" font-size="9" text-anchor="middle" font-family="sans-serif">静态配置，永不GC</text>
+          <text x="100" y="226" fill="#8b949e" font-size="9" text-anchor="middle" font-family="sans-serif">arp -s / ip neigh add perm</text>
+
+          <rect x="185" y="180" width="140" height="60" rx="4" fill="#1c2128" stroke="#ffa657" stroke-width="1"/>
+          <text x="255" y="198" fill="#ffa657" font-size="10" font-weight="700" text-anchor="middle" font-family="sans-serif">NTF_EXT_LEARNED</text>
+          <text x="255" y="212" fill="#8b949e" font-size="9" text-anchor="middle" font-family="sans-serif">外部注入，GC免疫</text>
+          <text x="255" y="226" fill="#8b949e" font-size="9" text-anchor="middle" font-family="sans-serif">Linux 4.20+ (2018)</text>
+
+          <rect x="345" y="180" width="130" height="60" rx="4" fill="#1c2128" stroke="#d2a8ff" stroke-width="1"/>
+          <text x="410" y="198" fill="#d2a8ff" font-size="10" font-weight="700" text-anchor="middle" font-family="sans-serif">NTF_MANAGED</text>
+          <text x="410" y="212" fill="#8b949e" font-size="9" text-anchor="middle" font-family="sans-serif">自动探测保活</text>
+          <text x="410" y="226" fill="#8b949e" font-size="9" text-anchor="middle" font-family="sans-serif">Linux 5.13+ (2021)</text>
+
+          <rect x="495" y="180" width="195" height="60" rx="4" fill="#1c2128" stroke="#58a6ff" stroke-width="1"/>
+          <text x="592" y="198" fill="#58a6ff" font-size="10" font-weight="700" text-anchor="middle" font-family="sans-serif">NTF_EXT_VALIDATED (6.x)</text>
+          <text x="592" y="212" fill="#8b949e" font-size="9" text-anchor="middle" font-family="sans-serif">外部验证，内核不删除</text>
+          <text x="592" y="226" fill="#8b949e" font-size="9" text-anchor="middle" font-family="sans-serif">可探测并通知用户空间</text>
+        </svg>
+      </div>
+
+      <div class="card">
+        <div class="card-title">🔔 邻居事件通知（Netlink 异步）</div>
+        <div class="card-body">
+          <p>Linux 5.x 增强了邻居状态变化的异步通知机制。用户空间的控制平面可以通过 <code>RTMGRP_NEIGH</code> 多播组订阅邻居表事件，实时感知条目的创建、更新、删除和状态变化：</p>
+          <pre style="font-size:11px;line-height:1.5;">/* 用户空间监听邻居事件 */
+nl_socket_add_memberships(sk, RTNLGRP_NEIGH);
+// 收到事件：RTM_NEWNEIGH / RTM_DELNEIGH
+// 包含：IP地址、MAC地址、NUD状态、接口索引
+
+/* 典型事件流：
+   INCOMPLETE → REACHABLE (ARP 解析完成)
+   REACHABLE  → STALE     (超时)
+   STALE      → DELAY     (有新流量)
+   DELAY      → PROBE     (需要单播确认)
+   PROBE      → FAILED    (无法联系)
+   FAILED     → (删除)    */</pre>
+        </div>
+      </div>
+
+      <div class="callout callout-principle">
+        <div class="callout-title">🔬 第一性原理</div>
+        在 SDN 时代，邻居发现不再是一个自包含的分布式协议，而成为了"控制平面意图"和"数据平面状态"之间的接口。<code>NTF_EXT_LEARNED</code> 的本质是：<strong>承认内核 ARP/NDP 的学习能力有边界，允许外部更高层知识（BGP EVPN、SDN 控制器）注入内核数据平面</strong>，而不是让内核重新发明 BGP。这是"单一职责原则"在系统设计层面的体现——内核只负责维护和转发，策略由外部控制平面决定。
+      </div>
+    </section>
+
+    <!-- ===== S8: Linux 6.x ===== -->
+    <section class="section" id="s8">
+      <div class="section-era">第四纪元 · 云原生期 · 2022–2024</div>
+      <div class="section-title">Linux 6.x — 现代化精炼</div>
+      <div class="section-subtitle">去除 rcu_bh、lockdep 注解、RFC 9131 支持、数据竞争修复</div>
+      <div class="section-divider"></div>
+
+      <div class="card">
+        <div class="card-title">🧹 去除 rcu_bh：简化并发模型</div>
+        <div class="card-body">
+          <p>Linux 6.1 中，Eric Dumazet 提交了 <em>"neighbour: switch to standard rcu, instead of rcu_bh"</em>（<a href="https://cdn.kernel.org/pub/linux/kernel//v6.x/ChangeLog-6.1.57" target="_blank">ChangeLog-6.1.57</a>），移除了对 <code>rcu_bh</code>（底半部 RCU）的依赖：</p>
+          <div class="callout callout-info" style="margin-top:0;">
+            <div class="callout-title">📖 技术细节</div>
+            <code>rcu_bh</code> 是一种特殊的 RCU 变体，它通过"禁止软中断"来定义宽限期。随着内核向 PREEMPT_RCU 演进，<code>rcu_bh</code> 不再比标准 <code>rcu</code> 更高效——尤其是邻居条目使用标准 <code>call_rcu()</code> 释放时，混用 <code>rcu_bh</code> 反而会带来不必要的底半部禁用开销。
+          </div>
+          <p>同步提交 <em>"neighbour: annotate lockless accesses to n->nud_state"</em> 为所有无锁访问的 <code>nud_state</code> 字段加上 <code>READ_ONCE()</code>/<code>WRITE_ONCE()</code> 注解，使 KCSAN（内核并发检测器）能够检测数据竞争。</p>
+        </div>
+      </div>
+
+      <div class="card">
+        <div class="card-title">🌐 RFC 9131：更新 IPv6 邻居广告处理</div>
+        <div class="card-body">
+          <p>RFC 9131（2021）更新了 RFC 4861 中关于接收未请求邻居广告（Unsolicited Neighbor Advertisement）的处理规则。Linux 6.x 在 <code>net/ipv6/ndisc.c</code> 中实现了这一更新：</p>
+          <pre style="font-size:11px;line-height:1.5;">/* RFC 9131: 路由器可以对无对应条目的 NA 创建 STALE 条目
+ * 条件：accept_untracked_na=1 且本机配置为路由器
+ *
+ *   entry  accept  fwding  solicited   behavior
+ *   ------  ------  ------  ---------  ----------------
+ *   absent    1       1         X      Add new STALE entry ← 新增
+ *   absent    1       0         X      Do nothing
+ *   absent    0       X         X      Do nothing
+ */
+if (!neigh && lladdr && idev &&
+    READ_ONCE(idev->cnf.forwarding)) {
+    if (accept_untracked_na(dev, saddr)) {
+        neigh = neigh_create(&nd_tbl, &msg->target, dev);
+        new_state = NUD_STALE;
+    }
+}</pre>
+          <p>此改进使路由器能够更积极地学习网络拓扑，减少后续通信建立时的延迟。</p>
+        </div>
+      </div>
+
+      <div class="card">
+        <div class="card-title">🛡️ NTF_EXT_VALIDATED：外部验证条目</div>
+        <div class="card-body">
+          <p>Linux 6.x 引入了 <code>NTF_EXT_VALIDATED</code>（<code>NDA_FLAGS_EXT</code> 扩展标志），代表"由外部控制平面验证为有效"的条目：</p>
+          <pre style="font-size:11px;line-height:1.5;">/**
+ * NTF_EXT_EXT_VALIDATED flagged neighbor entries were externally
+ * validated by a user space control plane. The kernel will not
+ * remove or invalidate them, but it can probe them and notify
+ * user space when they become reachable.
+ * The kernel will return the entry to stale state if it did not
+ * receive a confirmation after probing the entry.
+ */</pre>
+          <p>与 <code>NTF_EXT_LEARNED</code> 的区别：</p>
+          <div class="grid-2">
+            <div>
+              <p><strong style="color:var(--accent5)">NTF_EXT_LEARNED</strong></p>
+              <p style="font-size:13px;color:var(--text-muted);">GC 不删除，内核不主动探测，适合"相信控制平面"的场景</p>
+            </div>
+            <div>
+              <p><strong style="color:var(--accent4)">NTF_EXT_VALIDATED</strong></p>
+              <p style="font-size:13px;color:var(--text-muted);">内核仍可探测并通知，控制平面可感知实际可达性变化，适合需要验证的场景</p>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <!-- SVG: 历史里程碑时间轴 -->
+      <div class="svg-wrap">
+        <svg viewBox="0 0 740 280" xmlns="http://www.w3.org/2000/svg" style="width:100%;height:auto;">
+          <text x="370" y="22" fill="#e6edf3" font-size="13" font-weight="700" text-anchor="middle" font-family="sans-serif">Linux 邻居子系统演进时间轴</text>
+          <!-- Timeline line -->
+          <line x1="40" y1="120" x2="720" y2="120" stroke="#30363d" stroke-width="2"/>
+          <!-- Milestones -->
+          <!-- 1994 -->
+          <circle cx="60" cy="120" r="6" fill="#484f58"/>
+          <line x1="60" y1="114" x2="60" y2="60" stroke="#484f58" stroke-width="1" stroke-dasharray="3,2"/>
+          <text x="60" y="55" fill="#484f58" font-size="10" text-anchor="middle" font-family="sans-serif">1994</text>
+          <text x="60" y="145" fill="#8b949e" font-size="9" text-anchor="middle" font-family="sans-serif">arp.c 诞生</text>
+          <text x="60" y="157" fill="#484f58" font-size="8" text-anchor="middle" font-family="sans-serif">Florian LaRoche</text>
+
+          <!-- 1997 -->
+          <circle cx="160" cy="120" r="8" fill="#58a6ff"/>
+          <line x1="160" y1="112" x2="160" y2="50" stroke="#58a6ff" stroke-width="1.5"/>
+          <text x="160" y="44" fill="#58a6ff" font-size="10" font-weight="700" text-anchor="middle" font-family="sans-serif">1997</text>
+          <rect x="108" y="130" width="104" height="28" rx="4" fill="#1a2a3a" stroke="#58a6ff"/>
+          <text x="160" y="145" fill="#58a6ff" font-size="9" text-anchor="middle" font-family="sans-serif">neighbour.c 创建</text>
+          <text x="160" y="157" fill="#8b949e" font-size="8" text-anchor="middle" font-family="sans-serif">NUD状态机 (Kuznetsov)</text>
+
+          <!-- 2001 -->
+          <circle cx="270" cy="120" r="7" fill="#3fb950"/>
+          <line x1="270" y1="113" x2="270" y2="56" stroke="#3fb950" stroke-width="1.5"/>
+          <text x="270" y="50" fill="#3fb950" font-size="10" font-weight="700" text-anchor="middle" font-family="sans-serif">2001</text>
+          <rect x="220" y="130" width="100" height="28" rx="4" fill="#1a3a1a" stroke="#3fb950"/>
+          <text x="270" y="145" fill="#3fb950" font-size="9" text-anchor="middle" font-family="sans-serif">IPv6 NDP 整合</text>
+          <text x="270" y="157" fill="#8b949e" font-size="8" text-anchor="middle" font-family="sans-serif">nd_tbl / ndisc.c</text>
+
+          <!-- 2004 -->
+          <circle cx="360" cy="120" r="6" fill="#ffa657"/>
+          <line x1="360" y1="114" x2="360" y2="62" stroke="#ffa657" stroke-width="1"/>
+          <text x="360" y="56" fill="#ffa657" font-size="10" text-anchor="middle" font-family="sans-serif">2004</text>
+          <rect x="312" y="130" width="96" height="28" rx="4" fill="#2a1a1a" stroke="#ffa657"/>
+          <text x="360" y="145" fill="#ffa657" font-size="9" text-anchor="middle" font-family="sans-serif">arp_ignore/announce</text>
+          <text x="360" y="157" fill="#8b949e" font-size="8" text-anchor="middle" font-family="sans-serif">LVS/多宿主支持</text>
+
+          <!-- 2012 -->
+          <circle cx="475" cy="120" r="8" fill="#58a6ff"/>
+          <line x1="475" y1="112" x2="475" y2="48" stroke="#58a6ff" stroke-width="1.5"/>
+          <text x="475" y="42" fill="#58a6ff" font-size="10" font-weight="700" text-anchor="middle" font-family="sans-serif">2012</text>
+          <rect x="425" y="130" width="100" height="28" rx="4" fill="#1a2a3a" stroke="#58a6ff"/>
+          <text x="475" y="145" fill="#58a6ff" font-size="9" text-anchor="middle" font-family="sans-serif">RCU 无锁化</text>
+          <text x="475" y="157" fill="#8b949e" font-size="8" text-anchor="middle" font-family="sans-serif">Eric Dumazet</text>
+
+          <!-- 2018 -->
+          <circle cx="575" cy="120" r="7" fill="#d2a8ff"/>
+          <line x1="575" y1="113" x2="575" y2="55" stroke="#d2a8ff" stroke-width="1.5"/>
+          <text x="575" y="48" fill="#d2a8ff" font-size="10" font-weight="700" text-anchor="middle" font-family="sans-serif">2018</text>
+          <rect x="525" y="130" width="100" height="28" rx="4" fill="#2a1a3a" stroke="#d2a8ff"/>
+          <text x="575" y="145" fill="#d2a8ff" font-size="9" text-anchor="middle" font-family="sans-serif">NTF_EXT_LEARNED</text>
+          <text x="575" y="157" fill="#8b949e" font-size="8" text-anchor="middle" font-family="sans-serif">SDN 支持</text>
+
+          <!-- 2022 -->
+          <circle cx="680" cy="120" r="8" fill="#3fb950"/>
+          <line x1="680" y1="112" x2="680" y2="50" stroke="#3fb950" stroke-width="1.5"/>
+          <text x="680" y="44" fill="#3fb950" font-size="10" font-weight="700" text-anchor="middle" font-family="sans-serif">2022+</text>
+          <rect x="625" y="130" width="106" height="28" rx="4" fill="#1a3a1a" stroke="#3fb950"/>
+          <text x="678" y="145" fill="#3fb950" font-size="9" text-anchor="middle" font-family="sans-serif">rcu_bh 移除</text>
+          <text x="678" y="157" fill="#8b949e" font-size="8" text-anchor="middle" font-family="sans-serif">RFC 9131 / lockdep</text>
+
+          <!-- Bottom legend -->
+          <rect x="40" y="195" width="660" height="72" rx="6" fill="#1c2128" stroke="#30363d"/>
+          <text x="370" y="213" fill="#e6edf3" font-size="11" font-weight="700" text-anchor="middle" font-family="sans-serif">关键改进维度</text>
+          <text x="60" y="232" fill="#58a6ff" font-size="10" font-family="sans-serif">🔵 正确性</text>
+          <text x="60" y="248" fill="#8b949e" font-size="9" font-family="sans-serif">NUD状态机/竞态修复</text>
+          <text x="180" y="232" fill="#3fb950" font-size="10" font-family="sans-serif">🟢 协议支持</text>
+          <text x="180" y="248" fill="#8b949e" font-size="9" font-family="sans-serif">IPv6/NDP/RFC合规</text>
+          <text x="310" y="232" fill="#ffa657" font-size="10" font-family="sans-serif">🟠 可管理性</text>
+          <text x="310" y="248" fill="#8b949e" font-size="9" font-family="sans-serif">Netlink/sysctl/proc</text>
+          <text x="450" y="232" fill="#58a6ff" font-size="10" font-family="sans-serif">🔵 性能</text>
+          <text x="450" y="248" fill="#8b949e" font-size="9" font-family="sans-serif">RCU/hh_cache/动态哈希</text>
+          <text x="540" y="232" fill="#d2a8ff" font-size="10" font-family="sans-serif">🟣 云原生</text>
+          <text x="540" y="248" fill="#8b949e" font-size="9" font-family="sans-serif">netns/SDN/EXT_LEARNED</text>
+          <text x="660" y="232" fill="#3fb950" font-size="10" font-family="sans-serif">🟢 安全</text>
+          <text x="660" y="248" fill="#8b949e" font-size="9" font-family="sans-serif">Jenkins Hash/lockdep</text>
+        </svg>
+      </div>
+
+      <div class="callout callout-principle">
+        <div class="callout-title">🔬 第一性原理</div>
+        软件的演进总是在回应外部约束的变化：CPU 从单核变多核（→ RCU），网络从局域网变云原生（→ 命名空间、SDN 支持），协议从 IPv4 变双栈（→ 统一框架），规模从百台变万台（→ 动态哈希、GC 优化）。<strong>Linux 邻居子系统 30 年的演进史，本质上是一部对"环境假设改变"的持续适应史</strong>——每一次重构，都是当旧假设无法再解释新现实时的必然响应。
+      </div>
+    </section>
+
+    <!-- ===== S9: 第一性原理总结 ===== -->
+    <section class="section" id="s9">
+      <div class="section-era">总结</div>
+      <div class="section-title">🎯 第一性原理总结</div>
+      <div class="section-subtitle">从最基本的物理约束，推导 Linux 邻居子系统的所有设计决策</div>
+      <div class="section-divider"></div>
+
+      <div class="card">
+        <div class="card-title">🧱 公理：物理世界的不可绕过约束</div>
+        <div class="card-body">
+          <p>以太网帧必须携带目标 MAC 地址，这是物理层的硬性要求，无法更改。IP 协议工作在逻辑层，只认 IP 地址。因此：</p>
+          <div class="callout callout-warn" style="margin:12px 0 0 0;">
+            <strong>不可变公理：</strong> 在共享链路上发送 IP 数据包之前，必须已知目标 IP 对应的链路层地址。
+          </div>
+        </div>
+      </div>
+
+      <div class="grid-2">
+        <div class="card">
+          <div class="card-title">📐 推论一：必须有缓存</div>
+          <div class="card-body">
+            <p>每次发包都广播查询 MAC 地址的代价是不可接受的（O(n×m) 网络开销，n=发包率，m=主机数）。因此必须维护一个本地缓存——这是 <code>neigh_table</code> 存在的根本原因。</p>
+          </div>
+        </div>
+        <div class="card">
+          <div class="card-title">📐 推论二：缓存必须有时效</div>
+          <div class="card-body">
+            <p>网络是动态的，主机会宕机、迁移、更换网卡。永不过期的缓存会导致数据发往错误目标。因此必须有 TTL 和主动探测——这是 NUD 状态机的根本原因。</p>
+          </div>
+        </div>
+        <div class="card">
+          <div class="card-title">📐 推论三：探测必须节制</div>
+          <div class="card-body">
+            <p>如果每个主机的每条缓存条目都频繁广播探测，网络会被 ARP 淹没（ARP Storm）。因此探测必须是单播优先、有退避策略的——这是 DELAY→PROBE 转换的根本原因。</p>
+          </div>
+        </div>
+        <div class="card">
+          <div class="card-title">📐 推论四：上层可以辅助</div>
+          <div class="card-body">
+            <p>TCP ACK 本身就是"对方可达"的证明。利用上层确认信息来延长邻居条目有效期，比重新发 ARP 代价更低——这是 <code>neigh_confirm()</code> 的根本原因。</p>
+          </div>
+        </div>
+      </div>
+
+      <!-- SVG: 第一性原理推导图 -->
+      <div class="svg-wrap">
+        <svg viewBox="0 0 720 320" xmlns="http://www.w3.org/2000/svg" style="width:100%;height:auto;">
+          <text x="360" y="22" fill="#e6edf3" font-size="13" font-weight="700" text-anchor="middle" font-family="sans-serif">第一性原理推导：从物理约束到系统设计</text>
+          <!-- Layer 1: Physical constraint -->
+          <rect x="210" y="38" width="300" height="40" rx="8" fill="#2a1a1a" stroke="#f78166" stroke-width="2"/>
+          <text x="360" y="63" fill="#f78166" font-size="12" font-weight="700" text-anchor="middle" font-family="sans-serif">物理约束：以太网需要 MAC 地址</text>
+
+          <!-- Arrow -->
+          <line x1="360" y1="78" x2="360" y2="98" stroke="#8b949e" stroke-width="1.5" marker-end="url(#a1)"/>
+          <text x="390" y="92" fill="#8b949e" font-size="10" font-family="sans-serif">推论</text>
+
+          <!-- Layer 2: Mapping needed -->
+          <rect x="170" y="100" width="380" height="36" rx="6" fill="#1a2a3a" stroke="#58a6ff" stroke-width="1.5"/>
+          <text x="360" y="123" fill="#58a6ff" font-size="11" font-weight="700" text-anchor="middle" font-family="sans-serif">必须维护 IP → MAC 映射（neigh_table）</text>
+
+          <!-- Branch arrows -->
+          <line x1="250" y1="136" x2="140" y2="160" stroke="#8b949e" stroke-width="1.2" marker-end="url(#a1)"/>
+          <line x1="360" y1="136" x2="360" y2="160" stroke="#8b949e" stroke-width="1.2" marker-end="url(#a1)"/>
+          <line x1="470" y1="136" x2="580" y2="160" stroke="#8b949e" stroke-width="1.2" marker-end="url(#a1)"/>
+
+          <!-- Layer 3: Three constraints -->
+          <rect x="30" y="162" width="180" height="52" rx="6" fill="#1c2128" stroke="#ffa657" stroke-width="1.2"/>
+          <text x="120" y="183" fill="#ffa657" font-size="10" font-weight="700" text-anchor="middle" font-family="sans-serif">映射会过时</text>
+          <text x="120" y="198" fill="#8b949e" font-size="9" text-anchor="middle" font-family="sans-serif">主机会宕机/迁移/换网卡</text>
+          <text x="120" y="210" fill="#8b949e" font-size="9" text-anchor="middle" font-family="sans-serif">→ NUD 状态机</text>
+
+          <rect x="270" y="162" width="180" height="52" rx="6" fill="#1c2128" stroke="#3fb950" stroke-width="1.2"/>
+          <text x="360" y="183" fill="#3fb950" font-size="10" font-weight="700" text-anchor="middle" font-family="sans-serif">查询有开销</text>
+          <text x="360" y="198" fill="#8b949e" font-size="9" text-anchor="middle" font-family="sans-serif">广播/组播消耗带宽和CPU</text>
+          <text x="360" y="210" fill="#8b949e" font-size="9" text-anchor="middle" font-family="sans-serif">→ 缓存 + 单播探测</text>
+
+          <rect x="510" y="162" width="180" height="52" rx="6" fill="#1c2128" stroke="#d2a8ff" stroke-width="1.2"/>
+          <text x="600" y="183" fill="#d2a8ff" font-size="10" font-weight="700" text-anchor="middle" font-family="sans-serif">规模不可预知</text>
+          <text x="600" y="198" fill="#8b949e" font-size="9" text-anchor="middle" font-family="sans-serif">表可能无限增长</text>
+          <text x="600" y="210" fill="#8b949e" font-size="9" text-anchor="middle" font-family="sans-serif">→ GC + 动态哈希</text>
+
+          <!-- Lower arrows -->
+          <line x1="120" y1="214" x2="120" y2="238" stroke="#8b949e" stroke-width="1.2" marker-end="url(#a1)"/>
+          <line x1="360" y1="214" x2="360" y2="238" stroke="#8b949e" stroke-width="1.2" marker-end="url(#a1)"/>
+          <line x1="600" y1="214" x2="600" y2="238" stroke="#8b949e" stroke-width="1.2" marker-end="url(#a1)"/>
+
+          <!-- Layer 4: Solutions -->
+          <rect x="30" y="240" width="180" height="52" rx="6" fill="#1a2a1a" stroke="#3fb950" stroke-width="1.2"/>
+          <text x="120" y="261" fill="#3fb950" font-size="10" font-weight="700" text-anchor="middle" font-family="sans-serif">INCOMPLETE→REACHABLE</text>
+          <text x="120" y="275" fill="#8b949e" font-size="9" text-anchor="middle" font-family="sans-serif">→STALE→DELAY→PROBE</text>
+          <text x="120" y="287" fill="#8b949e" font-size="9" text-anchor="middle" font-family="sans-serif">→FAILED (生命周期管理)</text>
+
+          <rect x="270" y="240" width="180" height="52" rx="6" fill="#1a2a1a" stroke="#3fb950" stroke-width="1.2"/>
+          <text x="360" y="261" fill="#3fb950" font-size="10" font-weight="700" text-anchor="middle" font-family="sans-serif">L4确认 + RCU无锁查找</text>
+          <text x="360" y="275" fill="#8b949e" font-size="9" text-anchor="middle" font-family="sans-serif">hh_cache 快路径</text>
+          <text x="360" y="287" fill="#8b949e" font-size="9" text-anchor="middle" font-family="sans-serif">neigh_hh_output()</text>
+
+          <rect x="510" y="240" width="180" height="52" rx="6" fill="#1a2a1a" stroke="#3fb950" stroke-width="1.2"/>
+          <text x="600" y="261" fill="#3fb950" font-size="10" font-weight="700" text-anchor="middle" font-family="sans-serif">gc_thresh1/2/3</text>
+          <text x="600" y="275" fill="#8b949e" font-size="9" text-anchor="middle" font-family="sans-serif">neigh_periodic_work()</text>
+          <text x="600" y="287" fill="#8b949e" font-size="9" text-anchor="middle" font-family="sans-serif">neigh_forced_gc()</text>
+        </svg>
+      </div>
+
+      <div class="card">
+        <div class="card-title">🏆 30 年演进的核心张力</div>
+        <div class="card-body">
+          <p>Linux 邻居子系统的整个演进史，本质上是在三组张力之间持续寻找平衡：</p>
+          <div class="timeline" style="margin-top:16px;">
+            <div class="timeline-item">
+              <div class="timeline-dot green"></div>
+              <div class="timeline-label green">正确性 vs 性能</div>
+              <div class="timeline-text">加锁保证正确性，但代价是串行化；RCU 用更复杂的内存模型换取并发性能。两者的平衡点随 CPU 核心数的增加而不断移动。</div>
+            </div>
+            <div class="timeline-item">
+              <div class="timeline-dot orange"></div>
+              <div class="timeline-label orange">主动发现 vs 被动等待</div>
+              <div class="timeline-text">主动 ARP/NDP 探测能及时发现邻居失效，但会产生网络流量；被动等待流量触发不产生额外开销，但响应延迟高。NUD 的 DELAY 状态就是这一权衡的具体实现。</div>
+            </div>
+            <div class="timeline-item">
+              <div class="timeline-dot purple"></div>
+              <div class="timeline-label purple">内核自治 vs 外部控制</div>
+              <div class="timeline-text">传统 ARP 完全自治（无需人工干预）；现代 SDN 场景要求内核接受外部注入的 MAC/IP 映射。NTF_EXT_LEARNED 等机制是这一张力在 5.x 时代的解决方案。</div>
+            </div>
+            <div class="timeline-item">
+              <div class="timeline-dot red"></div>
+              <div class="timeline-label red">内存效率 vs 响应速度</div>
+              <div class="timeline-text">条目保留越久，后续通信越快（无需重新 ARP）；但内存有限，条目太多会耗尽 gc_thresh3。GC 机制是这一张力的动态调节器。</div>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <div class="callout callout-success">
+        <div class="callout-title">✅ 终极第一性原理</div>
+        <p>邻居子系统解决的根本问题是：<strong>在一个动态、异构、不可信的分布式环境中，以最小的全局代价，维护最新的局部通信路径信息</strong>。</p>
+        <p style="margin-top:8px;">所有 30 年的改进——从 NUD 状态机到 RCU，从命名空间隔离到 SDN 支持——都是在回答同一个问题的不同约束版本：当"动态"变得更动态（虚拟机迁移），当"异构"变得更异构（容器/VXLAN），当"不可信"变得更不可信（多租户），当"全局代价"的边界变了（多核/高速网络），系统如何演化以适应？</p>
+      </div>
+
+      <div class="card" style="margin-top:24px;">
+        <div class="card-title">📚 延伸阅读与原始资料</div>
+        <div class="card-body">
+          <div class="grid-2">
+            <div>
+              <p><strong style="color:var(--accent)">内核源码</strong></p>
+              <ul style="padding-left:16px;font-size:13px;color:var(--text-muted);line-height:2.2;">
+                <li><a href="https://github.com/torvalds/linux/blob/master/net/core/neighbour.c" target="_blank">net/core/neighbour.c</a></li>
+                <li><a href="https://github.com/torvalds/linux/blob/master/net/ipv4/arp.c" target="_blank">net/ipv4/arp.c</a></li>
+                <li><a href="https://github.com/torvalds/linux/blob/master/net/ipv6/ndisc.c" target="_blank">net/ipv6/ndisc.c</a></li>
+                <li><a href="https://github.com/torvalds/linux/blob/master/include/net/neighbour.h" target="_blank">include/net/neighbour.h</a></li>
+                <li><a href="https://github.com/torvalds/linux/blob/master/include/uapi/linux/neighbour.h" target="_blank">include/uapi/linux/neighbour.h</a></li>
+              </ul>
+            </div>
+            <div>
+              <p><strong style="color:var(--accent2)">文档与 RFC</strong></p>
+              <ul style="padding-left:16px;font-size:13px;color:var(--text-muted);line-height:2.2;">
+                <li><a href="https://wiki.linuxfoundation.org/networking/neighboring_subsystem" target="_blank">Linux Foundation Wiki: Neighboring Subsystem</a></li>
+                <li><a href="https://docs.kernel.org/networking/ip-sysctl.html" target="_blank">Kernel IP sysctl 文档</a></li>
+                <li><a href="https://www.man7.org/linux/man-pages/man8/ip-neighbour.8.html" target="_blank">ip-neighbour(8) man page</a></li>
+                <li><a href="https://www.ietf.org/rfc/rfc826.txt" target="_blank">RFC 826 (ARP, 1982)</a></li>
+                <li><a href="https://www.rfc-editor.org/rfc/rfc4861" target="_blank">RFC 4861 (NDP, 2007)</a></li>
+                <li><a href="https://www.rfc-editor.org/rfc/rfc9131" target="_blank">RFC 9131 (Gratuitous NA, 2021)</a></li>
+              </ul>
+            </div>
+          </div>
+        </div>
+      </div>
+    </section>
+
+  </main>
+</div>
+
+<script>
+  // ===== SECTION REGISTRY =====
+  const sections = ['s0','s1','s2','s3','s4','s5','s6','s7','s8','s9'];
+  let currentIdx = 0;
+
+  // ===== PROGRESS BAR =====
+  const progressBar = document.getElementById('progress-bar');
+  function updateProgress() {
+    const doc = document.documentElement;
+    const scrollTop = window.scrollY || doc.scrollTop;
+    const scrollHeight = doc.scrollHeight - doc.clientHeight;
+    const pct = scrollHeight > 0 ? (scrollTop / scrollHeight) * 100 : 0;
+    progressBar.style.width = pct + '%';
+    updateActiveSection();
+  }
+  window.addEventListener('scroll', updateProgress, { passive: true });
+
+  // ===== ACTIVE SECTION TRACKING =====
+  function updateActiveSection() {
+    const headerH = document.getElementById('header').offsetHeight + 3;
+    let activeId = sections[0];
+    for (const id of sections) {
+      const el = document.getElementById(id);
+      if (!el) continue;
+      const rect = el.getBoundingClientRect();
+      if (rect.top <= headerH + 60) activeId = id;
+    }
+    currentIdx = sections.indexOf(activeId);
+    document.querySelectorAll('.sidebar-item').forEach(item => {
+      const href = item.getAttribute('href');
+      item.classList.toggle('active', href === '#' + activeId);
+    });
+    document.getElementById('btn-prev').disabled = currentIdx <= 0;
+    document.getElementById('btn-next').disabled = currentIdx >= sections.length - 1;
+  }
+
+  // ===== NAVIGATION =====
+  function navigate(dir) {
+    const newIdx = currentIdx + dir;
+    if (newIdx < 0 || newIdx >= sections.length) return;
+    const target = document.getElementById(sections[newIdx]);
+    if (target) {
+      const headerH = document.getElementById('header').offsetHeight + 8;
+      const top = target.getBoundingClientRect().top + window.scrollY - headerH;
+      window.scrollTo({ top, behavior: 'smooth' });
+    }
+  }
+
+  // ===== KEYBOARD NAVIGATION =====
+  document.addEventListener('keydown', e => {
+    if (e.target.tagName === 'INPUT' || e.target.tagName === 'TEXTAREA') return;
+    if (e.key === 'ArrowRight') navigate(1);
+    if (e.key === 'ArrowLeft') navigate(-1);
+  });
+
+  // ===== SIDEBAR TOGGLE =====
+  function toggleSidebar() {
+    const sidebar = document.getElementById('sidebar');
+    const overlay = document.getElementById('overlay');
+    const btn = document.getElementById('hamburger');
+    const open = sidebar.classList.toggle('open');
+    overlay.classList.toggle('show', open);
+    btn.classList.toggle('open', open);
+  }
+  function closeSidebar() {
+    const sidebar = document.getElementById('sidebar');
+    const overlay = document.getElementById('overlay');
+    const btn = document.getElementById('hamburger');
+    if (sidebar.classList.contains('open')) {
+      sidebar.classList.remove('open');
+      overlay.classList.remove('show');
+      btn.classList.remove('open');
+    }
+  }
+
+  // ===== INIT =====
+  updateProgress();
+</script>
+</body>
+</html>

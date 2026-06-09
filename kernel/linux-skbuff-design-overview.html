@@ -1,0 +1,1603 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Linux sk_buff 网络协议栈设计原理</title>
+<style>
+  :root {
+    --bg: #0f1117;
+    --sidebar-bg: #161b22;
+    --card-bg: #1a1f2e;
+    --border: #2d3748;
+    --accent: #4f9cf9;
+    --accent2: #7c3aed;
+    --accent3: #10b981;
+    --accent4: #f59e0b;
+    --accent5: #ef4444;
+    --text: #e2e8f0;
+    --text-muted: #94a3b8;
+    --text-dim: #64748b;
+    --code-bg: #0d1117;
+    --highlight: #2d3748;
+    --progress-h: 3px;
+    --sidebar-w: 280px;
+  }
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+  html { scroll-behavior: smooth; }
+  body {
+    background: var(--bg);
+    color: var(--text);
+    font-family: 'Segoe UI', system-ui, -apple-system, sans-serif;
+    font-size: 15px;
+    line-height: 1.7;
+    overflow-x: hidden;
+  }
+
+  /* Progress Bar */
+  #progress-bar {
+    position: fixed; top: 0; left: 0; height: var(--progress-h);
+    width: 0%; background: linear-gradient(90deg, var(--accent), var(--accent2));
+    z-index: 9999; transition: width 0.1s;
+    box-shadow: 0 0 8px var(--accent);
+  }
+
+  /* Sidebar */
+  #sidebar {
+    position: fixed; top: 0; left: 0; height: 100vh;
+    width: var(--sidebar-w);
+    background: var(--sidebar-bg);
+    border-right: 1px solid var(--border);
+    overflow-y: auto; overflow-x: hidden;
+    z-index: 100;
+    transition: transform 0.3s ease;
+    padding-top: var(--progress-h);
+  }
+  #sidebar::-webkit-scrollbar { width: 4px; }
+  #sidebar::-webkit-scrollbar-track { background: transparent; }
+  #sidebar::-webkit-scrollbar-thumb { background: var(--border); border-radius: 2px; }
+
+  .sidebar-header {
+    padding: 20px 16px 12px;
+    border-bottom: 1px solid var(--border);
+  }
+  .sidebar-header h2 {
+    font-size: 13px; font-weight: 700; color: var(--accent);
+    text-transform: uppercase; letter-spacing: 1px;
+  }
+  .sidebar-header p { font-size: 11px; color: var(--text-dim); margin-top: 4px; }
+
+  .nav-group { padding: 8px 0; }
+  .nav-group-title {
+    padding: 6px 16px;
+    font-size: 10px; font-weight: 700; color: var(--text-dim);
+    text-transform: uppercase; letter-spacing: 1.2px;
+  }
+  .nav-item {
+    display: block; padding: 7px 16px 7px 24px;
+    color: var(--text-muted); text-decoration: none;
+    font-size: 13px; cursor: pointer;
+    border-left: 3px solid transparent;
+    transition: all 0.2s;
+    white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+  }
+  .nav-item:hover { color: var(--text); background: rgba(79,156,249,0.07); border-left-color: var(--accent); }
+  .nav-item.active { color: var(--accent); background: rgba(79,156,249,0.12); border-left-color: var(--accent); font-weight: 600; }
+
+  /* Hamburger */
+  #hamburger {
+    display: none; position: fixed; top: 12px; left: 12px;
+    z-index: 200; background: var(--sidebar-bg);
+    border: 1px solid var(--border); border-radius: 8px;
+    padding: 8px 10px; cursor: pointer; flex-direction: column; gap: 4px;
+  }
+  #hamburger span { display: block; width: 20px; height: 2px; background: var(--text); border-radius: 2px; transition: all 0.3s; }
+  #overlay { display: none; position: fixed; inset: 0; background: rgba(0,0,0,0.6); z-index: 99; }
+
+  /* Main Content */
+  #main {
+    margin-left: var(--sidebar-w);
+    min-height: 100vh;
+    transition: margin-left 0.3s;
+  }
+  .content-wrap {
+    max-width: 900px;
+    margin: 0 auto;
+    padding: 48px 32px 80px;
+  }
+
+  /* Sections */
+  section { margin-bottom: 80px; }
+  .section-badge {
+    display: inline-block; padding: 3px 10px;
+    border-radius: 20px; font-size: 11px; font-weight: 700;
+    text-transform: uppercase; letter-spacing: 1px; margin-bottom: 12px;
+  }
+  .badge-blue { background: rgba(79,156,249,0.15); color: var(--accent); }
+  .badge-purple { background: rgba(124,58,237,0.15); color: #a78bfa; }
+  .badge-green { background: rgba(16,185,129,0.15); color: var(--accent3); }
+  .badge-yellow { background: rgba(245,158,11,0.15); color: var(--accent4); }
+  .badge-red { background: rgba(239,68,68,0.15); color: var(--accent5); }
+
+  h1 { font-size: 2.2rem; font-weight: 800; line-height: 1.2; margin-bottom: 16px; }
+  h2 { font-size: 1.6rem; font-weight: 700; margin-bottom: 16px; color: var(--text); }
+  h3 { font-size: 1.15rem; font-weight: 600; margin-bottom: 12px; color: var(--accent); }
+  h4 { font-size: 1rem; font-weight: 600; margin-bottom: 8px; color: var(--accent4); }
+  p { margin-bottom: 14px; color: var(--text); }
+
+  .gradient-text {
+    background: linear-gradient(135deg, var(--accent), var(--accent2));
+    -webkit-background-clip: text; -webkit-text-fill-color: transparent;
+    background-clip: text;
+  }
+
+  /* Cards */
+  .card {
+    background: var(--card-bg);
+    border: 1px solid var(--border);
+    border-radius: 12px; padding: 24px;
+    margin-bottom: 20px;
+  }
+  .card-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 16px; margin-bottom: 20px; }
+
+  /* Code blocks */
+  pre {
+    background: var(--code-bg);
+    border: 1px solid var(--border);
+    border-radius: 10px; padding: 18px 20px;
+    overflow-x: auto; margin-bottom: 16px;
+    font-size: 13px; line-height: 1.6;
+  }
+  code {
+    font-family: 'JetBrains Mono', 'Fira Code', 'Consolas', monospace;
+    color: #a5d8ff;
+  }
+  pre code { color: #c9d1d9; }
+  .kw { color: #ff7b72; }
+  .ty { color: #79c0ff; }
+  .cm { color: #6e7681; font-style: italic; }
+  .st { color: #a5d8ff; }
+  .fn { color: #d2a8ff; }
+  .nm { color: #ffa657; }
+
+  /* Principle Box */
+  .principle-box {
+    background: linear-gradient(135deg, rgba(124,58,237,0.12), rgba(79,156,249,0.08));
+    border: 1px solid rgba(124,58,237,0.3);
+    border-radius: 12px; padding: 20px 24px;
+    margin-top: 24px;
+  }
+  .principle-box h4 {
+    color: #a78bfa; margin-bottom: 10px;
+    display: flex; align-items: center; gap: 8px;
+  }
+  .principle-box p { color: var(--text-muted); margin-bottom: 0; font-size: 14px; }
+
+  /* Info callout */
+  .callout {
+    border-left: 3px solid var(--accent);
+    background: rgba(79,156,249,0.06);
+    border-radius: 0 8px 8px 0;
+    padding: 12px 16px; margin-bottom: 16px;
+  }
+  .callout.warn { border-color: var(--accent4); background: rgba(245,158,11,0.06); }
+  .callout.success { border-color: var(--accent3); background: rgba(16,185,129,0.06); }
+  .callout strong { color: var(--accent); }
+  .callout.warn strong { color: var(--accent4); }
+  .callout.success strong { color: var(--accent3); }
+
+  /* Function Table */
+  table { width: 100%; border-collapse: collapse; margin-bottom: 16px; font-size: 13px; }
+  th { background: rgba(79,156,249,0.1); color: var(--accent); padding: 10px 14px; text-align: left; border-bottom: 2px solid var(--border); }
+  td { padding: 9px 14px; border-bottom: 1px solid var(--border); color: var(--text-muted); }
+  tr:hover td { background: rgba(255,255,255,0.02); }
+  td code { color: #ffa657; font-size: 12px; }
+
+  /* SVG container */
+  .svg-wrap {
+    background: var(--card-bg); border: 1px solid var(--border);
+    border-radius: 12px; padding: 20px; margin-bottom: 20px;
+    overflow-x: auto;
+  }
+  .svg-wrap svg { display: block; margin: 0 auto; max-width: 100%; }
+
+  /* Hero */
+  .hero-meta { display: flex; gap: 16px; flex-wrap: wrap; margin-top: 20px; }
+  .hero-tag {
+    display: inline-flex; align-items: center; gap: 6px;
+    background: var(--card-bg); border: 1px solid var(--border);
+    border-radius: 20px; padding: 5px 12px; font-size: 12px; color: var(--text-muted);
+  }
+  .dot { width: 6px; height: 6px; border-radius: 50%; }
+  .dot-blue { background: var(--accent); }
+  .dot-purple { background: #a78bfa; }
+  .dot-green { background: var(--accent3); }
+
+  /* Link */
+  a { color: var(--accent); text-decoration: none; }
+  a:hover { text-decoration: underline; }
+
+  .ref-list { list-style: none; }
+  .ref-list li { padding: 8px 0; border-bottom: 1px solid var(--border); font-size: 13px; }
+  .ref-list li:last-child { border-bottom: none; }
+
+  /* Responsive */
+  @media (max-width: 768px) {
+    :root { --sidebar-w: 260px; }
+    #hamburger { display: flex; }
+    #sidebar { transform: translateX(-100%); }
+    #sidebar.open { transform: translateX(0); }
+    #overlay.open { display: block; }
+    #main { margin-left: 0; }
+    .content-wrap { padding: 60px 16px 60px; }
+    h1 { font-size: 1.6rem; }
+    h2 { font-size: 1.3rem; }
+    .card-grid { grid-template-columns: 1fr; }
+    pre { font-size: 12px; padding: 14px; }
+    table { font-size: 12px; }
+  }
+</style>
+</head>
+<body>
+
+<div id="progress-bar"></div>
+
+<!-- Hamburger -->
+<button id="hamburger" onclick="toggleSidebar()" aria-label="菜单">
+  <span></span><span></span><span></span>
+</button>
+<div id="overlay" onclick="toggleSidebar()"></div>
+
+<!-- Sidebar -->
+<nav id="sidebar">
+  <div class="sidebar-header">
+    <h2>sk_buff 原理</h2>
+    <p>Linux 内核网络协议栈</p>
+  </div>
+
+  <div class="nav-group">
+    <div class="nav-group-title">概述</div>
+    <a class="nav-item" onclick="goTo('s0')">简介与背景</a>
+  </div>
+  <div class="nav-group">
+    <div class="nav-group-title">数据结构</div>
+    <a class="nav-item" onclick="goTo('s1')">sk_buff 内存布局</a>
+    <a class="nav-item" onclick="goTo('s2')">关键字段解析</a>
+    <a class="nav-item" onclick="goTo('s3')">数据指针操作</a>
+    <a class="nav-item" onclick="goTo('s4')">cb[] 控制块</a>
+    <a class="nav-item" onclick="goTo('s5')">分片与 shared_info</a>
+  </div>
+  <div class="nav-group">
+    <div class="nav-group-title">协议栈流程</div>
+    <a class="nav-item" onclick="goTo('s6')">发送路径 (TX)</a>
+    <a class="nav-item" onclick="goTo('s7')">接收路径 (RX)</a>
+  </div>
+  <div class="nav-group">
+    <div class="nav-group-title">高级特性</div>
+    <a class="nav-item" onclick="goTo('s8')">克隆与共享</a>
+    <a class="nav-item" onclick="goTo('s9')">Netfilter 钩子</a>
+    <a class="nav-item" onclick="goTo('s10')">NAPI 与 GRO</a>
+    <a class="nav-item" onclick="goTo('s11')">设计哲学总结</a>
+  </div>
+  <div class="nav-group">
+    <div class="nav-group-title">参考</div>
+    <a class="nav-item" onclick="goTo('refs')">原始资料</a>
+  </div>
+</nav>
+
+<!-- Main -->
+<div id="main">
+<div class="content-wrap">
+
+<!-- ========== Section 0: Hero ========== -->
+<section id="s0">
+  <div class="section-badge badge-blue">Linux Kernel Networking</div>
+  <h1>Linux <span class="gradient-text">sk_buff</span><br>网络协议栈设计原理</h1>
+  <p style="color:var(--text-muted);font-size:16px;max-width:680px;">
+    深入解析 Linux 内核中最核心的网络数据结构 —— Socket Buffer（sk_buff）的设计理念、内存布局，以及数据包在各协议层发送与接收过程中的完整流转机制。
+  </p>
+  <div class="hero-meta">
+    <span class="hero-tag"><span class="dot dot-blue"></span> 基于 Linux Kernel 官方文档</span>
+    <span class="hero-tag"><span class="dot dot-purple"></span> oldvger.kernel.org/~davem/skb.html</span>
+    <span class="hero-tag"><span class="dot dot-green"></span> wiki.linuxfoundation.org</span>
+  </div>
+
+  <div class="card" style="margin-top:28px;">
+    <h3>背景：为什么需要 sk_buff？</h3>
+    <p>Linux 网络实现被设计为协议无关的（protocol-independent）。这既适用于网络层与传输层协议（TCP/IP、IPX/SPX 等），也适用于网络适配器协议（以太网、令牌环等）。<strong>Socket Buffer（sk_buff）</strong> 是 Linux 内核中用于表示和管理数据包的核心数据结构。</p>
+    <p>在其他操作系统中，数据包穿越协议层时通常需要频繁内存拷贝。Linux 通过 sk_buff 的 <strong>headroom 预留机制</strong>，使各层可直接在已有缓冲区前端写入头部，极大减少拷贝开销。载荷（payload）仅被拷贝两次：一次从用户空间到内核空间，一次从内核空间到网络适配器。</p>
+    <div class="callout success">
+      <strong>核心设计目标：</strong> 在整个内核网络处理期间，始终通过同一个 sk_buff 来寻址和管理数据包，避免不必要的内存拷贝。
+    </div>
+  </div>
+
+  <!-- Overview SVG -->
+  <div class="svg-wrap">
+    <svg viewBox="0 0 780 200" xmlns="http://www.w3.org/2000/svg" style="width:100%;min-width:300px">
+      <defs>
+        <linearGradient id="g1" x1="0" y1="0" x2="1" y2="0">
+          <stop offset="0%" stop-color="#4f9cf9" stop-opacity="0.25"/>
+          <stop offset="100%" stop-color="#7c3aed" stop-opacity="0.25"/>
+        </linearGradient>
+        <marker id="arr" markerWidth="8" markerHeight="8" refX="6" refY="3" orient="auto">
+          <path d="M0,0 L0,6 L8,3 z" fill="#4f9cf9"/>
+        </marker>
+      </defs>
+      <!-- Background -->
+      <rect width="780" height="200" rx="12" fill="#1a1f2e"/>
+      <!-- Layers -->
+      <g font-family="'Segoe UI',sans-serif">
+        <!-- App -->
+        <rect x="20" y="20" width="110" height="160" rx="8" fill="rgba(79,156,249,0.1)" stroke="#4f9cf9" stroke-width="1.5"/>
+        <text x="75" y="106" text-anchor="middle" fill="#4f9cf9" font-size="13" font-weight="700">应用层</text>
+        <text x="75" y="124" text-anchor="middle" fill="#64748b" font-size="11">User Space</text>
+        <!-- TCP -->
+        <rect x="155" y="40" width="110" height="120" rx="8" fill="rgba(167,139,250,0.1)" stroke="#a78bfa" stroke-width="1.5"/>
+        <text x="210" y="97" text-anchor="middle" fill="#a78bfa" font-size="13" font-weight="700">TCP/UDP</text>
+        <text x="210" y="115" text-anchor="middle" fill="#64748b" font-size="11">Transport L4</text>
+        <!-- IP -->
+        <rect x="290" y="40" width="110" height="120" rx="8" fill="rgba(16,185,129,0.1)" stroke="#10b981" stroke-width="1.5"/>
+        <text x="345" y="97" text-anchor="middle" fill="#10b981" font-size="13" font-weight="700">IPv4</text>
+        <text x="345" y="115" text-anchor="middle" fill="#64748b" font-size="11">Network L3</text>
+        <!-- Ethernet -->
+        <rect x="425" y="40" width="110" height="120" rx="8" fill="rgba(245,158,11,0.1)" stroke="#f59e0b" stroke-width="1.5"/>
+        <text x="480" y="97" text-anchor="middle" fill="#f59e0b" font-size="13" font-weight="700">Ethernet</text>
+        <text x="480" y="115" text-anchor="middle" fill="#64748b" font-size="11">Link L2</text>
+        <!-- Driver/NIC -->
+        <rect x="560" y="60" width="110" height="80" rx="8" fill="rgba(239,68,68,0.1)" stroke="#ef4444" stroke-width="1.5"/>
+        <text x="615" y="97" text-anchor="middle" fill="#ef4444" font-size="13" font-weight="700">NIC Driver</text>
+        <text x="615" y="113" text-anchor="middle" fill="#64748b" font-size="11">Hardware</text>
+        <!-- sk_buff banner -->
+        <rect x="155" y="170" width="480" height="22" rx="5" fill="url(#g1)" stroke="rgba(79,156,249,0.4)" stroke-width="1"/>
+        <text x="395" y="185" text-anchor="middle" fill="#94a3b8" font-size="12" font-weight="600">sk_buff —— 贯穿所有层的统一数据包表示</text>
+        <!-- Arrows -->
+        <line x1="130" y1="100" x2="150" y2="100" stroke="#4f9cf9" stroke-width="1.5" marker-end="url(#arr)"/>
+        <line x1="265" y1="100" x2="285" y2="100" stroke="#4f9cf9" stroke-width="1.5" marker-end="url(#arr)"/>
+        <line x1="400" y1="100" x2="420" y2="100" stroke="#4f9cf9" stroke-width="1.5" marker-end="url(#arr)"/>
+        <line x1="535" y1="100" x2="555" y2="100" stroke="#4f9cf9" stroke-width="1.5" marker-end="url(#arr)"/>
+        <!-- Lines to banner -->
+        <line x1="210" y1="160" x2="210" y2="170" stroke="rgba(167,139,250,0.4)" stroke-width="1" stroke-dasharray="3,2"/>
+        <line x1="345" y1="160" x2="345" y2="170" stroke="rgba(16,185,129,0.4)" stroke-width="1" stroke-dasharray="3,2"/>
+        <line x1="480" y1="160" x2="480" y2="170" stroke="rgba(245,158,11,0.4)" stroke-width="1" stroke-dasharray="3,2"/>
+        <line x1="615" y1="140" x2="615" y2="170" stroke="rgba(239,68,68,0.4)" stroke-width="1" stroke-dasharray="3,2"/>
+      </g>
+    </svg>
+    <p style="text-align:center;font-size:12px;color:var(--text-dim);margin-top:8px">图1：sk_buff 作为统一数据结构贯穿所有协议层</p>
+  </div>
+
+  <div class="principle-box">
+    <h4>🔬 第一性原理</h4>
+    <p>网络协议栈的本质是：同一份数据在传递过程中被不同层的处理逻辑"包装"和"解包"。最高效的实现是<strong>零拷贝原则</strong>：不移动数据本身，只移动指针。sk_buff 就是这一原则的具体实现 —— 它是数据的"地址簿"，而非数据本身的容器。</p>
+  </div>
+</section>
+
+<!-- ========== Section 1: Memory Layout ========== -->
+<section id="s1">
+  <div class="section-badge badge-blue">数据结构</div>
+  <h2>sk_buff 内存布局</h2>
+  <p>sk_buff 由两个独立部分组成：<strong>元数据头（struct sk_buff）</strong>和<strong>数据缓冲区</strong>。元数据中包含 4 个关键指针：<code>head</code>、<code>data</code>、<code>tail</code>、<code>end</code>，共同描述缓冲区的几何形状。</p>
+
+  <!-- Memory Layout SVG -->
+  <div class="svg-wrap">
+    <svg viewBox="0 0 760 340" xmlns="http://www.w3.org/2000/svg" style="width:100%;min-width:300px">
+      <defs>
+        <marker id="arr2" markerWidth="8" markerHeight="8" refX="6" refY="3" orient="auto">
+          <path d="M0,0 L0,6 L8,3 z" fill="#94a3b8"/>
+        </marker>
+        <marker id="arr3" markerWidth="8" markerHeight="8" refX="6" refY="3" orient="auto">
+          <path d="M0,0 L0,6 L8,3 z" fill="#4f9cf9"/>
+        </marker>
+        <marker id="arr4" markerWidth="8" markerHeight="8" refX="6" refY="3" orient="auto">
+          <path d="M0,0 L0,6 L8,3 z" fill="#f59e0b"/>
+        </marker>
+      </defs>
+      <rect width="760" height="340" rx="12" fill="#1a1f2e"/>
+
+      <!-- sk_buff struct box -->
+      <rect x="20" y="20" width="220" height="260" rx="8" fill="rgba(79,156,249,0.07)" stroke="#4f9cf9" stroke-width="1.5"/>
+      <text x="130" y="44" text-anchor="middle" fill="#4f9cf9" font-size="13" font-weight="700" font-family="'Segoe UI',sans-serif">struct sk_buff</text>
+      <text x="130" y="60" text-anchor="middle" fill="#64748b" font-size="10" font-family="monospace">元数据</text>
+
+      <!-- Fields in sk_buff -->
+      <g font-family="monospace" font-size="11">
+        <rect x="30" y="70" width="200" height="18" rx="3" fill="rgba(79,156,249,0.15)"/>
+        <text x="38" y="83" fill="#79c0ff">*next, *prev</text><text x="175" y="83" fill="#6e7681">// 链表</text>
+        <rect x="30" y="92" width="200" height="18" rx="3" fill="rgba(167,139,250,0.1)"/>
+        <text x="38" y="105" fill="#a5d8ff">*sk</text><text x="175" y="105" fill="#6e7681">// 所属socket</text>
+        <rect x="30" y="114" width="200" height="18" rx="3" fill="rgba(16,185,129,0.1)"/>
+        <text x="38" y="127" fill="#6ee7b7">*dev</text><text x="155" y="127" fill="#6e7681">// 网络设备</text>
+        <rect x="30" y="136" width="200" height="18" rx="3" fill="rgba(245,158,11,0.1)"/>
+        <text x="38" y="149" fill="#fcd34d">len, data_len</text><text x="145" y="149" fill="#6e7681">// 长度</text>
+        <rect x="30" y="158" width="200" height="18" rx="3" fill="rgba(239,68,68,0.1)"/>
+        <text x="38" y="171" fill="#fca5a5">protocol, pkt_type</text>
+        <rect x="30" y="180" width="200" height="18" rx="3" fill="rgba(79,156,249,0.2)"/>
+        <text x="38" y="193" fill="#93c5fd">*head *data *tail *end</text>
+        <rect x="30" y="202" width="200" height="18" rx="3" fill="rgba(167,139,250,0.15)"/>
+        <text x="38" y="215" fill="#c4b5fd">cb[48]</text><text x="110" y="215" fill="#6e7681">// 控制块</text>
+        <rect x="30" y="224" width="200" height="18" rx="3" fill="rgba(16,185,129,0.1)"/>
+        <text x="38" y="237" fill="#86efac">mac/network/transport</text>
+        <rect x="30" y="246" width="200" height="18" rx="3" fill="rgba(100,116,139,0.1)"/>
+        <text x="38" y="259" fill="#94a3b8">cloned, ip_summed, ...</text>
+      </g>
+
+      <!-- Data buffer -->
+      <text x="280" y="36" fill="#94a3b8" font-size="12" font-family="'Segoe UI',sans-serif">数据缓冲区（独立分配）</text>
+
+      <!-- Buffer zones -->
+      <!-- headroom -->
+      <rect x="260" y="50" width="100" height="60" rx="6" fill="rgba(100,116,139,0.15)" stroke="#475569" stroke-width="1.5" stroke-dasharray="5,3"/>
+      <text x="310" y="76" text-anchor="middle" fill="#64748b" font-size="12" font-weight="600" font-family="'Segoe UI',sans-serif">headroom</text>
+      <text x="310" y="96" text-anchor="middle" fill="#475569" font-size="10" font-family="'Segoe UI',sans-serif">预留头部空间</text>
+
+      <!-- Eth header -->
+      <rect x="360" y="50" width="70" height="60" rx="0" fill="rgba(245,158,11,0.2)" stroke="#f59e0b" stroke-width="1.5"/>
+      <text x="395" y="76" text-anchor="middle" fill="#fbbf24" font-size="11" font-weight="700" font-family="'Segoe UI',sans-serif">ETH</text>
+      <text x="395" y="92" text-anchor="middle" fill="#d97706" font-size="10" font-family="'Segoe UI',sans-serif">14 bytes</text>
+
+      <!-- IP header -->
+      <rect x="430" y="50" width="70" height="60" rx="0" fill="rgba(16,185,129,0.2)" stroke="#10b981" stroke-width="1.5"/>
+      <text x="465" y="76" text-anchor="middle" fill="#34d399" font-size="11" font-weight="700" font-family="'Segoe UI',sans-serif">IP</text>
+      <text x="465" y="92" text-anchor="middle" fill="#059669" font-size="10" font-family="'Segoe UI',sans-serif">20 bytes</text>
+
+      <!-- TCP header -->
+      <rect x="500" y="50" width="70" height="60" rx="0" fill="rgba(167,139,250,0.2)" stroke="#a78bfa" stroke-width="1.5"/>
+      <text x="535" y="76" text-anchor="middle" fill="#c4b5fd" font-size="11" font-weight="700" font-family="'Segoe UI',sans-serif">TCP</text>
+      <text x="535" y="92" text-anchor="middle" fill="#7c3aed" font-size="10" font-family="'Segoe UI',sans-serif">20 bytes</text>
+
+      <!-- Payload -->
+      <rect x="570" y="50" width="100" height="60" rx="0" fill="rgba(79,156,249,0.15)" stroke="#4f9cf9" stroke-width="1.5"/>
+      <text x="620" y="76" text-anchor="middle" fill="#60a5fa" font-size="11" font-weight="700" font-family="'Segoe UI',sans-serif">Payload</text>
+      <text x="620" y="92" text-anchor="middle" fill="#3b82f6" font-size="10" font-family="'Segoe UI',sans-serif">数据载荷</text>
+
+      <!-- skb_shared_info -->
+      <rect x="670" y="50" width="70" height="60" rx="0" fill="rgba(239,68,68,0.12)" stroke="#ef4444" stroke-width="1.5" stroke-dasharray="4,2"/>
+      <text x="705" y="73" text-anchor="middle" fill="#f87171" font-size="10" font-weight="700" font-family="'Segoe UI',sans-serif">skb_</text>
+      <text x="705" y="87" text-anchor="middle" fill="#f87171" font-size="10" font-weight="700" font-family="'Segoe UI',sans-serif">shared_</text>
+      <text x="705" y="101" text-anchor="middle" fill="#f87171" font-size="10" font-weight="700" font-family="'Segoe UI',sans-serif">info</text>
+
+      <!-- Pointer labels -->
+      <!-- head -->
+      <line x1="260" y1="125" x2="260" y2="145" stroke="#94a3b8" stroke-width="1.5"/>
+      <text x="260" y="160" text-anchor="middle" fill="#94a3b8" font-size="11" font-family="monospace">head</text>
+      <!-- data -->
+      <line x1="360" y1="125" x2="360" y2="145" stroke="#4f9cf9" stroke-width="1.5"/>
+      <text x="360" y="160" text-anchor="middle" fill="#4f9cf9" font-size="11" font-family="monospace">data</text>
+      <!-- tail -->
+      <line x1="670" y1="125" x2="670" y2="145" stroke="#f59e0b" stroke-width="1.5"/>
+      <text x="670" y="160" text-anchor="middle" fill="#f59e0b" font-size="11" font-family="monospace">tail</text>
+      <!-- end -->
+      <line x1="740" y1="125" x2="740" y2="145" stroke="#ef4444" stroke-width="1.5"/>
+      <text x="740" y="160" text-anchor="middle" fill="#ef4444" font-size="11" font-family="monospace">end</text>
+
+      <!-- Bracket for len -->
+      <line x1="360" y1="175" x2="670" y2="175" stroke="#60a5fa" stroke-width="1.5"/>
+      <line x1="360" y1="170" x2="360" y2="180" stroke="#60a5fa" stroke-width="1.5"/>
+      <line x1="670" y1="170" x2="670" y2="180" stroke="#60a5fa" stroke-width="1.5"/>
+      <text x="515" y="192" text-anchor="middle" fill="#60a5fa" font-size="12" font-family="'Segoe UI',sans-serif" font-weight="600">skb→len（有效数据长度）</text>
+
+      <!-- Bracket for headroom -->
+      <line x1="260" y1="205" x2="360" y2="205" stroke="#475569" stroke-width="1.5"/>
+      <line x1="260" y1="200" x2="260" y2="210" stroke="#475569" stroke-width="1.5"/>
+      <line x1="360" y1="200" x2="360" y2="210" stroke="#475569" stroke-width="1.5"/>
+      <text x="310" y="222" text-anchor="middle" fill="#64748b" font-size="11" font-family="'Segoe UI',sans-serif">headroom</text>
+
+      <!-- Bracket for tailroom -->
+      <line x1="670" y1="205" x2="740" y2="205" stroke="#475569" stroke-width="1.5"/>
+      <line x1="670" y1="200" x2="670" y2="210" stroke="#475569" stroke-width="1.5"/>
+      <line x1="740" y1="200" x2="740" y2="210" stroke="#475569" stroke-width="1.5"/>
+      <text x="705" y="222" text-anchor="middle" fill="#64748b" font-size="11" font-family="'Segoe UI',sans-serif">tailroom</text>
+
+      <!-- Header offsets -->
+      <text x="395" y="248" text-anchor="middle" fill="#fbbf24" font-size="11" font-family="monospace">↑ mac_header</text>
+      <text x="465" y="248" text-anchor="middle" fill="#34d399" font-size="11" font-family="monospace">↑ network_header</text>
+      <text x="535" y="248" text-anchor="middle" fill="#c4b5fd" font-size="11" font-family="monospace">↑ transport_header</text>
+
+      <!-- Arrow from sk_buff to data buffer -->
+      <line x1="240" y1="189" x2="258" y2="189" stroke="#4f9cf9" stroke-width="1.5" marker-end="url(#arr3)"/>
+      <text x="230" y="186" fill="#4f9cf9" font-size="10" font-family="monospace" text-anchor="end">*head</text>
+      <text x="230" y="200" fill="#4f9cf9" font-size="10" font-family="monospace" text-anchor="end">*data</text>
+      <text x="230" y="214" fill="#4f9cf9" font-size="10" font-family="monospace" text-anchor="end">*tail</text>
+      <text x="230" y="228" fill="#4f9cf9" font-size="10" font-family="monospace" text-anchor="end">*end</text>
+
+      <!-- skb_push / skb_pull illustration -->
+      <text x="280" y="285" fill="#94a3b8" font-size="12" font-family="'Segoe UI',sans-serif" font-weight="600">操作说明：</text>
+      <rect x="280" y="295" width="210" height="34" rx="6" fill="rgba(79,156,249,0.1)" stroke="#4f9cf9" stroke-width="1"/>
+      <text x="290" y="310" fill="#60a5fa" font-size="11" font-family="monospace">skb_push(len)</text>
+      <text x="290" y="324" fill="#94a3b8" font-size="11" font-family="'Segoe UI',sans-serif">data -= len → 添加头部</text>
+      <rect x="510" y="295" width="220" height="34" rx="6" fill="rgba(245,158,11,0.1)" stroke="#f59e0b" stroke-width="1"/>
+      <text x="520" y="310" fill="#fbbf24" font-size="11" font-family="monospace">skb_pull(len)</text>
+      <text x="520" y="324" fill="#94a3b8" font-size="11" font-family="'Segoe UI',sans-serif">data += len → 消费头部</text>
+    </svg>
+    <p style="text-align:center;font-size:12px;color:var(--text-dim);margin-top:8px">图2：sk_buff 内存布局与四大指针关系</p>
+  </div>
+
+  <div class="card">
+    <h3>四大核心指针</h3>
+    <table>
+      <tr><th>指针</th><th>含义</th><th>说明</th></tr>
+      <tr><td><code>head</code></td><td>缓冲区起始地址</td><td>分配的内存块最开始位置，固定不变</td></tr>
+      <tr><td><code>data</code></td><td>有效数据起始地址</td><td>skb_push() 使其向左移（添加头部），skb_pull() 使其向右移（消费头部）</td></tr>
+      <tr><td><code>tail</code></td><td>有效数据结束地址</td><td>skb_put() 使其向右移（追加尾部数据）</td></tr>
+      <tr><td><code>end</code></td><td>缓冲区结束地址</td><td>固定不变，end 之后紧跟 skb_shared_info</td></tr>
+    </table>
+    <div class="callout">
+      <strong>关键设计：</strong> head 到 data 之间的空间称为 <strong>headroom</strong>，data 到 tail 之间为有效数据，tail 到 end 之间为 <strong>tailroom</strong>。发送时通过 skb_reserve() 预留 headroom，各层依次通过 skb_push() 写入本层头部。
+    </div>
+  </div>
+
+  <div class="principle-box">
+    <h4>🔬 第一性原理</h4>
+    <p>数据包头部的"封装"本质上是在数据前方加前缀。最高效的方式不是把原数据后移（O(n) 拷贝），而是把指针前移（O(1)）。headroom 机制正是这一原理：事先在缓冲区前端保留足够空间，各层只需移动 data 指针即可完成封装，代价恒为常数时间。</p>
+  </div>
+</section>
+
+<!-- ========== Section 2: Key Fields ========== -->
+<section id="s2">
+  <div class="section-badge badge-purple">数据结构</div>
+  <h2>关键字段解析</h2>
+  <p>以下字段解析基于 David S. Miller 在 <a href="http://oldvger.kernel.org/~davem/skb.html" target="_blank">oldvger.kernel.org/~davem/skb.html</a> 的权威说明以及 Linux 基金会 Wiki。</p>
+
+  <pre><code><span class="cm">// include/linux/skbuff.h</span>
+<span class="kw">struct</span> <span class="ty">sk_buff</span> {
+    <span class="cm">/* 链表：数据包可存在于多种队列（如 TCP 发送队列）*/</span>
+    <span class="kw">struct</span> <span class="ty">sk_buff</span>     *next, *prev;
+    <span class="kw">struct</span> <span class="ty">sk_buff_head</span> *list;  <span class="cm">// 所在队列</span>
+
+    <span class="kw">struct</span> <span class="ty">sock</span>        *sk;    <span class="cm">// 关联的 socket（路由器转发时为 NULL）</span>
+    <span class="kw">struct</span> <span class="ty">timeval</span>     stamp;  <span class="cm">// 时间戳（数据包到达/发送时间）</span>
+    <span class="kw">struct</span> <span class="ty">net_device</span>  *dev;   <span class="cm">// 当前处理网络设备</span>
+
+    <span class="cm">/* 三层协议头指针 */</span>
+    <span class="kw">union</span> { <span class="kw">struct</span> <span class="ty">tcphdr</span> *th; <span class="kw">struct</span> <span class="ty">udphdr</span> *uh; ... } h; <span class="cm">// L4</span>
+    <span class="kw">union</span> { <span class="kw">struct</span> <span class="ty">iphdr</span>  *iph; ...                     } nh;<span class="cm">// L3</span>
+    <span class="kw">union</span> { <span class="nm">unsigned char</span> *raw;                         } mac;<span class="cm">// L2</span>
+
+    <span class="kw">struct</span> <span class="ty">dst_entry</span>   *dst;   <span class="cm">// 路由信息（输入/输出均使用）</span>
+
+    <span class="cm">/* 控制块：各层私有存储区（48字节）*/</span>
+    <span class="nm">char</span> cb[48] __aligned(8);
+
+    <span class="cm">/* 长度字段 */</span>
+    <span class="nm">unsigned int</span> len;       <span class="cm">// 总长度（线性+分片）</span>
+    <span class="nm">unsigned int</span> data_len;  <span class="cm">// 分片数据长度</span>
+    <span class="nm">unsigned int</span> mac_len;   <span class="cm">// MAC 头部长度</span>
+    <span class="nm">unsigned int</span> csum;      <span class="cm">// 校验和</span>
+
+    <span class="cm">/* 标志位 */</span>
+    <span class="nm">unsigned char</span> cloned:1; <span class="cm">// 是否为克隆（共享数据区）</span>
+    <span class="nm">unsigned char</span> nohdr:1;  <span class="cm">// TSO支持：不允许修改头部</span>
+    <span class="nm">unsigned char</span> pkt_type; <span class="cm">// PACKET_HOST/BROADCAST/MULTICAST</span>
+    <span class="nm">unsigned char</span> ip_summed;<span class="cm">// CHECKSUM_NONE/HW/UNNECESSARY</span>
+
+    <span class="nm">unsigned short</span> protocol;<span class="cm">// 以太网协议类型 ETH_P_*</span>
+    <span class="nm">__u32</span>          priority; <span class="cm">// QoS 优先级（来自 IP TOS 字段）</span>
+
+    <span class="cm">/* 引用计数与内存核算 */</span>
+    <span class="nm">atomic_t</span>     users;     <span class="cm">// 引用计数</span>
+    <span class="nm">unsigned int</span> truesize;  <span class="cm">// 计入 socket 内存的实际大小</span>
+
+    <span class="cm">/* 四大核心指针（见图2）*/</span>
+    <span class="nm">unsigned char</span> *head, *data, *tail, *end;
+};</code></pre>
+
+  <div class="card-grid">
+    <div class="card" style="margin-bottom:0">
+      <h4>dev 字段的双重角色</h4>
+      <p style="font-size:13px;color:var(--text-muted);">接收时：dev 指向接收网卡；路由决策完成后，dev 更新为出口网卡。<code>input_dev</code> 始终保持真正的物理接收设备（即使经过 bonding/虚拟设备层层解封装）。</p>
+    </div>
+    <div class="card" style="margin-bottom:0">
+      <h4>protocol 字段</h4>
+      <p style="font-size:13px;color:var(--text-muted);">由 <code>eth_type_trans()</code> 等函数初始化，取 <code>ETH_P_*</code> 值（如 <code>ETH_P_IP=0x0800</code>）。即使非以太网设备也使用这套值体系，用于标识应接收该包的上层协议。</p>
+    </div>
+    <div class="card" style="margin-bottom:0">
+      <h4>ip_summed 校验和</h4>
+      <p style="font-size:13px;color:var(--text-muted);"><code>CHECKSUM_NONE</code>：网卡未提供校验；<code>CHECKSUM_HW</code>：csum 字段含全包两补码校验；<code>CHECKSUM_UNNECESSARY</code>：无需校验（如 loopback）。</p>
+    </div>
+    <div class="card" style="margin-bottom:0">
+      <h4>truesize 内存核算</h4>
+      <p style="font-size:13px;color:var(--text-muted);">记入 <code>sk->sk_rmem_alloc</code> 的实际内存量。若 socket 接收缓冲区满（超过 <code>tcp_rmem</code> 上限），新到达的数据包将被丢弃。</p>
+    </div>
+  </div>
+
+  <div class="principle-box">
+    <h4>🔬 第一性原理</h4>
+    <p>网络协议层之间需要传递的不仅是数据，还有关于数据的"元信息"（协议类型、校验状态、路由信息等）。传统方法是为每层单独分配结构体并建立关联。sk_buff 的设计将所有元信息嵌入同一结构体，消除了跨层查找的间接寻址开销，以空间换取了时间效率。</p>
+  </div>
+</section>
+
+<!-- ========== Section 3: Pointer Operations ========== -->
+<section id="s3">
+  <div class="section-badge badge-green">数据结构</div>
+  <h2>数据指针操作函数</h2>
+  <p>Linux 内核提供了一套标准函数来操作 sk_buff 数据区，这些操作通过移动指针而非移动数据来实现高效的头部增删。</p>
+
+  <!-- Pointer ops SVG -->
+  <div class="svg-wrap">
+    <svg viewBox="0 0 760 360" xmlns="http://www.w3.org/2000/svg" style="width:100%;min-width:300px">
+      <rect width="760" height="360" rx="12" fill="#1a1f2e"/>
+      <defs>
+        <marker id="arrl" markerWidth="8" markerHeight="8" refX="6" refY="3" orient="auto">
+          <path d="M0,0 L0,6 L8,3 z" fill="#4f9cf9"/>
+        </marker>
+        <marker id="arrr" markerWidth="8" markerHeight="8" refX="2" refY="3" orient="auto-start-reverse">
+          <path d="M0,3 L8,0 L8,6 z" fill="#f59e0b"/>
+        </marker>
+      </defs>
+
+      <!-- Title -->
+      <text x="380" y="30" text-anchor="middle" fill="#94a3b8" font-size="14" font-weight="700" font-family="'Segoe UI',sans-serif">数据指针操作示意</text>
+
+      <!-- Initial state -->
+      <text x="30" y="60" fill="#64748b" font-size="12" font-family="'Segoe UI',sans-serif" font-weight="600">① 初始状态（发送方向）</text>
+      <rect x="30" y="68" width="120" height="40" rx="4" fill="rgba(100,116,139,0.2)" stroke="#475569" stroke-width="1.5" stroke-dasharray="4,2"/>
+      <text x="90" y="93" text-anchor="middle" fill="#64748b" font-size="11" font-family="'Segoe UI',sans-serif">headroom</text>
+      <rect x="150" y="68" width="200" height="40" rx="4" fill="rgba(79,156,249,0.2)" stroke="#4f9cf9" stroke-width="1.5"/>
+      <text x="250" y="93" text-anchor="middle" fill="#60a5fa" font-size="11" font-family="'Segoe UI',sans-serif" font-weight="600">Payload 数据</text>
+      <rect x="350" y="68" width="80" height="40" rx="4" fill="rgba(100,116,139,0.1)" stroke="#334155" stroke-width="1" stroke-dasharray="3,2"/>
+      <text x="390" y="93" text-anchor="middle" fill="#475569" font-size="11" font-family="'Segoe UI',sans-serif">tailroom</text>
+      <!-- Pointers -->
+      <text x="30" y="122" fill="#94a3b8" font-size="11" font-family="monospace">↑head</text>
+      <text x="150" y="122" fill="#4f9cf9" font-size="11" font-family="monospace">↑data</text>
+      <text x="350" y="122" fill="#f59e0b" font-size="11" font-family="monospace">↑tail</text>
+      <text x="430" y="122" fill="#ef4444" font-size="11" font-family="monospace">↑end</text>
+
+      <!-- skb_push -->
+      <text x="30" y="152" fill="#a78bfa" font-size="12" font-family="'Segoe UI',sans-serif" font-weight="600">② skb_push(skb, hdr_len) — 向前添加头部</text>
+      <text x="600" y="152" fill="#64748b" font-size="11" font-family="monospace">data -= hdr_len; len += hdr_len;</text>
+      <rect x="30" y="160" width="60" height="40" rx="4" fill="rgba(100,116,139,0.1)" stroke="#334155" stroke-width="1" stroke-dasharray="4,2"/>
+      <text x="60" y="185" text-anchor="middle" fill="#475569" font-size="10" font-family="'Segoe UI',sans-serif">减少</text>
+      <rect x="90" y="160" width="60" height="40" rx="4" fill="rgba(167,139,250,0.3)" stroke="#a78bfa" stroke-width="2"/>
+      <text x="120" y="180" text-anchor="middle" fill="#c4b5fd" font-size="11" font-weight="700" font-family="'Segoe UI',sans-serif">新</text>
+      <text x="120" y="194" text-anchor="middle" fill="#c4b5fd" font-size="11" font-weight="700" font-family="'Segoe UI',sans-serif">头部</text>
+      <rect x="150" y="160" width="200" height="40" rx="4" fill="rgba(79,156,249,0.2)" stroke="#4f9cf9" stroke-width="1.5"/>
+      <text x="250" y="185" text-anchor="middle" fill="#60a5fa" font-size="11" font-family="'Segoe UI',sans-serif" font-weight="600">Payload 数据</text>
+      <!-- Arrow showing data moved left -->
+      <line x1="148" y1="190" x2="92" y2="190" stroke="#a78bfa" stroke-width="2" marker-end="url(#arrl)"/>
+      <text x="30" y="214" fill="#94a3b8" font-size="11" font-family="monospace">↑head</text>
+      <text x="90" y="214" fill="#a78bfa" font-size="11" font-family="monospace">↑data（移左）</text>
+      <text x="350" y="214" fill="#f59e0b" font-size="11" font-family="monospace">↑tail（不变）</text>
+
+      <!-- skb_pull -->
+      <text x="30" y="244" fill="#10b981" font-size="12" font-family="'Segoe UI',sans-serif" font-weight="600">③ skb_pull(skb, hdr_len) — 消费头部（接收方向）</text>
+      <text x="600" y="244" fill="#64748b" font-size="11" font-family="monospace">data += hdr_len; len -= hdr_len;</text>
+      <rect x="30" y="252" width="80" height="40" rx="4" fill="rgba(100,116,139,0.2)" stroke="#475569" stroke-width="1" stroke-dasharray="4,2"/>
+      <text x="70" y="277" text-anchor="middle" fill="#475569" font-size="10" font-family="'Segoe UI',sans-serif">已处理头部</text>
+      <rect x="110" y="252" width="240" height="40" rx="4" fill="rgba(16,185,129,0.2)" stroke="#10b981" stroke-width="2"/>
+      <text x="230" y="277" text-anchor="middle" fill="#34d399" font-size="11" font-weight="700" font-family="'Segoe UI',sans-serif">剩余数据（上传给上层）</text>
+      <!-- Arrow showing data moved right -->
+      <line x1="82" y1="282" x2="108" y2="282" stroke="#10b981" stroke-width="2" marker-end="url(#arrl)"/>
+      <text x="30" y="306" fill="#94a3b8" font-size="11" font-family="monospace">↑head</text>
+      <text x="110" y="306" fill="#10b981" font-size="11" font-family="monospace">↑data（移右）</text>
+      <text x="350" y="306" fill="#f59e0b" font-size="11" font-family="monospace">↑tail（不变）</text>
+
+      <!-- skb_put -->
+      <text x="30" y="336" fill="#f59e0b" font-size="12" font-family="'Segoe UI',sans-serif" font-weight="600">④ skb_put(skb, len) — 在尾部追加数据</text>
+      <text x="450" y="336" fill="#64748b" font-size="11" font-family="monospace">tail += len; len += len;</text>
+    </svg>
+    <p style="text-align:center;font-size:12px;color:var(--text-dim);margin-top:8px">图3：skb_push / skb_pull / skb_put 操作对指针的影响</p>
+  </div>
+
+  <pre><code><span class="cm">// 向前添加头部数据（发送时各层封装头部）</span>
+<span class="kw">void</span> *<span class="fn">skb_push</span>(<span class="kw">struct</span> <span class="ty">sk_buff</span> *skb, <span class="nm">unsigned int</span> len) {
+    skb->data -= len;
+    skb->len  += len;
+    <span class="kw">return</span> skb->data;
+}
+
+<span class="cm">// 从前端消费头部（接收时各层剥除头部）</span>
+<span class="kw">void</span> *<span class="fn">skb_pull</span>(<span class="kw">struct</span> <span class="ty">sk_buff</span> *skb, <span class="nm">unsigned int</span> len) {
+    skb->data += len;
+    skb->len  -= len;
+    <span class="kw">return</span> skb->data;
+}
+
+<span class="cm">// 在尾部追加数据（接收时网卡DMA写入数据）</span>
+<span class="kw">void</span> *<span class="fn">skb_put</span>(<span class="kw">struct</span> <span class="ty">sk_buff</span> *skb, <span class="nm">unsigned int</span> len) {
+    <span class="kw">void</span> *tmp = skb_tail_pointer(skb);
+    skb->tail += len;
+    skb->len  += len;
+    <span class="kw">return</span> tmp;
+}
+
+<span class="cm">// 获取各层头部指针</span>
+<span class="kw">struct</span> <span class="ty">ethhdr</span>  *<span class="fn">eth_hdr</span>(skb)   { <span class="kw">return</span> (<span class="ty">ethhdr</span> *)skb_mac_header(skb); }
+<span class="kw">struct</span> <span class="ty">iphdr</span>   *<span class="fn">ip_hdr</span>(skb)    { <span class="kw">return</span> (<span class="ty">iphdr</span>  *)skb_network_header(skb); }
+<span class="kw">struct</span> <span class="ty">tcphdr</span>  *<span class="fn">tcp_hdr</span>(skb)   { <span class="kw">return</span> (<span class="ty">tcphdr</span> *)skb_transport_header(skb); }</code></pre>
+
+  <div class="principle-box">
+    <h4>🔬 第一性原理</h4>
+    <p>所有 skb 指针操作的时间复杂度均为 O(1)。这遵循了"<strong>让操作代价与数据大小无关</strong>"的设计准则。发送时 skb_push 把 data 左移，接收时 skb_pull 把 data 右移 —— 两者都是寄存器级整数运算，与数据包大小完全无关。</p>
+  </div>
+</section>
+
+<!-- ========== Section 4: cb[] Control Block ========== -->
+<section id="s4">
+  <div class="section-badge badge-yellow">数据结构</div>
+  <h2>cb[] 控制块 —— 各层私有存储</h2>
+  <p>sk_buff 中的 <code>cb[48]</code>（或现代内核的 cb[48]，__aligned(8)）是一块不透明的"暂存区"，供协议层和驱动在处理数据包期间存储私有的每包信息（per-packet info）。</p>
+
+  <div class="callout">
+    <strong>来源：</strong> David S. Miller 官方说明：<em>"This is the SKB control block. It is an opaque storage area usable by protocols, and even some drivers, to store private per-packet information. TCP uses this, for example, to store sequence numbers and retransmission state for the frame."</em>
+  </div>
+
+  <pre><code><span class="cm">// TCP 使用 cb[] 存储 TCP 私有元信息</span>
+<span class="kw">struct</span> <span class="ty">tcp_skb_cb</span> {
+    <span class="kw">union</span> {
+        <span class="kw">struct</span> <span class="ty">inet_skb_parm</span>  h4; <span class="cm">// IPv4 选项信息</span>
+        <span class="kw">struct</span> <span class="ty">inet6_skb_parm</span> h6; <span class="cm">// IPv6 选项信息</span>
+    } header;
+    __u32  seq;       <span class="cm">// 起始序列号</span>
+    __u32  end_seq;   <span class="cm">// SEQ + FIN + SYN + datalen</span>
+    __u8   tcp_flags; <span class="cm">// TCP 头部标志</span>
+    __u8   sacked;    <span class="cm">// SACK 位状态</span>
+    <span class="cm">// ...</span>
+};
+<span class="cm">// 访问宏：直接将 cb[] 强制转型为目标结构</span>
+#define <span class="fn">TCP_SKB_CB</span>(__skb) ((<span class="kw">struct</span> <span class="ty">tcp_skb_cb</span> *)&((__skb)->cb[0]))
+
+<span class="cm">// 使用示例</span>
+<span class="fn">TCP_SKB_CB</span>(skb)->seq = tcp_seq;
+<span class="fn">TCP_SKB_CB</span>(skb)->tcp_flags = TCPHDR_SYN;</code></pre>
+
+  <div class="card-grid">
+    <div class="card" style="margin-bottom:0">
+      <h4>为什么不用单独分配？</h4>
+      <p style="font-size:13px;color:var(--text-muted);">每收/发一个包都需要分配 sk_buff。若为每层的私有元数据单独 kmalloc，高速网络下（百万包/秒）会产生巨大分配压力。内嵌 cb[] 使得所有元数据随 sk_buff 一次性分配和释放。</p>
+    </div>
+    <div class="card" style="margin-bottom:0">
+      <h4>各层如何协作？</h4>
+      <p style="font-size:13px;color:var(--text-muted);">cb[] 在不同协议层之间是互斥使用的：当包处于 IP 层时，TCP 的 cb 数据无意义；反之亦然。各层约定各自的解释方式，通过类型转换宏访问，无运行时开销。</p>
+    </div>
+  </div>
+
+  <div class="principle-box">
+    <h4>🔬 第一性原理</h4>
+    <p>cb[] 体现了"<strong>按需复用，约定优于运行时检查</strong>"的设计哲学。固定大小的内联存储区消除了动态分配，协议层通过编译期类型约定而非运行时标签来区分，这是用<strong>静态知识替代动态开销</strong>的典型范式。</p>
+  </div>
+</section>
+
+<!-- ========== Section 5: Fragments ========== -->
+<section id="s5">
+  <div class="section-badge badge-red">数据结构</div>
+  <h2>分片支持与 skb_shared_info</h2>
+  <p>现代 NIC 支持 Scatter-Gather DMA，可将数据包 DMA 写入不连续的物理页。内核用"线性区 + 分片数组"的混合模型来表示这种情况。</p>
+
+  <!-- Fragment layout SVG -->
+  <div class="svg-wrap">
+    <svg viewBox="0 0 760 280" xmlns="http://www.w3.org/2000/svg" style="width:100%;min-width:300px">
+      <rect width="760" height="280" rx="12" fill="#1a1f2e"/>
+
+      <!-- Linear area -->
+      <text x="30" y="30" fill="#94a3b8" font-size="13" font-weight="700" font-family="'Segoe UI',sans-serif">线性区（kmalloc 分配，连续物理内存）</text>
+      <rect x="30" y="40" width="80" height="50" rx="4" fill="rgba(100,116,139,0.15)" stroke="#475569" stroke-width="1.5" stroke-dasharray="4,2"/>
+      <text x="70" y="70" text-anchor="middle" fill="#64748b" font-size="11" font-family="'Segoe UI',sans-serif">headroom</text>
+      <rect x="110" y="40" width="60" height="50" rx="4" fill="rgba(245,158,11,0.2)" stroke="#f59e0b" stroke-width="1.5"/>
+      <text x="140" y="70" text-anchor="middle" fill="#fbbf24" font-size="11" font-family="'Segoe UI',sans-serif">ETH+IP</text>
+      <text x="140" y="84" text-anchor="middle" fill="#fbbf24" font-size="10" font-family="'Segoe UI',sans-serif">+TCP</text>
+      <rect x="170" y="40" width="80" height="50" rx="4" fill="rgba(79,156,249,0.2)" stroke="#4f9cf9" stroke-width="1.5"/>
+      <text x="210" y="70" text-anchor="middle" fill="#60a5fa" font-size="11" font-family="'Segoe UI',sans-serif">前段</text>
+      <text x="210" y="84" text-anchor="middle" fill="#60a5fa" font-size="11" font-family="'Segoe UI',sans-serif">payload</text>
+      <rect x="250" y="40" width="120" height="50" rx="4" fill="rgba(239,68,68,0.15)" stroke="#ef4444" stroke-width="1.5" stroke-dasharray="3,2"/>
+      <text x="310" y="65" text-anchor="middle" fill="#f87171" font-size="12" font-weight="700" font-family="'Segoe UI',sans-serif">skb_shared_info</text>
+      <text x="310" y="81" text-anchor="middle" fill="#94a3b8" font-size="10" font-family="'Segoe UI',sans-serif">@skb→end（紧接线性区）</text>
+
+      <!-- Shared info fields -->
+      <rect x="390" y="40" width="340" height="50" rx="4" fill="rgba(239,68,68,0.08)" stroke="#ef4444" stroke-width="1"/>
+      <text x="560" y="60" text-anchor="middle" fill="#f87171" font-size="11" font-family="monospace">nr_frags: 3   frags[MAX_SKB_FRAGS]</text>
+      <text x="560" y="78" text-anchor="middle" fill="#94a3b8" font-size="10" font-family="'Segoe UI',sans-serif">gso_size, gso_segs, destructor_arg, ...</text>
+
+      <!-- Fragment pages -->
+      <text x="30" y="120" fill="#94a3b8" font-size="13" font-weight="700" font-family="'Segoe UI',sans-serif">分片页（页缓存 / DMA 直接写入，可不连续）</text>
+      <rect x="30" y="132" width="140" height="60" rx="8" fill="rgba(167,139,250,0.15)" stroke="#a78bfa" stroke-width="1.5"/>
+      <text x="100" y="158" text-anchor="middle" fill="#c4b5fd" font-size="12" font-weight="700" font-family="'Segoe UI',sans-serif">Page Frag [0]</text>
+      <text x="100" y="176" text-anchor="middle" fill="#7c3aed" font-size="11" font-family="'Segoe UI',sans-serif">payload cont.</text>
+      <rect x="200" y="132" width="140" height="60" rx="8" fill="rgba(167,139,250,0.15)" stroke="#a78bfa" stroke-width="1.5"/>
+      <text x="270" y="158" text-anchor="middle" fill="#c4b5fd" font-size="12" font-weight="700" font-family="'Segoe UI',sans-serif">Page Frag [1]</text>
+      <text x="270" y="176" text-anchor="middle" fill="#7c3aed" font-size="11" font-family="'Segoe UI',sans-serif">payload cont.</text>
+      <rect x="370" y="132" width="140" height="60" rx="8" fill="rgba(167,139,250,0.15)" stroke="#a78bfa" stroke-width="1.5"/>
+      <text x="440" y="158" text-anchor="middle" fill="#c4b5fd" font-size="12" font-weight="700" font-family="'Segoe UI',sans-serif">Page Frag [2]</text>
+      <text x="440" y="176" text-anchor="middle" fill="#7c3aed" font-size="11" font-family="'Segoe UI',sans-serif">payload cont.</text>
+
+      <!-- Arrows from shared_info to frags -->
+      <line x1="310" y1="90" x2="100" y2="130" stroke="rgba(239,68,68,0.5)" stroke-width="1.5" stroke-dasharray="4,2"/>
+      <line x1="310" y1="90" x2="270" y2="130" stroke="rgba(239,68,68,0.5)" stroke-width="1.5" stroke-dasharray="4,2"/>
+      <line x1="310" y1="90" x2="440" y2="130" stroke="rgba(239,68,68,0.5)" stroke-width="1.5" stroke-dasharray="4,2"/>
+
+      <!-- Length annotation -->
+      <line x1="30" y1="216" x2="250" y2="216" stroke="#60a5fa" stroke-width="1.5"/>
+      <line x1="30" y1="210" x2="30" y2="222" stroke="#60a5fa" stroke-width="1.5"/>
+      <line x1="250" y1="210" x2="250" y2="222" stroke="#60a5fa" stroke-width="1.5"/>
+      <text x="140" y="234" text-anchor="middle" fill="#60a5fa" font-size="12" font-family="'Segoe UI',sans-serif">skb_headlen() = len - data_len</text>
+
+      <line x1="30" y1="250" x2="510" y2="250" stroke="#a78bfa" stroke-width="1.5"/>
+      <line x1="30" y1="244" x2="30" y2="256" stroke="#a78bfa" stroke-width="1.5"/>
+      <line x1="510" y1="244" x2="510" y2="256" stroke="#a78bfa" stroke-width="1.5"/>
+      <text x="270" y="268" text-anchor="middle" fill="#a78bfa" font-size="12" font-family="'Segoe UI',sans-serif">skb→len = headlen + data_len（总长度）</text>
+
+      <!-- Access API -->
+      <rect x="560" y="132" width="180" height="60" rx="8" fill="rgba(16,185,129,0.08)" stroke="#10b981" stroke-width="1"/>
+      <text x="650" y="153" text-anchor="middle" fill="#34d399" font-size="11" font-weight="600" font-family="monospace">访问分片：</text>
+      <text x="650" y="168" text-anchor="middle" fill="#94a3b8" font-size="11" font-family="monospace">skb_shinfo(skb)</text>
+      <text x="650" y="183" text-anchor="middle" fill="#94a3b8" font-size="11" font-family="monospace">  →frags[i]</text>
+    </svg>
+    <p style="text-align:center;font-size:12px;color:var(--text-dim);margin-top:8px">图4：sk_buff 线性区 + 分片页混合内存模型</p>
+  </div>
+
+  <pre><code><span class="cm">/* 分片存储在 skb_shared_info 中（位于线性区末尾 skb→end 处）*/</span>
+<span class="kw">struct</span> <span class="ty">skb_shared_info</span> {
+    skb_frag_t frags[MAX_SKB_FRAGS]; <span class="cm">// 分片数组</span>
+    __u8       nr_frags;             <span class="cm">// 实际分片数</span>
+    __u16      gso_size;             <span class="cm">// GSO 段大小</span>
+    __u16      gso_segs;             <span class="cm">// GSO 段数量</span>
+    <span class="cm">// ...</span>
+};
+
+<span class="cm">/* 访问：通过内联函数将 skb→end 强转为 skb_shared_info* */</span>
+<span class="kw">static inline</span> <span class="kw">struct</span> <span class="ty">skb_shared_info</span> *<span class="fn">skb_shinfo</span>(<span class="kw">const struct</span> <span class="ty">sk_buff</span> *skb) {
+    <span class="kw">return</span> (<span class="kw">struct</span> <span class="ty">skb_shared_info</span> *)<span class="fn">skb_end_pointer</span>(skb);
+}
+
+<span class="cm">/* 为何 skb_shared_info 放在 skb→end 处？
+ * 避免额外的 kmalloc：线性区和分片元数据一次性分配，
+ * 减少高速路径上的内存分配次数。*/</span></code></pre>
+
+  <div class="callout warn">
+    <strong>TSO（TCP Segmentation Offload）：</strong> 支持 TSO 的 NIC 可接受一个大 sk_buff（例如 64KB payload 在分片数组中），由硬件自行切割成 MTU 大小的帧。内核无需软件分片，显著降低 CPU 负载。
+  </div>
+
+  <div class="principle-box">
+    <h4>🔬 第一性原理</h4>
+    <p>skb_shared_info 紧跟线性区末尾，是"<strong>布局即语义</strong>"原则：将相关数据物理上放在一起，利用指针偏移代替单独的堆分配。一次 kmalloc 同时获得线性缓冲区和分片元数据，最小化热路径（每包路径）上的内存分配次数。</p>
+  </div>
+</section>
+
+<!-- ========== Section 6: TX Path ========== -->
+<section id="s6">
+  <div class="section-badge badge-green">协议栈流程</div>
+  <h2>发送路径（TX）—— 从应用层到网卡</h2>
+  <p>基于 Linux 基金会 Wiki（<a href="https://wiki.linuxfoundation.org/networking/kernel_flow" target="_blank">kernel_flow</a>）权威描述，发送路径自上而下穿越 L5→L4→L3→L2→驱动。</p>
+
+  <!-- TX Flow SVG -->
+  <div class="svg-wrap">
+    <svg viewBox="0 0 760 700" xmlns="http://www.w3.org/2000/svg" style="width:100%;min-width:300px">
+      <defs>
+        <marker id="txarr" markerWidth="10" markerHeight="10" refX="9" refY="5" orient="auto">
+          <path d="M0,0 L0,10 L10,5 z" fill="#4f9cf9"/>
+        </marker>
+        <marker id="txarrg" markerWidth="10" markerHeight="10" refX="9" refY="5" orient="auto">
+          <path d="M0,0 L0,10 L10,5 z" fill="#10b981"/>
+        </marker>
+      </defs>
+      <rect width="760" height="700" rx="12" fill="#1a1f2e"/>
+
+      <!-- Title -->
+      <text x="380" y="28" text-anchor="middle" fill="#4f9cf9" font-size="15" font-weight="700" font-family="'Segoe UI',sans-serif">TX 发送路径：sk_buff 在各层的变化</text>
+
+      <!-- Buffer state at each layer, right side -->
+      <!-- L5 -->
+      <rect x="30" y="45" width="300" height="80" rx="8" fill="rgba(79,156,249,0.12)" stroke="#4f9cf9" stroke-width="1.5"/>
+      <text x="45" y="68" fill="#4f9cf9" font-size="13" font-weight="700" font-family="'Segoe UI',sans-serif">Layer 5 — 应用层 / Socket</text>
+      <text x="45" y="87" fill="#94a3b8" font-size="11" font-family="monospace">write() / sendto() / sendmsg()</text>
+      <text x="45" y="103" fill="#64748b" font-size="11" font-family="'Segoe UI',sans-serif">→ __sock_sendmsg() → security_sock_sendmsg() → L4 sendmsg</text>
+      <!-- skb state -->
+      <rect x="450" y="52" width="290" height="58" rx="6" fill="rgba(100,116,139,0.1)" stroke="#475569" stroke-width="1"/>
+      <text x="595" y="74" text-anchor="middle" fill="#64748b" font-size="11" font-family="'Segoe UI',sans-serif" font-weight="600">sk_buff 尚未分配</text>
+      <text x="595" y="92" text-anchor="middle" fill="#475569" font-size="10" font-family="'Segoe UI',sans-serif">用户数据在用户空间</text>
+
+      <!-- Arrow -->
+      <line x1="180" y1="125" x2="180" y2="148" stroke="#4f9cf9" stroke-width="2" marker-end="url(#txarr)"/>
+
+      <!-- L4 -->
+      <rect x="30" y="150" width="300" height="120" rx="8" fill="rgba(167,139,250,0.12)" stroke="#a78bfa" stroke-width="1.5"/>
+      <text x="45" y="173" fill="#a78bfa" font-size="13" font-weight="700" font-family="'Segoe UI',sans-serif">Layer 4 — 传输层 (TCP)</text>
+      <text x="45" y="192" fill="#94a3b8" font-size="11" font-family="monospace">tcp_sendmsg()</text>
+      <text x="45" y="208" fill="#64748b" font-size="11" font-family="'Segoe UI',sans-serif">1. alloc_skb: 分配 sk_buff，头部预留</text>
+      <text x="45" y="222" fill="#64748b" font-size="11" font-family="'Segoe UI',sans-serif">2. skb_add_data: 用户数据→内核（首次拷贝）</text>
+      <text x="45" y="236" fill="#64748b" font-size="11" font-family="'Segoe UI',sans-serif">3. tcp_transmit_skb: 构造 TCP 头，skb_push</text>
+      <text x="45" y="250" fill="#64748b" font-size="11" font-family="'Segoe UI',sans-serif">4. 调用 queue_xmit（→ IP层）</text>
+      <!-- skb state -->
+      <rect x="450" y="158" width="290" height="104" rx="6" fill="rgba(167,139,250,0.08)" stroke="#7c3aed" stroke-width="1"/>
+      <text x="595" y="178" text-anchor="middle" fill="#c4b5fd" font-size="11" font-weight="600" font-family="'Segoe UI',sans-serif">sk_buff 已分配</text>
+      <rect x="460" y="184" width="40" height="60" rx="3" fill="rgba(100,116,139,0.2)" stroke="#475569" stroke-width="1" stroke-dasharray="3,2"/>
+      <text x="480" y="205" text-anchor="middle" fill="#64748b" font-size="9" font-family="'Segoe UI',sans-serif">head</text>
+      <text x="480" y="218" text-anchor="middle" fill="#64748b" font-size="9" font-family="'Segoe UI',sans-serif">room</text>
+      <rect x="500" y="184" width="50" height="60" rx="3" fill="rgba(167,139,250,0.3)" stroke="#a78bfa" stroke-width="1.5"/>
+      <text x="525" y="212" text-anchor="middle" fill="#c4b5fd" font-size="10" font-weight="700" font-family="'Segoe UI',sans-serif">TCP</text>
+      <text x="525" y="226" text-anchor="middle" fill="#c4b5fd" font-size="10" font-family="'Segoe UI',sans-serif">hdr</text>
+      <rect x="550" y="184" width="120" height="60" rx="3" fill="rgba(79,156,249,0.2)" stroke="#4f9cf9" stroke-width="1.5"/>
+      <text x="610" y="218" text-anchor="middle" fill="#60a5fa" font-size="11" font-weight="600" font-family="'Segoe UI',sans-serif">Payload</text>
+      <text x="480" y="256" text-anchor="middle" fill="#475569" font-size="10" font-family="monospace">↑head ↑data</text>
+
+      <!-- Arrow -->
+      <line x1="180" y1="270" x2="180" y2="293" stroke="#4f9cf9" stroke-width="2" marker-end="url(#txarr)"/>
+
+      <!-- L3 -->
+      <rect x="30" y="295" width="300" height="120" rx="8" fill="rgba(16,185,129,0.1)" stroke="#10b981" stroke-width="1.5"/>
+      <text x="45" y="318" fill="#10b981" font-size="13" font-weight="700" font-family="'Segoe UI',sans-serif">Layer 3 — 网络层 (IPv4)</text>
+      <text x="45" y="337" fill="#94a3b8" font-size="11" font-family="monospace">ip_queue_xmit()</text>
+      <text x="45" y="353" fill="#64748b" font-size="11" font-family="'Segoe UI',sans-serif">1. 路由查找（dst_entry）</text>
+      <text x="45" y="367" fill="#64748b" font-size="11" font-family="'Segoe UI',sans-serif">2. skb_push: 写入 IP 头部</text>
+      <text x="45" y="381" fill="#64748b" font-size="11" font-family="'Segoe UI',sans-serif">3. nf_hook: Netfilter NF_INET_LOCAL_OUT</text>
+      <text x="45" y="395" fill="#64748b" font-size="11" font-family="'Segoe UI',sans-serif">4. ip_output() → dev_queue_xmit()</text>
+      <!-- skb state -->
+      <rect x="450" y="303" width="290" height="104" rx="6" fill="rgba(16,185,129,0.06)" stroke="#059669" stroke-width="1"/>
+      <text x="595" y="323" text-anchor="middle" fill="#34d399" font-size="11" font-weight="600" font-family="'Segoe UI',sans-serif">IP 头部已写入</text>
+      <rect x="460" y="332" width="30" height="58" rx="3" fill="rgba(100,116,139,0.15)" stroke="#475569" stroke-width="1" stroke-dasharray="3,2"/>
+      <text x="475" y="360" text-anchor="middle" fill="#475569" font-size="9" font-family="'Segoe UI',sans-serif">head</text>
+      <rect x="490" y="332" width="40" height="58" rx="3" fill="rgba(16,185,129,0.25)" stroke="#10b981" stroke-width="1.5"/>
+      <text x="510" y="360" text-anchor="middle" fill="#34d399" font-size="10" font-weight="700" font-family="'Segoe UI',sans-serif">IP</text>
+      <text x="510" y="374" text-anchor="middle" fill="#34d399" font-size="9" font-family="'Segoe UI',sans-serif">hdr</text>
+      <rect x="530" y="332" width="45" height="58" rx="3" fill="rgba(167,139,250,0.2)" stroke="#a78bfa" stroke-width="1"/>
+      <text x="552" y="360" text-anchor="middle" fill="#c4b5fd" font-size="10" font-family="'Segoe UI',sans-serif">TCP</text>
+      <rect x="575" y="332" width="95" height="58" rx="3" fill="rgba(79,156,249,0.15)" stroke="#4f9cf9" stroke-width="1"/>
+      <text x="622" y="360" text-anchor="middle" fill="#60a5fa" font-size="10" font-family="'Segoe UI',sans-serif">Payload</text>
+      <text x="490" y="400" text-anchor="middle" fill="#059669" font-size="10" font-family="monospace">↑data（IP hdr起）</text>
+
+      <!-- Arrow -->
+      <line x1="180" y1="415" x2="180" y2="438" stroke="#4f9cf9" stroke-width="2" marker-end="url(#txarr)"/>
+
+      <!-- L2 -->
+      <rect x="30" y="440" width="300" height="120" rx="8" fill="rgba(245,158,11,0.1)" stroke="#f59e0b" stroke-width="1.5"/>
+      <text x="45" y="463" fill="#f59e0b" font-size="13" font-weight="700" font-family="'Segoe UI',sans-serif">Layer 2 — 链路层 (Ethernet)</text>
+      <text x="45" y="482" fill="#94a3b8" font-size="11" font-family="monospace">dev_queue_xmit()</text>
+      <text x="45" y="498" fill="#64748b" font-size="11" font-family="'Segoe UI',sans-serif">1. Qdisc enqueue（流量整形/调度）</text>
+      <text x="45" y="512" fill="#64748b" font-size="11" font-family="'Segoe UI',sans-serif">2. skb_push: 写入以太网帧头</text>
+      <text x="45" y="526" fill="#64748b" font-size="11" font-family="'Segoe UI',sans-serif">3. dev_queue_xmit_nit（tcpdump 抓包点）</text>
+      <text x="45" y="540" fill="#64748b" font-size="11" font-family="'Segoe UI',sans-serif">4. dev_hard_start_xmit() → 驱动</text>
+      <!-- skb state -->
+      <rect x="450" y="448" width="290" height="104" rx="6" fill="rgba(245,158,11,0.06)" stroke="#b45309" stroke-width="1"/>
+      <text x="595" y="468" text-anchor="middle" fill="#fbbf24" font-size="11" font-weight="600" font-family="'Segoe UI',sans-serif">以太网头部已写入</text>
+      <rect x="460" y="478" width="30" height="58" rx="3" fill="rgba(245,158,11,0.25)" stroke="#f59e0b" stroke-width="1.5"/>
+      <text x="475" y="506" text-anchor="middle" fill="#fbbf24" font-size="9" font-weight="700" font-family="'Segoe UI',sans-serif">ETH</text>
+      <rect x="490" y="478" width="35" height="58" rx="3" fill="rgba(16,185,129,0.2)" stroke="#10b981" stroke-width="1"/>
+      <text x="507" y="506" text-anchor="middle" fill="#34d399" font-size="9" font-family="'Segoe UI',sans-serif">IP</text>
+      <rect x="525" y="478" width="40" height="58" rx="3" fill="rgba(167,139,250,0.15)" stroke="#a78bfa" stroke-width="1"/>
+      <text x="545" y="506" text-anchor="middle" fill="#c4b5fd" font-size="9" font-family="'Segoe UI',sans-serif">TCP</text>
+      <rect x="565" y="478" width="105" height="58" rx="3" fill="rgba(79,156,249,0.15)" stroke="#4f9cf9" stroke-width="1"/>
+      <text x="617" y="506" text-anchor="middle" fill="#60a5fa" font-size="10" font-family="'Segoe UI',sans-serif">Payload</text>
+      <text x="460" y="546" text-anchor="middle" fill="#b45309" font-size="10" font-family="monospace">↑data（完整帧）</text>
+
+      <!-- Arrow -->
+      <line x1="180" y1="560" x2="180" y2="583" stroke="#4f9cf9" stroke-width="2" marker-end="url(#txarr)"/>
+
+      <!-- Driver/NIC -->
+      <rect x="30" y="585" width="300" height="90" rx="8" fill="rgba(239,68,68,0.1)" stroke="#ef4444" stroke-width="1.5"/>
+      <text x="45" y="608" fill="#ef4444" font-size="13" font-weight="700" font-family="'Segoe UI',sans-serif">NIC 驱动 / 硬件</text>
+      <text x="45" y="626" fill="#64748b" font-size="11" font-family="'Segoe UI',sans-serif">hard_start_xmit() → DMA → 网络发送</text>
+      <text x="45" y="642" fill="#64748b" font-size="11" font-family="'Segoe UI',sans-serif">发送完成 → 硬件中断 → dev_kfree_skb_irq()</text>
+      <text x="45" y="658" fill="#64748b" font-size="11" font-family="'Segoe UI',sans-serif">NET_TX_SOFTIRQ → consume_skb() 释放</text>
+      <!-- NIC icon -->
+      <rect x="450" y="595" width="290" height="72" rx="6" fill="rgba(239,68,68,0.08)" stroke="#7f1d1d" stroke-width="1"/>
+      <text x="595" y="625" text-anchor="middle" fill="#f87171" font-size="13" font-weight="700" font-family="'Segoe UI',sans-serif">📡 物理网络发送</text>
+      <text x="595" y="643" text-anchor="middle" fill="#ef4444" font-size="11" font-family="'Segoe UI',sans-serif">DMA 读取 skb 数据区 → 发出帧</text>
+      <text x="595" y="659" text-anchor="middle" fill="#64748b" font-size="11" font-family="'Segoe UI',sans-serif">完成后 kfree_skb / consume_skb</text>
+    </svg>
+    <p style="text-align:center;font-size:12px;color:var(--text-dim);margin-top:8px">图5：TX 发送路径 —— sk_buff 在各层的状态变化</p>
+  </div>
+
+  <h3>发送路径关键函数调用链</h3>
+  <table>
+    <tr><th>层级</th><th>关键函数</th><th>sk_buff 操作</th><th>说明</th></tr>
+    <tr><td>L5 Socket</td><td><code>__sock_sendmsg()</code></td><td>尚未分配</td><td>权限检查，调用协议 sendmsg</td></tr>
+    <tr><td>L4 TCP</td><td><code>tcp_sendmsg()</code></td><td><code>alloc_skb()</code> 分配，<code>skb_add_data()</code> 拷贝</td><td>用户数据→内核空间（第1次拷贝）</td></tr>
+    <tr><td>L4 TCP</td><td><code>tcp_transmit_skb()</code></td><td><code>skb_push(sizeof(tcphdr))</code> 写入 TCP 头</td><td>克隆 skb 传给网络层</td></tr>
+    <tr><td>L3 IP</td><td><code>ip_queue_xmit()</code></td><td><code>skb_push(sizeof(iphdr))</code> 写入 IP 头</td><td>路由查找、Netfilter 钩子</td></tr>
+    <tr><td>L3 IP</td><td><code>ip_output()</code></td><td>IP 分片（必要时）</td><td>调用 dst→output</td></tr>
+    <tr><td>L2 Ethernet</td><td><code>dev_queue_xmit()</code></td><td><code>skb_push(ETH_HLEN)</code> 写入以太网头</td><td>Qdisc 入队，tcpdump 抓包点</td></tr>
+    <tr><td>L2 Ethernet</td><td><code>dev_hard_start_xmit()</code></td><td>linearize（若需要）</td><td>调用驱动 hard_start_xmit</td></tr>
+    <tr><td>驱动/NIC</td><td><code>hard_start_xmit()</code></td><td>DMA，发送完成后 <code>kfree_skb()</code></td><td>数据→内核空间→网络（第2次拷贝）</td></tr>
+  </table>
+
+  <div class="principle-box">
+    <h4>🔬 第一性原理</h4>
+    <p>发送路径体现了"<strong>逐层封装，头部前置，零移动数据</strong>"的设计。每层只做两件事：①向 headroom 写入本层头部（skb_push）；②将指针传给下层。数据载荷在内核态全程不移动，直到 DMA 将其复制到网卡缓冲区（第 2 次也是最后一次必要的拷贝）。</p>
+  </div>
+</section>
+
+<!-- ========== Section 7: RX Path ========== -->
+<section id="s7">
+  <div class="section-badge badge-purple">协议栈流程</div>
+  <h2>接收路径（RX）—— 从网卡到应用层</h2>
+  <p>接收路径与发送路径对称：从硬件 → L2 → L3 → L4 → Socket，每层通过 <code>skb_pull()</code> 消费本层头部，将剩余数据传给上层。</p>
+
+  <!-- RX Flow SVG -->
+  <div class="svg-wrap">
+    <svg viewBox="0 0 760 720" xmlns="http://www.w3.org/2000/svg" style="width:100%;min-width:300px">
+      <defs>
+        <marker id="rxarr" markerWidth="10" markerHeight="10" refX="9" refY="5" orient="auto">
+          <path d="M0,0 L0,10 L10,5 z" fill="#10b981"/>
+        </marker>
+      </defs>
+      <rect width="760" height="720" rx="12" fill="#1a1f2e"/>
+      <text x="380" y="28" text-anchor="middle" fill="#10b981" font-size="15" font-weight="700" font-family="'Segoe UI',sans-serif">RX 接收路径：sk_buff 在各层的变化</text>
+
+      <!-- NIC/Driver -->
+      <rect x="30" y="45" width="300" height="100" rx="8" fill="rgba(239,68,68,0.1)" stroke="#ef4444" stroke-width="1.5"/>
+      <text x="45" y="68" fill="#ef4444" font-size="13" font-weight="700" font-family="'Segoe UI',sans-serif">NIC 驱动 / 硬件中断</text>
+      <text x="45" y="87" fill="#64748b" font-size="11" font-family="'Segoe UI',sans-serif">1. 帧到达 → 硬件中断（HardIRQ）</text>
+      <text x="45" y="101" fill="#64748b" font-size="11" font-family="'Segoe UI',sans-serif">2. netif_rx_schedule() → 注册 NAPI poll</text>
+      <text x="45" y="115" fill="#64748b" font-size="11" font-family="'Segoe UI',sans-serif">3. SoftIRQ: net_rx_action() → driver poll()</text>
+      <text x="45" y="130" fill="#64748b" font-size="11" font-family="'Segoe UI',sans-serif">4. dev_alloc_skb() + DMA 写入数据</text>
+      <!-- skb state -->
+      <rect x="450" y="50" width="290" height="87" rx="6" fill="rgba(239,68,68,0.08)" stroke="#7f1d1d" stroke-width="1"/>
+      <text x="595" y="73" text-anchor="middle" fill="#f87171" font-size="11" font-weight="600" font-family="'Segoe UI',sans-serif">sk_buff 刚分配</text>
+      <text x="595" y="91" text-anchor="middle" fill="#64748b" font-size="11" font-family="'Segoe UI',sans-serif">DMA 将完整以太网帧写入</text>
+      <rect x="460" y="100" width="40" height="28" rx="3" fill="rgba(245,158,11,0.3)" stroke="#f59e0b" stroke-width="1.5"/>
+      <text x="480" y="118" text-anchor="middle" fill="#fbbf24" font-size="9" font-weight="700" font-family="'Segoe UI',sans-serif">ETH</text>
+      <rect x="500" y="100" width="35" height="28" rx="3" fill="rgba(16,185,129,0.2)" stroke="#10b981" stroke-width="1"/>
+      <text x="517" y="118" text-anchor="middle" fill="#34d399" font-size="9" font-family="'Segoe UI',sans-serif">IP</text>
+      <rect x="535" y="100" width="40" height="28" rx="3" fill="rgba(167,139,250,0.15)" stroke="#a78bfa" stroke-width="1"/>
+      <text x="555" y="118" text-anchor="middle" fill="#c4b5fd" font-size="9" font-family="'Segoe UI',sans-serif">TCP</text>
+      <rect x="575" y="100" width="95" height="28" rx="3" fill="rgba(79,156,249,0.15)" stroke="#4f9cf9" stroke-width="1"/>
+      <text x="622" y="118" text-anchor="middle" fill="#60a5fa" font-size="9" font-family="'Segoe UI',sans-serif">Payload</text>
+      <text x="460" y="140" fill="#475569" font-size="10" font-family="monospace">↑head=↑data</text>
+
+      <!-- Arrow -->
+      <line x1="180" y1="145" x2="180" y2="168" stroke="#10b981" stroke-width="2" marker-end="url(#rxarr)"/>
+
+      <!-- L2 -->
+      <rect x="30" y="170" width="300" height="110" rx="8" fill="rgba(245,158,11,0.1)" stroke="#f59e0b" stroke-width="1.5"/>
+      <text x="45" y="193" fill="#f59e0b" font-size="13" font-weight="700" font-family="'Segoe UI',sans-serif">Layer 2 — 链路层 (Ethernet)</text>
+      <text x="45" y="212" fill="#94a3b8" font-size="11" font-family="monospace">netif_receive_skb()</text>
+      <text x="45" y="228" fill="#64748b" font-size="11" font-family="'Segoe UI',sans-serif">1. 克隆给 packet tap（tcpdump）</text>
+      <text x="45" y="242" fill="#64748b" font-size="11" font-family="'Segoe UI',sans-serif">2. eth_type_trans() → 设置 skb→protocol</text>
+      <text x="45" y="256" fill="#64748b" font-size="11" font-family="'Segoe UI',sans-serif">3. 根据 ETH_P_IP 调度到 ip_rcv()</text>
+      <text x="45" y="270" fill="#64748b" font-size="11" font-family="'Segoe UI',sans-serif">   (GRO: napi_gro_receive 聚合)</text>
+      <!-- skb state -->
+      <rect x="450" y="178" width="290" height="95" rx="6" fill="rgba(245,158,11,0.06)" stroke="#b45309" stroke-width="1"/>
+      <text x="595" y="198" text-anchor="middle" fill="#fbbf24" font-size="11" font-weight="600" font-family="'Segoe UI',sans-serif">以太网头被识别（不 pull）</text>
+      <text x="595" y="214" text-anchor="middle" fill="#64748b" font-size="11" font-family="'Segoe UI',sans-serif">mac_header 偏移记录</text>
+      <rect x="460" y="224" width="40" height="28" rx="3" fill="rgba(245,158,11,0.15)" stroke="#f59e0b" stroke-width="1" stroke-dasharray="3,2"/>
+      <text x="480" y="242" text-anchor="middle" fill="#92400e" font-size="9" font-family="'Segoe UI',sans-serif">ETH*</text>
+      <rect x="500" y="224" width="35" height="28" rx="3" fill="rgba(16,185,129,0.2)" stroke="#10b981" stroke-width="1"/>
+      <text x="517" y="242" text-anchor="middle" fill="#34d399" font-size="9" font-family="'Segoe UI',sans-serif">IP</text>
+      <rect x="535" y="224" width="40" height="28" rx="3" fill="rgba(167,139,250,0.15)" stroke="#a78bfa" stroke-width="1"/>
+      <text x="555" y="242" text-anchor="middle" fill="#c4b5fd" font-size="9" font-family="'Segoe UI',sans-serif">TCP</text>
+      <rect x="575" y="224" width="95" height="28" rx="3" fill="rgba(79,156,249,0.15)" stroke="#4f9cf9" stroke-width="1"/>
+      <text x="622" y="242" text-anchor="middle" fill="#60a5fa" font-size="9" font-family="'Segoe UI',sans-serif">Payload</text>
+      <text x="460" y="265" fill="#b45309" font-size="10" font-family="monospace">mac_header↑  ↑data→eth_type_trans skb_pull</text>
+
+      <!-- Arrow -->
+      <line x1="180" y1="280" x2="180" y2="303" stroke="#10b981" stroke-width="2" marker-end="url(#rxarr)"/>
+
+      <!-- L3 -->
+      <rect x="30" y="305" width="300" height="120" rx="8" fill="rgba(16,185,129,0.1)" stroke="#10b981" stroke-width="1.5"/>
+      <text x="45" y="328" fill="#10b981" font-size="13" font-weight="700" font-family="'Segoe UI',sans-serif">Layer 3 — 网络层 (IPv4)</text>
+      <text x="45" y="347" fill="#94a3b8" font-size="11" font-family="monospace">ip_rcv()</text>
+      <text x="45" y="363" fill="#64748b" font-size="11" font-family="'Segoe UI',sans-serif">1. 校验 IP 头合法性</text>
+      <text x="45" y="377" fill="#64748b" font-size="11" font-family="'Segoe UI',sans-serif">2. Netfilter NF_INET_PRE_ROUTING</text>
+      <text x="45" y="391" fill="#64748b" font-size="11" font-family="'Segoe UI',sans-serif">3. ip_route_input() → 路由决策</text>
+      <text x="45" y="405" fill="#64748b" font-size="11" font-family="'Segoe UI',sans-serif">4. ip_local_deliver() → skb_pull(IP 头)</text>
+      <!-- skb state -->
+      <rect x="450" y="313" width="290" height="104" rx="6" fill="rgba(16,185,129,0.06)" stroke="#059669" stroke-width="1"/>
+      <text x="595" y="333" text-anchor="middle" fill="#34d399" font-size="11" font-weight="600" font-family="'Segoe UI',sans-serif">skb_pull 消费 IP 头</text>
+      <rect x="460" y="342" width="40" height="28" rx="3" fill="rgba(245,158,11,0.08)" stroke="#475569" stroke-width="1" stroke-dasharray="3,2"/>
+      <text x="480" y="360" text-anchor="middle" fill="#475569" font-size="8" font-family="'Segoe UI',sans-serif">ETH*</text>
+      <rect x="500" y="342" width="35" height="28" rx="3" fill="rgba(16,185,129,0.1)" stroke="#475569" stroke-width="1" stroke-dasharray="3,2"/>
+      <text x="517" y="360" text-anchor="middle" fill="#475569" font-size="8" font-family="'Segoe UI',sans-serif">IP*</text>
+      <rect x="535" y="342" width="40" height="28" rx="3" fill="rgba(167,139,250,0.3)" stroke="#a78bfa" stroke-width="2"/>
+      <text x="555" y="360" text-anchor="middle" fill="#c4b5fd" font-size="9" font-weight="700" font-family="'Segoe UI',sans-serif">TCP</text>
+      <rect x="575" y="342" width="95" height="28" rx="3" fill="rgba(79,156,249,0.2)" stroke="#4f9cf9" stroke-width="1.5"/>
+      <text x="622" y="360" text-anchor="middle" fill="#60a5fa" font-size="9" font-family="'Segoe UI',sans-serif">Payload</text>
+      <text x="535" y="382" fill="#10b981" font-size="10" font-family="monospace">↑data（TCP 头起始）</text>
+
+      <!-- Arrow -->
+      <line x1="180" y1="425" x2="180" y2="448" stroke="#10b981" stroke-width="2" marker-end="url(#rxarr)"/>
+
+      <!-- L4 -->
+      <rect x="30" y="450" width="300" height="120" rx="8" fill="rgba(167,139,250,0.1)" stroke="#a78bfa" stroke-width="1.5"/>
+      <text x="45" y="473" fill="#a78bfa" font-size="13" font-weight="700" font-family="'Segoe UI',sans-serif">Layer 4 — 传输层 (TCP)</text>
+      <text x="45" y="492" fill="#94a3b8" font-size="11" font-family="monospace">tcp_v4_rcv()</text>
+      <text x="45" y="508" fill="#64748b" font-size="11" font-family="'Segoe UI',sans-serif">1. 4元组查找 socket</text>
+      <text x="45" y="522" fill="#64748b" font-size="11" font-family="'Segoe UI',sans-serif">2. tcp_rcv_established() / tcp_data_queue()</text>
+      <text x="45" y="536" fill="#64748b" font-size="11" font-family="'Segoe UI',sans-serif">3. skb_pull 消费 TCP 头</text>
+      <text x="45" y="550" fill="#64748b" font-size="11" font-family="'Segoe UI',sans-serif">4. 追加到 sk_receive_queue</text>
+      <!-- skb state -->
+      <rect x="450" y="458" width="290" height="104" rx="6" fill="rgba(167,139,250,0.06)" stroke="#7c3aed" stroke-width="1"/>
+      <text x="595" y="478" text-anchor="middle" fill="#c4b5fd" font-size="11" font-weight="600" font-family="'Segoe UI',sans-serif">skb_pull 消费 TCP 头</text>
+      <rect x="460" y="488" width="115" height="28" rx="3" fill="rgba(100,116,139,0.1)" stroke="#334155" stroke-width="1" stroke-dasharray="3,2"/>
+      <text x="517" y="506" text-anchor="middle" fill="#334155" font-size="8" font-family="'Segoe UI',sans-serif">ETH*+IP*+TCP*</text>
+      <rect x="575" y="488" width="95" height="28" rx="3" fill="rgba(79,156,249,0.3)" stroke="#4f9cf9" stroke-width="2"/>
+      <text x="622" y="506" text-anchor="middle" fill="#60a5fa" font-size="10" font-weight="700" font-family="'Segoe UI',sans-serif">Payload</text>
+      <text x="575" y="528" fill="#a78bfa" font-size="10" font-family="monospace">↑data（纯数据）</text>
+      <text x="595" y="548" text-anchor="middle" fill="#64748b" font-size="10" font-family="'Segoe UI',sans-serif">入 sk_receive_queue</text>
+
+      <!-- Arrow -->
+      <line x1="180" y1="570" x2="180" y2="593" stroke="#10b981" stroke-width="2" marker-end="url(#rxarr)"/>
+
+      <!-- L5 -->
+      <rect x="30" y="595" width="300" height="100" rx="8" fill="rgba(79,156,249,0.1)" stroke="#4f9cf9" stroke-width="1.5"/>
+      <text x="45" y="618" fill="#4f9cf9" font-size="13" font-weight="700" font-family="'Segoe UI',sans-serif">Layer 5 — 应用层 / Socket</text>
+      <text x="45" y="637" fill="#94a3b8" font-size="11" font-family="monospace">tcp_recvmsg()</text>
+      <text x="45" y="653" fill="#64748b" font-size="11" font-family="'Segoe UI',sans-serif">1. 从 sk_receive_queue 取 skb</text>
+      <text x="45" y="667" fill="#64748b" font-size="11" font-family="'Segoe UI',sans-serif">2. skb_copy_datagram_iovec → 用户空间</text>
+      <text x="45" y="681" fill="#64748b" font-size="11" font-family="'Segoe UI',sans-serif">3. consume_skb() 释放（第2次也是最后拷贝）</text>
+      <!-- skb state -->
+      <rect x="450" y="602" width="290" height="85" rx="6" fill="rgba(79,156,249,0.08)" stroke="#1d4ed8" stroke-width="1"/>
+      <text x="595" y="626" text-anchor="middle" fill="#60a5fa" font-size="11" font-weight="600" font-family="'Segoe UI',sans-serif">数据拷贝到用户空间</text>
+      <text x="595" y="645" text-anchor="middle" fill="#64748b" font-size="11" font-family="'Segoe UI',sans-serif">skb_copy_datagram_iovec()</text>
+      <text x="595" y="664" text-anchor="middle" fill="#ef4444" font-size="11" font-family="'Segoe UI',sans-serif">→ consume_skb() 释放</text>
+    </svg>
+    <p style="text-align:center;font-size:12px;color:var(--text-dim);margin-top:8px">图6：RX 接收路径 —— sk_buff 在各层的状态变化</p>
+  </div>
+
+  <h3>接收路径关键函数调用链</h3>
+  <table>
+    <tr><th>层级</th><th>关键函数</th><th>sk_buff 操作</th><th>说明</th></tr>
+    <tr><td>NIC/Driver</td><td><code>dev_alloc_skb()</code></td><td>分配 skb，DMA 写入完整以太网帧</td><td>NAPI poll 循环中执行</td></tr>
+    <tr><td>L2 Ethernet</td><td><code>netif_receive_skb()</code></td><td><code>eth_type_trans()</code> 设置 protocol，记录 mac_header</td><td>协议分发，tcpdump 点</td></tr>
+    <tr><td>L3 IP</td><td><code>ip_rcv()</code></td><td>校验、Netfilter、路由决策</td><td>本机包→ ip_local_deliver</td></tr>
+    <tr><td>L3 IP</td><td><code>ip_local_deliver()</code></td><td><code>skb_pull(IP_HDR_LEN)</code> 消费 IP 头</td><td>调用 L4 协议处理器</td></tr>
+    <tr><td>L4 TCP</td><td><code>tcp_v4_rcv()</code></td><td>4 元组查找 socket，<code>skb_pull(TCP_HDR_LEN)</code></td><td>处理 TCP 状态机</td></tr>
+    <tr><td>L4 TCP</td><td><code>tcp_data_queue()</code></td><td>维护 out_of_order_queue，入 sk_receive_queue</td><td>唤醒等待进程</td></tr>
+    <tr><td>L5 Socket</td><td><code>tcp_recvmsg()</code></td><td><code>skb_copy_datagram_iovec()</code> 拷贝到用户空间</td><td>第 2 次也是最后一次拷贝</td></tr>
+  </table>
+
+  <div class="principle-box">
+    <h4>🔬 第一性原理</h4>
+    <p>接收路径的本质是"<strong>逐层剥壳</strong>"：每层读取并验证本层头部后，通过 skb_pull 将 data 指针右移，向上层呈现"更小的视图"。注意头部字节并未被清除，只是不再"可见"。这种惰性删除策略避免了清零开销，mac_header/network_header/transport_header 偏移量允许任意层随时回溯访问已处理的头部。</p>
+  </div>
+</section>
+
+<!-- ========== Section 8: Clone & Share ========== -->
+<section id="s8">
+  <div class="section-badge badge-blue">高级特性</div>
+  <h2>克隆与共享 —— skb_clone / skb_copy</h2>
+
+  <div class="svg-wrap">
+    <svg viewBox="0 0 760 220" xmlns="http://www.w3.org/2000/svg" style="width:100%;min-width:300px">
+      <rect width="760" height="220" rx="12" fill="#1a1f2e"/>
+      <defs>
+        <marker id="ca" markerWidth="8" markerHeight="8" refX="6" refY="3" orient="auto">
+          <path d="M0,0 L0,6 L8,3 z" fill="#a78bfa"/>
+        </marker>
+        <marker id="cb" markerWidth="8" markerHeight="8" refX="6" refY="3" orient="auto">
+          <path d="M0,0 L0,6 L8,3 z" fill="#10b981"/>
+        </marker>
+      </defs>
+
+      <!-- Original sk_buff -->
+      <rect x="30" y="30" width="160" height="80" rx="8" fill="rgba(79,156,249,0.12)" stroke="#4f9cf9" stroke-width="1.5"/>
+      <text x="110" y="54" text-anchor="middle" fill="#60a5fa" font-size="12" font-weight="700" font-family="'Segoe UI',sans-serif">原始 sk_buff</text>
+      <text x="110" y="72" text-anchor="middle" fill="#64748b" font-size="11" font-family="monospace">cloned=1</text>
+      <text x="110" y="88" text-anchor="middle" fill="#64748b" font-size="11" font-family="monospace">users=1</text>
+      <text x="110" y="122" text-anchor="middle" fill="#475569" font-size="10" font-family="'Segoe UI',sans-serif">→ data buffer</text>
+
+      <!-- Data buffer (shared) -->
+      <rect x="280" y="55" width="200" height="50" rx="8" fill="rgba(79,156,249,0.2)" stroke="#4f9cf9" stroke-width="2"/>
+      <text x="380" y="77" text-anchor="middle" fill="#60a5fa" font-size="12" font-weight="700" font-family="'Segoe UI',sans-serif">共享数据缓冲区</text>
+      <text x="380" y="95" text-anchor="middle" fill="#64748b" font-size="11" font-family="'Segoe UI',sans-serif">dataref=2（skb_clone 后）</text>
+
+      <!-- Clone sk_buff -->
+      <rect x="30" y="140" width="160" height="60" rx="8" fill="rgba(167,139,250,0.12)" stroke="#a78bfa" stroke-width="1.5"/>
+      <text x="110" y="165" text-anchor="middle" fill="#c4b5fd" font-size="12" font-weight="700" font-family="'Segoe UI',sans-serif">克隆 sk_buff</text>
+      <text x="110" y="183" text-anchor="middle" fill="#64748b" font-size="11" font-family="monospace">cloned=1, users=1</text>
+      <text x="110" y="207" text-anchor="middle" fill="#475569" font-size="10" font-family="'Segoe UI',sans-serif">→ 同一 data buffer</text>
+
+      <!-- Arrows to shared buffer -->
+      <line x1="190" y1="75" x2="278" y2="80" stroke="#4f9cf9" stroke-width="1.5" marker-end="url(#ca)"/>
+      <line x1="190" y1="170" x2="278" y2="90" stroke="#a78bfa" stroke-width="1.5" marker-end="url(#ca)"/>
+
+      <!-- Independent copy -->
+      <rect x="570" y="55" width="160" height="50" rx="8" fill="rgba(16,185,129,0.12)" stroke="#10b981" stroke-width="1.5"/>
+      <text x="650" y="78" text-anchor="middle" fill="#34d399" font-size="12" font-weight="700" font-family="'Segoe UI',sans-serif">独立副本（skb_copy）</text>
+      <text x="650" y="96" text-anchor="middle" fill="#64748b" font-size="11" font-family="monospace">完全独立，可修改</text>
+      <line x1="480" y1="80" x2="568" y2="80" stroke="#10b981" stroke-width="1.5" stroke-dasharray="5,3" marker-end="url(#cb)"/>
+      <text x="524" y="74" text-anchor="middle" fill="#10b981" font-size="10" font-family="'Segoe UI',sans-serif">深拷贝</text>
+
+      <!-- Labels -->
+      <text x="30" y="18" fill="#94a3b8" font-size="12" font-weight="600" font-family="'Segoe UI',sans-serif">skb_clone()：共享数据区，独立元数据（写时复制）</text>
+    </svg>
+    <p style="text-align:center;font-size:12px;color:var(--text-dim);margin-top:8px">图7：skb_clone 与 skb_copy 对比</p>
+  </div>
+
+  <div class="card-grid">
+    <div class="card" style="margin-bottom:0">
+      <h4>skb_clone() —— 共享克隆</h4>
+      <p style="font-size:13px;color:var(--text-muted);">创建一个新的 sk_buff 头部，但与原始 skb 共享相同的数据缓冲区。cloned 位在两者中均置 1，dataref 引用计数增加。适用于需要将同一数据包发给多个消费者的场景（如：packet socket 监听 + 正常转发路径）。</p>
+      <p style="font-size:13px;color:var(--text-muted);">任何需要修改头部的层必须先调用 <code>skb_unshare()</code> 或 <code>pskb_expand_head()</code> 获取独立副本（写时复制语义）。</p>
+    </div>
+    <div class="card" style="margin-bottom:0">
+      <h4>skb_copy() —— 完整拷贝</h4>
+      <p style="font-size:13px;color:var(--text-muted);">创建完全独立的 sk_buff，包括所有数据区的深拷贝。适用于需要独立修改内容的场景，代价是全量内存拷贝。</p>
+      <p style="font-size:13px;color:var(--text-muted);"><code>kfree_skb()</code>：引用计数减 1，为 0 时才真正释放（丢包路径）。<code>consume_skb()</code>：正常完成路径的释放（不计入丢包统计）。</p>
+    </div>
+  </div>
+
+  <div class="principle-box">
+    <h4>🔬 第一性原理</h4>
+    <p>克隆机制体现了"<strong>共享不可变数据，隔离可变状态</strong>"的并发设计原则。数据载荷在同一个流内是不变的（只会被读取、转发），元数据（当前处理层、校验状态）则是变化的。cloned + dataref 的引用计数设计，以极低代价（一个整数加法）实现了无拷贝的多播分发。</p>
+  </div>
+</section>
+
+<!-- ========== Section 9: Netfilter ========== -->
+<section id="s9">
+  <div class="section-badge badge-yellow">高级特性</div>
+  <h2>Netfilter 钩子点</h2>
+  <p>Netfilter 在数据包路径的关键节点插入钩子（hooks），内核模块可在这些点注册回调，实现防火墙、NAT、连接跟踪等功能。sk_buff 会在这些点被检查或修改。</p>
+
+  <div class="svg-wrap">
+    <svg viewBox="0 0 760 240" xmlns="http://www.w3.org/2000/svg" style="width:100%;min-width:300px">
+      <rect width="760" height="240" rx="12" fill="#1a1f2e"/>
+      <defs>
+        <marker id="nfa" markerWidth="8" markerHeight="8" refX="6" refY="3" orient="auto">
+          <path d="M0,0 L0,6 L8,3 z" fill="#94a3b8"/>
+        </marker>
+      </defs>
+
+      <!-- RX path -->
+      <text x="30" y="24" fill="#94a3b8" font-size="12" font-weight="700" font-family="'Segoe UI',sans-serif">接收路径（Ingress）</text>
+      <!-- NIC -->
+      <rect x="20" y="32" width="60" height="32" rx="5" fill="rgba(239,68,68,0.15)" stroke="#ef4444" stroke-width="1"/>
+      <text x="50" y="53" text-anchor="middle" fill="#f87171" font-size="11" font-family="'Segoe UI',sans-serif">NIC</text>
+      <line x1="80" y1="48" x2="100" y2="48" stroke="#94a3b8" stroke-width="1.5" marker-end="url(#nfa)"/>
+      <!-- PRE_ROUTING -->
+      <rect x="100" y="32" width="110" height="32" rx="5" fill="rgba(245,158,11,0.2)" stroke="#f59e0b" stroke-width="1.5"/>
+      <text x="155" y="53" text-anchor="middle" fill="#fbbf24" font-size="10" font-weight="700" font-family="'Segoe UI',sans-serif">PRE_ROUTING</text>
+      <line x1="210" y1="48" x2="230" y2="48" stroke="#94a3b8" stroke-width="1.5" marker-end="url(#nfa)"/>
+      <!-- Route -->
+      <rect x="230" y="32" width="70" height="32" rx="5" fill="rgba(100,116,139,0.15)" stroke="#475569" stroke-width="1"/>
+      <text x="265" y="53" text-anchor="middle" fill="#94a3b8" font-size="10" font-family="'Segoe UI',sans-serif">路由决策</text>
+      <!-- Fork: LOCAL_IN / FORWARD -->
+      <line x1="300" y1="48" x2="340" y2="48" stroke="#94a3b8" stroke-width="1.5" marker-end="url(#nfa)"/>
+      <line x1="300" y1="48" x2="300" y2="120" stroke="#94a3b8" stroke-width="1.5"/>
+      <line x1="300" y1="120" x2="340" y2="120" stroke="#94a3b8" stroke-width="1.5" marker-end="url(#nfa)"/>
+      <!-- LOCAL_IN -->
+      <rect x="340" y="32" width="100" height="32" rx="5" fill="rgba(79,156,249,0.2)" stroke="#4f9cf9" stroke-width="1.5"/>
+      <text x="390" y="53" text-anchor="middle" fill="#60a5fa" font-size="10" font-weight="700" font-family="'Segoe UI',sans-serif">LOCAL_IN</text>
+      <line x1="440" y1="48" x2="460" y2="48" stroke="#94a3b8" stroke-width="1.5" marker-end="url(#nfa)"/>
+      <rect x="460" y="32" width="60" height="32" rx="5" fill="rgba(79,156,249,0.12)" stroke="#4f9cf9" stroke-width="1"/>
+      <text x="490" y="53" text-anchor="middle" fill="#60a5fa" font-size="11" font-family="'Segoe UI',sans-serif">Socket</text>
+      <!-- FORWARD -->
+      <rect x="340" y="104" width="90" height="32" rx="5" fill="rgba(16,185,129,0.2)" stroke="#10b981" stroke-width="1.5"/>
+      <text x="385" y="125" text-anchor="middle" fill="#34d399" font-size="10" font-weight="700" font-family="'Segoe UI',sans-serif">FORWARD</text>
+      <line x1="430" y1="120" x2="450" y2="120" stroke="#94a3b8" stroke-width="1.5" marker-end="url(#nfa)"/>
+
+      <!-- TX path -->
+      <text x="30" y="168" fill="#94a3b8" font-size="12" font-weight="700" font-family="'Segoe UI',sans-serif">发送路径（Egress）</text>
+      <rect x="20" y="176" width="60" height="32" rx="5" fill="rgba(79,156,249,0.12)" stroke="#4f9cf9" stroke-width="1"/>
+      <text x="50" y="197" text-anchor="middle" fill="#60a5fa" font-size="11" font-family="'Segoe UI',sans-serif">Socket</text>
+      <line x1="80" y1="192" x2="100" y2="192" stroke="#94a3b8" stroke-width="1.5" marker-end="url(#nfa)"/>
+      <!-- LOCAL_OUT -->
+      <rect x="100" y="176" width="100" height="32" rx="5" fill="rgba(167,139,250,0.2)" stroke="#a78bfa" stroke-width="1.5"/>
+      <text x="150" y="197" text-anchor="middle" fill="#c4b5fd" font-size="10" font-weight="700" font-family="'Segoe UI',sans-serif">LOCAL_OUT</text>
+      <line x1="200" y1="192" x2="220" y2="192" stroke="#94a3b8" stroke-width="1.5" marker-end="url(#nfa)"/>
+      <!-- Route -->
+      <rect x="220" y="176" width="70" height="32" rx="5" fill="rgba(100,116,139,0.15)" stroke="#475569" stroke-width="1"/>
+      <text x="255" y="197" text-anchor="middle" fill="#94a3b8" font-size="10" font-family="'Segoe UI',sans-serif">路由决策</text>
+      <line x1="290" y1="192" x2="310" y2="192" stroke="#94a3b8" stroke-width="1.5" marker-end="url(#nfa)"/>
+      <!-- POST_ROUTING -->
+      <rect x="310" y="176" width="110" height="32" rx="5" fill="rgba(245,158,11,0.2)" stroke="#f59e0b" stroke-width="1.5"/>
+      <text x="365" y="197" text-anchor="middle" fill="#fbbf24" font-size="10" font-weight="700" font-family="'Segoe UI',sans-serif">POST_ROUTING</text>
+      <line x1="420" y1="192" x2="440" y2="192" stroke="#94a3b8" stroke-width="1.5" marker-end="url(#nfa)"/>
+      <rect x="440" y="176" width="60" height="32" rx="5" fill="rgba(239,68,68,0.15)" stroke="#ef4444" stroke-width="1"/>
+      <text x="470" y="197" text-anchor="middle" fill="#f87171" font-size="11" font-family="'Segoe UI',sans-serif">NIC</text>
+
+      <!-- FORWARD → POST_ROUTING -->
+      <line x1="450" y1="120" x2="550" y2="120" stroke="#94a3b8" stroke-width="1.5"/>
+      <line x1="550" y1="120" x2="550" y2="192" stroke="#94a3b8" stroke-width="1.5"/>
+      <line x1="550" y1="192" x2="530" y2="192" stroke="#94a3b8" stroke-width="1.5" marker-end="url(#nfa)"/>
+      <text x="500" y="115" fill="#64748b" font-size="10" font-family="'Segoe UI',sans-serif">→ POST_ROUTING</text>
+
+      <!-- Legend -->
+      <rect x="560" y="32" width="12" height="12" rx="2" fill="rgba(245,158,11,0.3)" stroke="#f59e0b" stroke-width="1"/>
+      <text x="576" y="43" fill="#94a3b8" font-size="11" font-family="'Segoe UI',sans-serif">Netfilter 钩子点</text>
+    </svg>
+    <p style="text-align:center;font-size:12px;color:var(--text-dim);margin-top:8px">图8：Netfilter 五大钩子点与数据包路径</p>
+  </div>
+
+  <table>
+    <tr><th>钩子</th><th>位置</th><th>典型用途</th></tr>
+    <tr><td><code>NF_INET_PRE_ROUTING</code></td><td>IP 层入口，路由决策前</td><td>DNAT、连接跟踪</td></tr>
+    <tr><td><code>NF_INET_LOCAL_IN</code></td><td>路由到本机后，交给 socket 前</td><td>INPUT 链过滤</td></tr>
+    <tr><td><code>NF_INET_FORWARD</code></td><td>转发路径中间</td><td>FORWARD 链过滤</td></tr>
+    <tr><td><code>NF_INET_LOCAL_OUT</code></td><td>本机发出，路由决策前</td><td>OUTPUT 链过滤</td></tr>
+    <tr><td><code>NF_INET_POST_ROUTING</code></td><td>路由后，发出前</td><td>SNAT、MASQUERADE</td></tr>
+  </table>
+
+  <div class="principle-box">
+    <h4>🔬 第一性原理</h4>
+    <p>Netfilter 钩子是"<strong>开放-封闭原则</strong>"在内核中的应用：核心路径对扩展开放，对修改封闭。防火墙、NAT、连接跟踪模块通过注册钩子函数插入处理逻辑，而无需修改核心转发代码。每个钩子都接收同一个 sk_buff 指针，模块可读取、修改或丢弃数据包。</p>
+  </div>
+</section>
+
+<!-- ========== Section 10: NAPI & GRO ========== -->
+<section id="s10">
+  <div class="section-badge badge-green">高级特性</div>
+  <h2>NAPI 与 GRO —— 高速接收优化</h2>
+
+  <div class="card-grid">
+    <div class="card" style="margin-bottom:0">
+      <h3>NAPI（New API）</h3>
+      <p style="font-size:13px;color:var(--text-muted);">在旧内核中，每个数据包到达都触发一次硬件中断。高速网络下（百万包/秒）中断开销极大。NAPI 将接收改为"中断+轮询"混合模式：</p>
+      <ol style="font-size:13px;color:var(--text-muted);padding-left:20px;margin-top:8px">
+        <li>第一个包触发硬件中断 → 调用 <code>netif_rx_schedule()</code> → 禁用该设备中断</li>
+        <li>注册设备到 <code>softnet_data.poll_list</code>，触发 <code>NET_RX_SOFTIRQ</code></li>
+        <li>ksoftirqd 运行 <code>net_rx_action()</code> → 调用驱动 poll() 批量处理</li>
+        <li>处理完 budget 后重启中断（或超时重启）</li>
+      </ol>
+    </div>
+    <div class="card" style="margin-bottom:0">
+      <h3>GRO（Generic Receive Offload）</h3>
+      <p style="font-size:13px;color:var(--text-muted);">GRO 是软件实现的接收聚合：将多个属于同一 TCP 流的小 sk_buff 合并为一个大 sk_buff，再交给协议栈处理。</p>
+      <p style="font-size:13px;color:var(--text-muted);margin-top:8px;"><strong>效果：</strong> 1Gbps 流量在 1460 字节分段下约 85,000 包/秒。经 GRO 聚合后可减少 10-20 倍的协议栈调用次数，显著降低 CPU 负载。</p>
+      <p style="font-size:13px;color:var(--text-muted);"><code>dev_gro_receive()</code> 在 NAPI poll 中匹配同一 5 元组的连续包，合并后通过 <code>netif_receive_skb()</code> 上送协议栈。</p>
+    </div>
+  </div>
+
+  <!-- NAPI SVG -->
+  <div class="svg-wrap" style="margin-top:16px">
+    <svg viewBox="0 0 760 180" xmlns="http://www.w3.org/2000/svg" style="width:100%;min-width:300px">
+      <rect width="760" height="180" rx="12" fill="#1a1f2e"/>
+      <defs>
+        <marker id="na2" markerWidth="8" markerHeight="8" refX="6" refY="3" orient="auto">
+          <path d="M0,0 L0,6 L8,3 z" fill="#4f9cf9"/>
+        </marker>
+      </defs>
+      <text x="380" y="22" text-anchor="middle" fill="#94a3b8" font-size="13" font-weight="700" font-family="'Segoe UI',sans-serif">NAPI 接收流程</text>
+
+      <rect x="20" y="36" width="80" height="36" rx="6" fill="rgba(239,68,68,0.15)" stroke="#ef4444" stroke-width="1.5"/>
+      <text x="60" y="59" text-anchor="middle" fill="#f87171" font-size="11" font-family="'Segoe UI',sans-serif" font-weight="600">数据包到达</text>
+
+      <line x1="100" y1="54" x2="120" y2="54" stroke="#4f9cf9" stroke-width="1.5" marker-end="url(#na2)"/>
+      <rect x="120" y="36" width="90" height="36" rx="6" fill="rgba(245,158,11,0.12)" stroke="#f59e0b" stroke-width="1.5"/>
+      <text x="165" y="52" text-anchor="middle" fill="#fbbf24" font-size="10" font-family="'Segoe UI',sans-serif">HardIRQ</text>
+      <text x="165" y="66" text-anchor="middle" fill="#fbbf24" font-size="10" font-family="'Segoe UI',sans-serif">禁用设备中断</text>
+
+      <line x1="210" y1="54" x2="230" y2="54" stroke="#4f9cf9" stroke-width="1.5" marker-end="url(#na2)"/>
+      <rect x="230" y="36" width="100" height="36" rx="6" fill="rgba(167,139,250,0.12)" stroke="#a78bfa" stroke-width="1.5"/>
+      <text x="280" y="52" text-anchor="middle" fill="#c4b5fd" font-size="10" font-family="'Segoe UI',sans-serif">SoftIRQ</text>
+      <text x="280" y="66" text-anchor="middle" fill="#c4b5fd" font-size="10" font-family="'Segoe UI',sans-serif">NET_RX_SOFTIRQ</text>
+
+      <line x1="330" y1="54" x2="350" y2="54" stroke="#4f9cf9" stroke-width="1.5" marker-end="url(#na2)"/>
+      <rect x="350" y="36" width="110" height="36" rx="6" fill="rgba(16,185,129,0.12)" stroke="#10b981" stroke-width="1.5"/>
+      <text x="405" y="52" text-anchor="middle" fill="#34d399" font-size="10" font-family="'Segoe UI',sans-serif">net_rx_action()</text>
+      <text x="405" y="66" text-anchor="middle" fill="#34d399" font-size="10" font-family="'Segoe UI',sans-serif">批量 poll(budget)</text>
+
+      <line x1="460" y1="54" x2="480" y2="54" stroke="#4f9cf9" stroke-width="1.5" marker-end="url(#na2)"/>
+      <rect x="480" y="36" width="110" height="36" rx="6" fill="rgba(79,156,249,0.12)" stroke="#4f9cf9" stroke-width="1.5"/>
+      <text x="535" y="52" text-anchor="middle" fill="#60a5fa" font-size="10" font-family="'Segoe UI',sans-serif">GRO 聚合</text>
+      <text x="535" y="66" text-anchor="middle" fill="#60a5fa" font-size="10" font-family="'Segoe UI',sans-serif">napi_gro_receive()</text>
+
+      <line x1="590" y1="54" x2="610" y2="54" stroke="#4f9cf9" stroke-width="1.5" marker-end="url(#na2)"/>
+      <rect x="610" y="36" width="130" height="36" rx="6" fill="rgba(79,156,249,0.2)" stroke="#4f9cf9" stroke-width="2"/>
+      <text x="675" y="52" text-anchor="middle" fill="#60a5fa" font-size="10" font-family="'Segoe UI',sans-serif">netif_receive_skb()</text>
+      <text x="675" y="66" text-anchor="middle" fill="#60a5fa" font-size="10" font-family="'Segoe UI',sans-serif">→ 协议栈</text>
+
+      <!-- GRO comparison -->
+      <text x="30" y="110" fill="#94a3b8" font-size="12" font-weight="600" font-family="'Segoe UI',sans-serif">GRO 对比：</text>
+      <text x="30" y="130" fill="#ef4444" font-size="12" font-family="'Segoe UI',sans-serif">无 GRO: skb(1460) → ip_rcv → tcp_rcv  ×85,000/秒</text>
+      <text x="30" y="155" fill="#10b981" font-size="12" font-family="'Segoe UI',sans-serif">有 GRO: skb(~45KB) → ip_rcv → tcp_rcv  ×~4,000/秒  (减少约 20×)</text>
+    </svg>
+    <p style="text-align:center;font-size:12px;color:var(--text-dim);margin-top:8px">图9：NAPI 接收流程与 GRO 效果对比</p>
+  </div>
+
+  <div class="principle-box">
+    <h4>🔬 第一性原理</h4>
+    <p>NAPI 和 GRO 都遵循"<strong>批处理摊销固定开销</strong>"原则。每次协议栈调用（ip_rcv、tcp_v4_rcv）都有固定的调度、锁、状态机开销。通过批量处理（NAPI poll）和聚合（GRO），将这些固定成本摊销到更多字节上，使得<strong>边际处理成本趋近于零</strong>，等效于软件层面的分段卸载。</p>
+  </div>
+</section>
+
+<!-- ========== Section 11: Design Summary ========== -->
+<section id="s11">
+  <div class="section-badge badge-purple">设计总结</div>
+  <h2>sk_buff 设计哲学总结</h2>
+
+  <!-- Summary SVG -->
+  <div class="svg-wrap">
+    <svg viewBox="0 0 760 360" xmlns="http://www.w3.org/2000/svg" style="width:100%;min-width:300px">
+      <rect width="760" height="360" rx="12" fill="#1a1f2e"/>
+      <text x="380" y="28" text-anchor="middle" fill="#94a3b8" font-size="14" font-weight="700" font-family="'Segoe UI',sans-serif">sk_buff 六大设计原则</text>
+
+      <!-- 6 principles -->
+      <!-- 1 -->
+      <rect x="20" y="44" width="220" height="90" rx="8" fill="rgba(79,156,249,0.1)" stroke="#4f9cf9" stroke-width="1.5"/>
+      <text x="130" y="68" text-anchor="middle" fill="#4f9cf9" font-size="13" font-weight="700" font-family="'Segoe UI',sans-serif">① 零拷贝头部封装</text>
+      <text x="130" y="86" text-anchor="middle" fill="#64748b" font-size="11" font-family="'Segoe UI',sans-serif">headroom 预留 + skb_push/pull</text>
+      <text x="130" y="102" text-anchor="middle" fill="#64748b" font-size="11" font-family="'Segoe UI',sans-serif">O(1) 添加/删除协议头部</text>
+      <text x="130" y="118" text-anchor="middle" fill="#3b82f6" font-size="10" font-family="'Segoe UI',sans-serif">载荷在内核态全程不移动</text>
+
+      <!-- 2 -->
+      <rect x="260" y="44" width="220" height="90" rx="8" fill="rgba(167,139,250,0.1)" stroke="#a78bfa" stroke-width="1.5"/>
+      <text x="370" y="68" text-anchor="middle" fill="#a78bfa" font-size="13" font-weight="700" font-family="'Segoe UI',sans-serif">② 统一数据包表示</text>
+      <text x="370" y="86" text-anchor="middle" fill="#64748b" font-size="11" font-family="'Segoe UI',sans-serif">同一个 sk_buff 贯穿所有层</text>
+      <text x="370" y="102" text-anchor="middle" fill="#64748b" font-size="11" font-family="'Segoe UI',sans-serif">避免跨层分配/转换开销</text>
+      <text x="370" y="118" text-anchor="middle" fill="#7c3aed" font-size="10" font-family="'Segoe UI',sans-serif">协议无关性设计</text>
+
+      <!-- 3 -->
+      <rect x="500" y="44" width="240" height="90" rx="8" fill="rgba(16,185,129,0.1)" stroke="#10b981" stroke-width="1.5"/>
+      <text x="620" y="68" text-anchor="middle" fill="#10b981" font-size="13" font-weight="700" font-family="'Segoe UI',sans-serif">③ 内联 cb[] 控制块</text>
+      <text x="620" y="86" text-anchor="middle" fill="#64748b" font-size="11" font-family="'Segoe UI',sans-serif">48字节随 skb 一次性分配</text>
+      <text x="620" y="102" text-anchor="middle" fill="#64748b" font-size="11" font-family="'Segoe UI',sans-serif">各层私有元数据无堆分配</text>
+      <text x="620" y="118" text-anchor="middle" fill="#059669" font-size="10" font-family="'Segoe UI',sans-serif">TCP seq/flags 等按需解释</text>
+
+      <!-- 4 -->
+      <rect x="20" y="154" width="220" height="90" rx="8" fill="rgba(245,158,11,0.1)" stroke="#f59e0b" stroke-width="1.5"/>
+      <text x="130" y="178" text-anchor="middle" fill="#f59e0b" font-size="13" font-weight="700" font-family="'Segoe UI',sans-serif">④ 线性+分片混合</text>
+      <text x="130" y="196" text-anchor="middle" fill="#64748b" font-size="11" font-family="'Segoe UI',sans-serif">头部在线性区（快速访问）</text>
+      <text x="130" y="212" text-anchor="middle" fill="#64748b" font-size="11" font-family="'Segoe UI',sans-serif">载荷在分片页（DMA友好）</text>
+      <text x="130" y="228" text-anchor="middle" fill="#b45309" font-size="10" font-family="'Segoe UI',sans-serif">支持 TSO/Scatter-Gather</text>
+
+      <!-- 5 -->
+      <rect x="260" y="154" width="220" height="90" rx="8" fill="rgba(239,68,68,0.1)" stroke="#ef4444" stroke-width="1.5"/>
+      <text x="370" y="178" text-anchor="middle" fill="#ef4444" font-size="13" font-weight="700" font-family="'Segoe UI',sans-serif">⑤ 写时复制克隆</text>
+      <text x="370" y="196" text-anchor="middle" fill="#64748b" font-size="11" font-family="'Segoe UI',sans-serif">skb_clone：共享数据区</text>
+      <text x="370" y="212" text-anchor="middle" fill="#64748b" font-size="11" font-family="'Segoe UI',sans-serif">cloned+dataref 引用计数</text>
+      <text x="370" y="228" text-anchor="middle" fill="#7f1d1d" font-size="10" font-family="'Segoe UI',sans-serif">多消费者零拷贝分发</text>
+
+      <!-- 6 -->
+      <rect x="500" y="154" width="240" height="90" rx="8" fill="rgba(79,156,249,0.08)" stroke="#3b82f6" stroke-width="1.5"/>
+      <text x="620" y="178" text-anchor="middle" fill="#60a5fa" font-size="13" font-weight="700" font-family="'Segoe UI',sans-serif">⑥ NAPI/GRO 批处理</text>
+      <text x="620" y="196" text-anchor="middle" fill="#64748b" font-size="11" font-family="'Segoe UI',sans-serif">中断+轮询混合减少中断数</text>
+      <text x="620" y="212" text-anchor="middle" fill="#64748b" font-size="11" font-family="'Segoe UI',sans-serif">GRO 聚合摊销固定开销</text>
+      <text x="620" y="228" text-anchor="middle" fill="#1d4ed8" font-size="10" font-family="'Segoe UI',sans-serif">10-20× 协议栈调用减少</text>
+
+      <!-- Central principle -->
+      <rect x="100" y="264" width="560" height="70" rx="12" fill="linear-gradient(135deg, rgba(79,156,249,0.1), rgba(124,58,237,0.1))" stroke="rgba(79,156,249,0.3)" stroke-width="1.5"/>
+      <defs><linearGradient id="cg" x1="0" y1="0" x2="1" y2="0">
+        <stop offset="0%" stop-color="rgba(79,156,249,0.12)"/>
+        <stop offset="100%" stop-color="rgba(124,58,237,0.12)"/>
+      </linearGradient></defs>
+      <rect x="100" y="264" width="560" height="70" rx="12" fill="url(#cg)" stroke="rgba(79,156,249,0.3)" stroke-width="1.5"/>
+      <text x="380" y="292" text-anchor="middle" fill="#94a3b8" font-size="13" font-weight="700" font-family="'Segoe UI',sans-serif">核心设计哲学</text>
+      <text x="380" y="312" text-anchor="middle" fill="#64748b" font-size="12" font-family="'Segoe UI',sans-serif">"让指针移动，让数据静止"</text>
+      <text x="380" y="328" text-anchor="middle" fill="#475569" font-size="11" font-family="'Segoe UI',sans-serif">Move Pointers, Not Data</text>
+    </svg>
+    <p style="text-align:center;font-size:12px;color:var(--text-dim);margin-top:8px">图10：sk_buff 六大设计原则总览</p>
+  </div>
+
+  <div class="card">
+    <h3>两次不可避免的拷贝</h3>
+    <p>Linux 网络栈通过 sk_buff 将内核态的数据拷贝次数压缩到理论最小值 —— <strong>2次</strong>：</p>
+    <ol style="padding-left:20px;color:var(--text-muted)">
+      <li><strong>第1次（发送）</strong>：用户空间 → 内核空间（<code>skb_add_data()</code> / <code>skb_copy_datagram_iovec()</code>）。这是跨越地址空间边界的必要拷贝。</li>
+      <li><strong>第2次（发送）</strong>：内核空间 → 网卡 DMA 缓冲区。这是将数据交给硬件的必要拷贝（零拷贝 NIC 可消除此步）。</li>
+    </ol>
+    <p style="margin-top:12px">接收方向同样 2 次：① DMA 写入 → sk_buff 数据区；② sk_buff 数据区 → 用户空间（sendfile/splice 等零拷贝技术可消除接收侧的第2次拷贝）。</p>
+  </div>
+
+  <div class="principle-box">
+    <h4>🔬 第一性原理 —— 终极总结</h4>
+    <p>从第一性原理看，网络传输的本质是：在两个不信任的地址空间之间，通过可靠的协议约定安全地传递字节序列。内核的根本任务是：① 以最小拷贝次数搬运数据；② 在协议层间高效传递描述信息；③ 以公平的资源核算防止内存耗尽。</p>
+    <p style="margin-top:10px">sk_buff 是这三个目标的统一解：<strong>指针而非数据的移动</strong>满足①；<strong>内联 cb[] 与头部偏移量</strong>满足②；<strong>truesize 与 users 引用计数</strong>满足③。整个设计围绕"避免不必要的工作"这一极简原则展开。</p>
+  </div>
+</section>
+
+<!-- ========== References ========== -->
+<section id="refs">
+  <div class="section-badge badge-blue">参考资料</div>
+  <h2>原始资料与参考文献</h2>
+  <p>本文档内容严格基于以下权威来源，未加入未经文献支持的内容：</p>
+  <ul class="ref-list">
+    <li>
+      <strong>[1] David S. Miller — "How SKBs work"（官方权威说明）</strong><br>
+      <a href="http://oldvger.kernel.org/~davem/skb.html" target="_blank">http://oldvger.kernel.org/~davem/skb.html</a><br>
+      <span style="color:var(--text-dim);font-size:12px">Linux 网络子系统核心维护者 David S. Miller 对 sk_buff 各字段的权威解释，是本文数据结构章节的主要来源。</span>
+    </li>
+    <li>
+      <strong>[2] Linux 基金会 Wiki — "networking:kernel_flow"</strong><br>
+      <a href="https://wiki.linuxfoundation.org/networking/kernel_flow" target="_blank">https://wiki.linuxfoundation.org/networking/kernel_flow</a><br>
+      <span style="color:var(--text-dim);font-size:12px">Linux 内核网络数据流完整描述，包含 TX/RX 各层函数调用链，是本文协议栈流程章节的主要来源。</span>
+    </li>
+    <li>
+      <strong>[3] Linux 基金会 Wiki — "networking:sk_buff"</strong><br>
+      <a href="https://wiki.linuxfoundation.org/networking/sk_buff" target="_blank">https://wiki.linuxfoundation.org/networking/sk_buff</a><br>
+      <span style="color:var(--text-dim);font-size:12px">sk_buff 数据结构官方 Wiki 页，包含队列管理、分配函数等详细说明。</span>
+    </li>
+    <li>
+      <strong>[4] kernel-internals.org — "sk_buff: The Network Buffer"</strong><br>
+      <a href="https://kernel-internals.org/net/sk-buff/" target="_blank">https://kernel-internals.org/net/sk-buff/</a><br>
+      <span style="color:var(--text-dim);font-size:12px">现代内核 sk_buff 结构体字段详解，包含分片模型、克隆机制、线性+分片设计哲学的分析。</span>
+    </li>
+    <li>
+      <strong>[5] Linux Kernel Labs — "Networking"</strong><br>
+      <a href="https://linux-kernel-labs.github.io/refs/pull/189/merge/labs/networking.html" target="_blank">https://linux-kernel-labs.github.io/refs/pull/189/merge/labs/networking.html</a><br>
+      <span style="color:var(--text-dim);font-size:12px">内核实验室文档，包含完整 struct sk_buff 字段注释及 socket 层说明。</span>
+    </li>
+    <li>
+      <strong>[6] mintlify.wiki — "Networking Stack" (Linux Kernel)</strong><br>
+      <a href="https://mintlify.wiki/torvalds/linux/internals/networking-stack" target="_blank">https://mintlify.wiki/torvalds/linux/internals/networking-stack</a><br>
+      <span style="color:var(--text-dim);font-size:12px">Linux 内核网络栈架构概览，包含 Netfilter 钩子、NAPI、XDP 等现代特性说明。</span>
+    </li>
+    <li>
+      <strong>[7] Medium — "Tracing a Packet in the Linux Kernel: Wire to Socket (Part 4)"</strong><br>
+      <a href="https://medium.com/@m-ibrahim.research/tracing-a-packet-in-the-linux-kernel-wire-to-socket-part-4-bfaba725ddd1" target="_blank">https://medium.com/@m-ibrahim.research/...</a><br>
+      <span style="color:var(--text-dim);font-size:12px">GRO 机制的详细说明及与无 GRO 方案的性能对比数据。</span>
+    </li>
+    <li>
+      <strong>[8] pr0gr4m.github.io — "Linux Kernel SKB"</strong><br>
+      <a href="https://pr0gr4m.github.io/linux/kernel/sk_buff/" target="_blank">https://pr0gr4m.github.io/linux/kernel/sk_buff/</a><br>
+      <span style="color:var(--text-dim);font-size:12px">struct sk_buff 完整注释字段列表，包含 TCP_SKB_CB 等私有控制块说明。</span>
+    </li>
+  </ul>
+</section>
+
+</div><!-- content-wrap -->
+</div><!-- main -->
+
+<script>
+  // Progress bar
+  window.addEventListener('scroll', () => {
+    const scrollTop = window.scrollY;
+    const docHeight = document.documentElement.scrollHeight - window.innerHeight;
+    const progress = docHeight > 0 ? (scrollTop / docHeight) * 100 : 0;
+    document.getElementById('progress-bar').style.width = progress + '%';
+  });
+
+  // Sidebar navigation
+  function goTo(id) {
+    const el = document.getElementById(id);
+    if (el) {
+      const offset = 20;
+      const top = el.getBoundingClientRect().top + window.scrollY - offset;
+      window.scrollTo({ top, behavior: 'smooth' });
+    }
+    // Close sidebar on mobile
+    if (window.innerWidth <= 768) closeSidebar();
+  }
+
+  // Active nav tracking
+  const sectionIds = ['s0','s1','s2','s3','s4','s5','s6','s7','s8','s9','s10','s11','refs'];
+  const navItems = document.querySelectorAll('.nav-item');
+
+  function updateActiveNav() {
+    let current = sectionIds[0];
+    for (const id of sectionIds) {
+      const el = document.getElementById(id);
+      if (el) {
+        const rect = el.getBoundingClientRect();
+        if (rect.top <= 100) current = id;
+      }
+    }
+    navItems.forEach(item => {
+      const onclick = item.getAttribute('onclick');
+      if (onclick && onclick.includes(current)) {
+        item.classList.add('active');
+      } else {
+        item.classList.remove('active');
+      }
+    });
+  }
+
+  window.addEventListener('scroll', updateActiveNav);
+  updateActiveNav();
+
+  // Hamburger / Sidebar toggle
+  function toggleSidebar() {
+    document.getElementById('sidebar').classList.toggle('open');
+    document.getElementById('overlay').classList.toggle('open');
+  }
+  function closeSidebar() {
+    document.getElementById('sidebar').classList.remove('open');
+    document.getElementById('overlay').classList.remove('open');
+  }
+
+  // Keyboard arrow navigation
+  let currentSectionIndex = 0;
+  document.addEventListener('keydown', (e) => {
+    if (e.key === 'ArrowRight' || e.key === 'ArrowDown') {
+      e.preventDefault();
+      currentSectionIndex = Math.min(currentSectionIndex + 1, sectionIds.length - 1);
+      goTo(sectionIds[currentSectionIndex]);
+    } else if (e.key === 'ArrowLeft' || e.key === 'ArrowUp') {
+      e.preventDefault();
+      currentSectionIndex = Math.max(currentSectionIndex - 1, 0);
+      goTo(sectionIds[currentSectionIndex]);
+    }
+  });
+
+  // Update section index on scroll
+  window.addEventListener('scroll', () => {
+    let current = 0;
+    for (let i = 0; i < sectionIds.length; i++) {
+      const el = document.getElementById(sectionIds[i]);
+      if (el) {
+        const rect = el.getBoundingClientRect();
+        if (rect.top <= 100) current = i;
+      }
+    }
+    currentSectionIndex = current;
+  });
+</script>
+</body>
+</html>

@@ -1,0 +1,340 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>struct mosquitto 结构设计背景与多锁设计分析</title>
+  <style>
+    :root {
+      --bg:#0f1117; --bg2:#161b22; --bg3:#1e2530; --border:#30363d;
+      --accent:#0a84ff; --green:#30d158; --warn:#ffa657; --red:#ff453a;
+      --violet:#bf5af2; --text:#e6edf3; --muted:#8b949e; --cyan:#64d2ff; --code:#d2a8ff;
+    }
+    * { box-sizing:border-box; }
+    html { scroll-behavior:smooth; }
+    body { margin:0; background:var(--bg); color:var(--text); font-family:"Segoe UI","Noto Sans SC",sans-serif; line-height:1.72; }
+    a { color:var(--cyan); text-decoration:none; }
+    a:hover { text-decoration:underline; }
+    code { padding:1px 5px; border:1px solid var(--border); border-radius:4px; background:rgba(110,118,129,.16); color:var(--code); font-family:"SFMono-Regular",Consolas,monospace; font-size:.92em; }
+    pre { overflow:auto; padding:14px 16px; border:1px solid var(--border); border-radius:8px; background:#0b0f14; color:#c9d1d9; font-family:"SFMono-Regular",Consolas,monospace; font-size:12px; line-height:1.55; }
+    .topbar { position:fixed; top:0; left:0; right:0; z-index:20; min-height:54px; display:flex; align-items:center; gap:14px; padding:0 22px; background:rgba(15,17,23,.94); border-bottom:1px solid var(--border); backdrop-filter:blur(10px); }
+    .brand { font-weight:800; white-space:nowrap; }
+    .toplinks { margin-left:auto; display:flex; gap:12px; font-size:13px; }
+    #menuButton { display:none; border:1px solid var(--border); border-radius:6px; background:var(--bg2); color:var(--text); padding:6px 9px; cursor:pointer; }
+    #progressBar { position:fixed; top:54px; left:0; z-index:30; height:3px; width:0; background:linear-gradient(90deg,var(--accent),var(--green)); }
+    .layout { display:flex; padding-top:57px; }
+    nav { position:fixed; top:57px; bottom:0; width:318px; overflow:auto; padding:18px 16px 28px; background:var(--bg2); border-right:1px solid var(--border); }
+    nav details { margin-bottom:10px; }
+    nav summary { cursor:pointer; color:var(--text); font-weight:700; margin-bottom:8px; }
+    nav a { display:block; padding:7px 10px; margin:2px 0; border-radius:6px; color:var(--muted); font-size:13px; }
+    nav a.active, nav a:hover { background:var(--bg3); color:var(--text); text-decoration:none; }
+    main { width:calc(100% - 318px); max-width:1190px; margin-left:318px; padding:34px 42px 72px; }
+    section { margin:0 0 46px; scroll-margin-top:76px; }
+    h1 { margin:0 0 12px; font-size:32px; line-height:1.25; }
+    h2 { margin:0 0 14px; font-size:24px; border-bottom:1px solid var(--border); padding-bottom:8px; }
+    h3 { margin:22px 0 10px; font-size:18px; }
+    .lead { color:var(--muted); font-size:16px; max-width:940px; }
+    .grid { display:grid; grid-template-columns:repeat(2,minmax(0,1fr)); gap:16px; }
+    .triple { display:grid; grid-template-columns:repeat(3,minmax(0,1fr)); gap:16px; }
+    .card { border:1px solid var(--border); border-radius:8px; background:var(--bg2); padding:16px; }
+    .card h3 { margin-top:0; }
+    .note { border-left:4px solid var(--accent); background:rgba(10,132,255,.09); padding:12px 14px; border-radius:6px; }
+    .warn { border-left:4px solid var(--warn); background:rgba(255,166,87,.1); padding:12px 14px; border-radius:6px; }
+    .danger { border-left:4px solid var(--red); background:rgba(255,69,58,.1); padding:12px 14px; border-radius:6px; }
+    .principle { border-left:4px solid var(--green); background:rgba(48,209,88,.09); padding:12px 14px; border-radius:6px; margin-top:18px; }
+    table { width:100%; border-collapse:collapse; margin:14px 0; table-layout:fixed; }
+    th,td { border:1px solid var(--border); padding:10px 12px; vertical-align:top; overflow-wrap:anywhere; }
+    th { background:var(--bg3); text-align:left; }
+    td { background:rgba(22,27,34,.72); }
+    .tag { display:inline-block; margin:2px 4px 2px 0; padding:2px 8px; border:1px solid var(--border); border-radius:999px; color:var(--muted); background:rgba(110,118,129,.12); font-size:12px; }
+    .svg-wrap { margin:18px 0; overflow:auto; border:1px solid var(--border); border-radius:8px; background:#0b0f14; }
+    svg { display:block; width:100%; max-width:100%; height:auto; }
+    .api { fill:rgba(10,132,255,.18); stroke:var(--accent); stroke-width:1.5; rx:8; }
+    .server { fill:rgba(48,209,88,.15); stroke:var(--green); stroke-width:1.5; rx:8; }
+    .hot { fill:rgba(255,166,87,.16); stroke:var(--warn); stroke-width:1.5; rx:8; }
+    .violet { fill:rgba(191,90,242,.16); stroke:var(--violet); stroke-width:1.5; rx:8; }
+    .bad { fill:rgba(255,69,58,.16); stroke:var(--red); stroke-width:1.5; rx:8; }
+    .wire { stroke:var(--muted); stroke-width:2; fill:none; marker-end:url(#arrow); }
+    .wire-blue { stroke:var(--accent); stroke-width:2; fill:none; marker-end:url(#arrowBlue); }
+    .wire-green { stroke:var(--green); stroke-width:2; fill:none; marker-end:url(#arrowGreen); }
+    .svg-title { fill:var(--text); font-size:16px; font-weight:800; }
+    .svg-text { fill:var(--text); font-size:13px; }
+    .svg-small { fill:var(--muted); font-size:11px; }
+    .chapter-nav { display:flex; justify-content:space-between; gap:12px; margin-top:36px; }
+    .chapter-nav a { border:1px solid var(--border); border-radius:6px; padding:10px 14px; background:var(--bg2); }
+    @media (max-width:900px) {
+      #menuButton { display:block; } .toplinks { display:none; }
+      nav { transform:translateX(-100%); transition:transform .18s ease; z-index:18; max-width:86vw; }
+      body.nav-open nav { transform:translateX(0); }
+      main { width:100%; margin-left:0; padding:26px 18px 58px; }
+      .grid,.triple { grid-template-columns:1fr; }
+      h1 { font-size:26px; }
+      table { table-layout:auto; }
+      th,td { padding:9px 10px; }
+    }
+  </style>
+</head>
+<body>
+  <header class="topbar">
+    <button id="menuButton" aria-label="打开目录">目录</button>
+    <div class="brand">struct mosquitto design analysis</div>
+    <div class="toplinks">
+      <a href="https://docs.oasis-open.org/mqtt/mqtt/v5.0/os/mqtt-v5.0-os.html">MQTT 5.0</a>
+      <a href="https://docs.oasis-open.org/mqtt/mqtt/v3.1.1/os/mqtt-v3.1.1-os.html">MQTT 3.1.1</a>
+      <a href="https://mosquitto.org/api/files/mosquitto-h.html">Mosquitto API</a>
+      <a href="mosquitto-with-threading-thread-model-analysis.html">线程模型分析</a>
+    </div>
+  </header>
+  <div id="progressBar"></div>
+  <div class="layout">
+    <nav>
+      <details open><summary>结构背景</summary><a href="#intro">阅读边界</a><a href="#protocol">协议背景</a><a href="#shape">结构形状</a><a href="#lifecycle">生命周期</a></details>
+      <details open><summary>字段设计</summary><a href="#field-map">字段分组</a><a href="#state-machine">状态机落地</a><a href="#queues">队列与 QoS</a><a href="#callbacks">回调与应用边界</a></details>
+      <details open><summary>锁设计</summary><a href="#many-locks">为什么很多锁</a><a href="#lock-table">锁保护表</a><a href="#deadlock">如何避免死锁</a><a href="#summary">总结</a></details>
+    </nav>
+
+    <main>
+      <section id="intro">
+        <h1><code>struct mosquitto</code> 的结构设计背景与多锁设计</h1>
+        <p class="lead">本文结合 MQTT 协议和当前 Mosquitto 2.0.14 源码，解释 <code>mosquitto_internal.h</code> 中 <code>struct mosquitto</code> 为什么聚合了网络连接、会话状态、收发包、QoS 队列、TLS、回调和线程同步字段，以及为什么 <code>WITH_THREADING</code> 下使用多把锁而不是一把全局大锁。</p>
+        <div class="note">核心结论：<code>struct mosquitto</code> 是 libmosquitto 的“客户端连接上下文”。它不是普通 DTO，而是 MQTT Client 在一个会话中的运行时对象：既要满足协议对 Session、Packet Identifier、QoS、Keep Alive、重连、订阅确认的状态要求，又要作为 Reactor loop 线程和应用线程之间的共享边界。</div>
+        <div class="principle"><strong>第一性原理：</strong>对象结构来自协议不变量。MQTT 要求客户端持续维护连接、会话、未确认消息、包序号和心跳，所以实现必须有一个能跨 API 调用保存这些不变量的上下文对象。</div>
+      </section>
+
+      <section id="protocol">
+        <h2>协议背景：为什么客户端需要一个大上下文</h2>
+        <table>
+          <tr><th>协议要求</th><th>官方依据</th><th>落到 <code>struct mosquitto</code> 的字段</th></tr>
+          <tr><td>Client 打开 Network Connection，并 publish、subscribe、unsubscribe、disconnect。</td><td>MQTT 5.0 Terminology 对 Client 的定义；MQTT 3.1.1 Terminology 同样说明 Client 建立网络连接并执行发布/订阅/取消订阅/断开。</td><td><code>sock</code>、<code>address</code>、<code>host</code>、<code>port</code>、<code>bind_address</code>、<code>state</code>。</td></tr>
+          <tr><td>Session 是 Client 与 Server 的有状态交互，可跨多个 Network Connection。</td><td>MQTT 5.0 4.1 Session State；MQTT 3.1.1 4.1 Storing state。</td><td><code>id</code>、<code>clean_start</code>、<code>session_expiry_interval</code>、<code>session_expiry_time</code>、<code>msgs_in</code>、<code>msgs_out</code>。</td></tr>
+          <tr><td>QoS 1/2 需要保存未确认 PUBLISH/PUBREL，收到 ACK 后才能释放 Packet Identifier。</td><td>MQTT 5.0 2.2.1 Packet Identifier、4.3 QoS flows、4.4 retry；MQTT 3.1.1 2.3.1、4.3、4.4。</td><td><code>last_mid</code>、<code>struct mosquitto_msg_data msgs_out</code>、<code>struct mosquitto_msg_data msgs_in</code>。</td></tr>
+          <tr><td>Keep Alive 要求在没有其他控制包时发送 PINGREQ，并监控 PINGRESP/输入输出时间。</td><td>MQTT 5.0 3.1.2.10 Keep Alive；MQTT 3.1.1 3.1.2.10 Keep Alive。</td><td><code>keepalive</code>、<code>last_msg_in</code>、<code>next_msg_out</code>、<code>ping_t</code>。</td></tr>
+          <tr><td>MQTT 5 增加 Receive Maximum、Maximum Packet Size、Topic Alias、Maximum QoS、Retain Available 等连接级协商。</td><td>MQTT 5.0 CONNECT/CONNACK properties 与 4.9 Flow Control。</td><td><code>maximum_packet_size</code>、<code>aliases</code>、<code>alias_count</code>、<code>max_qos</code>、<code>retain_available</code>、<code>inflight_quota</code>。</td></tr>
+          <tr><td>协议运行在有序、无损、双向字节流上，客户端需要拆包/组包。</td><td>MQTT 5.0 Network Connection；MQTT 3.1.1 4.2 Network Connections。</td><td><code>in_packet</code>、<code>current_out_packet</code>、<code>out_packet</code>、<code>out_packet_last</code>、<code>out_packet_count</code>。</td></tr>
+        </table>
+        <div class="principle"><strong>第一性原理：</strong>协议是状态机，不是一次函数调用。只要协议要求“发送后等待 ACK”“断线后重发”“按心跳时间做动作”，实现就必须把这些状态保存到一个长期存在的上下文。</div>
+      </section>
+
+      <section id="shape">
+        <h2>结构形状：一个客户端对象承载五类状态</h2>
+        <div class="svg-wrap">
+          <svg viewBox="0 0 1180 560" role="img" aria-label="struct mosquitto design map">
+            <defs>
+              <marker id="arrow" markerWidth="10" markerHeight="10" refX="8" refY="3" orient="auto"><path d="M0,0 L0,6 L9,3 z" fill="#8b949e"/></marker>
+              <marker id="arrowBlue" markerWidth="10" markerHeight="10" refX="8" refY="3" orient="auto"><path d="M0,0 L0,6 L9,3 z" fill="#0a84ff"/></marker>
+              <marker id="arrowGreen" markerWidth="10" markerHeight="10" refX="8" refY="3" orient="auto"><path d="M0,0 L0,6 L9,3 z" fill="#30d158"/></marker>
+            </defs>
+            <text x="32" y="36" class="svg-title">struct mosquitto = Client runtime context</text>
+            <rect x="430" y="70" width="320" height="410" class="violet"/><text x="505" y="108" class="svg-text">struct mosquitto</text>
+            <rect x="470" y="136" width="240" height="46" class="api"/><text x="500" y="165" class="svg-small">身份/配置：id username password will TLS</text>
+            <rect x="470" y="200" width="240" height="46" class="server"/><text x="500" y="229" class="svg-small">连接状态：sock state keepalive time</text>
+            <rect x="470" y="264" width="240" height="46" class="hot"/><text x="500" y="293" class="svg-small">包缓冲：in/current/out packet</text>
+            <rect x="470" y="328" width="240" height="46" class="bad"/><text x="500" y="357" class="svg-small">会话队列：msgs_in / msgs_out</text>
+            <rect x="470" y="392" width="240" height="46" class="api"/><text x="500" y="421" class="svg-small">应用边界：callbacks userdata locks</text>
+            <rect x="60" y="120" width="250" height="86" class="api"/><text x="105" y="158" class="svg-text">应用 API 线程</text><text x="85" y="184" class="svg-small">publish / subscribe / disconnect</text>
+            <rect x="60" y="330" width="250" height="86" class="hot"/><text x="104" y="368" class="svg-text">用户回调</text><text x="86" y="394" class="svg-small">on_message / on_publish / on_log</text>
+            <rect x="870" y="120" width="250" height="86" class="server"/><text x="914" y="158" class="svg-text">网络 loop</text><text x="900" y="184" class="svg-small">select/read/write/misc</text>
+            <rect x="870" y="330" width="250" height="86" class="bad"/><text x="914" y="368" class="svg-text">Broker / Server</text><text x="902" y="394" class="svg-small">CONNACK/PUBLISH/ACK/PING</text>
+            <path d="M310 163 H430" class="wire-blue"/><path d="M750 163 H870" class="wire-green"/><path d="M310 373 C375 410 405 420 470 415" class="wire"/><path d="M870 373 C805 410 775 420 710 415" class="wire"/>
+            <text x="70" y="510" class="svg-small">左侧：应用线程生产动作和接收回调；右侧：loop 线程推进协议；中间：客户端上下文保存协议状态和共享边界。</text>
+          </svg>
+        </div>
+        <div class="principle"><strong>第一性原理：</strong>上下文对象要把“协议状态”和“程序边界”放在一起：协议字段保证 MQTT 正确，回调和锁保证 C API 能被应用安全驱动。</div>
+      </section>
+
+      <section id="lifecycle">
+        <h2>生命周期：创建、重置、运行、销毁</h2>
+        <table>
+          <tr><th>阶段</th><th>源码行为</th><th>设计含义</th></tr>
+          <tr><td>创建</td><td><code>mosquitto_new()</code> 分配对象后调用 <code>mosquitto_reinitialise()</code>。</td><td>把 API 可见的 client handle 转成内部完整上下文。</td></tr>
+          <tr><td>重置</td><td><code>mosquitto_reinitialise()</code> 先 <code>mosquitto__destroy()</code>，再 <code>memset</code>，设置默认协议 <code>mosq_p_mqtt311</code>、socket、keepalive、状态、QoS quota、回调指针、线程状态，并初始化 mutex。</td><td>同一个对象可以复用，但复用动作是“先清理再重新构造”，不是运行期任意重写字段。</td></tr>
+          <tr><td>运行</td><td>应用 API 构造 packet/message，loop 线程执行 <code>mosquitto_loop()</code>、<code>packet__write()</code>、<code>handle__packet()</code>、<code>mosquitto_loop_misc()</code>。</td><td>运行期核心是 Reactor：一个 loop 推进网络事件，其他 API 把工作投递进共享队列。</td></tr>
+          <tr><td>销毁</td><td><code>mosquitto__destroy()</code> 在内部 loop 线程模式下可能 cancel/join，然后关闭 socket、清理消息、Will、TLS、属性、packet，并销毁 mutex。</td><td>销毁是生命周期边界，不是普通并发 API。其他线程仍访问对象时销毁，锁无法兜底。</td></tr>
+        </table>
+        <div class="principle"><strong>第一性原理：</strong>mutex 保护运行期字段一致性，不保护对象生死。对象生命周期必须由调用者建立更外层的所有权规则。</div>
+      </section>
+
+      <section id="field-map">
+        <h2>字段分组：每组字段对应一个协议问题</h2>
+        <table>
+          <tr><th>字段组</th><th>代表字段</th><th>协议/实现问题</th><th>是否运行期共享</th></tr>
+          <tr><td>网络连接</td><td><code>sock</code>、<code>sockpairR/W</code>、<code>host</code>、<code>port</code>、<code>bind_address</code>、<code>want_write</code>、<code>want_connect</code></td><td>MQTT 运行在有序双向字节流上；TLS pending 和 socketpair 唤醒都属于 loop 事件源。</td><td>是，loop 线程和应用线程都可能影响写需求或唤醒。</td></tr>
+          <tr><td>身份与认证</td><td><code>id</code>、<code>username</code>、<code>password</code>、TLS/PSK/ALPN 字段</td><td>CONNECT 需要 ClientID、用户名密码、TLS 配置；ClientID 与 Session State 绑定。</td><td>主要连接前配置，不应作为任意并发可写字段。</td></tr>
+          <tr><td>会话与连接状态</td><td><code>state</code>、<code>clean_start</code>、<code>session_expiry_interval</code>、<code>reconnect_delay</code></td><td>CONNECT/CONNACK/DISCONNECT/重连决定会话是否延续、是否处于连接中。</td><td><code>state</code> 是运行期共享；其他多为配置/策略。</td></tr>
+          <tr><td>协议时间</td><td><code>keepalive</code>、<code>last_msg_in</code>、<code>next_msg_out</code>、<code>ping_t</code></td><td>Keep Alive 要求按时间发送 PINGREQ，并在超时后关闭连接。</td><td><code>last_msg_in/next_msg_out</code> 共享并加锁；<code>ping_t</code> 由 loop 路径主导。</td></tr>
+          <tr><td>Packet 流</td><td><code>in_packet</code>、<code>current_out_packet</code>、<code>out_packet</code>、<code>out_packet_last</code>、<code>out_packet_count</code></td><td>TCP 是字节流，读包/写包可能分片；出站控制包要排队保持顺序。</td><td>出站队列和当前包共享；入站包通常由 loop 线程独占。</td></tr>
+          <tr><td>QoS 会话队列</td><td><code>msgs_in</code>、<code>msgs_out</code>、<code>last_mid</code></td><td>Packet Identifier、QoS1/2 ACK、Receive Maximum、重连重发都需要未完成消息集合。</td><td>是，多线程 publish 与 ACK handler 并发。</td></tr>
+          <tr><td>MQTT 5 能力</td><td><code>maximum_packet_size</code>、<code>aliases</code>、<code>max_qos</code>、<code>retain_available</code></td><td>CONNACK 中服务器能力限制影响后续 PUBLISH、Topic Alias、包大小。</td><td>多由连接协商后 loop 路径更新/读取，应用不应随意并发修改。</td></tr>
+          <tr><td>应用边界</td><td><code>userdata</code>、<code>in_callback</code>、各类 <code>on_*</code> 回调</td><td>libmosquitto 通过回调把协议事件转交给应用。</td><td>是，setter 与 loop 触发回调并发。</td></tr>
+        </table>
+        <div class="principle"><strong>第一性原理：</strong>字段不是随意堆叠，而是协议职责分层后的结果：连接、身份、会话、时间、包、QoS、能力、应用出口。</div>
+      </section>
+
+      <section id="state-machine">
+        <h2>状态机落地：为什么有这么多状态枚举</h2>
+        <p><code>enum mosquitto_client_state</code> 覆盖了从 <code>mosq_cs_new</code>、<code>mosq_cs_connect_pending</code>、<code>mosq_cs_active</code>、<code>mosq_cs_connected</code> 到 <code>mosq_cs_disconnecting</code>、<code>mosq_cs_disconnected</code> 的连接生命周期，还包含 SOCKS5、认证、重认证、broker 上下文复用等状态。</p>
+        <div class="svg-wrap">
+          <svg viewBox="0 0 1180 430" role="img" aria-label="MQTT state machine to struct mosquitto">
+            <defs><marker id="arrowS" markerWidth="10" markerHeight="10" refX="8" refY="3" orient="auto"><path d="M0,0 L0,6 L9,3 z" fill="#8b949e"/></marker></defs>
+            <text x="32" y="36" class="svg-title">协议事件驱动 state 字段迁移</text>
+            <rect x="70" y="100" width="150" height="58" class="api"/><text x="104" y="135" class="svg-text">new</text>
+            <rect x="280" y="100" width="170" height="58" class="hot"/><text x="318" y="135" class="svg-text">connect pending</text>
+            <rect x="510" y="100" width="150" height="58" class="server"/><text x="552" y="135" class="svg-text">active</text>
+            <rect x="720" y="100" width="150" height="58" class="server"/><text x="750" y="135" class="svg-text">connected</text>
+            <rect x="930" y="100" width="170" height="58" class="bad"/><text x="968" y="135" class="svg-text">disconnecting</text>
+            <path d="M220 129 H280" stroke="#8b949e" stroke-width="2" marker-end="url(#arrowS)"/><path d="M450 129 H510" stroke="#8b949e" stroke-width="2" marker-end="url(#arrowS)"/><path d="M660 129 H720" stroke="#8b949e" stroke-width="2" marker-end="url(#arrowS)"/><path d="M870 129 H930" stroke="#8b949e" stroke-width="2" marker-end="url(#arrowS)"/>
+            <text x="90" y="235" class="svg-small">API: mosquitto_connect*</text><text x="300" y="235" class="svg-small">socket/TLS/SOCKS 建连</text><text x="520" y="235" class="svg-small">CONNECT 发出</text><text x="732" y="235" class="svg-small">CONNACK 成功</text><text x="930" y="235" class="svg-small">DISCONNECT / error / keepalive timeout</text>
+            <rect x="410" y="300" width="360" height="58" class="violet"/><text x="450" y="335" class="svg-text">state_mutex 保护 state 读写</text>
+          </svg>
+        </div>
+        <p>状态枚举的设计收益是把协议合法性检查从“散落的布尔判断”变成“显式状态”。例如 <code>packet__write()</code> 写包前读取 <code>state</code>，如果仍在 connect pending 或 TLS connect 阶段，就不继续写应用层 packet。</p>
+        <div class="principle"><strong>第一性原理：</strong>协议正确性依赖状态可判定。枚举状态比多个布尔变量更容易表达“当前允许哪些控制包、哪些行为必须延后”。</div>
+      </section>
+
+      <section id="queues">
+        <h2>队列与 QoS：为什么既有 packet 队列又有 message 队列</h2>
+        <table>
+          <tr><th>结构</th><th>保存什么</th><th>生命周期</th><th>协议意义</th></tr>
+          <tr><td><code>struct mosquitto__packet</code></td><td>已经编码好的 MQTT Control Packet 字节流，包括 command、remaining length、payload、pos、to_process。</td><td>进入 <code>out_packet</code> 后等待写 socket；写完即释放。</td><td>处理 TCP 非阻塞写和 MQTT 控制包顺序。</td></tr>
+          <tr><td><code>current_out_packet</code></td><td>当前正在写的 packet。</td><td>可能跨多次 <code>net__write()</code>；EAGAIN 时保留写入进度。</td><td>保证一个 MQTT packet 不会被写到一半就丢失上下文。</td></tr>
+          <tr><td><code>msgs_out.inflight</code></td><td>QoS1/2 出站 application message、state、dup、timestamp、properties。</td><td>从 publish 后直到 PUBACK/PUBREC/PUBCOMP 完成。</td><td>满足“未确认前保留消息、重连时按原 Packet Identifier 重发”。</td></tr>
+          <tr><td><code>msgs_in.inflight</code></td><td>入站 QoS2 消息状态。</td><td>收到 PUBLISH QoS2 到 PUBREL/PUBCOMP 流程完成。</td><td>满足 QoS2 不重复交付与 ACK 流程。</td></tr>
+        </table>
+        <div class="note"><code>packet</code> 是“线上的字节包”，<code>message</code> 是“协议会话里的未完成业务消息”。两者生命周期不同，所以拆成两个结构。QoS0 通常只需要 packet；QoS1/2 还需要 message state。</div>
+        <div class="principle"><strong>第一性原理：</strong>网络发送缓冲解决“怎么把字节写出去”，会话消息队列解决“协议是否已经完成”。这两个不变量不同，不能混成一个队列。</div>
+      </section>
+
+      <section id="callbacks">
+        <h2>回调与应用边界</h2>
+        <p>libmosquitto 是 C 库，不能把协议事件主动推给上层对象系统，所以 <code>struct mosquitto</code> 保存 <code>userdata</code> 和一组 <code>on_*</code> 函数指针。loop 线程收到 CONNACK、PUBLISH、SUBACK、PUBACK、DISCONNECT 等协议事件后，通过这些回调把事件交给应用。</p>
+        <table>
+          <tr><th>回调字段</th><th>协议事件</th><th>为什么放在 <code>struct mosquitto</code></th></tr>
+          <tr><td><code>on_connect</code> / <code>on_connect_v5</code></td><td>CONNACK。</td><td>连接结果属于该客户端实例；回调需要带回该实例和 userdata。</td></tr>
+          <tr><td><code>on_message</code> / <code>on_message_v5</code></td><td>入站 PUBLISH。</td><td>消息交付依赖该实例的订阅、协议版本、properties 处理。</td></tr>
+          <tr><td><code>on_publish</code> / <code>on_publish_v5</code></td><td>QoS0 发送完成或 QoS1/2 ACK 完成。</td><td>mid 和 QoS 状态来自该实例的出站消息队列。</td></tr>
+          <tr><td><code>on_subscribe</code> / <code>on_unsubscribe</code></td><td>SUBACK / UNSUBACK。</td><td>ACK 的 Packet Identifier 对应该实例发出的订阅控制包。</td></tr>
+          <tr><td><code>on_log</code></td><td>库内部日志。</td><td>日志需要携带实例 userdata，但不应与业务回调用同一把锁。</td></tr>
+        </table>
+        <div class="principle"><strong>第一性原理：</strong>回调是协议事件到应用代码的出口。出口必须挂在客户端上下文上，才能保证事件、userdata、协议状态属于同一个连接实例。</div>
+      </section>
+
+      <section id="many-locks">
+        <h2>为什么使用很多锁，而不是一把大锁</h2>
+        <div class="grid">
+          <div class="card"><h3>减少无关竞争</h3><p>应用线程设置 log callback 不应阻塞 loop 线程处理 QoS ACK；生成 mid 不应阻塞出站 packet 写 socket。多锁让独立不变量独立竞争。</p></div>
+          <div class="card"><h3>锁保护范围清晰</h3><p><code>out_packet_mutex</code> 只保护出站链表，<code>mid_mutex</code> 只保护 <code>last_mid</code>，<code>state_mutex</code> 只保护连接状态。调试时能快速定位哪个不变量被破坏。</p></div>
+          <div class="card"><h3>贴合协议并行性</h3><p>MQTT 允许同时存在多个不同 Packet Identifier 的未确认交换；应用线程也可能同时 publish。细粒度锁支持这种并行，而不是把所有 API 串行化。</p></div>
+          <div class="card"><h3>避免长临界区</h3><p>网络 I/O、select、TLS pending、用户回调都可能慢。多锁使大多数临界区只覆盖链表修改、计数更新、指针读取这些短操作。</p></div>
+        </div>
+        <div class="warn">多锁不是越多越好。这里能成立，是因为 Mosquitto 的共享数据天然按协议不变量分域：packet 队列、QoS 队列、mid、state、msgtime、callback。每把锁都有明确数据域，且嵌套很少。</div>
+        <div class="principle"><strong>第一性原理：</strong>锁应该保护不变量，而不是保护代码块。不同不变量用不同锁，可以降低竞争，并让死锁分析变成锁图分析。</div>
+      </section>
+
+      <section id="lock-table">
+        <h2>锁保护表：每把锁保护什么</h2>
+        <table>
+          <tr><th>锁</th><th>保护对象</th><th>为什么不能共享一把锁</th><th>典型临界区长度</th></tr>
+          <tr><td><code>callback_mutex</code></td><td>业务回调指针和回调执行期的 <code>in_callback</code>。</td><td>业务回调和日志回调语义不同；业务回调可能触发 publish，不应被日志路径拖住。</td><td>相对长，因为覆盖用户回调调用。</td></tr>
+          <tr><td><code>log_callback_mutex</code></td><td><code>on_log</code> 指针与日志回调。</td><td>日志可能来自很多路径，独立锁避免与业务事件互相阻塞。</td><td>取决于用户日志回调。</td></tr>
+          <tr><td><code>state_mutex</code></td><td><code>state</code>。</td><td>状态读取高频且只是一枚枚举，不应等待队列锁或回调锁。</td><td>极短。</td></tr>
+          <tr><td><code>mid_mutex</code></td><td><code>last_mid</code>。</td><td>Packet Identifier 生成是独立计数器，使用专锁能允许并发 publish/subscribe 快速拿号。</td><td>极短。</td></tr>
+          <tr><td><code>msgtime_mutex</code></td><td><code>last_msg_in</code>、<code>next_msg_out</code>。</td><td>Keep Alive 判断和收发包时间更新不应阻塞 QoS 队列操作。</td><td>极短。</td></tr>
+          <tr><td><code>out_packet_mutex</code></td><td><code>out_packet</code>、<code>out_packet_last</code>、<code>out_packet_count</code>。</td><td>保护生产者-消费者队列；与 QoS message 队列生命周期不同。</td><td>短，链表入队/出队。</td></tr>
+          <tr><td><code>current_out_packet_mutex</code></td><td><code>current_out_packet</code> 及当前写包所有权。</td><td>当前写包跨多次非阻塞写，需要与待发送队列分离。</td><td>可能覆盖一次 <code>packet__write()</code> 写循环。</td></tr>
+          <tr><td><code>msgs_in.mutex</code></td><td>入站 QoS message 链表、长度、quota。</td><td>入站 QoS2 与出站 QoS1/2 是两个协议方向，Packet Identifier 空间也独立。</td><td>短到中等，链表与状态更新。</td></tr>
+          <tr><td><code>msgs_out.mutex</code></td><td>出站 QoS message 链表、长度、quota、message state。</td><td>出站 publish 与 ACK handler 会并发访问，必须与入站队列分开以降低竞争。</td><td>短到中等，链表与状态更新。</td></tr>
+        </table>
+        <div class="principle"><strong>第一性原理：</strong>一把锁对应一个被保护的不变量集合。保护集合越小，等待关系越少，死锁图越简单，性能退化越可控。</div>
+      </section>
+
+      <section id="deadlock">
+        <h2>如何保证这些锁不会造成死锁</h2>
+        <p>这里的“保证”不是语言层面的自动保证，而是源码通过锁域拆分、固定嵌套顺序、短临界区和调用约束降低死锁条件。死锁需要同时满足互斥、持有并等待、不可抢占、循环等待。Mosquitto 内部主要破坏的是“循环等待”和“持有并等待”。</p>
+        <div class="svg-wrap">
+          <svg viewBox="0 0 1180 520" role="img" aria-label="deadlock prevention lock graph">
+            <defs><marker id="arrowD" markerWidth="10" markerHeight="10" refX="8" refY="3" orient="auto"><path d="M0,0 L0,6 L9,3 z" fill="#8b949e"/></marker></defs>
+            <text x="32" y="36" class="svg-title">内部锁图：大多数锁互不嵌套，出站 packet 有固定顺序</text>
+            <rect x="80" y="100" width="190" height="58" class="api"/><text x="108" y="135" class="svg-text">callback_mutex</text>
+            <rect x="80" y="190" width="190" height="58" class="api"/><text x="108" y="225" class="svg-text">log_callback_mutex</text>
+            <rect x="80" y="280" width="190" height="58" class="server"/><text x="126" y="315" class="svg-text">state_mutex</text>
+            <rect x="80" y="370" width="190" height="58" class="server"/><text x="126" y="405" class="svg-text">mid_mutex</text>
+            <rect x="420" y="160" width="230" height="58" class="hot"/><text x="456" y="195" class="svg-text">current_out_packet_mutex</text>
+            <rect x="760" y="160" width="210" height="58" class="hot"/><text x="804" y="195" class="svg-text">out_packet_mutex</text>
+            <path d="M650 189 H760" stroke="#8b949e" stroke-width="2" marker-end="url(#arrowD)"/>
+            <text x="505" y="250" class="svg-small">固定顺序：current_out_packet_mutex -> out_packet_mutex</text>
+            <rect x="420" y="310" width="210" height="58" class="bad"/><text x="464" y="345" class="svg-text">msgs_in.mutex</text>
+            <rect x="760" y="310" width="210" height="58" class="bad"/><text x="800" y="345" class="svg-text">msgs_out.mutex</text>
+            <text x="78" y="475" class="svg-small">没有反向边：源码没有 out_packet_mutex -> current_out_packet_mutex 的反向嵌套；多数锁单独持有后立即释放。</text>
+          </svg>
+        </div>
+        <table>
+          <tr><th>死锁条件</th><th>源码中的规避方式</th><th>仍需调用者遵守的边界</th></tr>
+          <tr><td>循环等待</td><td>绝大多数锁不嵌套；出站 packet 相关嵌套统一为 <code>current_out_packet_mutex</code> 后 <code>out_packet_mutex</code>，没有反向加锁路径。</td><td>新增代码不能反向持有 <code>out_packet_mutex</code> 再等待 <code>current_out_packet_mutex</code>。</td></tr>
+          <tr><td>持有并等待</td><td><code>packet__queue()</code> 入队后释放 <code>out_packet_mutex</code>，再写 socketpair 唤醒；<code>mosquitto_loop()</code> select 前只短暂检查队列，不持锁进入 select。</td><td>应用不能在外部持有自己的业务锁后调用可能回调再反拿业务锁的逻辑。</td></tr>
+          <tr><td>长时间阻塞</td><td>大多数 mutex 只保护链表指针、计数、枚举、时间戳；线程 join/cancel 不在这些内部 mutex 保护区中执行。</td><td><code>callback_mutex</code> 覆盖用户回调，用户回调必须短小，避免调用会等待同一回调锁的 setter。</td></tr>
+          <tr><td>跨线程等待</td><td><code>mosquitto_loop_stop()</code> 用 socketpair 唤醒 loop，再 <code>pthread_join()</code>；不是持 packet/message 锁等待线程退出。</td><td>停止/销毁必须在对象生命周期外层串行化，不能让其他线程继续访问已销毁对象。</td></tr>
+          <tr><td>隐藏共享</td><td>运行期高频共享字段都有专锁：state、mid、msgtime、packet queue、message queue、callback。</td><td>配置类字段多数要求 connect 前设置，不应被当作任意并发可写状态。</td></tr>
+        </table>
+        <div class="danger">重要边界：Mosquitto 内部锁图可以避免库内部常规路径形成死锁，但不能保证任意用户回调重入都安全。特别是回调执行期间持有 <code>callback_mutex</code>，如果回调里调用会再次获取同一锁的 callback setter，NORMAL mutex 会自死锁。</div>
+        <div class="principle"><strong>第一性原理：</strong>死锁来自等待环。多锁系统要能安全运行，必须让锁图接近 DAG：锁域独立，必要嵌套有固定方向，等待线程退出或阻塞 I/O 不发生在内部锁持有期间。</div>
+      </section>
+
+      <section id="summary">
+        <h2>总结</h2>
+        <div class="triple">
+          <div class="card"><h3>结构背景</h3><p><code>struct mosquitto</code> 是 MQTT Client 的运行时上下文，承载连接、会话、QoS、Packet Identifier、Keep Alive 和回调。</p></div>
+          <div class="card"><h3>多锁收益</h3><p>多锁把不同协议不变量拆开保护，降低无关竞争，缩短临界区，并让应用线程和 loop 线程通过队列协作。</p></div>
+          <div class="card"><h3>死锁边界</h3><p>内部依赖锁域拆分、固定嵌套顺序、短临界区和 socketpair 唤醒避免等待环；用户回调和生命周期仍需遵守调用约束。</p></div>
+        </div>
+        <p>从设计模式看，<code>struct mosquitto</code> 是 Reactor 上下文对象：网络 loop 独占协议推进，应用 API 只生产动作或设置回调。多把锁不是为了让所有字段任意并发改写，而是让必须跨线程共享的少数字段各自拥有清晰保护者。</p>
+        <div class="principle"><strong>第一性原理：</strong>好的并发结构不是“共享一个大对象再加一把大锁”，而是先按协议不变量拆分状态，再只给真正跨线程读写的状态配最小必要同步。</div>
+        <div class="chapter-nav"><a href="#deadlock">上一章</a><a href="#intro">回到开头</a></div>
+      </section>
+    </main>
+  </div>
+
+  <script>
+    const links = Array.from(document.querySelectorAll('nav a'));
+    const sections = links.map(a => document.querySelector(a.getAttribute('href'))).filter(Boolean);
+    const progressBar = document.getElementById('progressBar');
+    const menuButton = document.getElementById('menuButton');
+
+    function updateProgress(){
+      const scrollTop = document.documentElement.scrollTop || document.body.scrollTop;
+      const height = document.documentElement.scrollHeight - document.documentElement.clientHeight;
+      progressBar.style.width = height > 0 ? (scrollTop / height * 100) + '%' : '0%';
+    }
+
+    const observer = new IntersectionObserver(entries => {
+      entries.forEach(entry => {
+        if(entry.isIntersecting){
+          const id = '#' + entry.target.id;
+          links.forEach(a => a.classList.toggle('active', a.getAttribute('href') === id));
+        }
+      });
+    }, { rootMargin:'-35% 0px -55% 0px', threshold:0.01 });
+
+    sections.forEach(section => observer.observe(section));
+    window.addEventListener('scroll', updateProgress, { passive:true });
+    updateProgress();
+
+    menuButton.addEventListener('click', () => document.body.classList.toggle('nav-open'));
+    links.forEach(link => link.addEventListener('click', () => document.body.classList.remove('nav-open')));
+
+    function currentIndex(){
+      const scrollTop = window.scrollY + 90;
+      let index = 0;
+      sections.forEach((section, i) => { if(section.offsetTop <= scrollTop) index = i; });
+      return index;
+    }
+
+    document.addEventListener('keydown', event => {
+      if(event.target && ['INPUT','TEXTAREA','SELECT'].includes(event.target.tagName)) return;
+      if(event.key !== 'ArrowRight' && event.key !== 'ArrowLeft') return;
+      const delta = event.key === 'ArrowRight' ? 1 : -1;
+      const next = Math.max(0, Math.min(sections.length - 1, currentIndex() + delta));
+      sections[next].scrollIntoView({ behavior:'smooth', block:'start' });
+    });
+  </script>
+</body>
+</html>

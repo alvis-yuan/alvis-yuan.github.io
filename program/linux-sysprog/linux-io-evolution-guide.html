@@ -1,0 +1,2231 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Linux I/O 演进全解</title>
+<style>
+  :root {
+    --bg: #0f1117;
+    --sidebar-bg: #161b22;
+    --card-bg: #1c2128;
+    --border: #30363d;
+    --accent: #58a6ff;
+    --accent2: #3fb950;
+    --accent3: #f78166;
+    --accent4: #d2a8ff;
+    --accent5: #ffa657;
+    --text: #e6edf3;
+    --text-muted: #8b949e;
+    --code-bg: #161b22;
+    --sidebar-w: 280px;
+    --header-h: 52px;
+    --progress-h: 3px;
+  }
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  html { scroll-behavior: smooth; }
+  body {
+    font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', 'Noto Sans SC', sans-serif;
+    background: var(--bg);
+    color: var(--text);
+    line-height: 1.7;
+    overflow-x: hidden;
+  }
+
+  /* Progress bar */
+  #progress-bar {
+    position: fixed; top: 0; left: 0; height: var(--progress-h);
+    width: 0%; background: linear-gradient(90deg, #58a6ff, #3fb950);
+    z-index: 9999; transition: width 0.1s linear;
+  }
+
+  /* Top header */
+  #top-header {
+    position: fixed; top: var(--progress-h); left: 0; right: 0;
+    height: var(--header-h); background: rgba(15,17,23,0.95);
+    backdrop-filter: blur(8px); border-bottom: 1px solid var(--border);
+    display: flex; align-items: center; justify-content: space-between;
+    padding: 0 20px; z-index: 1000;
+  }
+  #top-header .logo {
+    font-weight: 700; font-size: 1rem; color: var(--accent);
+    letter-spacing: 0.03em;
+  }
+  #hamburger {
+    display: none; background: none; border: none;
+    color: var(--text); cursor: pointer; padding: 6px;
+  }
+  #hamburger svg { width: 22px; height: 22px; }
+
+  /* Sidebar */
+  #sidebar {
+    position: fixed; top: calc(var(--progress-h) + var(--header-h));
+    left: 0; bottom: 0; width: var(--sidebar-w);
+    background: var(--sidebar-bg); border-right: 1px solid var(--border);
+    overflow-y: auto; z-index: 900; transition: transform 0.3s ease;
+    scrollbar-width: thin; scrollbar-color: var(--border) transparent;
+  }
+  #sidebar::-webkit-scrollbar { width: 4px; }
+  #sidebar::-webkit-scrollbar-thumb { background: var(--border); border-radius: 2px; }
+
+  .nav-group { padding: 16px 0 8px; }
+  .nav-group-label {
+    font-size: 0.68rem; font-weight: 700; letter-spacing: 0.1em;
+    text-transform: uppercase; color: var(--text-muted);
+    padding: 0 16px 6px;
+  }
+  .nav-item {
+    display: block; padding: 7px 16px 7px 20px;
+    color: var(--text-muted); text-decoration: none; font-size: 0.83rem;
+    border-left: 3px solid transparent; transition: all 0.2s;
+    cursor: pointer; line-height: 1.4;
+  }
+  .nav-item:hover { color: var(--text); background: rgba(88,166,255,0.06); }
+  .nav-item.active {
+    color: var(--accent); border-left-color: var(--accent);
+    background: rgba(88,166,255,0.08);
+  }
+  .nav-item .nav-num {
+    display: inline-block; width: 20px; font-size: 0.72rem;
+    color: var(--text-muted); font-family: monospace;
+  }
+
+  /* Key nav bar */
+  #key-nav {
+    position: fixed; bottom: 20px; right: 20px;
+    display: flex; gap: 8px; z-index: 800;
+  }
+  .key-btn {
+    background: var(--card-bg); border: 1px solid var(--border);
+    color: var(--text-muted); padding: 8px 14px; border-radius: 8px;
+    cursor: pointer; font-size: 0.8rem; transition: all 0.2s;
+    display: flex; align-items: center; gap: 5px;
+  }
+  .key-btn:hover { border-color: var(--accent); color: var(--accent); }
+
+  /* Main content */
+  #main {
+    margin-left: var(--sidebar-w);
+    padding-top: calc(var(--progress-h) + var(--header-h));
+    min-height: 100vh;
+  }
+  .content-wrap {
+    max-width: 860px; margin: 0 auto; padding: 40px 32px 80px;
+  }
+
+  /* Sections */
+  .section {
+    margin-bottom: 64px; scroll-margin-top: calc(var(--progress-h) + var(--header-h) + 20px);
+  }
+  .section-header {
+    display: flex; align-items: flex-start; gap: 16px;
+    margin-bottom: 28px; padding-bottom: 16px;
+    border-bottom: 1px solid var(--border);
+  }
+  .section-icon {
+    width: 48px; height: 48px; border-radius: 12px;
+    display: flex; align-items: center; justify-content: center;
+    font-size: 1.5rem; flex-shrink: 0;
+  }
+  .section-meta { flex: 1; }
+  .section-label {
+    font-size: 0.72rem; font-weight: 700; letter-spacing: 0.1em;
+    text-transform: uppercase; color: var(--text-muted); margin-bottom: 4px;
+  }
+  .section-title {
+    font-size: 1.55rem; font-weight: 700; color: var(--text); line-height: 1.3;
+  }
+  .section-subtitle {
+    margin-top: 4px; font-size: 0.85rem; color: var(--text-muted);
+  }
+
+  /* Badges */
+  .badge {
+    display: inline-flex; align-items: center; gap: 4px;
+    padding: 2px 10px; border-radius: 100px; font-size: 0.72rem;
+    font-weight: 600; margin: 2px;
+  }
+  .badge-blue { background: rgba(88,166,255,0.15); color: #58a6ff; }
+  .badge-green { background: rgba(63,185,80,0.15); color: #3fb950; }
+  .badge-red { background: rgba(247,129,102,0.15); color: #f78166; }
+  .badge-purple { background: rgba(210,168,255,0.15); color: #d2a8ff; }
+  .badge-orange { background: rgba(255,166,87,0.15); color: #ffa657; }
+
+  /* Card */
+  .card {
+    background: var(--card-bg); border: 1px solid var(--border);
+    border-radius: 12px; padding: 20px 24px; margin-bottom: 16px;
+  }
+  .card-title {
+    font-size: 0.9rem; font-weight: 700; color: var(--accent);
+    margin-bottom: 10px; display: flex; align-items: center; gap: 8px;
+  }
+
+  /* Grid */
+  .grid-2 { display: grid; grid-template-columns: 1fr 1fr; gap: 16px; }
+  .grid-3 { display: grid; grid-template-columns: repeat(3, 1fr); gap: 12px; }
+
+  /* Code block */
+  pre {
+    background: var(--code-bg); border: 1px solid var(--border);
+    border-radius: 10px; padding: 18px 20px; overflow-x: auto;
+    font-size: 0.8rem; line-height: 1.6; margin: 12px 0;
+    font-family: 'JetBrains Mono', 'Fira Code', 'Consolas', monospace;
+  }
+  code {
+    background: rgba(88,166,255,0.12); color: #58a6ff;
+    padding: 1px 6px; border-radius: 4px; font-size: 0.82em;
+    font-family: 'JetBrains Mono', 'Fira Code', monospace;
+  }
+  pre code { background: none; color: inherit; padding: 0; font-size: inherit; }
+
+  .kw { color: #ff7b72; }
+  .fn { color: #d2a8ff; }
+  .cm { color: #8b949e; font-style: italic; }
+  .str { color: #a5d6ff; }
+  .num { color: #79c0ff; }
+  .tp { color: #ffa657; }
+
+  /* Prose */
+  p { color: var(--text-muted); margin-bottom: 12px; font-size: 0.92rem; }
+  p strong { color: var(--text); }
+  ul, ol { color: var(--text-muted); padding-left: 20px; margin-bottom: 12px; font-size: 0.92rem; }
+  li { margin-bottom: 5px; }
+  li strong { color: var(--text); }
+
+  h3 {
+    font-size: 1.05rem; font-weight: 700; color: var(--text);
+    margin: 20px 0 10px; padding-left: 10px;
+    border-left: 3px solid var(--accent);
+  }
+  h4 {
+    font-size: 0.9rem; font-weight: 700; color: var(--text-muted);
+    margin: 16px 0 8px; text-transform: uppercase; letter-spacing: 0.05em;
+    font-size: 0.75rem;
+  }
+
+  /* SVG diagrams */
+  .diagram-wrap {
+    background: var(--code-bg); border: 1px solid var(--border);
+    border-radius: 12px; padding: 20px; margin: 16px 0;
+    overflow-x: auto;
+  }
+  .diagram-wrap svg { display: block; max-width: 100%; height: auto; }
+
+  /* First principle box */
+  .fp-box {
+    background: linear-gradient(135deg, rgba(88,166,255,0.08), rgba(63,185,80,0.06));
+    border: 1px solid rgba(88,166,255,0.25); border-radius: 12px;
+    padding: 20px 24px; margin-top: 24px; position: relative; overflow: hidden;
+  }
+  .fp-box::before {
+    content: '⚛'; position: absolute; right: 20px; top: 14px;
+    font-size: 2rem; opacity: 0.12;
+  }
+  .fp-title {
+    font-size: 0.72rem; font-weight: 700; letter-spacing: 0.12em;
+    text-transform: uppercase; color: var(--accent); margin-bottom: 10px;
+  }
+  .fp-box p { color: var(--text); font-size: 0.88rem; margin-bottom: 8px; }
+  .fp-box p:last-child { margin-bottom: 0; }
+
+  /* Info box */
+  .info-box {
+    border-radius: 10px; padding: 14px 18px; margin: 12px 0;
+    font-size: 0.85rem; border-left: 3px solid;
+  }
+  .info-box.note { background: rgba(88,166,255,0.07); border-color: #58a6ff; color: var(--text-muted); }
+  .info-box.warn { background: rgba(255,166,87,0.07); border-color: #ffa657; color: var(--text-muted); }
+  .info-box.tip  { background: rgba(63,185,80,0.07); border-color: #3fb950; color: var(--text-muted); }
+  .info-box strong { color: var(--text); }
+
+  /* Source link */
+  .src-link {
+    display: inline-flex; align-items: center; gap: 5px;
+    font-size: 0.75rem; color: var(--text-muted); text-decoration: none;
+    background: var(--card-bg); border: 1px solid var(--border);
+    padding: 4px 10px; border-radius: 6px; transition: all 0.2s;
+    margin: 4px 4px 4px 0;
+  }
+  .src-link:hover { border-color: var(--accent); color: var(--accent); }
+
+  /* Timeline */
+  .timeline { position: relative; padding-left: 28px; }
+  .timeline::before {
+    content: ''; position: absolute; left: 8px; top: 8px; bottom: 8px;
+    width: 2px; background: var(--border); border-radius: 1px;
+  }
+  .tl-item { position: relative; margin-bottom: 18px; }
+  .tl-dot {
+    position: absolute; left: -24px; top: 6px;
+    width: 12px; height: 12px; border-radius: 50%;
+    border: 2px solid var(--border); background: var(--bg);
+  }
+  .tl-item.done .tl-dot { border-color: var(--accent); background: var(--accent); }
+  .tl-year { font-size: 0.72rem; color: var(--accent); font-weight: 700; margin-bottom: 2px; }
+  .tl-text { font-size: 0.85rem; color: var(--text-muted); }
+  .tl-text strong { color: var(--text); }
+
+  /* Comparison table */
+  .cmp-table { width: 100%; border-collapse: collapse; font-size: 0.8rem; margin: 12px 0; }
+  .cmp-table th {
+    background: rgba(88,166,255,0.1); color: var(--accent);
+    padding: 10px 12px; text-align: left; font-weight: 700;
+    border-bottom: 1px solid var(--border);
+  }
+  .cmp-table td {
+    padding: 8px 12px; border-bottom: 1px solid rgba(48,54,61,0.6);
+    color: var(--text-muted); vertical-align: top;
+  }
+  .cmp-table tr:last-child td { border-bottom: none; }
+  .cmp-table td:first-child { color: var(--text); font-weight: 600; font-family: monospace; }
+  .cmp-table .good { color: #3fb950; }
+  .cmp-table .bad  { color: #f78166; }
+  .cmp-table .mid  { color: #ffa657; }
+
+  /* Responsive */
+  @media (max-width: 900px) {
+    :root { --sidebar-w: 260px; }
+    #sidebar { transform: translateX(-100%); }
+    #sidebar.open { transform: translateX(0); }
+    #hamburger { display: flex; }
+    #main { margin-left: 0; }
+    .grid-2, .grid-3 { grid-template-columns: 1fr; }
+    .content-wrap { padding: 28px 18px 80px; }
+    .section-title { font-size: 1.25rem; }
+    #overlay { display: none; position: fixed; inset: 0; background: rgba(0,0,0,0.5); z-index: 850; }
+    #overlay.show { display: block; }
+  }
+  @media (max-width: 480px) {
+    .content-wrap { padding: 20px 14px 80px; }
+    pre { font-size: 0.73rem; padding: 14px; }
+    .card { padding: 14px 16px; }
+  }
+</style>
+</head>
+<body>
+
+<div id="progress-bar"></div>
+<div id="overlay"></div>
+
+<header id="top-header">
+  <div class="logo">🐧 Linux I/O 演进全解</div>
+  <button id="hamburger" aria-label="菜单">
+    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+      <line x1="3" y1="6" x2="21" y2="6"/><line x1="3" y1="12" x2="21" y2="12"/><line x1="3" y1="18" x2="21" y2="18"/>
+    </svg>
+  </button>
+</header>
+
+<nav id="sidebar">
+  <div class="nav-group">
+    <div class="nav-group-label">概述</div>
+    <a class="nav-item active" data-target="s0">
+      <span class="nav-num">00</span> I/O 演进总览
+    </a>
+  </div>
+  <div class="nav-group">
+    <div class="nav-group-label">基础 I/O</div>
+    <a class="nav-item" data-target="s1">
+      <span class="nav-num">01</span> 阻塞 I/O (Blocking)
+    </a>
+    <a class="nav-item" data-target="s2">
+      <span class="nav-num">02</span> 非阻塞 I/O (O_NONBLOCK)
+    </a>
+  </div>
+  <div class="nav-group">
+    <div class="nav-group-label">I/O 多路复用</div>
+    <a class="nav-item" data-target="s3">
+      <span class="nav-num">03</span> select — POSIX 标准
+    </a>
+    <a class="nav-item" data-target="s4">
+      <span class="nav-num">04</span> poll — 改进版
+    </a>
+    <a class="nav-item" data-target="s5">
+      <span class="nav-num">05</span> epoll — Linux 专有
+    </a>
+  </div>
+  <div class="nav-group">
+    <div class="nav-group-label">异步 I/O</div>
+    <a class="nav-item" data-target="s6">
+      <span class="nav-num">06</span> POSIX AIO
+    </a>
+    <a class="nav-item" data-target="s7">
+      <span class="nav-num">07</span> Linux 原生 AIO
+    </a>
+    <a class="nav-item" data-target="s8">
+      <span class="nav-num">08</span> io_uring — 新一代
+    </a>
+  </div>
+  <div class="nav-group">
+    <div class="nav-group-label">零拷贝 I/O</div>
+    <a class="nav-item" data-target="s9">
+      <span class="nav-num">09</span> mmap 内存映射
+    </a>
+    <a class="nav-item" data-target="s10">
+      <span class="nav-num">10</span> sendfile — 文件→Socket
+    </a>
+    <a class="nav-item" data-target="s11">
+      <span class="nav-num">11</span> splice / tee / vmsplice
+    </a>
+  </div>
+  <div class="nav-group">
+    <div class="nav-group-label">附录</div>
+    <a class="nav-item" data-target="s12">
+      <span class="nav-num">12</span> 全面横向对比
+    </a>
+  </div>
+</nav>
+
+<main id="main">
+<div class="content-wrap">
+
+<!-- S0: Overview -->
+<section class="section" id="s0">
+  <div class="section-header">
+    <div class="section-icon" style="background:rgba(88,166,255,0.12)">🗺️</div>
+    <div class="section-meta">
+      <div class="section-label">Chapter 00</div>
+      <div class="section-title">I/O 演进总览</div>
+      <div class="section-subtitle">从阻塞到零拷贝的五十年历程</div>
+    </div>
+  </div>
+
+  <p>Linux I/O 子系统的演进是操作系统设计领域最典型的「以问题驱动创新」的案例。每一代新机制的诞生，都是为了解决前一代在<strong>吞吐量、延迟或 CPU 效率</strong>上的根本瓶颈。</p>
+
+  <div class="diagram-wrap">
+    <svg viewBox="0 0 780 320" xmlns="http://www.w3.org/2000/svg" style="min-width:520px">
+      <defs>
+        <marker id="arr" markerWidth="8" markerHeight="6" refX="8" refY="3" orient="auto">
+          <polygon points="0 0,8 3,0 6" fill="#58a6ff"/>
+        </marker>
+        <linearGradient id="lg1" x1="0%" y1="0%" x2="100%" y2="0%">
+          <stop offset="0%" stop-color="#58a6ff" stop-opacity="0.3"/>
+          <stop offset="100%" stop-color="#3fb950" stop-opacity="0.3"/>
+        </linearGradient>
+      </defs>
+      <!-- Background lane -->
+      <rect x="30" y="140" width="720" height="4" rx="2" fill="url(#lg1)"/>
+
+      <!-- Nodes -->
+      <!-- BIO -->
+      <circle cx="80" cy="142" r="22" fill="#1c2128" stroke="#58a6ff" stroke-width="2"/>
+      <text x="80" y="137" text-anchor="middle" fill="#58a6ff" font-size="10" font-weight="bold">BIO</text>
+      <text x="80" y="148" text-anchor="middle" fill="#58a6ff" font-size="9">阻塞</text>
+      <text x="80" y="188" text-anchor="middle" fill="#8b949e" font-size="9">Unix早期</text>
+      <!-- NIO -->
+      <circle cx="185" cy="142" r="22" fill="#1c2128" stroke="#ffa657" stroke-width="2"/>
+      <text x="185" y="137" text-anchor="middle" fill="#ffa657" font-size="10" font-weight="bold">NIO</text>
+      <text x="185" y="148" text-anchor="middle" fill="#ffa657" font-size="9">非阻塞</text>
+      <text x="185" y="188" text-anchor="middle" fill="#8b949e" font-size="9">O_NONBLOCK</text>
+      <!-- select -->
+      <circle cx="300" cy="142" r="22" fill="#1c2128" stroke="#d2a8ff" stroke-width="2"/>
+      <text x="300" y="137" text-anchor="middle" fill="#d2a8ff" font-size="10" font-weight="bold">select</text>
+      <text x="300" y="148" text-anchor="middle" fill="#d2a8ff" font-size="9">4.2BSD</text>
+      <text x="300" y="188" text-anchor="middle" fill="#8b949e" font-size="9">1983</text>
+      <!-- poll -->
+      <circle cx="400" cy="142" r="22" fill="#1c2128" stroke="#d2a8ff" stroke-width="2"/>
+      <text x="400" y="137" text-anchor="middle" fill="#d2a8ff" font-size="10" font-weight="bold">poll</text>
+      <text x="400" y="148" text-anchor="middle" fill="#d2a8ff" font-size="9">SVR3</text>
+      <text x="400" y="188" text-anchor="middle" fill="#8b949e" font-size="9">1986</text>
+      <!-- epoll -->
+      <circle cx="500" cy="142" r="26" fill="#1c2128" stroke="#3fb950" stroke-width="2.5"/>
+      <text x="500" y="137" text-anchor="middle" fill="#3fb950" font-size="10" font-weight="bold">epoll</text>
+      <text x="500" y="150" text-anchor="middle" fill="#3fb950" font-size="9">Linux 2.5</text>
+      <text x="500" y="192" text-anchor="middle" fill="#8b949e" font-size="9">2002</text>
+      <!-- AIO -->
+      <circle cx="610" cy="142" r="22" fill="#1c2128" stroke="#f78166" stroke-width="2"/>
+      <text x="610" y="137" text-anchor="middle" fill="#f78166" font-size="10" font-weight="bold">AIO</text>
+      <text x="610" y="148" text-anchor="middle" fill="#f78166" font-size="9">异步</text>
+      <text x="610" y="188" text-anchor="middle" fill="#8b949e" font-size="9">Linux 2.5</text>
+      <!-- io_uring -->
+      <circle cx="715" cy="142" r="30" fill="#1c2128" stroke="#58a6ff" stroke-width="3"/>
+      <text x="715" y="135" text-anchor="middle" fill="#58a6ff" font-size="9" font-weight="bold">io_</text>
+      <text x="715" y="147" text-anchor="middle" fill="#58a6ff" font-size="9" font-weight="bold">uring</text>
+      <text x="715" y="159" text-anchor="middle" fill="#58a6ff" font-size="8">5.1</text>
+      <text x="715" y="197" text-anchor="middle" fill="#8b949e" font-size="9">2019</text>
+
+      <!-- Arrows -->
+      <line x1="102" y1="142" x2="160" y2="142" stroke="#58a6ff" stroke-width="1.5" marker-end="url(#arr)" stroke-dasharray="4,2"/>
+      <line x1="207" y1="142" x2="275" y2="142" stroke="#58a6ff" stroke-width="1.5" marker-end="url(#arr)" stroke-dasharray="4,2"/>
+      <line x1="322" y1="142" x2="375" y2="142" stroke="#58a6ff" stroke-width="1.5" marker-end="url(#arr)" stroke-dasharray="4,2"/>
+      <line x1="422" y1="142" x2="471" y2="142" stroke="#58a6ff" stroke-width="1.5" marker-end="url(#arr)" stroke-dasharray="4,2"/>
+      <line x1="526" y1="142" x2="585" y2="142" stroke="#58a6ff" stroke-width="1.5" marker-end="url(#arr)" stroke-dasharray="4,2"/>
+      <line x1="632" y1="142" x2="680" y2="142" stroke="#58a6ff" stroke-width="1.5" marker-end="url(#arr)" stroke-dasharray="4,2"/>
+
+      <!-- Labels top -->
+      <text x="30" y="50" fill="#8b949e" font-size="11" font-weight="bold">同步性能</text>
+      <rect x="30" y="60" width="150" height="8" rx="4" fill="#1c2128" stroke="#30363d"/>
+      <rect x="30" y="60" width="60" height="8" rx="4" fill="#58a6ff" opacity="0.5"/>
+
+      <text x="250" y="50" fill="#8b949e" font-size="11" font-weight="bold">规模扩展性</text>
+      <rect x="250" y="60" width="150" height="8" rx="4" fill="#1c2128" stroke="#30363d"/>
+      <rect x="250" y="60" width="130" height="8" rx="4" fill="#3fb950" opacity="0.5"/>
+
+      <text x="480" y="50" fill="#8b949e" font-size="11" font-weight="bold">异步吞吐</text>
+      <rect x="480" y="60" width="150" height="8" rx="4" fill="#1c2128" stroke="#30363d"/>
+      <rect x="480" y="60" width="150" height="8" rx="4" fill="#f78166" opacity="0.5"/>
+
+      <!-- Zero copy annotation -->
+      <rect x="30" y="230" width="720" height="68" rx="8" fill="rgba(63,185,80,0.05)" stroke="rgba(63,185,80,0.2)" stroke-width="1"/>
+      <text x="50" y="252" fill="#3fb950" font-size="11" font-weight="bold">零拷贝路径（独立演进）</text>
+      <text x="70" y="274" fill="#8b949e" font-size="10">mmap (1987) ──▶ sendfile Linux 2.2 ──▶ splice/tee Linux 2.6.17 ──▶ io_uring SPLICE (5.7)</text>
+      <text x="70" y="290" fill="#8b949e" font-size="10">目标：消除用户态与内核态之间的数据拷贝开销</text>
+    </svg>
+  </div>
+
+  <h3>Linux I/O 演进时间线</h3>
+  <div class="timeline">
+    <div class="tl-item done">
+      <div class="tl-dot"></div>
+      <div class="tl-year">Unix 早期 / POSIX</div>
+      <div class="tl-text"><strong>阻塞 I/O</strong> — read()/write() 调用阻塞进程直到完成，最简单的模型</div>
+    </div>
+    <div class="tl-item done">
+      <div class="tl-dot"></div>
+      <div class="tl-year">4.2BSD 1983</div>
+      <div class="tl-text"><strong>select()</strong> 首次出现，多路复用第一代，FD_SETSIZE=1024 限制</div>
+    </div>
+    <div class="tl-item done">
+      <div class="tl-dot"></div>
+      <div class="tl-year">SVR3 1986</div>
+      <div class="tl-text"><strong>poll()</strong> — 突破 1024 FD 限制，用结构数组代替位图</div>
+    </div>
+    <div class="tl-item done">
+      <div class="tl-dot"></div>
+      <div class="tl-year">Linux 2.2 (1999)</div>
+      <div class="tl-text"><strong>sendfile()</strong> — 首个零拷贝系统调用，file→socket 无需用户态中转</div>
+    </div>
+    <div class="tl-item done">
+      <div class="tl-dot"></div>
+      <div class="tl-year">Linux 2.5 (2002)</div>
+      <div class="tl-text"><strong>epoll</strong> (kernel 2.5.44) + <strong>Linux 原生 AIO</strong> — O(1) 事件通知 + 真正内核态异步</div>
+    </div>
+    <div class="tl-item done">
+      <div class="tl-dot"></div>
+      <div class="tl-year">Linux 2.6.17 (2006)</div>
+      <div class="tl-text"><strong>splice / tee / vmsplice</strong> — 通用零拷贝原语，sendfile 底层实现</div>
+    </div>
+    <div class="tl-item done">
+      <div class="tl-dot"></div>
+      <div class="tl-year">Linux 5.1 (2019)</div>
+      <div class="tl-text"><strong>io_uring</strong> — 颠覆性创新，共享环形队列彻底消除系统调用开销，真正零拷贝 + 真异步</div>
+    </div>
+  </div>
+
+  <div class="fp-box">
+    <div class="fp-title">第一性原理 — I/O 演进的本质</div>
+    <p>I/O 操作的根本问题在于：<strong>CPU 速度与外设速度之间存在数量级差异</strong>（CPU ns 级 vs 磁盘 ms 级，网络 μs~ms 级）。所有 I/O 演进的本质都是在回答同一个问题：<em>「当数据尚未就绪时，CPU 应该做什么？」</em></p>
+    <p>答案的演进：①<strong>等</strong>（阻塞）→ ②<strong>轮询</strong>（非阻塞）→ ③<strong>委托内核通知</strong>（多路复用）→ ④<strong>完全委托内核执行</strong>（异步 I/O）→ ⑤<strong>消除通信本身的开销</strong>（零拷贝 + io_uring）。</p>
+  </div>
+</section>
+
+<!-- S1: Blocking I/O -->
+<section class="section" id="s1">
+  <div class="section-header">
+    <div class="section-icon" style="background:rgba(88,166,255,0.12)">🔒</div>
+    <div class="section-meta">
+      <div class="section-label">Chapter 01</div>
+      <div class="section-title">阻塞 I/O（Blocking I/O）</div>
+      <div class="section-subtitle">POSIX.1 / SVr4 / 4.3BSD — 最原始、最简单的模型</div>
+    </div>
+  </div>
+  <div style="margin-bottom:10px">
+    <a class="src-link" href="https://man7.org/linux/man-pages/man2/read.2.html" target="_blank">📄 man2/read(2)</a>
+    <a class="src-link" href="https://man7.org/linux/man-pages/man2/write.2.html" target="_blank">📄 man2/write(2)</a>
+    <a class="src-link" href="https://man7.org/linux/man-pages/man2/open.2.html" target="_blank">📄 man2/open(2)</a>
+  </div>
+
+  <h3>原理</h3>
+  <p>当进程调用 <code>read()</code>/<code>write()</code> 等系统调用时，若数据尚未就绪（如网络数据未到达，磁盘 I/O 未完成），<strong>内核将进程放入等待队列并切换到其他进程运行</strong>，直到 I/O 完成后再唤醒该进程。整个等待过程中进程处于 <code>TASK_INTERRUPTIBLE</code> 睡眠状态，不消耗 CPU。</p>
+
+  <div class="diagram-wrap">
+    <svg viewBox="0 0 700 200" xmlns="http://www.w3.org/2000/svg" style="min-width:420px">
+      <defs>
+        <marker id="a2" markerWidth="8" markerHeight="6" refX="8" refY="3" orient="auto">
+          <polygon points="0 0,8 3,0 6" fill="#58a6ff"/>
+        </marker>
+        <marker id="a3" markerWidth="8" markerHeight="6" refX="8" refY="3" orient="auto">
+          <polygon points="0 0,8 3,0 6" fill="#f78166"/>
+        </marker>
+      </defs>
+      <!-- Labels -->
+      <text x="80" y="20" text-anchor="middle" fill="#8b949e" font-size="11" font-weight="bold">用户进程</text>
+      <text x="400" y="20" text-anchor="middle" fill="#8b949e" font-size="11" font-weight="bold">内核</text>
+      <text x="620" y="20" text-anchor="middle" fill="#8b949e" font-size="11" font-weight="bold">外设 / 网卡</text>
+
+      <!-- Vertical lines -->
+      <line x1="80" y1="30" x2="80" y2="185" stroke="#30363d" stroke-width="1.5" stroke-dasharray="4,3"/>
+      <line x1="400" y1="30" x2="400" y2="185" stroke="#30363d" stroke-width="1.5" stroke-dasharray="4,3"/>
+      <line x1="620" y1="30" x2="620" y2="185" stroke="#30363d" stroke-width="1.5" stroke-dasharray="4,3"/>
+
+      <!-- read() call -->
+      <line x1="80" y1="50" x2="390" y2="50" stroke="#58a6ff" stroke-width="1.5" marker-end="url(#a2)"/>
+      <text x="230" y="44" text-anchor="middle" fill="#58a6ff" font-size="10">read() 系统调用</text>
+
+      <!-- Kernel → Device -->
+      <line x1="400" y1="65" x2="610" y2="65" stroke="#ffa657" stroke-width="1.5" marker-end="url(#a2)"/>
+      <text x="510" y="59" text-anchor="middle" fill="#ffa657" font-size="10">发起 I/O</text>
+
+      <!-- Wait block -->
+      <rect x="50" y="75" width="60" height="75" rx="6" fill="rgba(247,129,102,0.1)" stroke="#f78166" stroke-width="1" stroke-dasharray="4,2"/>
+      <text x="80" y="98" text-anchor="middle" fill="#f78166" font-size="9">进程</text>
+      <text x="80" y="111" text-anchor="middle" fill="#f78166" font-size="9">睡眠</text>
+      <text x="80" y="124" text-anchor="middle" fill="#f78166" font-size="9">阻塞中</text>
+      <text x="80" y="137" text-anchor="middle" fill="#f78166" font-size="9">😴</text>
+
+      <!-- Device data ready -->
+      <line x1="620" y1="145" x2="410" y2="145" stroke="#3fb950" stroke-width="1.5" marker-end="url(#a2)"/>
+      <text x="515" y="139" text-anchor="middle" fill="#3fb950" font-size="10">数据就绪，复制到用户buffer</text>
+
+      <!-- Return -->
+      <line x1="400" y1="162" x2="90" y2="162" stroke="#3fb950" stroke-width="1.5" marker-end="url(#a2)"/>
+      <text x="240" y="156" text-anchor="middle" fill="#3fb950" font-size="10">唤醒进程，返回数据长度</text>
+    </svg>
+  </div>
+
+  <div class="grid-2">
+    <div class="card">
+      <div class="card-title">✅ 优点</div>
+      <ul>
+        <li>编程模型<strong>极其简单</strong>，符合线性思维</li>
+        <li>等待期间 CPU <strong>完全释放</strong>，不浪费算力</li>
+        <li>内核实现成熟，性能可预测</li>
+        <li>天然串行，无并发竞争问题</li>
+      </ul>
+    </div>
+    <div class="card">
+      <div class="card-title">❌ 缺点</div>
+      <ul>
+        <li><strong>一连接一线程</strong>，高并发时线程开销巨大</li>
+        <li>单线程无法同时处理多个 I/O</li>
+        <li>线程切换、内存（每线程栈 ~8MB）开销高</li>
+        <li>C10K 问题：万级并发无法用此模型</li>
+      </ul>
+    </div>
+  </div>
+
+  <h3>适用场景</h3>
+  <p><strong>低并发、单连接脚本</strong>（日志处理、文件转换）；<strong>多进程/多线程服务器</strong>（Apache prefork 模式）；连接数固定且少（如数据库连接池内部单连接通信）。</p>
+
+  <h3>示例代码</h3>
+  <pre><span class="cm">/* 阻塞 I/O 最简读取 — man2/read(2) POSIX.1-2008 */</span>
+<span class="kw">#include</span> <span class="str">&lt;unistd.h&gt;</span>
+<span class="kw">#include</span> <span class="str">&lt;fcntl.h&gt;</span>
+
+<span class="tp">int</span> <span class="fn">main</span>(<span class="tp">void</span>) {
+    <span class="tp">char</span> buf[4096];
+    <span class="tp">int</span>  fd = <span class="fn">open</span>(<span class="str">"/etc/hostname"</span>, O_RDONLY);  <span class="cm">/* 默认阻塞模式 */</span>
+
+    <span class="cm">/* 若数据未就绪，进程在此睡眠直到内核唤醒 */</span>
+    <span class="tp">ssize_t</span> n = <span class="fn">read</span>(fd, buf, <span class="kw">sizeof</span>(buf));
+
+    <span class="cm">/* 到达此处时数据已从内核页缓存拷贝到 buf */</span>
+    <span class="fn">write</span>(STDOUT_FILENO, buf, n);
+    <span class="fn">close</span>(fd);
+    <span class="kw">return</span> <span class="num">0</span>;
+}</pre>
+
+  <div class="fp-box">
+    <div class="fp-title">第一性原理</div>
+    <p>阻塞 I/O 的本质是<strong>「时间换空间」</strong>：用进程的等待时间换取编程简单性。当 I/O 速度远慢于 CPU 时，这是对 CPU 资源的浪费。其核心矛盾是：<em>「一个进程一次只能等待一件事」</em>，与服务器需要同时服务大量客户端的需求天然冲突。</p>
+  </div>
+</section>
+
+<!-- S2: Non-blocking I/O -->
+<section class="section" id="s2">
+  <div class="section-header">
+    <div class="section-icon" style="background:rgba(255,166,87,0.12)">⚡</div>
+    <div class="section-meta">
+      <div class="section-label">Chapter 02</div>
+      <div class="section-title">非阻塞 I/O（O_NONBLOCK）</div>
+      <div class="section-subtitle">POSIX.1 — 调用立即返回，通过轮询检测就绪</div>
+    </div>
+  </div>
+  <div style="margin-bottom:10px">
+    <a class="src-link" href="https://man7.org/linux/man-pages/man2/fcntl.2.html" target="_blank">📄 man2/fcntl(2)</a>
+    <a class="src-link" href="https://man7.org/linux/man-pages/man2/open.2.html" target="_blank">📄 man2/open(2) O_NONBLOCK</a>
+  </div>
+
+  <h3>原理</h3>
+  <p>通过 <code>fcntl(fd, F_SETFL, O_NONBLOCK)</code> 将文件描述符设置为非阻塞模式。此后，<code>read()</code>/<code>write()</code> 在数据未就绪时<strong>立即返回 <code>-1</code> 并设置 <code>errno = EAGAIN</code>（或 <code>EWOULDBLOCK</code>）</strong>，而非挂起进程。应用需自行轮询重试。</p>
+
+  <div class="diagram-wrap">
+    <svg viewBox="0 0 680 230" xmlns="http://www.w3.org/2000/svg" style="min-width:400px">
+      <defs>
+        <marker id="arr4" markerWidth="8" markerHeight="6" refX="8" refY="3" orient="auto">
+          <polygon points="0 0,8 3,0 6" fill="#ffa657"/>
+        </marker>
+        <marker id="arr5" markerWidth="8" markerHeight="6" refX="8" refY="3" orient="auto">
+          <polygon points="0 0,8 3,0 6" fill="#3fb950"/>
+        </marker>
+      </defs>
+      <text x="80" y="20" text-anchor="middle" fill="#8b949e" font-size="11" font-weight="bold">用户进程（轮询）</text>
+      <text x="430" y="20" text-anchor="middle" fill="#8b949e" font-size="11" font-weight="bold">内核</text>
+      <line x1="80" y1="30" x2="80" y2="215" stroke="#30363d" stroke-width="1.5" stroke-dasharray="4,3"/>
+      <line x1="430" y1="30" x2="430" y2="215" stroke="#30363d" stroke-width="1.5" stroke-dasharray="4,3"/>
+
+      <!-- Poll 1 -->
+      <line x1="80" y1="50" x2="420" y2="50" stroke="#ffa657" stroke-width="1.5" marker-end="url(#arr4)"/>
+      <text x="250" y="44" text-anchor="middle" fill="#ffa657" font-size="10">read() — 未就绪</text>
+      <line x1="420" y1="62" x2="90" y2="62" stroke="#f78166" stroke-width="1.5" marker-end="url(#arr4)"/>
+      <text x="250" y="58" text-anchor="middle" fill="#f78166" font-size="10">返回 -1, errno=EAGAIN</text>
+
+      <!-- Poll 2 -->
+      <line x1="80" y1="90" x2="420" y2="90" stroke="#ffa657" stroke-width="1.5" marker-end="url(#arr4)"/>
+      <text x="250" y="84" text-anchor="middle" fill="#ffa657" font-size="10">read() — 未就绪</text>
+      <line x1="420" y1="102" x2="90" y2="102" stroke="#f78166" stroke-width="1.5" marker-end="url(#arr4)"/>
+      <text x="250" y="98" text-anchor="middle" fill="#f78166" font-size="10">返回 -1, errno=EAGAIN</text>
+
+      <!-- Poll 3 -->
+      <line x1="80" y1="130" x2="420" y2="130" stroke="#ffa657" stroke-width="1.5" marker-end="url(#arr4)"/>
+      <text x="250" y="124" text-anchor="middle" fill="#ffa657" font-size="10">read() — 未就绪</text>
+      <line x1="420" y1="142" x2="90" y2="142" stroke="#f78166" stroke-width="1.5" marker-end="url(#arr4)"/>
+      <text x="250" y="138" text-anchor="middle" fill="#f78166" font-size="10">返回 -1, errno=EAGAIN</text>
+
+      <!-- Data ready + Poll 4 -->
+      <text x="540" y="162" text-anchor="middle" fill="#3fb950" font-size="9">数据就绪 ✓</text>
+      <line x1="80" y1="170" x2="420" y2="170" stroke="#3fb950" stroke-width="1.5" marker-end="url(#arr5)"/>
+      <text x="250" y="164" text-anchor="middle" fill="#3fb950" font-size="10">read() — 数据已就绪</text>
+      <line x1="420" y1="182" x2="90" y2="182" stroke="#3fb950" stroke-width="1.5" marker-end="url(#arr5)"/>
+      <text x="250" y="178" text-anchor="middle" fill="#3fb950" font-size="10">返回实际读取字节数</text>
+
+      <text x="80" y="212" text-anchor="middle" fill="#f78166" font-size="9">⚠ CPU 在轮询中空转浪费</text>
+    </svg>
+  </div>
+
+  <div class="info-box warn"><strong>注意：</strong>Linux man 页指出，POSIX.1-2001 允许 EAGAIN 或 EWOULDBLOCK 两种错误码均可返回，可移植程序应同时检查两者。</div>
+
+  <h3>设置非阻塞的两种方式</h3>
+  <pre><span class="cm">/* 方式 1：open 时设置 */</span>
+<span class="tp">int</span> fd = <span class="fn">open</span>(<span class="str">"/dev/ttyS0"</span>, O_RDWR | O_NONBLOCK);
+
+<span class="cm">/* 方式 2：对已存在 fd 用 fcntl 设置 — man2/fcntl(2) */</span>
+<span class="tp">int</span> flags = <span class="fn">fcntl</span>(fd, F_GETFL, <span class="num">0</span>);
+<span class="fn">fcntl</span>(fd, F_SETFL, flags | O_NONBLOCK);
+
+<span class="cm">/* 非阻塞读取循环 */</span>
+<span class="tp">char</span> buf[4096];
+<span class="kw">for</span> (;;) {
+    <span class="tp">ssize_t</span> n = <span class="fn">read</span>(fd, buf, <span class="kw">sizeof</span>(buf));
+    <span class="kw">if</span> (n > <span class="num">0</span>) {
+        <span class="fn">handle_data</span>(buf, n);
+        <span class="kw">break</span>;
+    }
+    <span class="kw">if</span> (n < <span class="num">0</span> &amp;&amp; (errno == EAGAIN || errno == EWOULDBLOCK)) {
+        <span class="cm">/* 数据未就绪，稍后重试 — 此处 CPU 空转！ */</span>
+        <span class="fn">nanosleep</span>(&amp;(<span class="tp">struct timespec</span>){<span class="num">0</span>, <span class="num">1000</span>}, <span class="kw">NULL</span>);
+        <span class="kw">continue</span>;
+    }
+    <span class="kw">break</span>; <span class="cm">/* 真正的错误 */</span>
+}</pre>
+
+  <div class="grid-2">
+    <div class="card">
+      <div class="card-title">✅ 优点</div>
+      <ul>
+        <li>单线程可管理多个 FD（手动轮询）</li>
+        <li>不会永久阻塞，可做超时控制</li>
+        <li>与 I/O 多路复用配合使用效果极佳</li>
+      </ul>
+    </div>
+    <div class="card">
+      <div class="card-title">❌ 缺点</div>
+      <ul>
+        <li><strong>忙轮询浪费 CPU</strong>（如不加 sleep）</li>
+        <li>轮询间隔难以把握：太短耗 CPU，太长增延迟</li>
+        <li>单独使用很少见，通常配合 select/poll/epoll</li>
+      </ul>
+    </div>
+  </div>
+
+  <div class="fp-box">
+    <div class="fp-title">第一性原理</div>
+    <p>非阻塞 I/O 将「<strong>等待</strong>」的职责从内核转移给应用程序。进程不再被动睡眠，而是主动反复询问。这解决了「单进程无法等待多 FD」的问题，但带来了 CPU 空转浪费。其本质矛盾是：<em>「应用不知道何时数据会就绪」</em>——这个矛盾催生了 I/O 多路复用机制。</p>
+  </div>
+</section>
+
+<!-- S3: select -->
+<section class="section" id="s3">
+  <div class="section-header">
+    <div class="section-icon" style="background:rgba(210,168,255,0.12)">📋</div>
+    <div class="section-meta">
+      <div class="section-label">Chapter 03</div>
+      <div class="section-title">select — I/O 多路复用第一代</div>
+      <div class="section-subtitle">POSIX.1-2001 / 4.2BSD — 同步 I/O 多路复用</div>
+    </div>
+  </div>
+  <div style="margin-bottom:10px">
+    <a class="src-link" href="https://man7.org/linux/man-pages/man2/select.2.html" target="_blank">📄 man2/select(2)</a>
+    <span class="badge badge-blue">POSIX.1-2024</span>
+    <span class="badge badge-purple">4.2BSD 起源</span>
+  </div>
+
+  <h3>原理</h3>
+  <p>来自 man2/select(2)：<em>「select() allows a program to monitor multiple file descriptors, waiting until one or more of the file descriptors become "ready" for some class of I/O operation.」</em></p>
+  <p><code>select()</code> 接受三个 <code>fd_set</code> 位图（读/写/异常），内核<strong>遍历所有被监控的 FD</strong>（O(n) 线性扫描），有就绪 FD 时返回，进程再遍历找出哪个 FD 就绪。每次调用都要重建位图，且有 <strong>FD_SETSIZE=1024</strong> 的硬性上限。</p>
+
+  <div class="diagram-wrap">
+    <svg viewBox="0 0 700 240" xmlns="http://www.w3.org/2000/svg" style="min-width:420px">
+      <defs>
+        <marker id="as" markerWidth="8" markerHeight="6" refX="8" refY="3" orient="auto">
+          <polygon points="0 0,8 3,0 6" fill="#d2a8ff"/>
+        </marker>
+      </defs>
+
+      <!-- fd_set bitmap -->
+      <text x="30" y="30" fill="#8b949e" font-size="11" font-weight="bold">用户空间</text>
+      <rect x="20" y="40" width="220" height="50" rx="6" fill="rgba(210,168,255,0.06)" stroke="#30363d"/>
+      <text x="130" y="60" text-anchor="middle" fill="#8b949e" font-size="10">fd_set readfds (位图, 1024位)</text>
+      <text x="30" y="80" fill="#d2a8ff" font-size="9" font-family="monospace">bit[0..1023]</text>
+
+      <!-- Kernel area -->
+      <text x="440" y="30" fill="#8b949e" font-size="11" font-weight="bold">内核空间</text>
+      <rect x="360" y="40" width="300" height="140" rx="8" fill="rgba(210,168,255,0.04)" stroke="#30363d"/>
+
+      <!-- FD scan -->
+      <text x="510" y="62" text-anchor="middle" fill="#d2a8ff" font-size="10" font-weight="bold">O(n) 线性扫描</text>
+      <rect x="375" y="70" width="20" height="16" rx="3" fill="rgba(63,185,80,0.3)" stroke="#3fb950"/>
+      <text x="385" y="82" text-anchor="middle" fill="#3fb950" font-size="9">0</text>
+      <rect x="398" y="70" width="20" height="16" rx="3" fill="rgba(48,54,61,0.8)" stroke="#30363d"/>
+      <text x="408" y="82" text-anchor="middle" fill="#8b949e" font-size="9">1</text>
+      <text x="425" y="82" fill="#8b949e" font-size="9">...</text>
+      <rect x="445" y="70" width="20" height="16" rx="3" fill="rgba(63,185,80,0.3)" stroke="#3fb950"/>
+      <text x="455" y="82" text-anchor="middle" fill="#3fb950" font-size="9">fd</text>
+      <text x="472" y="82" fill="#8b949e" font-size="9">...</text>
+      <rect x="490" y="70" width="20" height="16" rx="3" fill="rgba(48,54,61,0.8)" stroke="#30363d"/>
+      <text x="500" y="82" text-anchor="middle" fill="#8b949e" font-size="9">n</text>
+
+      <text x="510" y="110" text-anchor="middle" fill="#8b949e" font-size="9">检查每一位直到 nfds</text>
+      <text x="510" y="130" text-anchor="middle" fill="#ffa657" font-size="9">⚠ 有就绪FD → 修改位图原地返回</text>
+      <text x="510" y="148" text-anchor="middle" fill="#f78166" font-size="9">⚠ 每次调用重新复制位图到内核</text>
+      <text x="510" y="166" text-anchor="middle" fill="#f78166" font-size="9">⚠ FD_SETSIZE = 1024 (硬限制)</text>
+
+      <!-- arrows -->
+      <line x1="240" y1="65" x2="355" y2="65" stroke="#d2a8ff" stroke-width="1.5" marker-end="url(#as)"/>
+      <text x="297" y="58" text-anchor="middle" fill="#d2a8ff" font-size="9">复制到内核</text>
+
+      <!-- User scan after return -->
+      <rect x="20" y="115" width="220" height="80" rx="6" fill="rgba(247,129,102,0.05)" stroke="#30363d"/>
+      <text x="130" y="134" text-anchor="middle" fill="#8b949e" font-size="10">返回后应用侧再次 O(n) 遍历</text>
+      <text x="30" y="152" fill="#8b949e" font-size="9">for (i=0; i&lt;nfds; i++)</text>
+      <text x="40" y="168" fill="#8b949e" font-size="9">if (FD_ISSET(i, &amp;readfds))</text>
+      <text x="50" y="184" fill="#3fb950" font-size="9">handle(i);</text>
+
+      <!-- return arrow -->
+      <line x1="360" y1="90" x2="245" y2="115" stroke="#3fb950" stroke-width="1.5" marker-end="url(#as)"/>
+    </svg>
+  </div>
+
+  <h3>API 签名（来自 man2/select.2）</h3>
+  <pre><span class="kw">#include</span> <span class="str">&lt;sys/select.h&gt;</span>
+
+<span class="tp">int</span> <span class="fn">select</span>(<span class="tp">int</span> nfds,               <span class="cm">/* 最大FD+1 */</span>
+           <span class="tp">fd_set</span> *readfds,        <span class="cm">/* 关注可读的FD集合 */</span>
+           <span class="tp">fd_set</span> *writefds,       <span class="cm">/* 关注可写的FD集合 */</span>
+           <span class="tp">fd_set</span> *exceptfds,      <span class="cm">/* 关注异常的FD集合 */</span>
+           <span class="tp">struct timeval</span> *timeout); <span class="cm">/* NULL=永久等待 */</span>
+
+<span class="cm">/* man2 警告：select() 只能监控 &lt; FD_SETSIZE (1024) 的FD！
+   现代应用应改用 poll(2) 或 epoll(7) */</span></pre>
+
+  <h3>示例：监控 stdin（来自 man2/select.2 官方示例）</h3>
+  <pre><span class="kw">#include</span> <span class="str">&lt;stdio.h&gt;</span>
+<span class="kw">#include</span> <span class="str">&lt;sys/select.h&gt;</span>
+<span class="kw">#include</span> <span class="str">&lt;sys/time.h&gt;</span>
+
+<span class="tp">int</span> <span class="fn">main</span>(<span class="tp">void</span>) {
+    <span class="tp">fd_set</span>         rfds;
+    <span class="tp">struct timeval</span> tv;
+    <span class="tp">int</span>            retval;
+
+    FD_ZERO(&amp;rfds);
+    FD_SET(<span class="num">0</span>, &amp;rfds);  <span class="cm">/* 监控 stdin (fd=0) */</span>
+
+    tv.tv_sec  = <span class="num">5</span>;    <span class="cm">/* 超时 5 秒 */</span>
+    tv.tv_usec = <span class="num">0</span>;
+
+    retval = <span class="fn">select</span>(<span class="num">1</span>, &amp;rfds, NULL, NULL, &amp;tv);
+    <span class="cm">/* 注意：返回后必须重建 fd_set，因为内核修改了它 */</span>
+
+    <span class="kw">if</span> (retval == -<span class="num">1</span>)       <span class="fn">perror</span>(<span class="str">"select()"</span>);
+    <span class="kw">else if</span> (retval > <span class="num">0</span>)  <span class="fn">printf</span>(<span class="str">"Data is available now.\n"</span>);
+    <span class="kw">else</span>                   <span class="fn">printf</span>(<span class="str">"No data within five seconds.\n"</span>);
+    <span class="kw">return</span> <span class="num">0</span>;
+}</pre>
+
+  <div class="card">
+    <div class="card-title">⚠ select 的已知缺陷（来自 man2/select.2 BUGS 节）</div>
+    <ul>
+      <li><strong>FD_SETSIZE=1024</strong>：glibc 将 fd_set 固定为 1024 位，无法监控超过此值的 FD</li>
+      <li><strong>每次重建位图</strong>：fd_set 作为 value-result 参数被内核修改，每次调用必须重建，是设计错误</li>
+      <li><strong>O(n) 线性扫描</strong>：内核遍历所有 FD，应用也要遍历找就绪者</li>
+      <li><strong>用户↔内核拷贝</strong>：每次调用都要将 fd_set 复制到内核</li>
+    </ul>
+  </div>
+
+  <div class="fp-box">
+    <div class="fp-title">第一性原理</div>
+    <p>select 的核心创新是<strong>「将等待权交给内核」</strong>：应用不再自己轮询，而是告诉内核「帮我盯着这些 FD，有动静叫我」。这是从主动轮询到被动通知的关键跃迁。但 select 用<strong>位图</strong>表达 FD 集合，决定了其 O(n) 的扫描复杂度和 1024 的上限——这是数据结构选择不当导致的根本性缺陷。</p>
+  </div>
+</section>
+
+<!-- S4: poll -->
+<section class="section" id="s4">
+  <div class="section-header">
+    <div class="section-icon" style="background:rgba(210,168,255,0.12)">🔄</div>
+    <div class="section-meta">
+      <div class="section-label">Chapter 04</div>
+      <div class="section-title">poll — 移除 FD 数量限制</div>
+      <div class="section-subtitle">POSIX.1-2001 / SVR3 — 改进型 I/O 多路复用</div>
+    </div>
+  </div>
+  <div style="margin-bottom:10px">
+    <a class="src-link" href="https://man7.org/linux/man-pages/man2/poll.2.html" target="_blank">📄 man2/poll(2)</a>
+    <span class="badge badge-blue">POSIX.1-2001</span>
+  </div>
+
+  <h3>原理</h3>
+  <p>来自 man2/poll(2)：<em>「poll() performs a similar task to select(2): it waits for one of a set of file descriptors to become ready to perform I/O.」</em></p>
+  <p>poll 用<strong>结构体数组</strong>替代三个位图，每个 <code>pollfd</code> 独立描述一个 FD 及其关心的事件。<strong>无 FD 数量上限</strong>，但仍是 O(n) 扫描，仍需每次将数组从用户态复制到内核态。</p>
+
+  <pre><span class="kw">#include</span> <span class="str">&lt;poll.h&gt;</span>
+
+<span class="cm">/* man2/poll.2 中的结构体定义 */</span>
+<span class="kw">struct</span> pollfd {
+    <span class="tp">int</span>   fd;       <span class="cm">/* 文件描述符（负值表示忽略该项） */</span>
+    <span class="tp">short</span> events;  <span class="cm">/* 关注的事件 (POLLIN|POLLOUT|POLLPRI...) */</span>
+    <span class="tp">short</span> revents; <span class="cm">/* 实际发生的事件（内核填充）*/</span>
+};
+
+<span class="tp">int</span> <span class="fn">poll</span>(<span class="tp">struct pollfd</span> *fds, <span class="tp">nfds_t</span> nfds, <span class="tp">int</span> timeout);</pre>
+
+  <div class="grid-2">
+    <div class="card">
+      <div class="card-title">poll 关键事件标志</div>
+      <ul>
+        <li><code>POLLIN</code> — 有数据可读</li>
+        <li><code>POLLOUT</code> — 可写入数据</li>
+        <li><code>POLLPRI</code> — 紧急/带外数据</li>
+        <li><code>POLLRDHUP</code> — 对端关闭连接（Linux 2.6.17+）</li>
+        <li><code>POLLERR</code> — 错误（仅 revents）</li>
+        <li><code>POLLHUP</code> — 挂起（仅 revents）</li>
+      </ul>
+    </div>
+    <div class="card">
+      <div class="card-title">select vs poll 对比</div>
+      <table style="width:100%;font-size:0.8rem;border-collapse:collapse">
+        <tr>
+          <td style="padding:4px;color:var(--text-muted)">FD 上限</td>
+          <td style="padding:4px;color:#f78166">select: 1024</td>
+          <td style="padding:4px;color:#3fb950">poll: 无限</td>
+        </tr>
+        <tr>
+          <td style="padding:4px;color:var(--text-muted)">数据结构</td>
+          <td style="padding:4px;color:#f78166">3个位图</td>
+          <td style="padding:4px;color:#3fb950">结构体数组</td>
+        </tr>
+        <tr>
+          <td style="padding:4px;color:var(--text-muted)">每次重建</td>
+          <td style="padding:4px;color:#f78166">是</td>
+          <td style="padding:4px;color:#3fb950">revents重置即可</td>
+        </tr>
+        <tr>
+          <td style="padding:4px;color:var(--text-muted)">扫描复杂度</td>
+          <td style="padding:4px;color:#ffa657">O(n)</td>
+          <td style="padding:4px;color:#ffa657">O(n)</td>
+        </tr>
+        <tr>
+          <td style="padding:4px;color:var(--text-muted)">内核拷贝</td>
+          <td style="padding:4px;color:#f78166">每次</td>
+          <td style="padding:4px;color:#f78166">每次</td>
+        </tr>
+      </table>
+    </div>
+  </div>
+
+  <h3>示例：多 FD 监控</h3>
+  <pre><span class="kw">#include</span> <span class="str">&lt;poll.h&gt;</span>
+<span class="kw">#include</span> <span class="str">&lt;stdio.h&gt;</span>
+
+<span class="tp">int</span> <span class="fn">main</span>(<span class="tp">void</span>) {
+    <span class="tp">struct pollfd</span> fds[<span class="num">2</span>];
+
+    fds[<span class="num">0</span>].fd = STDIN_FILENO;
+    fds[<span class="num">0</span>].events = POLLIN;
+
+    fds[<span class="num">1</span>].fd = some_socket_fd;
+    fds[<span class="num">1</span>].events = POLLIN | POLLOUT;
+
+    <span class="tp">int</span> ret = <span class="fn">poll</span>(fds, <span class="num">2</span>, <span class="num">5000</span>); <span class="cm">/* 5000ms 超时 */</span>
+    <span class="kw">if</span> (ret > <span class="num">0</span>) {
+        <span class="kw">if</span> (fds[<span class="num">0</span>].revents &amp; POLLIN)
+            <span class="fn">handle_stdin</span>();
+        <span class="kw">if</span> (fds[<span class="num">1</span>].revents &amp; POLLIN)
+            <span class="fn">handle_recv</span>();
+        <span class="cm">/* 优点：fd 负值可临时禁用，revents 只需清零，无需完整重建 */</span>
+    }
+    <span class="kw">return</span> <span class="num">0</span>;
+}</pre>
+
+  <div class="info-box note"><strong>ppoll()</strong>：Linux 特有的 poll 变体，增加了信号掩码参数（类似 pselect），可原子性地在等待时屏蔽信号，避免 TOCTOU 竞态条件。定义需 <code>_GNU_SOURCE</code>。</div>
+
+  <div class="fp-box">
+    <div class="fp-title">第一性原理</div>
+    <p>poll 解决了 select 的<strong>数据结构问题</strong>（位图→结构体），但没有解决其<strong>算法问题</strong>（O(n) 扫描）。当连接数增大到数万级时，O(n) 扫描成为瓶颈——即使只有 1 个 FD 就绪，内核也要扫描全部 n 个。这揭示了一个第一性原理：<em>「通知机制的效率不应与被监控FD的总数成正比」</em>——这正是 epoll 要解决的根本问题。</p>
+  </div>
+</section>
+
+<!-- S5: epoll -->
+<section class="section" id="s5">
+  <div class="section-header">
+    <div class="section-icon" style="background:rgba(63,185,80,0.12)">⚡</div>
+    <div class="section-meta">
+      <div class="section-label">Chapter 05</div>
+      <div class="section-title">epoll — Linux 专有高性能事件通知</div>
+      <div class="section-subtitle">Linux 2.5.44 (2002) — O(1) 就绪通知，C10K 解决方案</div>
+    </div>
+  </div>
+  <div style="margin-bottom:10px">
+    <a class="src-link" href="https://man7.org/linux/man-pages/man7/epoll.7.html" target="_blank">📄 man7/epoll(7)</a>
+    <a class="src-link" href="https://man7.org/linux/man-pages/man2/epoll_create.2.html" target="_blank">📄 epoll_create(2)</a>
+    <a class="src-link" href="https://man7.org/linux/man-pages/man2/epoll_ctl.2.html" target="_blank">📄 epoll_ctl(2)</a>
+    <a class="src-link" href="https://man7.org/linux/man-pages/man2/epoll_wait.2.html" target="_blank">📄 epoll_wait(2)</a>
+    <span class="badge badge-green">Linux 专有</span>
+  </div>
+
+  <h3>原理</h3>
+  <p>来自 man7/epoll(7)：<em>「The epoll API can be used either as an edge-triggered or a level-triggered interface and scales well to large numbers of watched file descriptors.」</em></p>
+  <p>epoll 在内核维护一个<strong>兴趣列表</strong>（通过红黑树索引，O(logn) 注册/删除）和一个<strong>就绪列表</strong>。当被监控的 FD 发生事件时，内核<strong>主动将其加入就绪列表</strong>。<code>epoll_wait()</code> 只返回就绪的 FD，无需遍历全部。</p>
+
+  <div class="diagram-wrap">
+    <svg viewBox="0 0 720 290" xmlns="http://www.w3.org/2000/svg" style="min-width:480px">
+      <defs>
+        <marker id="ae" markerWidth="8" markerHeight="6" refX="8" refY="3" orient="auto">
+          <polygon points="0 0,8 3,0 6" fill="#3fb950"/>
+        </marker>
+      </defs>
+
+      <!-- User space -->
+      <rect x="10" y="10" width="200" height="260" rx="8" fill="rgba(88,166,255,0.03)" stroke="#30363d"/>
+      <text x="110" y="30" text-anchor="middle" fill="#8b949e" font-size="10" font-weight="bold">用户空间</text>
+
+      <rect x="25" y="40" width="170" height="30" rx="5" fill="rgba(63,185,80,0.1)" stroke="#3fb950"/>
+      <text x="110" y="60" text-anchor="middle" fill="#3fb950" font-size="9">epoll_create1(0) → epfd</text>
+
+      <rect x="25" y="80" width="170" height="30" rx="5" fill="rgba(63,185,80,0.1)" stroke="#3fb950"/>
+      <text x="110" y="100" text-anchor="middle" fill="#3fb950" font-size="9">epoll_ctl(EPOLL_CTL_ADD)</text>
+
+      <rect x="25" y="120" width="170" height="30" rx="5" fill="rgba(63,185,80,0.1)" stroke="#3fb950"/>
+      <text x="110" y="140" text-anchor="middle" fill="#3fb950" font-size="9">epoll_wait() 等待事件</text>
+
+      <rect x="25" y="185" width="170" height="50" rx="5" fill="rgba(88,166,255,0.06)" stroke="#30363d"/>
+      <text x="110" y="204" text-anchor="middle" fill="#58a6ff" font-size="9">遍历就绪 events[]</text>
+      <text x="110" y="220" text-anchor="middle" fill="#58a6ff" font-size="9">只处理就绪的 FD</text>
+      <text x="110" y="236" text-anchor="middle" fill="#3fb950" font-size="9">O(就绪数) ✓</text>
+
+      <!-- Kernel space -->
+      <rect x="240" y="10" width="460" height="260" rx="8" fill="rgba(63,185,80,0.03)" stroke="#30363d"/>
+      <text x="470" y="30" text-anchor="middle" fill="#8b949e" font-size="10" font-weight="bold">内核空间 — epoll 实例</text>
+
+      <!-- Red-black tree -->
+      <rect x="255" y="40" width="200" height="130" rx="6" fill="rgba(210,168,255,0.05)" stroke="#30363d"/>
+      <text x="355" y="58" text-anchor="middle" fill="#d2a8ff" font-size="9" font-weight="bold">兴趣列表（红黑树）</text>
+      <text x="355" y="74" text-anchor="middle" fill="#8b949e" font-size="8">O(log n) 插入/删除</text>
+
+      <!-- Tree nodes -->
+      <circle cx="355" cy="100" r="12" fill="rgba(210,168,255,0.2)" stroke="#d2a8ff"/>
+      <text x="355" y="104" text-anchor="middle" fill="#d2a8ff" font-size="8">fd5</text>
+      <circle cx="315" cy="130" r="12" fill="rgba(210,168,255,0.2)" stroke="#d2a8ff"/>
+      <text x="315" y="134" text-anchor="middle" fill="#d2a8ff" font-size="8">fd3</text>
+      <circle cx="395" cy="130" r="12" fill="rgba(210,168,255,0.2)" stroke="#d2a8ff"/>
+      <text x="395" y="134" text-anchor="middle" fill="#d2a8ff" font-size="8">fd9</text>
+      <line x1="345" y1="108" x2="323" y2="120" stroke="#30363d" stroke-width="1"/>
+      <line x1="365" y1="108" x2="387" y2="120" stroke="#30363d" stroke-width="1"/>
+
+      <!-- Ready list -->
+      <rect x="470" y="40" width="215" height="130" rx="6" fill="rgba(63,185,80,0.05)" stroke="#3fb950"/>
+      <text x="577" y="58" text-anchor="middle" fill="#3fb950" font-size="9" font-weight="bold">就绪列表（双向链表）</text>
+      <text x="577" y="74" text-anchor="middle" fill="#8b949e" font-size="8">事件发生时内核主动写入</text>
+
+      <rect x="480" y="85" width="60" height="20" rx="3" fill="rgba(63,185,80,0.2)" stroke="#3fb950"/>
+      <text x="510" y="99" text-anchor="middle" fill="#3fb950" font-size="8">fd3✓</text>
+      <rect x="548" y="85" width="60" height="20" rx="3" fill="rgba(63,185,80,0.2)" stroke="#3fb950"/>
+      <text x="578" y="99" text-anchor="middle" fill="#3fb950" font-size="8">fd9✓</text>
+
+      <!-- Event callback arrow -->
+      <text x="580" y="130" text-anchor="middle" fill="#8b949e" font-size="8">↑ 硬件中断/软中断回调</text>
+      <text x="580" y="145" text-anchor="middle" fill="#8b949e" font-size="8">自动加入就绪列表</text>
+      <text x="580" y="158" text-anchor="middle" fill="#3fb950" font-size="8">无需扫描全部 FD</text>
+
+      <!-- ET/LT -->
+      <rect x="255" y="190" width="420" height="65" rx="6" fill="rgba(255,166,87,0.04)" stroke="#30363d"/>
+      <text x="465" y="208" text-anchor="middle" fill="#ffa657" font-size="9" font-weight="bold">触发模式</text>
+      <text x="340" y="225" text-anchor="middle" fill="#8b949e" font-size="9">水平触发 LT（默认）</text>
+      <text x="340" y="240" text-anchor="middle" fill="#8b949e" font-size="8">只要缓冲区有数据就持续通知</text>
+      <text x="590" y="225" text-anchor="middle" fill="#58a6ff" font-size="9">边缘触发 ET (EPOLLET)</text>
+      <text x="590" y="240" text-anchor="middle" fill="#8b949e" font-size="8">仅在状态变化时通知一次</text>
+
+      <!-- arrows between spaces -->
+      <line x1="195" y1="55" x2="250" y2="55" stroke="#3fb950" stroke-width="1.2" marker-end="url(#ae)"/>
+      <line x1="195" y1="95" x2="250" y2="95" stroke="#3fb950" stroke-width="1.2" marker-end="url(#ae)"/>
+      <line x1="470" y1="95" x2="205" y2="145" stroke="#3fb950" stroke-width="1.5" marker-end="url(#ae)" stroke-dasharray="5,2"/>
+      <text x="340" y="128" text-anchor="middle" fill="#3fb950" font-size="9">返回就绪 events</text>
+    </svg>
+  </div>
+
+  <h3>三个核心系统调用（来自 man7/epoll.7）</h3>
+  <pre><span class="kw">#include</span> <span class="str">&lt;sys/epoll.h&gt;</span>
+
+<span class="cm">/* 1. 创建 epoll 实例 — Linux 2.5.44 */</span>
+<span class="tp">int</span> epollfd = <span class="fn">epoll_create1</span>(<span class="num">0</span>);  <span class="cm">/* 推荐用 epoll_create1，传 EPOLL_CLOEXEC */</span>
+
+<span class="cm">/* 2. 注册/修改/删除兴趣 FD */</span>
+<span class="kw">struct</span> epoll_event ev;
+ev.events  = EPOLLIN | EPOLLET;  <span class="cm">/* 边缘触发模式 */</span>
+ev.data.fd = conn_fd;
+<span class="fn">epoll_ctl</span>(epollfd, EPOLL_CTL_ADD, conn_fd, &amp;ev);
+
+<span class="cm">/* 3. 等待事件 — 返回就绪 FD 数量，只含就绪项 */</span>
+<span class="kw">struct</span> epoll_event events[<span class="num">64</span>];
+<span class="tp">int</span> n = <span class="fn">epoll_wait</span>(epollfd, events, <span class="num">64</span>, -<span class="num">1</span>); <span class="cm">/* -1=无限等待 */</span>
+<span class="kw">for</span> (<span class="tp">int</span> i = <span class="num">0</span>; i &lt; n; i++)
+    <span class="fn">do_use_fd</span>(events[i].data.fd); <span class="cm">/* 仅处理就绪的 FD，O(就绪数) */</span></pre>
+
+  <h3>边缘触发 vs 水平触发（来自 man7/epoll.7）</h3>
+  <div class="grid-2">
+    <div class="card">
+      <div class="card-title">🔵 水平触发 LT（默认）</div>
+      <p>只要缓冲区还有数据，每次 <code>epoll_wait</code> 都会通知。类似 <code>poll</code> 的语义，更安全但略低效。</p>
+      <div class="info-box tip" style="margin-top:8px"><strong>适合</strong>：大多数网络应用，编程更简单</div>
+    </div>
+    <div class="card">
+      <div class="card-title">⚡ 边缘触发 ET（EPOLLET）</div>
+      <p>仅在状态变化时通知一次。必须配合<strong>非阻塞 FD</strong>，循环读直到 <code>EAGAIN</code>。漏读则永远得不到再次通知。</p>
+      <div class="info-box tip" style="margin-top:8px"><strong>适合</strong>：高性能服务器，减少系统调用次数</div>
+    </div>
+  </div>
+
+  <h3>完整 Echo Server 示例（来自 man7/epoll.7 官方示例扩展）</h3>
+  <pre><span class="kw">#define</span> MAX_EVENTS <span class="num">10</span>
+<span class="kw">struct</span> epoll_event ev, events[MAX_EVENTS];
+<span class="tp">int</span> listen_sock, conn_sock, nfds, epollfd;
+
+epollfd = <span class="fn">epoll_create1</span>(<span class="num">0</span>);
+
+ev.events = EPOLLIN;
+ev.data.fd = listen_sock;
+<span class="fn">epoll_ctl</span>(epollfd, EPOLL_CTL_ADD, listen_sock, &amp;ev);
+
+<span class="kw">for</span> (;;) {
+    nfds = <span class="fn">epoll_wait</span>(epollfd, events, MAX_EVENTS, -<span class="num">1</span>);
+
+    <span class="kw">for</span> (<span class="tp">int</span> n = <span class="num">0</span>; n &lt; nfds; ++n) {
+        <span class="kw">if</span> (events[n].data.fd == listen_sock) {
+            conn_sock = <span class="fn">accept</span>(listen_sock,
+                               (<span class="tp">struct sockaddr</span> *) &amp;addr, &amp;addrlen);
+            <span class="fn">setnonblocking</span>(conn_sock);
+            ev.events  = EPOLLIN | EPOLLET;  <span class="cm">/* 边缘触发 */</span>
+            ev.data.fd = conn_sock;
+            <span class="fn">epoll_ctl</span>(epollfd, EPOLL_CTL_ADD, conn_sock, &amp;ev);
+        } <span class="kw">else</span> {
+            <span class="fn">do_use_fd</span>(events[n].data.fd);
+        }
+    }
+}</pre>
+
+  <div class="card">
+    <div class="card-title">📊 epoll vs select/poll 性能对比</div>
+    <table class="cmp-table">
+      <tr><th>指标</th><th>select</th><th>poll</th><th>epoll</th></tr>
+      <tr>
+        <td>FD 上限</td>
+        <td class="bad">1024</td>
+        <td class="good">无限</td>
+        <td class="good">无限 (/proc/sys/fs/epoll/maxuserwatches)</td>
+      </tr>
+      <tr>
+        <td>内核扫描复杂度</td>
+        <td class="bad">O(n) FD总数</td>
+        <td class="bad">O(n) FD总数</td>
+        <td class="good">O(1) 就绪FD数</td>
+      </tr>
+      <tr>
+        <td>用户态遍历</td>
+        <td class="bad">O(n) 遍历位图</td>
+        <td class="bad">O(n) 遍历数组</td>
+        <td class="good">O(就绪数) 直接处理</td>
+      </tr>
+      <tr>
+        <td>每次用户↔内核拷贝</td>
+        <td class="bad">全量 fd_set</td>
+        <td class="bad">全量 pollfd[]</td>
+        <td class="good">只传变更 / 就绪 events</td>
+      </tr>
+      <tr>
+        <td>触发模式</td>
+        <td class="mid">LT 水平</td>
+        <td class="mid">LT 水平</td>
+        <td class="good">LT + ET 边缘</td>
+      </tr>
+    </table>
+  </div>
+
+  <div class="info-box note"><strong>来自 man7/epoll.7 NOTES：</strong>类似机制在其他系统上的实现：FreeBSD 有 <em>kqueue</em>，Solaris 有 <em>/dev/poll</em>。epoll 是 Linux 专有接口（Linux 2.5.44，glibc 2.3.2）。</div>
+
+  <div class="fp-box">
+    <div class="fp-title">第一性原理</div>
+    <p>epoll 的本质突破是<strong>「反转通知方向」</strong>：select/poll 是应用定期询问内核「哪些 FD 就绪了？」，而 epoll 改为内核主动将就绪 FD 推入就绪列表。这将问题复杂度从「与 FD 总数相关」降为「与就绪 FD 数相关」。这正是<strong>推模型（push）优于拉模型（pull）</strong>的经典体现——当大多数 FD 无活动时，epoll 的优势极为显著。</p>
+  </div>
+</section>
+
+<!-- S6: POSIX AIO -->
+<section class="section" id="s6">
+  <div class="section-header">
+    <div class="section-icon" style="background:rgba(247,129,102,0.12)">🚀</div>
+    <div class="section-meta">
+      <div class="section-label">Chapter 06</div>
+      <div class="section-title">POSIX AIO — 标准异步 I/O</div>
+      <div class="section-subtitle">POSIX.1-2001 / glibc 2.1 — 用户态线程池模拟异步</div>
+    </div>
+  </div>
+  <div style="margin-bottom:10px">
+    <a class="src-link" href="https://man7.org/linux/man-pages/man7/aio.7.html" target="_blank">📄 man7/aio(7)</a>
+    <a class="src-link" href="https://man7.org/linux/man-pages/man3/aio_read.3.html" target="_blank">📄 aio_read(3)</a>
+    <span class="badge badge-blue">POSIX.1-2008</span>
+  </div>
+
+  <h3>原理</h3>
+  <p>来自 man7/aio(7)：<em>「The POSIX asynchronous I/O (AIO) interface allows applications to initiate one or more I/O operations that are performed asynchronously (i.e., in the background). The application can elect to be notified of completion of the I/O operation in a variety of ways: by delivery of a signal, by instantiation of a thread, or no notification at all.」</em></p>
+  <p><strong>重要限制</strong>（来自 man7/aio.7 NOTES）：<em>「The current Linux POSIX AIO implementation is provided in user space by glibc. This has a number of limitations, most notably that maintaining multiple threads to perform I/O operations is expensive and scales poorly.」</em>——Linux 上的 POSIX AIO 本质是<strong>用户态线程池模拟</strong>，并非真正的内核异步。</p>
+
+  <div class="diagram-wrap">
+    <svg viewBox="0 0 700 200" xmlns="http://www.w3.org/2000/svg" style="min-width:420px">
+      <defs>
+        <marker id="ap" markerWidth="8" markerHeight="6" refX="8" refY="3" orient="auto">
+          <polygon points="0 0,8 3,0 6" fill="#f78166"/>
+        </marker>
+      </defs>
+      <text x="100" y="20" text-anchor="middle" fill="#8b949e" font-size="10" font-weight="bold">应用线程</text>
+      <text x="350" y="20" text-anchor="middle" fill="#8b949e" font-size="10" font-weight="bold">glibc 线程池（用户态）</text>
+      <text x="600" y="20" text-anchor="middle" fill="#8b949e" font-size="10" font-weight="bold">内核（同步 I/O）</text>
+
+      <line x1="100" y1="30" x2="100" y2="185" stroke="#30363d" stroke-width="1.5" stroke-dasharray="4,3"/>
+      <line x1="350" y1="30" x2="350" y2="185" stroke="#30363d" stroke-width="1.5" stroke-dasharray="4,3"/>
+      <line x1="600" y1="30" x2="600" y2="185" stroke="#30363d" stroke-width="1.5" stroke-dasharray="4,3"/>
+
+      <line x1="100" y1="50" x2="340" y2="50" stroke="#f78166" stroke-width="1.5" marker-end="url(#ap)"/>
+      <text x="220" y="44" text-anchor="middle" fill="#f78166" font-size="9">aio_read(aiocb) 投递请求</text>
+      <text x="100" y="80" text-anchor="middle" fill="#3fb950" font-size="9">继续执行其他代码 ✓</text>
+
+      <rect x="280" y="60" width="140" height="60" rx="6" fill="rgba(247,129,102,0.08)" stroke="#30363d"/>
+      <text x="350" y="80" text-anchor="middle" fill="#8b949e" font-size="9">工作线程阻塞 read()</text>
+      <text x="350" y="96" text-anchor="middle" fill="#f78166" font-size="8">⚠ 实际仍是同步 I/O</text>
+      <text x="350" y="110" text-anchor="middle" fill="#f78166" font-size="8">⚠ N 请求 = N 线程</text>
+
+      <line x1="350" y1="65" x2="590" y2="65" stroke="#f78166" stroke-width="1" marker-end="url(#ap)"/>
+      <line x1="590" y1="115" x2="360" y2="115" stroke="#3fb950" stroke-width="1" marker-end="url(#ap)"/>
+      <text x="470" y="130" text-anchor="middle" fill="#3fb950" font-size="9">数据就绪，线程返回</text>
+
+      <line x1="350" y1="140" x2="110" y2="155" stroke="#3fb950" stroke-width="1.5" marker-end="url(#ap)"/>
+      <text x="230" y="148" text-anchor="middle" fill="#3fb950" font-size="9">发送信号/创建线程通知完成</text>
+    </svg>
+  </div>
+
+  <h3>aiocb 结构体（来自 man7/aio.7）</h3>
+  <pre><span class="kw">#include</span> <span class="str">&lt;aio.h&gt;</span>
+
+<span class="kw">struct</span> aiocb {
+    <span class="tp">int</span>             aio_fildes;    <span class="cm">/* 文件描述符 */</span>
+    <span class="tp">off_t</span>           aio_offset;    <span class="cm">/* 文件偏移量 */</span>
+    <span class="kw">volatile</span> <span class="tp">void</span>  *aio_buf;       <span class="cm">/* 数据缓冲区 */</span>
+    <span class="tp">size_t</span>          aio_nbytes;    <span class="cm">/* 传输字节数 */</span>
+    <span class="tp">int</span>             aio_reqprio;   <span class="cm">/* 请求优先级 */</span>
+    <span class="kw">struct</span> sigevent aio_sigevent;  <span class="cm">/* 完成通知方式 */</span>
+    <span class="tp">int</span>             aio_lio_opcode;<span class="cm">/* lio_listio 操作码 */</span>
+};
+
+<span class="cm">/* 通知方式 (aio_sigevent.sigev_notify): */</span>
+<span class="cm">/* SIGEV_NONE    — 不通知 */</span>
+<span class="cm">/* SIGEV_SIGNAL  — 发送信号 (aio_sigevent.sigev_signo) */</span>
+<span class="cm">/* SIGEV_THREAD  — 创建新线程调用回调 */</span>
+
+<span class="tp">int</span> <span class="fn">aio_read</span>  (<span class="tp">struct aiocb</span> *aiocbp);   <span class="cm">/* 异步读 */</span>
+<span class="tp">int</span> <span class="fn">aio_write</span> (<span class="tp">struct aiocb</span> *aiocbp);   <span class="cm">/* 异步写 */</span>
+<span class="tp">int</span> <span class="fn">aio_error</span> (<span class="tp">const struct aiocb</span> *aiocbp); <span class="cm">/* 查询状态 */</span>
+<span class="tp">ssize_t</span> <span class="fn">aio_return</span>(<span class="tp">struct aiocb</span> *aiocbp); <span class="cm">/* 获取结果 */</span>
+<span class="tp">int</span> <span class="fn">aio_cancel</span>(<span class="tp">int</span> fd, <span class="tp">struct aiocb</span> *aiocbp); <span class="cm">/* 取消 */</span>
+<span class="tp">int</span> <span class="fn">lio_listio</span>(<span class="tp">int</span> mode, <span class="tp">struct aiocb</span> *<span class="kw">const</span> list[], ...); <span class="cm">/* 批量提交 */</span></pre>
+
+  <div class="info-box warn"><strong>来自 man7/aio.7 NOTES：</strong>POSIX AIO 在 Linux 上由 glibc 用户态实现，通过维护多个线程执行 I/O，代价昂贵且扩展性差。真正的内核态异步 I/O 请参考 io_submit(2) 系列（Linux 原生 AIO）。</div>
+
+  <div class="fp-box">
+    <div class="fp-title">第一性原理</div>
+    <p>POSIX AIO 提供了<strong>正确的编程模型抽象</strong>（提交即返回，完成时通知），但 Linux 上的实现是「挂羊头卖狗肉」——底层仍是线程阻塞 I/O。其本质困境是：<em>标准先于实现，glibc 用最朴素的方式满足 API 语义</em>。线程池模型意味着 N 个并发 I/O 需要 N 个线程，扩展性天花板极低。真正的解决方案需要在内核中实现异步路径。</p>
+  </div>
+</section>
+
+<!-- S7: Linux Native AIO -->
+<section class="section" id="s7">
+  <div class="section-header">
+    <div class="section-icon" style="background:rgba(247,129,102,0.12)">🔧</div>
+    <div class="section-meta">
+      <div class="section-label">Chapter 07</div>
+      <div class="section-title">Linux 原生 AIO（内核态异步 I/O）</div>
+      <div class="section-subtitle">Linux 2.5 / Linux 专有 — io_setup/io_submit/io_getevents</div>
+    </div>
+  </div>
+  <div style="margin-bottom:10px">
+    <a class="src-link" href="https://man7.org/linux/man-pages/man2/io_setup.2.html" target="_blank">📄 man2/io_setup(2)</a>
+    <a class="src-link" href="https://man7.org/linux/man-pages/man2/io_submit.2.html" target="_blank">📄 man2/io_submit(2)</a>
+    <a class="src-link" href="https://man7.org/linux/man-pages/man2/io_getevents.2.html" target="_blank">📄 man2/io_getevents(2)</a>
+    <span class="badge badge-orange">Linux 专有</span>
+  </div>
+
+  <h3>原理</h3>
+  <p>Linux 原生 AIO（libaio）是真正的内核态异步 I/O，通过 <code>io_setup</code>、<code>io_submit</code>、<code>io_getevents</code> 等系统调用实现。内核在完成 I/O 后将结果放入完成队列，应用通过 <code>io_getevents</code> 批量收割结果，<strong>无需线程池</strong>。</p>
+  <div class="info-box warn"><strong>限制：</strong>仅对 <strong>O_DIRECT（绕过页缓存）的文件 I/O</strong> 真正异步，对普通文件和网络 socket 支持有限。这是其最大的设计缺陷，也是 io_uring 诞生的直接原因。</div>
+
+  <pre><span class="kw">#include</span> <span class="str">&lt;linux/aio_abi.h&gt;</span>  <span class="cm">/* Linux 专有头文件 */</span>
+<span class="kw">#include</span> <span class="str">&lt;sys/syscall.h&gt;</span>
+
+<span class="cm">/* 1. 创建 AIO 上下文（内核资源）*/</span>
+aio_context_t ctx = <span class="num">0</span>;
+<span class="fn">syscall</span>(__NR_io_setup, <span class="num">128</span>, &amp;ctx); <span class="cm">/* 最大未完成请求数=128 */</span>
+
+<span class="cm">/* 2. 构造 I/O 控制块 */</span>
+<span class="kw">struct</span> iocb cb = {
+    .aio_fildes     = fd,
+    .aio_lio_opcode = IOCB_CMD_PREAD,
+    .aio_buf        = (<span class="tp">uint64_t</span>)buf,
+    .aio_nbytes     = <span class="num">4096</span>,
+    .aio_offset     = <span class="num">0</span>,
+};
+<span class="kw">struct</span> iocb *cbp = &amp;cb;
+
+<span class="cm">/* 3. 提交请求 — 立即返回，内核异步执行 */</span>
+<span class="fn">syscall</span>(__NR_io_submit, ctx, <span class="num">1</span>, &amp;cbp);
+
+<span class="cm">/* 继续做其他事情... */</span>
+
+<span class="cm">/* 4. 收割完成事件 */</span>
+<span class="kw">struct</span> io_event events[<span class="num">128</span>];
+<span class="tp">int</span> n = <span class="fn">syscall</span>(__NR_io_getevents, ctx, <span class="num">1</span>, <span class="num">128</span>, events, NULL);
+<span class="kw">for</span> (<span class="tp">int</span> i = <span class="num">0</span>; i &lt; n; i++) {
+    <span class="tp">ssize_t</span> res = events[i].res;  <span class="cm">/* 返回值，类似 read() 的返回值 */</span>
+    <span class="fn">process_result</span>(res);
+}</pre>
+
+  <div class="grid-2">
+    <div class="card">
+      <div class="card-title">✅ 相比 POSIX AIO 的优势</div>
+      <ul>
+        <li>真正的<strong>内核态异步</strong>，无线程池开销</li>
+        <li>支持<strong>批量提交</strong>（一次 io_submit 多个请求）</li>
+        <li>对 O_DIRECT 文件 I/O <strong>真异步</strong></li>
+        <li>事件完成队列可与 eventfd 配合 epoll 使用</li>
+      </ul>
+    </div>
+    <div class="card">
+      <div class="card-title">❌ 主要缺陷</div>
+      <ul>
+        <li>只对 <strong>O_DIRECT 文件</strong>真正异步</li>
+        <li>普通 socket/pipe 退化为同步</li>
+        <li>API 设计复杂，仅通过 syscall 访问</li>
+        <li>内存对齐要求严格（O_DIRECT 需 512B 对齐）</li>
+        <li>io_uring 出现后已逐渐淘汰</li>
+      </ul>
+    </div>
+  </div>
+
+  <div class="fp-box">
+    <div class="fp-title">第一性原理</div>
+    <p>Linux 原生 AIO 迈出了<strong>「在内核中实现真正异步路径」</strong>的关键一步，证明了不依赖线程池可以实现真异步。但其 O_DIRECT 的限制揭示了一个更深的问题：内核的页缓存（page cache）本身就会引入同步等待。彻底的异步需要内核对所有 I/O 路径（含页缓存回写、网络 socket 等）都提供统一的异步原语——这正是 io_uring 的设计目标。</p>
+  </div>
+</section>
+
+<!-- S8: io_uring -->
+<section class="section" id="s8">
+  <div class="section-header">
+    <div class="section-icon" style="background:rgba(88,166,255,0.15)">🌀</div>
+    <div class="section-meta">
+      <div class="section-label">Chapter 08</div>
+      <div class="section-title">io_uring — 新一代异步 I/O</div>
+      <div class="section-subtitle">Linux 5.1 (2019) — 共享环形队列，真正零开销异步</div>
+    </div>
+  </div>
+  <div style="margin-bottom:10px">
+    <a class="src-link" href="https://man7.org/linux/man-pages/man7/io_uring.7.html" target="_blank">📄 man7/io_uring(7)</a>
+    <a class="src-link" href="https://man7.org/linux/man-pages/man2/io_uring_setup.2.html" target="_blank">📄 io_uring_setup(2)</a>
+    <a class="src-link" href="https://man7.org/linux/man-pages/man2/io_uring_enter.2.html" target="_blank">📄 io_uring_enter(2)</a>
+    <a class="src-link" href="https://github.com/axboe/liburing" target="_blank">🔗 liburing</a>
+    <span class="badge badge-blue">Linux 5.1+</span>
+    <span class="badge badge-green">Linux 专有</span>
+  </div>
+
+  <h3>原理</h3>
+  <p>来自 man7/io_uring(7)：<em>「io_uring is a Linux-specific API for asynchronous I/O. It allows the user to submit one or more I/O requests, which are processed asynchronously without blocking the calling process. io_uring gets its name from ring buffers which are shared between user space and kernel space.」</em></p>
+  <p>io_uring 使用<strong>两个共享内存环形队列</strong>（通过 mmap 在用户态与内核态之间共享）：<strong>提交队列（SQ）</strong>和<strong>完成队列（CQ）</strong>。应用向 SQ 尾部写入 SQE（提交队列项），内核从 SQ 头部读取并执行，完成后将 CQE（完成队列项）写入 CQ 尾部，应用从 CQ 头部读取结果——整个过程可以<strong>完全不产生系统调用</strong>（SQ Polling 模式）。</p>
+
+  <div class="diagram-wrap">
+    <svg viewBox="0 0 740 300" xmlns="http://www.w3.org/2000/svg" style="min-width:480px">
+      <defs>
+        <marker id="aio" markerWidth="8" markerHeight="6" refX="8" refY="3" orient="auto">
+          <polygon points="0 0,8 3,0 6" fill="#58a6ff"/>
+        </marker>
+        <marker id="aio2" markerWidth="8" markerHeight="6" refX="8" refY="3" orient="auto">
+          <polygon points="0 0,8 3,0 6" fill="#3fb950"/>
+        </marker>
+      </defs>
+
+      <!-- Shared Memory Region -->
+      <rect x="20" y="10" width="700" height="80" rx="8" fill="rgba(88,166,255,0.05)" stroke="rgba(88,166,255,0.3)" stroke-dasharray="6,3"/>
+      <text x="370" y="30" text-anchor="middle" fill="#58a6ff" font-size="10" font-weight="bold">共享内存区域（mmap — 用户态与内核态共享）</text>
+
+      <!-- SQ Ring -->
+      <rect x="30" y="40" width="310" height="40" rx="6" fill="rgba(88,166,255,0.08)" stroke="#58a6ff"/>
+      <text x="190" y="56" text-anchor="middle" fill="#58a6ff" font-size="9" font-weight="bold">提交队列 SQ（Submission Queue）</text>
+      <!-- SQ slots -->
+      <rect x="35" y="63" width="40" height="14" rx="2" fill="rgba(88,166,255,0.3)" stroke="#58a6ff"/>
+      <text x="55" y="74" text-anchor="middle" fill="#58a6ff" font-size="8">SQE</text>
+      <rect x="78" y="63" width="40" height="14" rx="2" fill="rgba(88,166,255,0.15)" stroke="#30363d"/>
+      <text x="98" y="74" text-anchor="middle" fill="#8b949e" font-size="8">SQE</text>
+      <text x="140" y="74" fill="#8b949e" font-size="8">...</text>
+      <rect x="155" y="63" width="40" height="14" rx="2" fill="rgba(88,166,255,0.3)" stroke="#58a6ff"/>
+      <text x="175" y="74" text-anchor="middle" fill="#58a6ff" font-size="8">SQE</text>
+
+      <!-- CQ Ring -->
+      <rect x="400" y="40" width="310" height="40" rx="6" fill="rgba(63,185,80,0.08)" stroke="#3fb950"/>
+      <text x="555" y="56" text-anchor="middle" fill="#3fb950" font-size="9" font-weight="bold">完成队列 CQ（Completion Queue）</text>
+      <rect x="405" y="63" width="40" height="14" rx="2" fill="rgba(63,185,80,0.3)" stroke="#3fb950"/>
+      <text x="425" y="74" text-anchor="middle" fill="#3fb950" font-size="8">CQE</text>
+      <rect x="448" y="63" width="40" height="14" rx="2" fill="rgba(63,185,80,0.3)" stroke="#3fb950"/>
+      <text x="468" y="74" text-anchor="middle" fill="#3fb950" font-size="8">CQE</text>
+      <text x="498" y="74" fill="#8b949e" font-size="8">...</text>
+
+      <!-- App box -->
+      <rect x="20" y="125" width="200" height="140" rx="8" fill="rgba(88,166,255,0.04)" stroke="#30363d"/>
+      <text x="120" y="145" text-anchor="middle" fill="#58a6ff" font-size="10" font-weight="bold">应用进程</text>
+      <text x="120" y="163" text-anchor="middle" fill="#8b949e" font-size="9">1. 写 SQE 到 SQ 尾部</text>
+      <text x="120" y="178" text-anchor="middle" fill="#8b949e" font-size="9">2. io_uring_enter() 通知内核</text>
+      <text x="120" y="193" text-anchor="middle" fill="#8b949e" font-size="9">（或 SQPOLL 免系统调用）</text>
+      <text x="120" y="212" text-anchor="middle" fill="#3fb950" font-size="9">3. 从 CQ 头部读取 CQE</text>
+      <text x="120" y="227" text-anchor="middle" fill="#3fb950" font-size="9">4. 处理结果</text>
+
+      <!-- Kernel box -->
+      <rect x="270" y="125" width="200" height="140" rx="8" fill="rgba(63,185,80,0.04)" stroke="#30363d"/>
+      <text x="370" y="145" text-anchor="middle" fill="#3fb950" font-size="10" font-weight="bold">内核 I/O 子系统</text>
+      <text x="370" y="163" text-anchor="middle" fill="#8b949e" font-size="9">从 SQ 头部读取 SQE</text>
+      <text x="370" y="178" text-anchor="middle" fill="#8b949e" font-size="9">异步执行 I/O 操作</text>
+      <text x="370" y="193" text-anchor="middle" fill="#8b949e" font-size="9">（可并行多个请求）</text>
+      <text x="370" y="212" text-anchor="middle" fill="#3fb950" font-size="9">完成后写 CQE 到 CQ 尾部</text>
+
+      <!-- Arrows -->
+      <line x1="220" y1="175" x2="268" y2="175" stroke="#58a6ff" stroke-width="1.5" marker-end="url(#aio)"/>
+      <line x1="268" y1="200" x2="220" y2="200" stroke="#3fb950" stroke-width="1.5" marker-end="url(#aio2)"/>
+
+      <!-- IO Device -->
+      <rect x="530" y="125" width="185" height="140" rx="8" fill="rgba(255,166,87,0.04)" stroke="#30363d"/>
+      <text x="617" y="145" text-anchor="middle" fill="#ffa657" font-size="10" font-weight="bold">硬件 / 外设</text>
+      <text x="617" y="165" text-anchor="middle" fill="#8b949e" font-size="9">磁盘 / 网卡 / 等</text>
+      <text x="617" y="183" text-anchor="middle" fill="#8b949e" font-size="9">DMA 直接传输</text>
+      <line x1="470" y1="175" x2="528" y2="175" stroke="#ffa657" stroke-width="1.5" marker-end="url(#aio)"/>
+      <line x1="528" y1="200" x2="470" y2="200" stroke="#ffa657" stroke-width="1.5" marker-end="url(#aio)"/>
+
+      <!-- SQ arrow -->
+      <line x1="120" y1="125" x2="120" y2="83" stroke="#58a6ff" stroke-width="1.5" marker-end="url(#aio)" stroke-dasharray="4,2"/>
+      <text x="90" y="110" fill="#58a6ff" font-size="8">写SQE</text>
+      <!-- CQ arrow -->
+      <line x1="555" y1="83" x2="555" y2="125" stroke="#3fb950" stroke-width="1.5" marker-end="url(#aio2)" stroke-dasharray="4,2"/>
+      <text x="558" y="110" fill="#3fb950" font-size="8">读CQE</text>
+
+      <!-- Performance note -->
+      <rect x="20" y="278" width="700" height="18" rx="4" fill="rgba(88,166,255,0.04)" stroke="rgba(88,166,255,0.15)"/>
+      <text x="370" y="291" text-anchor="middle" fill="#58a6ff" font-size="9">⚡ SQ Polling 模式：内核线程持续轮询 SQ，应用无需任何系统调用即可提交 I/O 请求</text>
+    </svg>
+  </div>
+
+  <h3>核心数据结构（来自 man7/io_uring.7）</h3>
+  <pre><span class="cm">/* SQE：提交队列项 — 描述一个 I/O 操作 */</span>
+<span class="kw">struct</span> io_uring_sqe {
+    __u8  opcode;     <span class="cm">/* 操作类型：IORING_OP_READ/WRITE/ACCEPT... */</span>
+    __u8  flags;      <span class="cm">/* IOSQE_IO_LINK: 串联请求，强制顺序执行 */</span>
+    __s32 fd;         <span class="cm">/* 目标文件描述符 */</span>
+    __u64 off;        <span class="cm">/* 文件偏移 */</span>
+    __u64 addr;       <span class="cm">/* 缓冲区地址 */</span>
+    __u32 len;        <span class="cm">/* 缓冲区长度 */</span>
+    __u64 user_data;  <span class="cm">/* 透传到 CQE，用于关联请求与完成 */</span>
+    ...
+};
+
+<span class="cm">/* CQE：完成队列项 — 记录 I/O 结果 */</span>
+<span class="kw">struct</span> io_uring_cqe {
+    __u64 user_data;  <span class="cm">/* 与 SQE 的 user_data 一致 */</span>
+    __s32 res;        <span class="cm">/* 返回值（类似 read/write 返回值，负值为 -errno）*/</span>
+    __u32 flags;      <span class="cm">/* CQE 标志（IORING_CQE_F_MORE 等）*/</span>
+};</pre>
+
+  <h3>使用 liburing 简化接口示例</h3>
+  <pre><span class="kw">#include</span> <span class="str">&lt;liburing.h&gt;</span>   <span class="cm">/* https://github.com/axboe/liburing */</span>
+
+<span class="tp">struct</span> io_uring ring;
+<span class="fn">io_uring_queue_init</span>(<span class="num">32</span>, &amp;ring, <span class="num">0</span>);  <span class="cm">/* 队列深度 32 */</span>
+
+<span class="cm">/* 提交读请求 */</span>
+<span class="kw">struct</span> io_uring_sqe *sqe = <span class="fn">io_uring_get_sqe</span>(&amp;ring);
+<span class="fn">io_uring_prep_read</span>(sqe, fd, buf, sizeof(buf), <span class="num">0</span>);
+sqe->user_data = (<span class="tp">uint64_t</span>)<span class="num">1234</span>;  <span class="cm">/* 自定义标识符 */</span>
+<span class="fn">io_uring_submit</span>(&amp;ring);           <span class="cm">/* 一次系统调用批量提交所有 SQE */</span>
+
+<span class="cm">/* 等待并收割完成 */</span>
+<span class="kw">struct</span> io_uring_cqe *cqe;
+<span class="fn">io_uring_wait_cqe</span>(&amp;ring, &amp;cqe);
+<span class="kw">if</span> (cqe->res > <span class="num">0</span>)
+    <span class="fn">process_data</span>(buf, cqe->res);
+<span class="fn">io_uring_cqe_seen</span>(&amp;ring, cqe);   <span class="cm">/* 标记 CQE 已消费，推进 CQ 头 */</span>
+
+<span class="fn">io_uring_queue_exit</span>(&amp;ring);</pre>
+
+  <div class="card">
+    <div class="card-title">🏆 io_uring 关键特性</div>
+    <div class="grid-2" style="margin-top:8px">
+      <div>
+        <h4>零拷贝机制</h4>
+        <ul>
+          <li>SQ/CQ 通过 <code>mmap</code> 共享，无需系统调用传递数据</li>
+          <li>Fixed buffers：预注册缓冲区，避免每次 I/O 的内存映射</li>
+        </ul>
+        <h4>批量操作</h4>
+        <ul>
+          <li>一次 <code>io_uring_enter()</code> 可提交任意数量 SQE</li>
+          <li>SQPOLL 模式：内核线程自动消费 SQE，无需系统调用</li>
+        </ul>
+      </div>
+      <div>
+        <h4>高级特性</h4>
+        <ul>
+          <li><code>IOSQE_IO_LINK</code>：强制请求顺序执行</li>
+          <li>Multi-shot：单次注册，多次返回（如 accept_multishot）</li>
+          <li>Provided buffers：内核自动选择缓冲区</li>
+          <li>零拷贝网络：<code>MSG_ZEROCOPY</code> + io_uring</li>
+        </ul>
+        <h4>支持的操作（Linux 6.x）</h4>
+        <ul>
+          <li>文件 I/O、网络、poll、定时器、splice、accept、connect...</li>
+        </ul>
+      </div>
+    </div>
+  </div>
+
+  <div class="card">
+    <div class="card-title">📊 io_uring vs 其他机制性能对比</div>
+    <table class="cmp-table">
+      <tr><th>机制</th><th>系统调用/请求</th><th>内存拷贝</th><th>适用 FD 类型</th><th>真异步</th></tr>
+      <tr>
+        <td>epoll + read</td>
+        <td class="mid">2次 (epoll_wait+read)</td>
+        <td class="bad">是</td>
+        <td class="good">Socket/Pipe</td>
+        <td class="bad">否（同步读取）</td>
+      </tr>
+      <tr>
+        <td>Linux AIO</td>
+        <td class="mid">1次(io_submit)+poll</td>
+        <td class="bad">是</td>
+        <td class="bad">仅O_DIRECT文件</td>
+        <td class="mid">部分</td>
+      </tr>
+      <tr>
+        <td>io_uring(普通)</td>
+        <td class="good">1次(批量提交)</td>
+        <td class="mid">视操作</td>
+        <td class="good">所有FD类型</td>
+        <td class="good">是</td>
+      </tr>
+      <tr>
+        <td>io_uring(SQPOLL)</td>
+        <td class="good" style="color:#3fb950">0次</td>
+        <td class="mid">视操作</td>
+        <td class="good">所有FD类型</td>
+        <td class="good">是</td>
+      </tr>
+    </table>
+  </div>
+
+  <div class="fp-box">
+    <div class="fp-title">第一性原理</div>
+    <p>io_uring 的根本创新是<strong>「将用户态与内核态的通信介质从系统调用换成共享内存」</strong>。传统 I/O 的瓶颈之一是系统调用本身的开销（尤其在 Spectre/Meltdown 补丁后，内核/用户态切换开销倍增）。通过共享环形队列，io_uring 使应用和内核像<em>两个线程共享一个无锁队列</em>一样工作，彻底消除了通信开销。这是 I/O 演进史上「减少层次」的终极体现。</p>
+  </div>
+</section>
+
+<!-- S9: mmap -->
+<section class="section" id="s9">
+  <div class="section-header">
+    <div class="section-icon" style="background:rgba(63,185,80,0.12)">🗂️</div>
+    <div class="section-meta">
+      <div class="section-label">Chapter 09</div>
+      <div class="section-title">mmap — 内存映射 I/O</div>
+      <div class="section-subtitle">POSIX.1 / 4.4BSD — 零拷贝文件访问</div>
+    </div>
+  </div>
+  <div style="margin-bottom:10px">
+    <a class="src-link" href="https://man7.org/linux/man-pages/man2/mmap.2.html" target="_blank">📄 man2/mmap(2)</a>
+    <span class="badge badge-blue">POSIX.1-2001</span>
+  </div>
+
+  <h3>原理</h3>
+  <p>mmap 将文件（或设备）的一段内容映射到进程的虚拟地址空间。进程直接通过指针访问该区域，<strong>内核按需（缺页中断）将页从文件加载到物理内存（页缓存）</strong>，并建立虚拟地址→物理页的映射。读写操作直接操作页缓存，<strong>无需 read()/write() 的用户↔内核数据拷贝</strong>。</p>
+
+  <div class="diagram-wrap">
+    <svg viewBox="0 0 680 200" xmlns="http://www.w3.org/2000/svg" style="min-width:400px">
+      <defs>
+        <marker id="am" markerWidth="8" markerHeight="6" refX="8" refY="3" orient="auto">
+          <polygon points="0 0,8 3,0 6" fill="#3fb950"/>
+        </marker>
+      </defs>
+
+      <!-- Traditional -->
+      <text x="160" y="20" text-anchor="middle" fill="#f78166" font-size="10" font-weight="bold">传统 read()</text>
+      <rect x="20" y="30" width="90" height="30" rx="5" fill="rgba(88,166,255,0.1)" stroke="#58a6ff"/>
+      <text x="65" y="50" text-anchor="middle" fill="#58a6ff" font-size="9">用户Buffer</text>
+      <rect x="130" y="30" width="90" height="30" rx="5" fill="rgba(210,168,255,0.1)" stroke="#d2a8ff"/>
+      <text x="175" y="50" text-anchor="middle" fill="#d2a8ff" font-size="9">页缓存</text>
+      <rect x="240" y="30" width="70" height="30" rx="5" fill="rgba(255,166,87,0.1)" stroke="#ffa657"/>
+      <text x="275" y="50" text-anchor="middle" fill="#ffa657" font-size="9">磁盘</text>
+
+      <line x1="240" y1="45" x2="225" y2="45" stroke="#ffa657" stroke-width="1.5" marker-end="url(#am)"/>
+      <text x="286" y="38" text-anchor="middle" fill="#ffa657" font-size="8">DMA</text>
+      <line x1="130" y1="45" x2="115" y2="45" stroke="#f78166" stroke-width="1.5" marker-end="url(#am)"/>
+      <text x="122" y="38" text-anchor="middle" fill="#f78166" font-size="8">CPU拷贝</text>
+      <text x="160" y="78" text-anchor="middle" fill="#f78166" font-size="9">⚠ 两次拷贝</text>
+
+      <!-- mmap -->
+      <text x="500" y="20" text-anchor="middle" fill="#3fb950" font-size="10" font-weight="bold">mmap()</text>
+      <rect x="370" y="30" width="90" height="30" rx="5" fill="rgba(88,166,255,0.1)" stroke="#58a6ff" stroke-dasharray="4,2"/>
+      <text x="415" y="46" text-anchor="middle" fill="#58a6ff" font-size="9">虚拟地址</text>
+      <text x="415" y="56" text-anchor="middle" fill="#58a6ff" font-size="8">（页表映射）</text>
+      <rect x="480" y="30" width="90" height="30" rx="5" fill="rgba(63,185,80,0.15)" stroke="#3fb950"/>
+      <text x="525" y="50" text-anchor="middle" fill="#3fb950" font-size="9">页缓存</text>
+      <rect x="590" y="30" width="70" height="30" rx="5" fill="rgba(255,166,87,0.1)" stroke="#ffa657"/>
+      <text x="625" y="50" text-anchor="middle" fill="#ffa657" font-size="9">磁盘</text>
+
+      <line x1="590" y1="45" x2="575" y2="45" stroke="#ffa657" stroke-width="1.5" marker-end="url(#am)"/>
+      <text x="634" y="38" text-anchor="middle" fill="#ffa657" font-size="8">DMA</text>
+      <line x1="480" y1="45" x2="465" y2="45" stroke="#3fb950" stroke-width="1.5"/>
+      <text x="473" y="38" text-anchor="middle" fill="#3fb950" font-size="8">页表</text>
+      <text x="500" y="78" text-anchor="middle" fill="#3fb950" font-size="9">✓ 零 CPU 拷贝</text>
+
+      <!-- Details -->
+      <rect x="20" y="100" width="640" height="85" rx="8" fill="rgba(63,185,80,0.03)" stroke="#30363d"/>
+      <text x="340" y="120" text-anchor="middle" fill="#8b949e" font-size="10" font-weight="bold">mmap 工作流程</text>
+      <text x="60" y="140" fill="#8b949e" font-size="9">1. mmap() 建立虚拟地址→文件映射（无物理内存分配）</text>
+      <text x="60" y="157" fill="#8b949e" font-size="9">2. 访问映射地址 → 触发缺页中断 → 内核从磁盘加载页到页缓存</text>
+      <text x="60" y="174" fill="#8b949e" font-size="9">3. 建立页表映射 → 应用直接读写页缓存中的数据，无 CPU 拷贝</text>
+    </svg>
+  </div>
+
+  <pre><span class="kw">#include</span> <span class="str">&lt;sys/mman.h&gt;</span>
+<span class="kw">#include</span> <span class="str">&lt;fcntl.h&gt;</span>
+
+<span class="tp">int</span> fd = <span class="fn">open</span>(<span class="str">"data.bin"</span>, O_RDWR);
+<span class="fn">fstat</span>(fd, &amp;sb);
+
+<span class="cm">/* 将整个文件映射到虚拟地址空间 */</span>
+<span class="tp">char</span> *data = <span class="fn">mmap</span>(NULL, sb.st_size,
+                   PROT_READ | PROT_WRITE,
+                   MAP_SHARED,   <span class="cm">/* 修改写回文件 */</span>
+                   fd, <span class="num">0</span>);
+
+<span class="cm">/* 直接通过指针访问，无需 read()/write() */</span>
+<span class="fn">memcpy</span>(output, data + offset, length); <span class="cm">/* 仅1次拷贝（到用户buffer）*/</span>
+data[<span class="num">100</span>] = <span class="str">'X'</span>;  <span class="cm">/* 直接写页缓存，稍后内核脏页回写 */</span>
+
+<span class="fn">munmap</span>(data, sb.st_size);
+<span class="fn">close</span>(fd);</pre>
+
+  <div class="grid-2">
+    <div class="card">
+      <div class="card-title">✅ 适用场景</div>
+      <ul>
+        <li>大文件随机访问（数据库文件、索引）</li>
+        <li>文件内容共享（多进程共享同一页缓存）</li>
+        <li>可执行文件加载（动态库 .so）</li>
+        <li>内存映射 I/O 设备（GPU framebuffer）</li>
+      </ul>
+    </div>
+    <div class="card">
+      <div class="card-title">❌ 注意事项</div>
+      <ul>
+        <li>小文件映射开销大（页表建立成本）</li>
+        <li>映射区域过大会消耗虚拟地址空间</li>
+        <li>SIGBUS 风险：文件缩小后访问越界区域</li>
+        <li>不能直接用于 socket（用 sendfile/splice）</li>
+      </ul>
+    </div>
+  </div>
+
+  <div class="fp-box">
+    <div class="fp-title">第一性原理</div>
+    <p>mmap 的本质是<strong>「消除用户态缓冲区这个中间层」</strong>——直接让应用的虚拟地址指向内核的页缓存。这利用了现代 CPU 的 MMU（内存管理单元）：通过页表映射，两个「地址」可以指向同一块物理内存。零拷贝的代价是：你现在直接在内核页上操作，<em>任何并发/同步问题都需要自行处理</em>。</p>
+  </div>
+</section>
+
+<!-- S10: sendfile -->
+<section class="section" id="s10">
+  <div class="section-header">
+    <div class="section-icon" style="background:rgba(63,185,80,0.12)">📤</div>
+    <div class="section-meta">
+      <div class="section-label">Chapter 10</div>
+      <div class="section-title">sendfile — 文件到 Socket 零拷贝</div>
+      <div class="section-subtitle">Linux 2.2 (1999) — 内核态直接传输，无用户态中转</div>
+    </div>
+  </div>
+  <div style="margin-bottom:10px">
+    <a class="src-link" href="https://man7.org/linux/man-pages/man2/sendfile.2.html" target="_blank">📄 man2/sendfile(2)</a>
+    <span class="badge badge-orange">Linux 专有风格</span>
+    <span class="badge badge-blue">Linux 2.2+</span>
+  </div>
+
+  <h3>原理</h3>
+  <p><code>sendfile()</code> 在 Linux 2.2 引入，允许在<strong>内核内部</strong>将数据从文件直接传输到 socket，完全<strong>绕过用户态缓冲区</strong>。在支持 Scatter-Gather DMA 的网卡上，连内核中的数据拷贝也可避免：只需将页缓存的页引用（指针+偏移）传给网卡 DMA，由硬件直接读取。</p>
+
+  <div class="diagram-wrap">
+    <svg viewBox="0 0 700 220" xmlns="http://www.w3.org/2000/svg" style="min-width:440px">
+      <defs>
+        <marker id="asf" markerWidth="8" markerHeight="6" refX="8" refY="3" orient="auto">
+          <polygon points="0 0,8 3,0 6" fill="#58a6ff"/>
+        </marker>
+        <marker id="asf2" markerWidth="8" markerHeight="6" refX="8" refY="3" orient="auto">
+          <polygon points="0 0,8 3,0 6" fill="#3fb950"/>
+        </marker>
+      </defs>
+
+      <!-- Traditional: 4 copies -->
+      <text x="170" y="18" text-anchor="middle" fill="#f78166" font-size="10" font-weight="bold">传统 read()+write()：4次拷贝</text>
+      <rect x="10" y="25" width="65" height="25" rx="4" fill="rgba(255,166,87,0.15)" stroke="#ffa657"/>
+      <text x="42" y="41" text-anchor="middle" fill="#ffa657" font-size="8">磁盘</text>
+      <rect x="95" y="25" width="65" height="25" rx="4" fill="rgba(210,168,255,0.15)" stroke="#d2a8ff"/>
+      <text x="127" y="41" text-anchor="middle" fill="#d2a8ff" font-size="8">页缓存</text>
+      <rect x="180" y="25" width="65" height="25" rx="4" fill="rgba(88,166,255,0.15)" stroke="#58a6ff"/>
+      <text x="212" y="41" text-anchor="middle" fill="#58a6ff" font-size="8">用户Buffer</text>
+      <rect x="265" y="25" width="65" height="25" rx="4" fill="rgba(63,185,80,0.15)" stroke="#3fb950"/>
+      <text x="297" y="41" text-anchor="middle" fill="#3fb950" font-size="8">Socket缓冲</text>
+      <rect x="350" y="25" width="65" height="25" rx="4" fill="rgba(255,166,87,0.15)" stroke="#ffa657"/>
+      <text x="382" y="41" text-anchor="middle" fill="#ffa657" font-size="8">网卡</text>
+
+      <line x1="75" y1="37" x2="92" y2="37" stroke="#ffa657" stroke-width="1.5" marker-end="url(#asf)"/>
+      <text x="84" y="32" fill="#f78166" font-size="7">DMA①</text>
+      <line x1="160" y1="37" x2="177" y2="37" stroke="#f78166" stroke-width="1.5" marker-end="url(#asf)"/>
+      <text x="169" y="32" fill="#f78166" font-size="7">CPU②</text>
+      <line x1="245" y1="37" x2="262" y2="37" stroke="#f78166" stroke-width="1.5" marker-end="url(#asf)"/>
+      <text x="254" y="32" fill="#f78166" font-size="7">CPU③</text>
+      <line x1="330" y1="37" x2="347" y2="37" stroke="#3fb950" stroke-width="1.5" marker-end="url(#asf)"/>
+      <text x="339" y="32" fill="#3fb950" font-size="7">DMA④</text>
+
+      <!-- sendfile: 2 copies -->
+      <text x="170" y="90" text-anchor="middle" fill="#3fb950" font-size="10" font-weight="bold">sendfile()：2次（SG-DMA时1次）</text>
+      <rect x="10" y="98" width="65" height="25" rx="4" fill="rgba(255,166,87,0.15)" stroke="#ffa657"/>
+      <text x="42" y="114" text-anchor="middle" fill="#ffa657" font-size="8">磁盘</text>
+      <rect x="95" y="98" width="65" height="25" rx="4" fill="rgba(210,168,255,0.15)" stroke="#d2a8ff"/>
+      <text x="127" y="114" text-anchor="middle" fill="#d2a8ff" font-size="8">页缓存</text>
+      <text x="212" y="110" fill="#f78166" font-size="9">❌ 跳过用户缓冲！</text>
+      <rect x="265" y="98" width="65" height="25" rx="4" fill="rgba(63,185,80,0.15)" stroke="#3fb950"/>
+      <text x="297" y="110" text-anchor="middle" fill="#3fb950" font-size="8">Socket缓冲</text>
+      <text x="297" y="120" text-anchor="middle" fill="#3fb950" font-size="7">（页引用/副本）</text>
+      <rect x="350" y="98" width="65" height="25" rx="4" fill="rgba(255,166,87,0.15)" stroke="#ffa657"/>
+      <text x="382" y="114" text-anchor="middle" fill="#ffa657" font-size="8">网卡</text>
+
+      <line x1="75" y1="110" x2="92" y2="110" stroke="#ffa657" stroke-width="1.5" marker-end="url(#asf)"/>
+      <text x="84" y="105" fill="#ffa657" font-size="7">DMA①</text>
+      <line x1="160" y1="110" x2="262" y2="110" stroke="#3fb950" stroke-width="1.5" marker-end="url(#asf2)"/>
+      <text x="210" y="105" fill="#3fb950" font-size="7">内核内复制（或SG-DMA直通）</text>
+      <line x1="330" y1="110" x2="347" y2="110" stroke="#3fb950" stroke-width="1.5" marker-end="url(#asf2)"/>
+      <text x="339" y="105" fill="#3fb950" font-size="7">DMA②</text>
+
+      <!-- API box -->
+      <rect x="20" y="148" width="640" height="60" rx="8" fill="rgba(63,185,80,0.04)" stroke="#30363d"/>
+      <text x="340" y="166" text-anchor="middle" fill="#8b949e" font-size="10" font-weight="bold">sendfile API</text>
+      <text x="50" y="184" fill="#3fb950" font-size="9" font-family="monospace">ssize_t sendfile(int out_fd, int in_fd, off_t *offset, size_t count);</text>
+      <text x="50" y="200" fill="#8b949e" font-size="8">out_fd: 必须是 socket (Linux &lt;2.6.33) 或任意文件(≥2.6.33) | in_fd: 必须是支持 mmap 的文件（不能是 socket）</text>
+    </svg>
+  </div>
+
+  <pre><span class="kw">#include</span> <span class="str">&lt;sys/sendfile.h&gt;</span>
+
+<span class="cm">/* sendfile(2) — Linux 2.2+ */</span>
+<span class="tp">ssize_t</span> <span class="fn">sendfile</span>(<span class="tp">int</span> out_fd,   <span class="cm">/* 输出：socket 或文件（≥2.6.33）*/</span>
+                 <span class="tp">int</span> in_fd,    <span class="cm">/* 输入：必须支持 mmap（普通文件）*/</span>
+                 <span class="tp">off_t</span> *offset,<span class="cm">/* NULL=使用文件当前偏移 */</span>
+                 <span class="tp">size_t</span> count); <span class="cm">/* 传输字节数 */</span>
+
+<span class="cm">/* 实用示例：HTTP 静态文件服务 */</span>
+<span class="tp">int</span> file_fd   = <span class="fn">open</span>(<span class="str">"/var/www/html/index.html"</span>, O_RDONLY);
+<span class="tp">int</span> client_fd = <span class="cm">/* accept() 得到的 socket */</span>;
+
+<span class="tp">struct</span> stat st;
+<span class="fn">fstat</span>(file_fd, &amp;st);
+
+<span class="cm">/* 一次调用，内核完成全部传输，无用户态拷贝 */</span>
+<span class="tp">off_t</span> offset = <span class="num">0</span>;
+<span class="tp">ssize_t</span> sent = <span class="fn">sendfile</span>(client_fd, file_fd, &amp;offset, st.st_size);
+<span class="cm">/* 循环发送直到完成... */</span></pre>
+
+  <div class="fp-box">
+    <div class="fp-title">第一性原理</div>
+    <p>sendfile 解答了一个问题：<em>「如果我不需要在用户态查看数据，为什么要把数据搬到用户态？」</em>对于文件服务器，数据从磁盘到网卡的路径中，用户进程只是一个「搬运工」而非「处理者」。sendfile 通过<strong>直接在内核态完成搬运</strong>，消除了这个不必要的中间角色。这是对<strong>「不做不必要的工作」</strong>这一第一性原理的直接应用。</p>
+  </div>
+</section>
+
+<!-- S11: splice/tee/vmsplice -->
+<section class="section" id="s11">
+  <div class="section-header">
+    <div class="section-icon" style="background:rgba(63,185,80,0.12)">🔀</div>
+    <div class="section-meta">
+      <div class="section-label">Chapter 11</div>
+      <div class="section-title">splice / tee / vmsplice — 通用零拷贝原语</div>
+      <div class="section-subtitle">Linux 2.6.17 (2006) — 管道作为中介的零拷贝传输</div>
+    </div>
+  </div>
+  <div style="margin-bottom:10px">
+    <a class="src-link" href="https://man7.org/linux/man-pages/man2/splice.2.html" target="_blank">📄 man2/splice(2)</a>
+    <a class="src-link" href="https://man7.org/linux/man-pages/man2/tee.2.html" target="_blank">📄 man2/tee(2)</a>
+    <a class="src-link" href="https://man7.org/linux/man-pages/man2/vmsplice.2.html" target="_blank">📄 man2/vmsplice(2)</a>
+    <span class="badge badge-orange">Linux 专有</span>
+    <span class="badge badge-blue">Linux 2.6.17+</span>
+  </div>
+
+  <h3>原理</h3>
+  <p><code>splice()</code> 是 sendfile 的底层实现和推广版本，通过<strong>管道（pipe）作为中介</strong>，在任意两个文件描述符之间移动数据（只要其中至少一个是管道）。数据以<strong>页引用（page reference）</strong>而非数据拷贝的形式在内核页缓存中传递，实现真正零 CPU 拷贝。</p>
+
+  <div class="diagram-wrap">
+    <svg viewBox="0 0 700 200" xmlns="http://www.w3.org/2000/svg" style="min-width:440px">
+      <defs>
+        <marker id="asp" markerWidth="8" markerHeight="6" refX="8" refY="3" orient="auto">
+          <polygon points="0 0,8 3,0 6" fill="#3fb950"/>
+        </marker>
+      </defs>
+
+      <!-- splice diagram -->
+      <text x="350" y="18" text-anchor="middle" fill="#8b949e" font-size="10" font-weight="bold">splice(fd_in, NULL, pipe_wr, NULL, len, 0) + splice(pipe_rd, NULL, fd_out, NULL, len, 0)</text>
+
+      <rect x="20" y="30" width="80" height="35" rx="6" fill="rgba(255,166,87,0.15)" stroke="#ffa657"/>
+      <text x="60" y="50" text-anchor="middle" fill="#ffa657" font-size="9" font-weight="bold">文件 / Socket</text>
+      <text x="60" y="62" text-anchor="middle" fill="#ffa657" font-size="8">fd_in</text>
+
+      <rect x="290" y="30" width="120" height="35" rx="6" fill="rgba(88,166,255,0.1)" stroke="#58a6ff"/>
+      <text x="350" y="50" text-anchor="middle" fill="#58a6ff" font-size="9" font-weight="bold">Pipe 管道</text>
+      <text x="350" y="62" text-anchor="middle" fill="#58a6ff" font-size="8">（页引用，非数据复制）</text>
+
+      <rect x="600" y="30" width="80" height="35" rx="6" fill="rgba(63,185,80,0.15)" stroke="#3fb950"/>
+      <text x="640" y="50" text-anchor="middle" fill="#3fb950" font-size="9" font-weight="bold">文件 / Socket</text>
+      <text x="640" y="62" text-anchor="middle" fill="#3fb950" font-size="8">fd_out</text>
+
+      <line x1="100" y1="47" x2="288" y2="47" stroke="#3fb950" stroke-width="2" marker-end="url(#asp)"/>
+      <text x="196" y="40" text-anchor="middle" fill="#3fb950" font-size="9">splice()①  页引用传递</text>
+      <line x1="410" y1="47" x2="598" y2="47" stroke="#3fb950" stroke-width="2" marker-end="url(#asp)"/>
+      <text x="506" y="40" text-anchor="middle" fill="#3fb950" font-size="9">splice()②  页引用传递</text>
+
+      <!-- vmsplice -->
+      <rect x="20" y="110" width="660" height="75" rx="8" fill="rgba(210,168,255,0.04)" stroke="#30363d"/>
+      <text x="350" y="130" text-anchor="middle" fill="#d2a8ff" font-size="10" font-weight="bold">三个零拷贝系统调用比较</text>
+      <text x="60" y="150" fill="#d2a8ff" font-size="9" font-weight="bold">splice:</text>
+      <text x="110" y="150" fill="#8b949e" font-size="9">在两个 FD 间移动数据（至少一个是管道），O(1)内核零拷贝</text>
+      <text x="60" y="165" fill="#58a6ff" font-size="9" font-weight="bold">tee:</text>
+      <text x="110" y="165" fill="#8b949e" font-size="9">复制管道数据到另一管道（不消耗原数据），用于数据分叉/监控</text>
+      <text x="60" y="180" fill="#ffa657" font-size="9" font-weight="bold">vmsplice:</text>
+      <text x="120" y="180" fill="#8b949e" font-size="9">将用户态内存页（iovec）移入管道，配合 SPLICE_F_GIFT 实现真零拷贝</text>
+    </svg>
+  </div>
+
+  <pre><span class="kw">#include</span> <span class="str">&lt;fcntl.h&gt;</span>  <span class="cm">/* splice, tee, vmsplice — Linux 2.6.17+ */</span>
+
+<span class="tp">ssize_t</span> <span class="fn">splice</span>(<span class="tp">int</span> fd_in, <span class="tp">loff_t</span> *off_in,
+               <span class="tp">int</span> fd_out, <span class="tp">loff_t</span> *off_out,
+               <span class="tp">size_t</span> len,
+               <span class="tp">unsigned int</span> flags);  <span class="cm">/* SPLICE_F_MOVE|SPLICE_F_NONBLOCK */</span>
+
+<span class="tp">ssize_t</span> <span class="fn">tee</span>(<span class="tp">int</span> fd_in, <span class="tp">int</span> fd_out, <span class="tp">size_t</span> len, <span class="tp">unsigned int</span> flags);
+
+<span class="tp">ssize_t</span> <span class="fn">vmsplice</span>(<span class="tp">int</span> fd, <span class="tp">const struct iovec</span> *iov,
+                  <span class="tp">unsigned long</span> nr_segs, <span class="tp">unsigned int</span> flags);
+
+<span class="cm">/* 示例：零拷贝 file→socket（等价于 sendfile，但更灵活）*/</span>
+<span class="tp">int</span> pfd[<span class="num">2</span>];
+<span class="fn">pipe</span>(pfd);
+
+<span class="cm">/* 第一步：文件→管道（零拷贝，传递页引用）*/</span>
+<span class="fn">splice</span>(file_fd, NULL, pfd[<span class="num">1</span>], NULL, file_size, SPLICE_F_MOVE);
+
+<span class="cm">/* 第二步：管道→socket（零拷贝）*/</span>
+<span class="fn">splice</span>(pfd[<span class="num">0</span>], NULL, sock_fd, NULL, file_size, SPLICE_F_MOVE);
+
+<span class="cm">/* tee 示例：日志分叉，同时写到文件和标准输出 */</span>
+<span class="fn">tee</span>(pipe_rd, log_pipe_wr, len, <span class="num">0</span>);  <span class="cm">/* 复制到日志管道，不消耗原数据 */</span>
+<span class="fn">splice</span>(pipe_rd, NULL, stdout_fd, NULL, len, <span class="num">0</span>); <span class="cm">/* 原数据写 stdout */</span></pre>
+
+  <div class="card">
+    <div class="card-title">📊 零拷贝机制横向对比</div>
+    <table class="cmp-table">
+      <tr><th>机制</th><th>引入版本</th><th>零拷贝</th><th>in_fd 限制</th><th>out_fd 限制</th><th>典型场景</th></tr>
+      <tr>
+        <td>mmap+write</td>
+        <td>早期</td>
+        <td class="mid">1次拷贝</td>
+        <td class="mid">可mmap文件</td>
+        <td class="good">任意</td>
+        <td>共享文件访问</td>
+      </tr>
+      <tr>
+        <td>sendfile</td>
+        <td class="good">2.2</td>
+        <td class="good">0~1次</td>
+        <td class="bad">仅文件/块设备</td>
+        <td class="bad">Socket(2.2)<br>任意(≥2.6.33)</td>
+        <td>静态文件HTTP服务</td>
+      </tr>
+      <tr>
+        <td>splice</td>
+        <td class="good">2.6.17</td>
+        <td class="good">0次</td>
+        <td class="mid">需一端是pipe</td>
+        <td class="mid">需一端是pipe</td>
+        <td>代理/日志/流水线</td>
+      </tr>
+      <tr>
+        <td>tee</td>
+        <td class="good">2.6.17</td>
+        <td class="good">0次</td>
+        <td class="bad">仅 pipe</td>
+        <td class="bad">仅 pipe</td>
+        <td>数据分叉/监控</td>
+      </tr>
+    </table>
+  </div>
+
+  <div class="fp-box">
+    <div class="fp-title">第一性原理</div>
+    <p>splice/tee 揭示了一个重要原理：<strong>「数据移动不等于数据拷贝」</strong>。通过传递「指向物理内存页的引用」代替复制字节，内核可以在不同 I/O 路径之间「移动」数据，而 CPU 完全不接触数据本体。管道在此作为统一的「引用传递中介」——这是将内核内部的写时复制（CoW）机制应用于 I/O 的创新。代价是：用户端的 API 复杂度增加，且需要管道作为中间媒介。</p>
+  </div>
+</section>
+
+<!-- S12: Comparison -->
+<section class="section" id="s12">
+  <div class="section-header">
+    <div class="section-icon" style="background:rgba(255,166,87,0.12)">📊</div>
+    <div class="section-meta">
+      <div class="section-label">Chapter 12</div>
+      <div class="section-title">全面横向对比</div>
+      <div class="section-subtitle">选型指南 — 如何为你的场景选择合适的 I/O 模型</div>
+    </div>
+  </div>
+
+  <h3>综合对比表</h3>
+  <div style="overflow-x:auto">
+  <table class="cmp-table" style="min-width:700px">
+    <tr>
+      <th>I/O 方式</th>
+      <th>引入版本</th>
+      <th>阻塞调用</th>
+      <th>并发规模</th>
+      <th>CPU效率</th>
+      <th>编程复杂度</th>
+      <th>典型应用</th>
+    </tr>
+    <tr>
+      <td>阻塞 read/write</td>
+      <td>Unix早期</td>
+      <td class="bad">是</td>
+      <td class="bad">低（线程数）</td>
+      <td class="bad">等待时浪费</td>
+      <td class="good">★☆☆ 简单</td>
+      <td>单连接工具</td>
+    </tr>
+    <tr>
+      <td>非阻塞 O_NONBLOCK</td>
+      <td>POSIX</td>
+      <td class="good">否</td>
+      <td class="mid">中</td>
+      <td class="bad">轮询浪费CPU</td>
+      <td class="mid">★★☆ 中等</td>
+      <td>配合多路复用</td>
+    </tr>
+    <tr>
+      <td>select</td>
+      <td>4.2BSD 1983</td>
+      <td class="good">否（等待）</td>
+      <td class="bad">低（1024 FD）</td>
+      <td class="bad">O(n)扫描</td>
+      <td class="mid">★★☆ 中等</td>
+      <td>少量连接跨平台</td>
+    </tr>
+    <tr>
+      <td>poll</td>
+      <td>SVR3 1986</td>
+      <td class="good">否（等待）</td>
+      <td class="mid">中（无上限）</td>
+      <td class="bad">O(n)扫描</td>
+      <td class="mid">★★☆ 中等</td>
+      <td>中等并发跨平台</td>
+    </tr>
+    <tr>
+      <td>epoll</td>
+      <td>Linux 2.5.44</td>
+      <td class="good">否</td>
+      <td class="good">高（百万级）</td>
+      <td class="good">O(就绪数)</td>
+      <td class="mid">★★☆ 中等</td>
+      <td>高并发服务器</td>
+    </tr>
+    <tr>
+      <td>POSIX AIO</td>
+      <td>POSIX.1-2001</td>
+      <td class="good">否</td>
+      <td class="bad">低（线程池）</td>
+      <td class="bad">线程开销大</td>
+      <td class="mid">★★☆ 中等</td>
+      <td>跨平台异步（限制多）</td>
+    </tr>
+    <tr>
+      <td>Linux 原生AIO</td>
+      <td>Linux 2.5</td>
+      <td class="good">否</td>
+      <td class="mid">中高</td>
+      <td class="mid">内核态异步</td>
+      <td class="bad">★★★ 复杂</td>
+      <td>O_DIRECT文件</td>
+    </tr>
+    <tr>
+      <td>io_uring</td>
+      <td>Linux 5.1</td>
+      <td class="good">否</td>
+      <td class="good">极高</td>
+      <td class="good">零syscall可能</td>
+      <td class="mid">★★☆（liburing）</td>
+      <td>下一代高性能服务器</td>
+    </tr>
+    <tr>
+      <td>mmap</td>
+      <td>4.4BSD</td>
+      <td class="mid">缺页时</td>
+      <td class="mid">中</td>
+      <td class="good">零拷贝</td>
+      <td class="mid">★★☆ 中等</td>
+      <td>大文件/数据库</td>
+    </tr>
+    <tr>
+      <td>sendfile</td>
+      <td>Linux 2.2</td>
+      <td class="mid">是（磁盘时）</td>
+      <td class="good">高</td>
+      <td class="good">零拷贝</td>
+      <td class="good">★☆☆ 简单</td>
+      <td>静态文件HTTP</td>
+    </tr>
+    <tr>
+      <td>splice/tee</td>
+      <td>Linux 2.6.17</td>
+      <td class="mid">可选</td>
+      <td class="good">高</td>
+      <td class="good">零拷贝</td>
+      <td class="bad">★★★ 复杂</td>
+      <td>代理/流水线</td>
+    </tr>
+  </table>
+  </div>
+
+  <h3>选型决策树</h3>
+  <div class="diagram-wrap">
+    <svg viewBox="0 0 700 340" xmlns="http://www.w3.org/2000/svg" style="min-width:480px">
+      <defs>
+        <marker id="adt" markerWidth="8" markerHeight="6" refX="8" refY="3" orient="auto">
+          <polygon points="0 0,8 3,0 6" fill="#58a6ff"/>
+        </marker>
+      </defs>
+
+      <!-- Root -->
+      <rect x="250" y="10" width="200" height="30" rx="6" fill="rgba(88,166,255,0.15)" stroke="#58a6ff"/>
+      <text x="350" y="30" text-anchor="middle" fill="#58a6ff" font-size="10" font-weight="bold">需要什么类型的 I/O？</text>
+
+      <!-- Branch 1: 文件传输到Socket -->
+      <line x1="280" y1="40" x2="120" y2="80" stroke="#58a6ff" stroke-width="1.2" marker-end="url(#adt)"/>
+      <text x="185" y="65" text-anchor="middle" fill="#8b949e" font-size="8">文件→Socket传输</text>
+      <rect x="30" y="80" width="175" height="25" rx="5" fill="rgba(63,185,80,0.12)" stroke="#3fb950"/>
+      <text x="117" y="97" text-anchor="middle" fill="#3fb950" font-size="9">sendfile() / splice()</text>
+
+      <!-- Branch 2: 高并发网络 -->
+      <line x1="350" y1="40" x2="350" y2="80" stroke="#58a6ff" stroke-width="1.2" marker-end="url(#adt)"/>
+      <text x="370" y="65" fill="#8b949e" font-size="8">高并发网络</text>
+      <rect x="265" y="80" width="170" height="25" rx="5" fill="rgba(88,166,255,0.12)" stroke="#58a6ff"/>
+      <text x="350" y="97" text-anchor="middle" fill="#58a6ff" font-size="9">epoll / io_uring</text>
+
+      <!-- Branch 3: 文件随机读写 -->
+      <line x1="420" y1="40" x2="570" y2="80" stroke="#58a6ff" stroke-width="1.2" marker-end="url(#adt)"/>
+      <text x="510" y="65" text-anchor="middle" fill="#8b949e" font-size="8">文件随机访问</text>
+      <rect x="495" y="80" width="160" height="25" rx="5" fill="rgba(255,166,87,0.12)" stroke="#ffa657"/>
+      <text x="575" y="97" text-anchor="middle" fill="#ffa657" font-size="9">mmap / io_uring</text>
+
+      <!-- epoll branch -->
+      <line x1="350" y1="105" x2="260" y2="145" stroke="#58a6ff" stroke-width="1.2" marker-end="url(#adt)"/>
+      <text x="282" y="130" text-anchor="middle" fill="#8b949e" font-size="8">需跨平台</text>
+      <rect x="165" y="145" width="140" height="25" rx="5" fill="rgba(210,168,255,0.12)" stroke="#d2a8ff"/>
+      <text x="235" y="162" text-anchor="middle" fill="#d2a8ff" font-size="9">poll / select</text>
+
+      <line x1="350" y1="105" x2="440" y2="145" stroke="#58a6ff" stroke-width="1.2" marker-end="url(#adt)"/>
+      <text x="420" y="130" text-anchor="middle" fill="#8b949e" font-size="8">Linux Only</text>
+      <rect x="365" y="145" width="150" height="25" rx="5" fill="rgba(63,185,80,0.12)" stroke="#3fb950"/>
+      <text x="440" y="162" text-anchor="middle" fill="#3fb950" font-size="9">epoll（推荐）</text>
+
+      <line x1="440" y1="170" x2="440" y2="210" stroke="#58a6ff" stroke-width="1.2" marker-end="url(#adt)"/>
+      <text x="462" y="195" fill="#8b949e" font-size="8">最高性能</text>
+      <rect x="365" y="210" width="150" height="25" rx="5" fill="rgba(88,166,255,0.2)" stroke="#58a6ff" stroke-width="2"/>
+      <text x="440" y="227" text-anchor="middle" fill="#58a6ff" font-size="9" font-weight="bold">io_uring（最优）</text>
+      <text x="440" y="253" text-anchor="middle" fill="#8b949e" font-size="8">Linux 5.1+ / liburing</text>
+
+      <!-- Use cases box -->
+      <rect x="20" y="270" width="660" height="60" rx="8" fill="rgba(88,166,255,0.04)" stroke="#30363d"/>
+      <text x="350" y="290" text-anchor="middle" fill="#58a6ff" font-size="10" font-weight="bold">框架选型参考</text>
+      <text x="60" y="308" fill="#8b949e" font-size="9">Nginx/Redis → epoll  |  数据库WAL → io_uring  |  静态文件CDN → sendfile  |  视频流媒体 → splice</text>
+      <text x="60" y="323" fill="#8b949e" font-size="9">Node.js/libuv → epoll+线程池  |  Tokio(Rust) → io_uring/epoll  |  Java NIO → epoll</text>
+    </svg>
+  </div>
+
+  <h3>Linux 专有 vs POSIX/UNIX 通用</h3>
+  <div class="grid-2">
+    <div class="card">
+      <div class="card-title">🐧 Linux 专有（高性能，不可移植）</div>
+      <ul>
+        <li><strong>epoll</strong> — Linux 2.5.44，O(1) 事件通知</li>
+        <li><strong>io_uring</strong> — Linux 5.1，新一代异步 I/O</li>
+        <li><strong>Linux 原生 AIO</strong> — io_submit/io_getevents</li>
+        <li><strong>sendfile</strong> — Linux 2.2（BSD 也有类似实现）</li>
+        <li><strong>splice/tee/vmsplice</strong> — Linux 2.6.17</li>
+        <li><strong>eventfd/timerfd/signalfd</strong> — Linux 特有文件描述符</li>
+      </ul>
+    </div>
+    <div class="card">
+      <div class="card-title">🌐 POSIX / UNIX 通用（可移植）</div>
+      <ul>
+        <li><strong>read/write</strong> — POSIX.1，所有 UNIX 系统</li>
+        <li><strong>O_NONBLOCK</strong> — POSIX.1，所有 UNIX 系统</li>
+        <li><strong>select</strong> — POSIX.1-2001，4.2BSD</li>
+        <li><strong>poll</strong> — POSIX.1-2001，SVR3</li>
+        <li><strong>POSIX AIO</strong> — POSIX.1-2001（实现质量不一）</li>
+        <li><strong>mmap</strong> — POSIX.1-2001，4.4BSD</li>
+        <li>等价替代：kqueue(FreeBSD/macOS)，IOCP(Windows)</li>
+      </ul>
+    </div>
+  </div>
+
+  <div class="fp-box">
+    <div class="fp-title">第一性原理 — 演进的终极目标</div>
+    <p>回顾整个 Linux I/O 演进史，本质是在不断消除三类浪费：</p>
+    <p><strong>① 等待浪费</strong>（阻塞→非阻塞→多路复用→异步）：让 CPU 在 I/O 等待期间做有用的工作。</p>
+    <p><strong>② 拷贝浪费</strong>（mmap→sendfile→splice→io_uring 零拷贝）：让数据尽可能少经过 CPU，直接在内存和外设之间流动。</p>
+    <p><strong>③ 系统调用浪费</strong>（批量提交→SQPOLL）：减少用户态/内核态上下文切换，尤其在 Spectre/Meltdown 修复后，这一开销被放大。</p>
+    <p>io_uring 是目前最接近「零浪费」的方案——<em>零拷贝 + 零系统调用 + 真异步</em>，但代价是仅在 Linux 5.1+ 上可用。最终的第一性原理是：<strong>「最快的 I/O 是不做 I/O；其次是不浪费任何一个 CPU 周期在搬运数据上」。</strong></p>
+  </div>
+</section>
+
+</div>
+</main>
+
+<div id="key-nav">
+  <button class="key-btn" id="prev-btn" title="上一章 (←)">← 上一章</button>
+  <button class="key-btn" id="next-btn" title="下一章 (→)">下一章 →</button>
+</div>
+
+<script>
+  // Sections order
+  const sections = ['s0','s1','s2','s3','s4','s5','s6','s7','s8','s9','s10','s11','s12'];
+  const navItems = document.querySelectorAll('.nav-item');
+  let currentSection = 0;
+
+  // Progress bar
+  function updateProgress() {
+    const scrollTop = window.scrollY || document.documentElement.scrollTop;
+    const docH = document.documentElement.scrollHeight - window.innerHeight;
+    const pct = docH > 0 ? (scrollTop / docH) * 100 : 0;
+    document.getElementById('progress-bar').style.width = pct + '%';
+  }
+
+  // Active nav tracking (IntersectionObserver)
+  const observer = new IntersectionObserver((entries) => {
+    entries.forEach(entry => {
+      if (entry.isIntersecting) {
+        const id = entry.target.id;
+        const idx = sections.indexOf(id);
+        if (idx !== -1) {
+          currentSection = idx;
+          navItems.forEach(n => n.classList.remove('active'));
+          const target = document.querySelector(`.nav-item[data-target="${id}"]`);
+          if (target) {
+            target.classList.add('active');
+            target.scrollIntoView({ block: 'nearest' });
+          }
+        }
+      }
+    });
+  }, { rootMargin: '-20% 0px -60% 0px', threshold: 0 });
+
+  sections.forEach(id => {
+    const el = document.getElementById(id);
+    if (el) observer.observe(el);
+  });
+
+  window.addEventListener('scroll', updateProgress, { passive: true });
+  updateProgress();
+
+  // Nav click
+  navItems.forEach(item => {
+    item.addEventListener('click', () => {
+      const target = item.dataset.target;
+      const el = document.getElementById(target);
+      if (el) el.scrollIntoView({ behavior: 'smooth' });
+      // Close sidebar on mobile
+      if (window.innerWidth <= 900) {
+        document.getElementById('sidebar').classList.remove('open');
+        document.getElementById('overlay').classList.remove('show');
+      }
+    });
+  });
+
+  // Hamburger
+  const hamburger = document.getElementById('hamburger');
+  const sidebar = document.getElementById('sidebar');
+  const overlay = document.getElementById('overlay');
+
+  hamburger.addEventListener('click', () => {
+    sidebar.classList.toggle('open');
+    overlay.classList.toggle('show');
+  });
+  overlay.addEventListener('click', () => {
+    sidebar.classList.remove('open');
+    overlay.classList.remove('show');
+  });
+
+  // Keyboard navigation
+  document.addEventListener('keydown', e => {
+    if (e.key === 'ArrowRight' || e.key === 'ArrowDown') {
+      e.preventDefault();
+      const next = Math.min(currentSection + 1, sections.length - 1);
+      document.getElementById(sections[next])?.scrollIntoView({ behavior: 'smooth' });
+    }
+    if (e.key === 'ArrowLeft' || e.key === 'ArrowUp') {
+      e.preventDefault();
+      const prev = Math.max(currentSection - 1, 0);
+      document.getElementById(sections[prev])?.scrollIntoView({ behavior: 'smooth' });
+    }
+  });
+
+  // Button navigation
+  document.getElementById('prev-btn').addEventListener('click', () => {
+    const prev = Math.max(currentSection - 1, 0);
+    document.getElementById(sections[prev])?.scrollIntoView({ behavior: 'smooth' });
+  });
+  document.getElementById('next-btn').addEventListener('click', () => {
+    const next = Math.min(currentSection + 1, sections.length - 1);
+    document.getElementById(sections[next])?.scrollIntoView({ behavior: 'smooth' });
+  });
+</script>
+</body>
+</html>

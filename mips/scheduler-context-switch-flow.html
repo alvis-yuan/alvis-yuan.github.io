@@ -1,0 +1,533 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>进程调度与上下文切换过程分析</title>
+  <style>
+    :root { --bg:#0f1117; --bg2:#161b22; --bg3:#1e2530; --border:#30363d; --accent:#0a84ff; --green:#30d158; --red:#ff453a; --violet:#bf5af2; --warn:#ffa657; --text:#e6edf3; --muted:#8b949e; --nav-w:288px; --header-h:48px; --radius:8px; }
+    * { box-sizing:border-box; }
+    html { scroll-behavior:smooth; }
+    body { margin:0; background:var(--bg); color:var(--text); font-family:-apple-system,BlinkMacSystemFont,'Segoe UI','PingFang SC','Microsoft YaHei',sans-serif; line-height:1.75; }
+    a { color:#79c0ff; text-decoration-thickness:1px; text-underline-offset:3px; }
+    code,.mono { font-family:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace; }
+    code { color:#79c0ff; }
+    .progress { position:fixed; inset:0 0 auto 0; height:3px; z-index:1000; background:rgba(10,132,255,.12); }
+    .progress span { display:block; width:0; height:100%; background:linear-gradient(90deg,var(--accent),var(--green)); }
+    .topbar { position:fixed; top:3px; left:0; right:0; height:var(--header-h); z-index:900; display:flex; align-items:center; gap:.75rem; padding:0 1rem; background:rgba(15,17,23,.95); backdrop-filter:blur(10px); border-bottom:1px solid var(--border); }
+    .topbar h1 { margin:0; font-size:.95rem; color:var(--accent); }
+    .topbar a { color:var(--muted); text-decoration:none; font-size:.8rem; }
+    .topbar a:hover { color:var(--accent); }
+    .topbar .meta { margin-left:auto; color:var(--muted); font-size:.75rem; }
+    .hamburger { width:2.25rem; height:2.25rem; border:1px solid var(--border); border-radius:var(--radius); background:transparent; color:var(--text); cursor:pointer; font:inherit; }
+    nav { position:fixed; top:calc(var(--header-h) + 3px); left:0; bottom:0; width:var(--nav-w); overflow:auto; background:var(--bg2); border-right:1px solid var(--border); padding:1rem .5rem; z-index:800; }
+    .brand { padding:.35rem .75rem .9rem; margin-bottom:.5rem; border-bottom:1px solid var(--border); }
+    .brand strong { display:block; color:var(--accent); font-size:.92rem; }
+    .brand small { display:block; margin-top:.3rem; color:var(--muted); font-size:.76rem; line-height:1.55; }
+    details { border-bottom:1px solid var(--border); padding:.25rem 0; }
+    summary { cursor:pointer; padding:.45rem .75rem; font-size:.82rem; font-weight:700; }
+    .nav-list { list-style:none; padding:0 0 .35rem; margin:0; }
+    .nav-list a { display:block; color:var(--muted); text-decoration:none; border-left:3px solid transparent; border-radius:.4rem; font-size:.82rem; padding:.4rem .75rem .4rem 1.1rem; line-height:1.35; }
+    .nav-list a:hover { color:var(--text); background:var(--bg3); }
+    .nav-list a.active { color:var(--accent); background:rgba(10,132,255,.08); border-left-color:var(--accent); }
+    main { margin:calc(var(--header-h) + 3px) 0 0 var(--nav-w); max-width:1060px; padding:2rem 2.5rem 4rem; }
+    header.hero { margin-bottom:3rem; padding-bottom:1.2rem; border-bottom:1px solid var(--border); }
+    .eyebrow { display:inline-block; margin-bottom:.75rem; padding:.2rem .55rem; border:1px solid rgba(10,132,255,.35); border-radius:99px; color:var(--accent); background:rgba(10,132,255,.15); font-size:.7rem; font-weight:700; letter-spacing:.04em; }
+    h1,h2,h3 { line-height:1.22; letter-spacing:0; }
+    h1 { margin:0 0 .75rem; font-size:1.8rem; }
+    h2 { margin:0 0 1rem; padding-bottom:.5rem; border-bottom:1px solid var(--border); font-size:1.35rem; }
+    h3 { margin:1.25rem 0 .75rem; color:var(--accent); font-size:1.05rem; }
+    .lead { color:var(--muted); font-size:1.05rem; }
+    section { margin-bottom:3rem; scroll-margin-top:calc(var(--header-h) + 16px); }
+    p,li { font-size:.95rem; }
+    p { margin:0 0 .75rem; }
+    pre { margin:1rem 0; padding:1rem; overflow-x:auto; color:#c9d1d9; background:#0b0d12; border:1px solid var(--border); border-radius:var(--radius); font-size:.82rem; line-height:1.55; }
+    table { width:100%; border-collapse:collapse; margin:1rem 0; font-size:.85rem; }
+    th,td { padding:.55rem .65rem; border:1px solid var(--border); text-align:left; vertical-align:top; }
+    th { color:var(--accent); background:var(--bg3); }
+    .panel { margin:1rem 0; padding:1rem; border:1px solid rgba(48,213,88,.25); border-radius:var(--radius); background:rgba(48,213,88,.08); }
+    .note { margin:1rem 0; padding:.85rem 1rem; border-left:4px solid var(--warn); border-radius:0 var(--radius) var(--radius) 0; background:rgba(255,166,87,.08); }
+    .grid { display:grid; grid-template-columns:repeat(2,minmax(0,1fr)); gap:1rem; margin:1rem 0; }
+    .concept { padding:1rem; border:1px solid var(--border); border-radius:var(--radius); background:var(--bg2); }
+    .concept h3 { margin-top:0; }
+    .svg-wrap { margin:1.25rem 0; padding:1rem; overflow-x:auto; border:1px solid var(--border); border-radius:.75rem; background:var(--bg2); }
+    svg { display:block; max-width:100%; height:auto; margin:0 auto; font-family:-apple-system,BlinkMacSystemFont,'Segoe UI','PingFang SC','Microsoft YaHei',sans-serif; }
+    .box { fill:var(--bg3); stroke:var(--border); stroke-width:1.4; rx:8; }
+    .box-blue { fill:rgba(10,132,255,.14); stroke:var(--accent); }
+    .box-green { fill:rgba(48,213,88,.10); stroke:var(--green); }
+    .box-warn { fill:rgba(255,166,87,.10); stroke:var(--warn); }
+    .box-red { fill:rgba(255,69,58,.08); stroke:var(--red); }
+    .box-violet { fill:rgba(191,90,242,.12); stroke:var(--violet); }
+    .wire { stroke:var(--muted); stroke-width:2; fill:none; marker-end:url(#arrow); }
+    .wire-blue { stroke:var(--accent); stroke-width:2; fill:none; marker-end:url(#arrowBlue); }
+    .wire-green { stroke:var(--green); stroke-width:2; fill:none; marker-end:url(#arrowGreen); }
+    .wire-warn { stroke:var(--warn); stroke-width:2; fill:none; marker-end:url(#arrowWarn); }
+    .svg-title { fill:var(--text); font-size:16px; font-weight:800; }
+    .svg-text { fill:var(--text); font-size:13px; }
+    .svg-small { fill:var(--muted); font-size:11px; }
+    .fig-cap { margin-top:.5rem; color:var(--muted); text-align:center; font-size:.8rem; }
+    .chapter-nav { display:flex; justify-content:space-between; gap:.75rem; margin-top:3rem; padding-top:1rem; border-top:1px solid var(--border); }
+    .chapter-nav a { display:inline-flex; align-items:center; justify-content:center; min-height:2.4rem; padding:.45rem .85rem; border:1px solid var(--border); border-radius:var(--radius); color:var(--text); background:var(--bg2); text-decoration:none; }
+    @media (max-width:900px) { .topbar .meta,.topbar a { display:none; } nav { width:min(86vw,20rem); transform:translateX(-100%); transition:transform 180ms ease; } body.nav-open nav { transform:translateX(0); } main { margin-left:0; padding:1.25rem; } .grid { grid-template-columns:1fr; } table { display:block; overflow-x:auto; } }
+    @media (min-width:901px) { .hamburger { display:none; } }
+  </style>
+</head>
+<body>
+  <div class="progress" aria-hidden="true"><span id="progressBar"></span></div>
+  <header class="topbar">
+    <button class="hamburger" id="menuButton" aria-label="打开或关闭导航">☰</button>
+    <h1>scheduler context switch flow</h1>
+    <a href="thread_creation_flow.html">线程创建</a>
+    <a href="entry-return-path.html">异常返回</a>
+    <span class="meta">独立 HTML · 内联 SVG · 无外部资源依赖</span>
+  </header>
+
+  <nav aria-label="章节导航">
+    <div class="brand"><strong>进程调度</strong><small>从调度时机、runqueue 选 next，到 MIPS switch_to/resume 保存和恢复 CPU 现场。</small></div>
+    <details open><summary>一、入口与时机</summary><ul class="nav-list"><li><a href="#intro">范围说明</a></li><li><a href="#sources">官方依据</a></li><li><a href="#timing">调度时机</a></li><li><a href="#top-flow">顶层流程</a></li></ul></details>
+    <details open><summary>二、调度核心</summary><ul class="nav-list"><li><a href="#resched">need_resched</a></li><li><a href="#schedule">schedule</a></li><li><a href="#pick-next">选择 next</a></li><li><a href="#context-switch">context_switch</a></li></ul></details>
+    <details open><summary>三、底层保存</summary><ul class="nav-list"><li><a href="#save-map">保存哪些信息</a></li><li><a href="#mips-switch">MIPS switch_to</a></li><li><a href="#resume">resume 汇编</a></li><li><a href="#return-path">返回路径</a></li></ul></details>
+    <details open><summary>四、总结</summary><ul class="nav-list"><li><a href="#msc">完整 MSC</a></li><li><a href="#links">相关文档</a></li><li><a href="#summary">整体总结</a></li></ul></details>
+  </nav>
+
+  <main>
+    <header class="hero" id="intro">
+      <div class="eyebrow">kernel/sched/core.c · kernel/sched/fair.c · arch/mips/include/asm/switch_to.h · arch/mips/kernel/r4k_switch.S</div>
+      <h1>进程调度与上下文切换：从调度时机到底层寄存器保存</h1>
+      <p class="lead">调度不是一个单点动作，而是“产生重新调度需求 -> 在安全边界进入 `schedule()` -> 在 runqueue 上选择 next -> 切换 mm 和 CPU 现场 -> 从 next 的内核栈继续执行”。本文以当前 X2600 MIPS 内核源码为准，说明什么时候会调度、`__schedule()` 如何走到 `context_switch()`，以及切换时哪些信息保存在哪里。</p>
+    </header>
+
+    <section id="sources">
+      <h2>官方依据</h2>
+      <table><thead><tr><th>主题</th><th>官方链接</th><th>本文使用的事实</th></tr></thead><tbody>
+        <tr><td>CFS 设计</td><td><a href="https://docs.kernel.org/scheduler/sched-design-CFS.html">sched-design-CFS</a></td><td>CFS 用虚拟运行时间 `p-&gt;se.vruntime` 近似理想多任务 CPU；普通任务倾向选择 vruntime 最小的 runnable 实体。</td></tr>
+        <tr><td>调度类</td><td><a href="https://docs.kernel.org/scheduler/sched-design-CFS.html#scheduling-classes">Scheduling Classes</a></td><td>调度核心通过 `sched_class` 钩子调用 `enqueue_task`、`dequeue_task`、`task_tick`、`pick_next_task` 等策略函数。</td></tr>
+        <tr><td>架构切换约束</td><td><a href="https://docs.kernel.org/scheduler/sched-arch.html">sched-arch</a></td><td>默认 `switch_to` 在 runqueue lock 持有期间被调用；架构代码必须实现保存 prev 与装载 next 的低层上下文切换。</td></tr>
+      </tbody></table>
+      <div class="panel"><strong>第一性原理概述：</strong>调度核心只决定“下一个谁运行”和维护 runqueue 一致性；真正让 CPU 变成另一个任务现场的是架构层 `switch_to()`。</div>
+    </section>
+
+    <section id="timing">
+      <h2>调度时机：什么时候会进入调度器</h2>
+      <p>当前源码在 `__schedule()` 的注释里直接列出三类驱动方式：显式阻塞、返回路径检查 `TIF_NEED_RESCHED`、以及 wakeup 导致的重新调度标志。wakeup 本身只是把任务放回运行队列；如果它应抢占当前任务，才设置 `TIF_NEED_RESCHED`，等最近的安全点调用 `schedule()`。</p>
+      <table><thead><tr><th>时机</th><th>本地源码入口</th><th>发生了什么</th></tr></thead><tbody>
+        <tr><td>主动睡眠/阻塞</td><td>`mutex`、`waitqueue`、`schedule()`</td><td>当前任务先把 `state` 设为非运行态，然后显式调用 `schedule()`。`__schedule(false)` 会把它从 runqueue 摘下。</td></tr>
+        <tr><td>时钟 tick 抢占</td><td>`scheduler_tick()`</td><td>调用 `curr-&gt;sched_class-&gt;task_tick()` 更新当前任务运行时间；调度类可调用 `resched_curr()` 标记需要调度。</td></tr>
+        <tr><td>wakeup 抢占</td><td>`wake_up_new_task()`/唤醒路径</td><td>新 runnable task 入队后，`check_preempt_curr()` 判断是否应该抢占当前 task，必要时设置 `TIF_NEED_RESCHED`。</td></tr>
+        <tr><td>返回用户态</td><td>`arch/mips/kernel/entry.S: resume_userspace`</td><td>返回前检查 `_TIF_WORK_MASK`，其中包含 `_TIF_NEED_RESCHED`，命中后跳到 `work_resched` 调用 `schedule()`。</td></tr>
+        <tr><td>内核抢占</td><td>`preempt_schedule()`/`preempt_schedule_irq()`</td><td>在可抢占内核中，最外层 `preempt_enable()` 或 IRQ 返回到可抢占上下文时进入 `__schedule(true)`。</td></tr>
+        <tr><td>idle 循环</td><td>`schedule_idle()`</td><td>idle 任务发现 `need_resched()` 后让出 CPU，调度真正 runnable 的任务。</td></tr>
+      </tbody></table>
+      <div class="svg-wrap"><svg viewBox="0 0 960 390" role="img" aria-label="调度时机图">
+        <defs><marker id="arrow" markerWidth="8" markerHeight="8" refX="7" refY="3" orient="auto"><path d="M0,0 L7,3 L0,6 Z" fill="#8b949e"/></marker><marker id="arrowBlue" markerWidth="8" markerHeight="8" refX="7" refY="3" orient="auto"><path d="M0,0 L7,3 L0,6 Z" fill="#0a84ff"/></marker><marker id="arrowGreen" markerWidth="8" markerHeight="8" refX="7" refY="3" orient="auto"><path d="M0,0 L7,3 L0,6 Z" fill="#30d158"/></marker><marker id="arrowWarn" markerWidth="8" markerHeight="8" refX="7" refY="3" orient="auto"><path d="M0,0 L7,3 L0,6 Z" fill="#ffa657"/></marker></defs>
+        <text x="24" y="34" class="svg-title">调度入口不是任意跳转，而是在安全边界消费 need_resched</text>
+        <rect x="46" y="82" width="170" height="64" class="box-blue"/><text x="76" y="108" class="svg-text">timer tick</text><text x="72" y="130" class="svg-small">task_tick/update_curr</text>
+        <rect x="46" y="178" width="170" height="64" class="box-green"/><text x="76" y="204" class="svg-text">wakeup</text><text x="65" y="226" class="svg-small">enqueue/check_preempt</text>
+        <rect x="46" y="274" width="170" height="64" class="box-warn"/><text x="72" y="300" class="svg-text">blocking</text><text x="68" y="322" class="svg-small">set state + schedule</text>
+        <rect x="326" y="132" width="190" height="90" class="box-violet"/><text x="362" y="166" class="svg-text">TIF_NEED_RESCHED</text><text x="365" y="190" class="svg-small">thread_info flags</text>
+        <rect x="632" y="132" width="210" height="90" class="box-red"/><text x="690" y="166" class="svg-text">schedule()</text><text x="672" y="190" class="svg-small">__schedule(false/true)</text>
+        <path d="M216 114 C270 114 278 158 326 165" class="wire-blue"/><path d="M216 210 H326" class="wire-green"/><path d="M216 306 C315 306 515 236 632 195" class="wire-warn"/><path d="M516 178 H632" class="wire-blue"/>
+      </svg><div class="fig-cap">图 1：抢占类调度先设置标志，阻塞类调度直接进入 `schedule()`。</div></div>
+      <div class="panel"><strong>第一性原理概述：</strong>内核不能在任意指令中间随意换栈换寄存器。抢占先变成一个标志，再在中断返回、系统调用返回、preempt enable、显式睡眠这些边界真正切换。</div>
+    </section>
+
+    <section id="top-flow">
+      <h2>从顶层到底层的总流程</h2>
+      <div class="svg-wrap"><svg viewBox="0 0 980 430" role="img" aria-label="调度总流程">
+        <text x="24" y="34" class="svg-title">顶层到底层：选择 next 与保存 CPU 现场是两个阶段</text>
+        <rect x="54" y="82" width="180" height="68" class="box-blue"/><text x="86" y="110" class="svg-text">产生调度需求</text><text x="78" y="132" class="svg-small">sleep/tick/wakeup/return</text>
+        <rect x="300" y="82" width="170" height="68" class="box-green"/><text x="352" y="110" class="svg-text">schedule</text><text x="324" y="132" class="svg-small">preempt_disable loop</text>
+        <rect x="536" y="82" width="170" height="68" class="box-warn"/><text x="576" y="110" class="svg-text">__schedule</text><text x="566" y="132" class="svg-small">rq lock + pick</text>
+        <rect x="772" y="82" width="170" height="68" class="box-violet"/><text x="810" y="110" class="svg-text">context_switch</text><text x="798" y="132" class="svg-small">mm + switch_to</text>
+        <rect x="170" y="244" width="190" height="76" class="box"/><text x="214" y="274" class="svg-text">调度类选 next</text><text x="202" y="298" class="svg-small">fair/rt/dl/idle hooks</text>
+        <rect x="428" y="244" width="190" height="76" class="box"/><text x="480" y="274" class="svg-text">MIPS resume</text><text x="454" y="298" class="svg-small">保存 prev, 恢复 next</text>
+        <rect x="686" y="244" width="190" height="76" class="box"/><text x="732" y="274" class="svg-text">next 继续执行</text><text x="710" y="298" class="svg-small">finish_task_switch/返回</text>
+        <path d="M234 116 H300" class="wire-blue"/><path d="M470 116 H536" class="wire-green"/><path d="M706 116 H772" class="wire-warn"/><path d="M621 150 C566 206 425 246 360 268" class="wire"/><path d="M858 150 C820 218 685 252 618 274" class="wire-blue"/><path d="M618 282 H686" class="wire-green"/>
+      </svg></div>
+      <p>顶层 C 代码负责 runqueue、任务状态、调度类和 mm 切换；底层汇编负责通用寄存器、栈指针、返回地址、CP0 状态和每线程特殊寄存器。两层的交界点是 `context_switch()` 里的 `switch_to(prev, next, prev)`。</p>
+      <div class="panel"><strong>第一性原理概述：</strong>调度算法决定 CPU 应该给谁；上下文切换机制保证 CPU 能从那个人上次停下的地方继续执行。</div>
+    </section>
+
+    <section id="resched">
+      <h2>`need_resched`：抢占请求保存在线程标志里</h2>
+      <pre><code>/* kernel/sched/core.c */
+void resched_curr(struct rq *rq)
+{
+        struct task_struct *curr = rq-&gt;curr;
+        int cpu;
+
+        lockdep_assert_held(&amp;rq-&gt;lock);
+
+        if (test_tsk_need_resched(curr))
+                return;
+
+        cpu = cpu_of(rq);
+
+        if (cpu == smp_processor_id()) {
+                set_tsk_need_resched(curr);
+                set_preempt_need_resched();
+                return;
+        }
+
+        if (set_nr_and_not_polling(curr))
+                smp_send_reschedule(cpu);
+}</code></pre>
+      <p>`set_tsk_need_resched(curr)` 最终修改当前任务 `thread_info.flags` 里的 `_TIF_NEED_RESCHED`。如果目标 CPU 不是本 CPU，SMP 会发 reschedule IPI；如果是本 CPU，只设置 task 标志和 preempt 标志。</p>
+      <pre><code>/* arch/mips/kernel/entry.S */
+resume_userspace:
+        local_irq_disable
+        LONG_L  a2, TI_FLAGS($28)
+        andi    t0, a2, _TIF_WORK_MASK
+        bnez    t0, work_pending
+        j       restore_all
+
+work_pending:
+        andi    t0, a2, _TIF_NEED_RESCHED
+        beqz    t0, work_notifysig
+work_resched:
+        TRACE_IRQS_OFF
+        jal     schedule</code></pre>
+      <p>MIPS 返回用户态之前读取 `$28` 指向的 `thread_info`，如果 `_TIF_NEED_RESCHED` 置位，就先调用 `schedule()`，调度完成后再重新检查工作标志。</p>
+      <div class="panel"><strong>第一性原理概述：</strong>`need_resched` 是“现在运行的 task 已不该继续独占 CPU”的延迟通知，保存在线程自己的低层标志中，等返回边界或抢占边界消费。</div>
+    </section>
+
+    <section id="schedule">
+      <h2>`schedule()` 与 `__schedule()`：摘下 prev，选出 next</h2>
+      <pre><code>/* kernel/sched/core.c */
+asmlinkage __visible void __sched schedule(void)
+{
+        struct task_struct *tsk = current;
+
+        sched_submit_work(tsk);
+        do {
+                preempt_disable();
+                __schedule(false);
+                sched_preempt_enable_no_resched();
+        } while (need_resched());
+        sched_update_worker(tsk);
+}</code></pre>
+      <pre><code>/* kernel/sched/core.c */
+static void __sched notrace __schedule(bool preempt)
+{
+        struct task_struct *prev, *next;
+        unsigned long prev_state;
+        struct rq *rq;
+
+        rq = cpu_rq(smp_processor_id());
+        prev = rq-&gt;curr;
+
+        local_irq_disable();
+        rq_lock(rq, &amp;rf);
+        update_rq_clock(rq);
+
+        prev_state = prev-&gt;state;
+        if (!preempt &amp;&amp; prev_state) {
+                if (signal_pending_state(prev_state, prev))
+                        prev-&gt;state = TASK_RUNNING;
+                else
+                        deactivate_task(rq, prev, DEQUEUE_SLEEP | DEQUEUE_NOCLOCK);
+                switch_count = &amp;prev-&gt;nvcsw;
+        }
+
+        next = pick_next_task(rq, prev, &amp;rf);
+        clear_tsk_need_resched(prev);
+        clear_preempt_need_resched();
+
+        if (likely(prev != next)) {
+                rq-&gt;nr_switches++;
+                RCU_INIT_POINTER(rq-&gt;curr, next);
+                ++*switch_count;
+                trace_sched_switch(preempt, prev, next);
+                rq = context_switch(rq, prev, next, &amp;rf);
+        } else {
+                rq_unlock_irq(rq, &amp;rf);
+        }
+}</code></pre>
+      <p>关键分支是 `!preempt &amp;&amp; prev_state`：主动睡眠时，`prev-&gt;state` 已经不是 `TASK_RUNNING`，所以 `deactivate_task()` 会将它从运行队列移除；抢占时 `prev` 仍 runnable，一般不摘队，只是重新排序后选择 next。</p>
+      <div class="panel"><strong>第一性原理概述：</strong>`__schedule()` 在 runqueue 锁内做原子决策：当前任务是否还 runnable，谁是下一位，`rq-&gt;curr` 指向谁。只有这一步完成后，才允许真正换 CPU 现场。</div>
+    </section>
+
+    <section id="pick-next">
+      <h2>选择 next：调度类决定策略</h2>
+      <p>核心调度器不把 CFS、RT、Deadline 策略写死在 `__schedule()`，而是调用 `pick_next_task()`，再由调度类选择。官方文档称这些策略被封装在 `sched_class` 钩子中。</p>
+      <pre><code>/* kernel/sched/fair.c */
+struct task_struct *
+pick_next_task_fair(struct rq *rq, struct task_struct *prev, struct rq_flags *rf)
+{
+        struct cfs_rq *cfs_rq = &amp;rq-&gt;cfs;
+        struct sched_entity *se;
+
+again:
+        if (!sched_fair_runnable(rq))
+                goto idle;
+
+        ...
+        se = pick_next_entity(cfs_rq, curr);
+        cfs_rq = group_cfs_rq(se);
+        ...
+}</code></pre>
+      <pre><code>/* kernel/sched/rt.c */
+static struct task_struct *pick_next_task_rt(struct rq *rq)
+{
+        struct task_struct *p;
+
+        if (!sched_rt_runnable(rq))
+                return NULL;
+
+        p = _pick_next_task_rt(rq);
+        set_next_task_rt(rq, p, true);
+        return p;
+}</code></pre>
+      <p>CFS 的普通任务从 CFS runqueue 选择合适的 `sched_entity`，本质是让运行较少的实体获得 CPU；RT 类则按实时优先级队列选最高优先级 runnable task。若高优先级类无任务，才逐级落到 CFS、idle。</p>
+      <div class="panel"><strong>第一性原理概述：</strong>调度公平性、实时优先级、空闲任务不是上下文切换机制的一部分；它们只是回答“next 是谁”。一旦 next 决定，后面的保存恢复流程相同。</div>
+    </section>
+
+    <section id="context-switch">
+      <h2>`context_switch()`：切 mm，再切寄存器和栈</h2>
+      <pre><code>/* kernel/sched/core.c */
+static __always_inline struct rq *
+context_switch(struct rq *rq, struct task_struct *prev,
+               struct task_struct *next, struct rq_flags *rf)
+{
+        prepare_task_switch(rq, prev, next);
+        arch_start_context_switch(prev);
+
+        if (!next-&gt;mm) {                         /* to kernel thread */
+                enter_lazy_tlb(prev-&gt;active_mm, next);
+                next-&gt;active_mm = prev-&gt;active_mm;
+                if (prev-&gt;mm)
+                        mmgrab(prev-&gt;active_mm);
+                else
+                        prev-&gt;active_mm = NULL;
+        } else {                                 /* to user task */
+                membarrier_switch_mm(rq, prev-&gt;active_mm, next-&gt;mm);
+                switch_mm_irqs_off(prev-&gt;active_mm, next-&gt;mm, next);
+                if (!prev-&gt;mm) {
+                        rq-&gt;prev_mm = prev-&gt;active_mm;
+                        prev-&gt;active_mm = NULL;
+                }
+        }
+
+        prepare_lock_switch(rq, next, rf);
+        switch_to(prev, next, prev);
+        barrier();
+
+        return finish_task_switch(prev);
+}</code></pre>
+      <p>`switch_mm_irqs_off()` 处理地址空间切换；内核线程没有自己的 `mm`，所以借用前一个用户进程的 `active_mm` 并进入 lazy TLB。真正的寄存器与内核栈切换发生在 `switch_to(prev, next, prev)`。</p>
+      <p>注意 `finish_task_switch(prev)` 是在切到 next 的内核栈之后执行的：代码文本相同，但执行者已经是 next task。它释放 runqueue lock、清理 `prev-&gt;on_cpu`、处理死亡 task 的栈释放、做 membarrier 后续同步。</p>
+      <div class="panel"><strong>第一性原理概述：</strong>进程上下文切换至少包含两种上下文：内存上下文 `mm/active_mm` 和 CPU 执行上下文。前者决定虚拟地址如何翻译，后者决定下一条指令、栈和寄存器属于谁。</div>
+    </section>
+
+    <section id="save-map">
+      <h2>切换时保存哪些信息，保存在哪</h2>
+      <table><thead><tr><th>信息类别</th><th>保存位置</th><th>保存者</th><th>说明</th></tr></thead><tbody>
+        <tr><td>当前任务状态、调度统计</td><td>`task_struct`、`rq`</td><td>`__schedule()`</td><td>`prev-&gt;state`、`nvcsw/nivcsw`、`rq-&gt;curr`、`rq-&gt;nr_switches`、`on_rq/on_cpu` 等。</td></tr>
+        <tr><td>地址空间上下文</td><td>`mm_struct`、`active_mm`、CPU TLB/页表寄存器</td><td>`context_switch()`/`switch_mm_irqs_off()`</td><td>用户任务切换 mm；内核线程借用 active_mm，延迟释放旧 mm。</td></tr>
+        <tr><td>MIPS 非易失通用寄存器</td><td>`prev-&gt;thread` 即 `struct thread_struct`</td><td>`resume()`/`cpu_save_nonscratch`</td><td>保存 `$s0-$s7`、`$sp`、`$fp`、`$ra` 和 CP0 status，恢复 next 对应字段。</td></tr>
+        <tr><td>异常/系统调用完整用户现场</td><td>每任务内核栈上的 `struct pt_regs`</td><td>异常入口 `SAVE_*`，返回路径 `RESTORE_*`</td><td>用户态 GPR、`cp0_epc`、`cp0_status` 等用于返回用户态；不是每次 `switch_to` 都重新保存完整用户寄存器。</td></tr>
+        <tr><td>FPU/DSP/MXU/COP2/watch/TLS</td><td>`thread_struct`、thread_info、协处理器私有结构</td><td>MIPS `switch_to` 宏</td><td>按 CPU 特性和任务使用情况保存恢复，TLS 写入 `CP0_USERLOCAL`。</td></tr>
+        <tr><td>新建线程首次返回点</td><td>`thread_struct.reg31` 与内核栈 `pt_regs`</td><td>`copy_thread()`</td><td>用户线程从 `ret_from_fork`，内核线程从 `ret_from_kernel_thread` 开始。</td></tr>
+      </tbody></table>
+      <div class="svg-wrap"><svg viewBox="0 0 960 430" role="img" aria-label="保存位置图">
+        <text x="24" y="34" class="svg-title">保存位置：task_struct/thread_struct 与内核栈分工</text>
+        <rect x="72" y="84" width="245" height="258" class="box-blue"/><text x="128" y="116" class="svg-text">prev task_struct</text><text x="110" y="145" class="svg-small">state / sched_entity / mm</text><rect x="106" y="178" width="175" height="116" class="box"/><text x="132" y="206" class="svg-text">thread_struct</text><text x="126" y="232" class="svg-small">reg16-reg23</text><text x="126" y="254" class="svg-small">reg29/reg30/reg31</text><text x="126" y="276" class="svg-small">cp0_status/FPU/DSP</text>
+        <rect x="384" y="84" width="210" height="258" class="box-green"/><text x="444" y="116" class="svg-text">内核栈</text><rect x="418" y="178" width="142" height="116" class="box"/><text x="454" y="206" class="svg-text">pt_regs</text><text x="438" y="232" class="svg-small">用户寄存器</text><text x="438" y="254" class="svg-small">cp0_epc/status</text><text x="438" y="276" class="svg-small">syscall/exception frame</text>
+        <rect x="670" y="118" width="210" height="168" class="box-violet"/><text x="727" y="154" class="svg-text">CPU 当前值</text><text x="708" y="184" class="svg-small">GPR / SP / RA / CP0</text><text x="708" y="208" class="svg-small">TLB ASID / page table</text><text x="708" y="232" class="svg-small">FPU/DSP/MXU/COP2</text>
+        <path d="M670 164 H594" class="wire-green"/><path d="M670 220 C570 350 405 344 300 284" class="wire-blue"/><path d="M317 214 H384" class="wire"/>
+      </svg></div>
+      <div class="panel"><strong>第一性原理概述：</strong>不能把“进程上下文”理解成一个单独的大结构。调度状态在 `task_struct/rq`，地址空间在 `mm`，内核态续跑寄存器在 `thread_struct`，用户态异常帧在内核栈 `pt_regs`。</div>
+    </section>
+
+    <section id="mips-switch">
+      <h2>MIPS `switch_to`：协处理器、TLS、watch 与 `resume`</h2>
+      <pre><code>/* arch/mips/include/asm/switch_to.h */
+#define switch_to(prev, next, last)                                    \
+do {                                                                  \
+        __mips_mt_fpaff_switch_to(prev);                              \
+        lose_fpu_inatomic(1, prev);                                   \
+        if (tsk_used_math(next))                                      \
+                __sanitize_fcr31(next);                               \
+        if (cpu_has_dsp) {                                            \
+                __save_dsp(prev);                                     \
+                __restore_dsp(next);                                  \
+        }                                                             \
+        if (cpu_has_mxu) {                                            \
+                if (KSTK_STATUS(prev) &amp; ST0_CU2) __save_mxu(prev);     \
+                if (KSTK_STATUS(next) &amp; ST0_CU2) __restore_mxu(next);  \
+        }                                                             \
+        if (cop2_present) {                                           \
+                ... cop2_save(prev); cop2_restore(next);              \
+        }                                                             \
+        __clear_r5_hw_ll_bit();                                       \
+        __clear_software_ll_bit();                                    \
+        if (cpu_has_userlocal)                                        \
+                write_c0_userlocal(task_thread_info(next)-&gt;tp_value); \
+        __restore_watch(next);                                        \
+        (last) = resume(prev, next, task_thread_info(next));           \
+} while (0)</code></pre>
+      <p>`switch_to` 在调用 `resume` 前处理那些不属于普通 GPR 的架构状态：FPU 延迟丢弃、DSP/MXU/COP2 保存恢复、LL bit 清除、TLS 写 `CP0_USERLOCAL`、硬件 watch 寄存器恢复。注释还指出：新建线程会从 `ret_from_kernel_thread` 或 `ret_from_fork` 走，`resume()` 后面的语句对新线程会被跳过，所以重要工作必须放在 `resume()` 之前。</p>
+      <pre><code>/* arch/mips/include/asm/processor.h */
+struct thread_struct {
+        unsigned long reg16;
+        unsigned long reg17, reg18, reg19, reg20, reg21, reg22, reg23;
+        unsigned long reg29, reg30, reg31;
+        unsigned long cp0_status;
+        struct mips_fpu_struct fpu;
+        struct mips_dsp_state dsp;
+        struct xburst_mxu_struct mxu;
+        union mips_watch_reg_state watch;
+        unsigned long cp0_badvaddr;
+        unsigned long cp0_baduaddr;
+        ...
+};</code></pre>
+      <div class="panel"><strong>第一性原理概述：</strong>通用寄存器只是 CPU 现场的一部分。MIPS/XBurst 还要处理协处理器、DSP/MXU、TLS 和 watch 寄存器，否则切换后用户线程可能看到上一个线程的数学状态、TLS 或调试状态。</div>
+    </section>
+
+    <section id="resume">
+      <h2>`resume` 汇编：真正换栈和返回地址</h2>
+      <pre><code>/* arch/mips/kernel/r4k_switch.S */
+LEAF(resume)
+        mfc0    t1, CP0_STATUS
+        LONG_S  t1, THREAD_STATUS(a0)
+        cpu_save_nonscratch a0
+        LONG_S  ra, THREAD_REG31(a0)
+
+        move    $28, a2
+        cpu_restore_nonscratch a1
+
+        PTR_ADDU        t0, $28, _THREAD_SIZE - 32
+        set_saved_sp    t0, t1, t2
+        mfc0    t1, CP0_STATUS
+        li      a3, 0xff01
+        and     t1, a3
+        LONG_L  a2, THREAD_STATUS(a1)
+        nor     a3, $0, a3
+        and     a2, a3
+        or      a2, t1
+        mtc0    a2, CP0_STATUS
+        move    v0, a0
+        jr      ra
+END(resume)</code></pre>
+      <pre><code>/* arch/mips/include/asm/asmmacro-32.h */
+.macro cpu_save_nonscratch thread
+        LONG_S  s0, THREAD_REG16(\thread)
+        LONG_S  s1, THREAD_REG17(\thread)
+        LONG_S  s2, THREAD_REG18(\thread)
+        LONG_S  s3, THREAD_REG19(\thread)
+        LONG_S  s4, THREAD_REG20(\thread)
+        LONG_S  s5, THREAD_REG21(\thread)
+        LONG_S  s6, THREAD_REG22(\thread)
+        LONG_S  s7, THREAD_REG23(\thread)
+        LONG_S  sp, THREAD_REG29(\thread)
+        LONG_S  fp, THREAD_REG30(\thread)
+.endm
+
+.macro cpu_restore_nonscratch thread
+        LONG_L  s0, THREAD_REG16(\thread)
+        LONG_L  s1, THREAD_REG17(\thread)
+        ...
+        LONG_L  sp, THREAD_REG29(\thread)
+        LONG_L  fp, THREAD_REG30(\thread)
+        LONG_L  ra, THREAD_REG31(\thread)
+.endm</code></pre>
+      <p>调用约定上，`a0=prev`、`a1=next`、`a2=task_thread_info(next)`。`resume` 先把 prev 的 CP0 status、`$s0-$s7`、`$sp`、`$fp`、`$ra` 保存到 `prev-&gt;thread`，再把 `$28` 切成 next 的 `thread_info`，从 `next-&gt;thread` 装回非易失寄存器、`$sp` 和 `$ra`，最后 `jr ra`。从这条 `jr ra` 开始，CPU 已经在 next 的内核栈和返回地址上运行。</p>
+      <div class="panel"><strong>第一性原理概述：</strong>上下文切换的最小魔法就是保存旧栈指针和返回地址，装入新栈指针和返回地址。其余寄存器保存都是为了让被切走的内核执行流下次回来时像没有离开过。</div>
+    </section>
+
+    <section id="return-path">
+      <h2>切换回来后从哪里继续</h2>
+      <p>如果 next 是以前运行过的任务，`jr ra` 会回到它上次在 `switch_to()` 之后的位置，然后执行 `finish_task_switch(prev)`。如果 next 是新建任务，`copy_thread()` 已把 `thread.reg31` 设成 `ret_from_fork` 或 `ret_from_kernel_thread`，所以第一次被调度时会走新线程专用返回路径。</p>
+      <pre><code>/* arch/mips/kernel/entry.S */
+FEXPORT(ret_from_kernel_thread)
+        jal     schedule_tail
+        move    a0, s1
+        jal     s0
+        j       syscall_exit
+
+FEXPORT(ret_from_fork)
+        jal     schedule_tail
+
+FEXPORT(syscall_exit)
+        local_irq_disable
+        LONG_L  a2, TI_FLAGS($28)
+        li      t0, _TIF_ALLWORK_MASK
+        and     t0, a2, t0
+        bnez    t0, syscall_exit_work
+
+restore_all:
+        RESTORE_TEMP
+        RESTORE_AT
+        RESTORE_STATIC
+        RESTORE_SOME
+        RESTORE_SP_AND_RET</code></pre>
+      <p>`schedule_tail(prev)` 与 `finish_task_switch(prev)` 配对，释放上一个任务留下的 runqueue lock。之后用户线程沿 `syscall_exit -> restore_all` 恢复内核栈中的 `pt_regs`，最终回到用户态；内核线程则调用创建时保存在 `$s0/$s1` 的函数和参数。</p>
+      <div class="panel"><strong>第一性原理概述：</strong>老任务恢复的是“上次被切走的内核执行点”，新任务恢复的是“构造好的首次执行点”。两者共用同一个 `switch_to/resume` 机制，只是 `thread.reg31` 初值不同。</div>
+    </section>
+
+    <section id="msc">
+      <h2>完整 MSC：从 tick/wakeup 到 MIPS 汇编切换</h2>
+      <div class="svg-wrap"><svg viewBox="0 0 980 560" role="img" aria-label="完整调度 MSC">
+        <text x="24" y="34" class="svg-title">MSC：调度核心与 MIPS 上下文切换</text>
+        <line x1="100" y1="72" x2="100" y2="500" stroke="#30363d"/><line x1="285" y1="72" x2="285" y2="500" stroke="#30363d"/><line x1="470" y1="72" x2="470" y2="500" stroke="#30363d"/><line x1="655" y1="72" x2="655" y2="500" stroke="#30363d"/><line x1="840" y1="72" x2="840" y2="500" stroke="#30363d"/>
+        <text x="66" y="60" class="svg-text">事件源</text><text x="242" y="60" class="svg-text">当前任务</text><text x="424" y="60" class="svg-text">__schedule</text><text x="606" y="60" class="svg-text">context_switch</text><text x="800" y="60" class="svg-text">MIPS resume</text>
+        <path d="M100 104 H285" class="wire-blue"/><text x="132" y="96" class="svg-small">set TIF_NEED_RESCHED</text>
+        <path d="M285 152 H470" class="wire-green"/><text x="336" y="144" class="svg-small">schedule()</text>
+        <path d="M470 200 H470" class="wire"/><text x="500" y="198" class="svg-small">lock rq / update clock</text>
+        <path d="M470 248 H470" class="wire"/><text x="500" y="246" class="svg-small">dequeue sleep prev if needed</text>
+        <path d="M470 296 H470" class="wire"/><text x="500" y="294" class="svg-small">pick_next_task</text>
+        <path d="M470 344 H655" class="wire-warn"/><text x="514" y="336" class="svg-small">prev != next</text>
+        <path d="M655 392 H840" class="wire-blue"/><text x="698" y="384" class="svg-small">switch_to(prev,next)</text>
+        <path d="M840 440 H840" class="wire-green"/><text x="715" y="438" class="svg-small">save prev-&gt;thread, load next-&gt;thread</text>
+        <path d="M840 488 H655" class="wire-green"/><text x="700" y="480" class="svg-small">jr next ra</text>
+      </svg><div class="fig-cap">图 2：`__schedule()` 负责选择和记账；`resume` 负责把 CPU 现场从 prev 变成 next。</div></div>
+      <div class="panel"><strong>第一性原理概述：</strong>一次进程调度可以看成两笔账：调度器账本记录谁 runnable、谁当前运行；CPU 账本记录寄存器和栈属于谁。两笔账必须在 runqueue 锁和架构切换协议保护下同步更新。</div>
+    </section>
+
+    <section id="links">
+      <h2>相关本地文档链接</h2>
+      <table><thead><tr><th>文档</th><th>关联点</th></tr></thead><tbody>
+        <tr><td><a href="thread_creation_flow.html">thread_creation_flow.html</a></td><td>新线程如何通过 `copy_thread()` 准备首次调度现场。</td></tr>
+        <tr><td><a href="entry-return-path.html">entry-return-path.html</a></td><td>MIPS 异常/系统调用返回路径如何检查 `_TIF_NEED_RESCHED` 并恢复 `pt_regs`。</td></tr>
+        <tr><td><a href="mips-register-overview.html">mips-register-overview.html</a></td><td>对照 `$sp`、`$ra`、`$s0-$s7`、CP0 status、TLS 相关寄存器语义。</td></tr>
+        <tr><td><a href="regs-save-restore-pm.html">regs-save-restore-pm.html</a></td><td>对比调度切换与休眠唤醒中的寄存器保存恢复差异。</td></tr>
+        <tr><td><a href="mips-o32-syscall-flow.html">mips-o32-syscall-flow.html</a></td><td>系统调用返回用户态前为什么可以成为调度检查点。</td></tr>
+      </tbody></table>
+      <div class="panel"><strong>第一性原理概述：</strong>调度切换和异常返回不是两套割裂机制：前者决定 next，后者让 next 最终回到内核或用户执行点。</div>
+    </section>
+
+    <section id="summary">
+      <h2>整体总结</h2>
+      <div class="grid">
+        <div class="concept"><h3>调度时机</h3><p>显式阻塞直接调用 `schedule()`；tick/wakeup/跨 CPU 事件先设置 `_TIF_NEED_RESCHED`，在返回边界或抢占边界调度。</p></div>
+        <div class="concept"><h3>调度核心</h3><p>`__schedule()` 在 rq lock 内更新时钟、处理睡眠任务出队、调用调度类选 next、更新 `rq-&gt;curr` 和切换计数。</p></div>
+        <div class="concept"><h3>上下文切换</h3><p>`context_switch()` 先处理 `mm/active_mm`，再调用 MIPS `switch_to()`，最终 `resume()` 换 `$sp/$ra` 和非易失寄存器。</p></div>
+        <div class="concept"><h3>保存位置</h3><p>调度状态在 `task_struct/rq`，地址空间在 `mm`，内核续跑现场在 `thread_struct`，用户态完整现场在内核栈 `pt_regs`。</p></div>
+      </div>
+      <div class="note">一句话：调度的顶层是“谁该运行”的 runqueue 决策，底层是“如何让 CPU 从那个人的栈和寄存器继续”的架构切换。</div>
+    </section>
+
+    <div class="chapter-nav" aria-label="章节翻页"><a id="prevChapter" href="#intro">上一章</a><a id="nextChapter" href="#sources">下一章</a></div>
+  </main>
+
+  <script>
+    (function () {
+      const body=document.body;
+      const menuButton=document.getElementById('menuButton');
+      const progressBar=document.getElementById('progressBar');
+      const links=Array.from(document.querySelectorAll('.nav-list a'));
+      const sections=links.map(link=>document.querySelector(link.getAttribute('href'))).filter(Boolean);
+      const prev=document.getElementById('prevChapter');
+      const next=document.getElementById('nextChapter');
+      function currentIndex(){ const y=window.scrollY+90; let index=0; sections.forEach((section,i)=>{ if(section.offsetTop<=y) index=i; }); return index; }
+      function update(){ const doc=document.documentElement; const max=Math.max(1,doc.scrollHeight-window.innerHeight); progressBar.style.width=Math.min(100,Math.max(0,window.scrollY/max*100))+'%'; const index=currentIndex(); links.forEach(link=>link.classList.remove('active')); if(links[index]) links[index].classList.add('active'); prev.href=sections[index-1]?'#'+sections[index-1].id:'#'+sections[0].id; next.href=sections[index+1]?'#'+sections[index+1].id:'#'+sections[sections.length-1].id; }
+      menuButton.addEventListener('click',()=>body.classList.toggle('nav-open'));
+      links.forEach(link=>link.addEventListener('click',()=>body.classList.remove('nav-open')));
+      window.addEventListener('scroll',update,{passive:true});
+      window.addEventListener('resize',update);
+      window.addEventListener('keydown',event=>{ if(event.altKey||event.ctrlKey||event.metaKey||event.shiftKey) return; if(event.key==='ArrowLeft'){ event.preventDefault(); location.hash=prev.getAttribute('href'); } if(event.key==='ArrowRight'){ event.preventDefault(); location.hash=next.getAttribute('href'); } });
+      update();
+    }());
+  </script>
+</body>
+</html>

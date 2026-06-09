@@ -1,0 +1,2310 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Linux 内核热插拔与 mdev 交互详解</title>
+<style>
+  :root {
+    --primary: #1a73e8;
+    --primary-dark: #0d47a1;
+    --accent: #f97316;
+    --bg: #f8fafc;
+    --sidebar-bg: #1e293b;
+    --sidebar-text: #cbd5e1;
+    --sidebar-active: #38bdf8;
+    --sidebar-hover: #334155;
+    --text: #1e293b;
+    --text-light: #64748b;
+    --border: #e2e8f0;
+    --code-bg: #1e293b;
+    --code-text: #e2e8f0;
+    --card-bg: #ffffff;
+    --tag-bg: #dbeafe;
+    --tag-text: #1d4ed8;
+    --sidebar-width: 280px;
+    --header-height: 56px;
+  }
+
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+
+  body {
+    font-family: 'Segoe UI', 'PingFang SC', 'Hiragino Sans GB', 'Microsoft YaHei', sans-serif;
+    background: var(--bg);
+    color: var(--text);
+    line-height: 1.7;
+    overflow-x: hidden;
+  }
+
+  /* Progress Bar */
+  #progress-bar {
+    position: fixed;
+    top: 0;
+    left: 0;
+    height: 3px;
+    background: linear-gradient(90deg, var(--primary), var(--accent));
+    z-index: 1000;
+    transition: width 0.1s ease;
+    width: 0%;
+  }
+
+  /* Top Header */
+  .top-header {
+    position: fixed;
+    top: 3px;
+    left: 0;
+    right: 0;
+    height: var(--header-height);
+    background: var(--sidebar-bg);
+    display: flex;
+    align-items: center;
+    padding: 0 1rem;
+    z-index: 900;
+    box-shadow: 0 2px 8px rgba(0,0,0,0.3);
+    gap: 1rem;
+  }
+
+  .hamburger {
+    display: none;
+    flex-direction: column;
+    gap: 5px;
+    cursor: pointer;
+    padding: 6px;
+    border-radius: 6px;
+    transition: background 0.2s;
+    flex-shrink: 0;
+  }
+  .hamburger:hover { background: var(--sidebar-hover); }
+  .hamburger span {
+    display: block;
+    width: 22px;
+    height: 2px;
+    background: #fff;
+    border-radius: 2px;
+    transition: all 0.3s;
+  }
+  .hamburger.active span:nth-child(1) { transform: rotate(45deg) translate(5px, 5px); }
+  .hamburger.active span:nth-child(2) { opacity: 0; }
+  .hamburger.active span:nth-child(3) { transform: rotate(-45deg) translate(5px, -5px); }
+
+  .header-title {
+    color: #fff;
+    font-size: 1rem;
+    font-weight: 600;
+    letter-spacing: 0.02em;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+  }
+
+  .header-nav {
+    margin-left: auto;
+    display: flex;
+    gap: 0.5rem;
+    flex-shrink: 0;
+  }
+  .nav-btn {
+    background: var(--sidebar-hover);
+    color: #e2e8f0;
+    border: none;
+    padding: 6px 14px;
+    border-radius: 6px;
+    cursor: pointer;
+    font-size: 0.82rem;
+    transition: background 0.2s;
+    white-space: nowrap;
+  }
+  .nav-btn:hover { background: #475569; }
+  .nav-btn:disabled { opacity: 0.4; cursor: not-allowed; }
+
+  /* Layout */
+  .layout {
+    display: flex;
+    padding-top: calc(var(--header-height) + 3px);
+    min-height: 100vh;
+  }
+
+  /* Sidebar */
+  .sidebar {
+    width: var(--sidebar-width);
+    background: var(--sidebar-bg);
+    position: fixed;
+    top: calc(var(--header-height) + 3px);
+    bottom: 0;
+    left: 0;
+    overflow-y: auto;
+    z-index: 800;
+    transition: transform 0.3s ease;
+    scrollbar-width: thin;
+    scrollbar-color: #475569 transparent;
+  }
+  .sidebar::-webkit-scrollbar { width: 4px; }
+  .sidebar::-webkit-scrollbar-thumb { background: #475569; border-radius: 4px; }
+
+  .sidebar-overlay {
+    display: none;
+    position: fixed;
+    inset: 0;
+    background: rgba(0,0,0,0.5);
+    z-index: 790;
+  }
+  .sidebar-overlay.show { display: block; }
+
+  .nav-group {
+    padding: 0.5rem 0;
+    border-bottom: 1px solid #334155;
+  }
+  .nav-group-label {
+    padding: 0.6rem 1.2rem 0.3rem;
+    font-size: 0.7rem;
+    text-transform: uppercase;
+    letter-spacing: 0.1em;
+    color: #64748b;
+    font-weight: 700;
+  }
+  .nav-item {
+    display: block;
+    padding: 0.55rem 1.2rem 0.55rem 1.5rem;
+    color: var(--sidebar-text);
+    text-decoration: none;
+    font-size: 0.87rem;
+    cursor: pointer;
+    transition: background 0.15s, color 0.15s;
+    border-left: 3px solid transparent;
+    line-height: 1.4;
+  }
+  .nav-item:hover {
+    background: var(--sidebar-hover);
+    color: #fff;
+  }
+  .nav-item.active {
+    background: #1e3a5f;
+    color: var(--sidebar-active);
+    border-left-color: var(--sidebar-active);
+    font-weight: 600;
+  }
+  .nav-item .nav-num {
+    display: inline-block;
+    min-width: 1.5em;
+    color: #475569;
+    font-size: 0.8em;
+    margin-right: 0.3em;
+  }
+  .nav-item.active .nav-num { color: var(--sidebar-active); }
+
+  /* Main Content */
+  .main {
+    margin-left: var(--sidebar-width);
+    flex: 1;
+    min-width: 0;
+  }
+
+  .content {
+    max-width: 900px;
+    margin: 0 auto;
+    padding: 2rem 2rem 4rem;
+  }
+
+  /* Sections */
+  .section {
+    display: none;
+    animation: fadeIn 0.3s ease;
+  }
+  .section.active { display: block; }
+
+  @keyframes fadeIn {
+    from { opacity: 0; transform: translateY(10px); }
+    to { opacity: 1; transform: translateY(0); }
+  }
+
+  /* Typography */
+  h1 {
+    font-size: 1.8rem;
+    font-weight: 800;
+    color: var(--primary-dark);
+    margin-bottom: 0.5rem;
+    line-height: 1.3;
+  }
+  h2 {
+    font-size: 1.35rem;
+    font-weight: 700;
+    color: var(--primary-dark);
+    margin: 1.8rem 0 0.8rem;
+    padding-bottom: 0.4rem;
+    border-bottom: 2px solid var(--border);
+  }
+  h3 {
+    font-size: 1.1rem;
+    font-weight: 600;
+    color: #1e40af;
+    margin: 1.4rem 0 0.6rem;
+  }
+  p { margin-bottom: 0.9rem; }
+  ul, ol { margin: 0.6rem 0 0.9rem 1.5rem; }
+  li { margin-bottom: 0.4rem; }
+  strong { color: #1e40af; }
+
+  /* Section Header */
+  .section-header {
+    background: linear-gradient(135deg, var(--primary-dark) 0%, #1a56a0 100%);
+    border-radius: 12px;
+    padding: 1.5rem 1.8rem;
+    margin-bottom: 1.5rem;
+    color: #fff;
+  }
+  .section-header h1 { color: #fff; margin-bottom: 0.3rem; font-size: 1.5rem; }
+  .section-badge {
+    display: inline-block;
+    background: rgba(255,255,255,0.2);
+    padding: 2px 10px;
+    border-radius: 20px;
+    font-size: 0.78rem;
+    margin-bottom: 0.5rem;
+    letter-spacing: 0.05em;
+  }
+  .section-desc { font-size: 0.95rem; opacity: 0.9; margin-bottom: 0; }
+
+  /* Cards */
+  .card {
+    background: var(--card-bg);
+    border-radius: 10px;
+    padding: 1.3rem 1.5rem;
+    margin-bottom: 1.2rem;
+    border: 1px solid var(--border);
+    box-shadow: 0 1px 4px rgba(0,0,0,0.05);
+  }
+  .card-title {
+    font-weight: 700;
+    color: var(--primary-dark);
+    font-size: 1rem;
+    margin-bottom: 0.6rem;
+    display: flex;
+    align-items: center;
+    gap: 0.5rem;
+  }
+  .card-icon {
+    font-size: 1.1rem;
+  }
+
+  /* Info/Warning/Note boxes */
+  .info-box {
+    border-left: 4px solid var(--primary);
+    background: #eff6ff;
+    padding: 0.8rem 1rem;
+    border-radius: 0 8px 8px 0;
+    margin: 1rem 0;
+    font-size: 0.92rem;
+  }
+  .warn-box {
+    border-left: 4px solid #f59e0b;
+    background: #fffbeb;
+    padding: 0.8rem 1rem;
+    border-radius: 0 8px 8px 0;
+    margin: 1rem 0;
+    font-size: 0.92rem;
+  }
+  .success-box {
+    border-left: 4px solid #10b981;
+    background: #ecfdf5;
+    padding: 0.8rem 1rem;
+    border-radius: 0 8px 8px 0;
+    margin: 1rem 0;
+    font-size: 0.92rem;
+  }
+  .principle-box {
+    border: 2px solid var(--accent);
+    background: #fff7ed;
+    padding: 1rem 1.2rem;
+    border-radius: 10px;
+    margin: 1.5rem 0;
+  }
+  .principle-box .ptitle {
+    font-weight: 700;
+    color: #c2410c;
+    font-size: 0.95rem;
+    margin-bottom: 0.5rem;
+    display: flex;
+    align-items: center;
+    gap: 0.4rem;
+  }
+  .principle-box p { margin-bottom: 0.3rem; font-size: 0.93rem; }
+
+  /* Code */
+  pre {
+    background: var(--code-bg);
+    color: var(--code-text);
+    padding: 1rem 1.2rem;
+    border-radius: 8px;
+    overflow-x: auto;
+    margin: 1rem 0;
+    font-size: 0.85rem;
+    line-height: 1.6;
+    font-family: 'Consolas', 'Monaco', 'Courier New', monospace;
+    max-width: 100%;
+  }
+  code {
+    background: #e8f0fe;
+    color: #1a56a0;
+    padding: 1px 5px;
+    border-radius: 4px;
+    font-size: 0.88em;
+    font-family: 'Consolas', 'Monaco', 'Courier New', monospace;
+  }
+  pre code { background: none; color: inherit; padding: 0; font-size: inherit; }
+
+  .kw { color: #c084fc; }
+  .fn { color: #67e8f9; }
+  .str { color: #86efac; }
+  .cmt { color: #64748b; font-style: italic; }
+  .num { color: #fbbf24; }
+  .var { color: #fcd34d; }
+
+  /* SVG / Diagram containers */
+  .diagram-wrap {
+    background: #fff;
+    border: 1px solid var(--border);
+    border-radius: 12px;
+    padding: 1rem;
+    margin: 1.2rem 0;
+    overflow-x: auto;
+    box-shadow: 0 2px 8px rgba(0,0,0,0.06);
+  }
+  .diagram-title {
+    font-size: 0.85rem;
+    color: var(--text-light);
+    text-align: center;
+    margin-bottom: 0.8rem;
+    font-weight: 600;
+    text-transform: uppercase;
+    letter-spacing: 0.05em;
+  }
+  svg { max-width: 100%; display: block; margin: 0 auto; }
+
+  /* Tags */
+  .tag {
+    display: inline-block;
+    background: var(--tag-bg);
+    color: var(--tag-text);
+    padding: 2px 8px;
+    border-radius: 12px;
+    font-size: 0.78rem;
+    font-weight: 600;
+    margin: 2px;
+  }
+  .tag.green { background: #d1fae5; color: #065f46; }
+  .tag.orange { background: #ffedd5; color: #9a3412; }
+  .tag.purple { background: #ede9fe; color: #5b21b6; }
+  .tag.red { background: #fee2e2; color: #991b1b; }
+
+  /* Table */
+  table {
+    width: 100%;
+    border-collapse: collapse;
+    margin: 1rem 0;
+    font-size: 0.9rem;
+  }
+  th {
+    background: var(--primary-dark);
+    color: #fff;
+    padding: 0.7rem 1rem;
+    text-align: left;
+    font-weight: 600;
+  }
+  td {
+    padding: 0.6rem 1rem;
+    border-bottom: 1px solid var(--border);
+  }
+  tr:nth-child(even) td { background: #f8fafc; }
+  tr:hover td { background: #eff6ff; }
+
+  /* Source links */
+  .source-link {
+    display: inline-flex;
+    align-items: center;
+    gap: 0.3rem;
+    color: var(--primary);
+    text-decoration: none;
+    font-size: 0.83rem;
+    padding: 3px 8px;
+    border: 1px solid var(--primary);
+    border-radius: 6px;
+    transition: all 0.2s;
+    margin: 2px;
+  }
+  .source-link:hover {
+    background: var(--primary);
+    color: #fff;
+  }
+
+  .sources-section {
+    margin-top: 1.2rem;
+    padding: 0.8rem 1rem;
+    background: #f1f5f9;
+    border-radius: 8px;
+    font-size: 0.85rem;
+  }
+  .sources-section h4 { margin-bottom: 0.5rem; color: var(--text-light); font-size: 0.8rem; text-transform: uppercase; letter-spacing: 0.05em; }
+
+  /* Step list */
+  .step-list { list-style: none; margin: 0; padding: 0; }
+  .step-item {
+    display: flex;
+    gap: 1rem;
+    padding: 0.8rem 0;
+    border-bottom: 1px solid var(--border);
+  }
+  .step-item:last-child { border-bottom: none; }
+  .step-num {
+    flex-shrink: 0;
+    width: 28px;
+    height: 28px;
+    border-radius: 50%;
+    background: var(--primary);
+    color: #fff;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    font-weight: 700;
+    font-size: 0.85rem;
+    margin-top: 2px;
+  }
+  .step-content { flex: 1; min-width: 0; }
+  .step-title { font-weight: 600; color: var(--primary-dark); margin-bottom: 0.25rem; }
+  .step-desc { font-size: 0.9rem; color: var(--text-light); }
+
+  /* Env variable table */
+  .env-table { font-size: 0.88rem; }
+  .env-var { font-family: monospace; color: #c2410c; font-weight: 700; }
+
+  /* Responsive */
+  @media (max-width: 768px) {
+    :root { --sidebar-width: 260px; }
+    .hamburger { display: flex; }
+    .sidebar {
+      transform: translateX(-100%);
+    }
+    .sidebar.open {
+      transform: translateX(0);
+    }
+    .main {
+      margin-left: 0;
+    }
+    .content {
+      padding: 1.2rem 1rem 3rem;
+    }
+    h1 { font-size: 1.3rem; }
+    h2 { font-size: 1.15rem; }
+    .header-title { font-size: 0.9rem; }
+    .nav-btn { padding: 5px 10px; font-size: 0.78rem; }
+    pre { font-size: 0.78rem; }
+    .section-header { padding: 1.1rem 1.2rem; }
+    table { font-size: 0.82rem; }
+    th, td { padding: 0.5rem 0.7rem; }
+  }
+
+  @media (max-width: 480px) {
+    .header-nav { gap: 0.3rem; }
+    .nav-btn { padding: 4px 8px; font-size: 0.75rem; }
+  }
+</style>
+</head>
+<body>
+
+<div id="progress-bar"></div>
+
+<!-- Top Header -->
+<header class="top-header">
+  <button class="hamburger" id="hamburger" aria-label="菜单">
+    <span></span><span></span><span></span>
+  </button>
+  <div class="header-title">Linux 内核热插拔与 mdev 交互详解</div>
+  <div class="header-nav">
+    <button class="nav-btn" id="btn-prev">← 上一章</button>
+    <button class="nav-btn" id="btn-next">下一章 →</button>
+  </div>
+</header>
+
+<div class="layout">
+  <!-- Sidebar -->
+  <nav class="sidebar" id="sidebar">
+    <div class="nav-group">
+      <div class="nav-group-label">概述</div>
+      <a class="nav-item active" data-section="0">
+        <span class="nav-num">01</span>引言与背景
+      </a>
+    </div>
+    <div class="nav-group">
+      <div class="nav-group-label">内核层</div>
+      <a class="nav-item" data-section="1">
+        <span class="nav-num">02</span>设备模型基础
+      </a>
+      <a class="nav-item" data-section="2">
+        <span class="nav-num">03</span>kobject 与 uevent 机制
+      </a>
+      <a class="nav-item" data-section="3">
+        <span class="nav-num">04</span>uevent 两种通知路径
+      </a>
+    </div>
+    <div class="nav-group">
+      <div class="nav-group-label">用户空间</div>
+      <a class="nav-item" data-section="4">
+        <span class="nav-num">05</span>mdev 工作原理
+      </a>
+      <a class="nav-item" data-section="5">
+        <span class="nav-num">06</span>完整交互流程（MSC）
+      </a>
+    </div>
+    <div class="nav-group">
+      <div class="nav-group-label">深入分析</div>
+      <a class="nav-item" data-section="6">
+        <span class="nav-num">07</span>冷插拔：mdev -s
+      </a>
+      <a class="nav-item" data-section="7">
+        <span class="nav-num">08</span>环境变量详解
+      </a>
+      <a class="nav-item" data-section="8">
+        <span class="nav-num">09</span>mdev.conf 配置
+      </a>
+      <a class="nav-item" data-section="9">
+        <span class="nav-num">10</span>固件加载流程
+      </a>
+    </div>
+    <div class="nav-group">
+      <div class="nav-group-label">总结</div>
+      <a class="nav-item" data-section="10">
+        <span class="nav-num">11</span>架构对比与总结
+      </a>
+    </div>
+  </nav>
+  <div class="sidebar-overlay" id="sidebar-overlay"></div>
+
+  <!-- Main Content -->
+  <main class="main">
+    <div class="content">
+
+      <!-- Section 0: 引言 -->
+      <div class="section active" id="sec-0">
+        <div class="section-header">
+          <div class="section-badge">第一章 · 概述</div>
+          <h1>引言与背景</h1>
+          <p class="section-desc">Linux 内核热插拔机制与 mdev 应用层交互的技术全景</p>
+        </div>
+
+        <div class="card">
+          <div class="card-title"><span class="card-icon">🔌</span>什么是热插拔（Hotplug）</div>
+          <p>热插拔（Hotplug）是指在系统运行过程中，无需重启即可动态地添加或移除硬件设备的机制。当一个设备插入或拔出系统时，内核必须能够：</p>
+          <ul>
+            <li>检测硬件状态变化（通过总线中断或轮询）</li>
+            <li>在内核数据结构中注册/注销设备</li>
+            <li>通知用户空间，以便自动创建设备节点、加载驱动或执行自定义脚本</li>
+          </ul>
+          <p>Linux 2.6.x 内核通过 <strong>sysfs</strong> 导出设备树，配合 <strong>uevent</strong> 热插拔机制，使用户空间工具（如 <code>udev</code> 或 <code>mdev</code>）能够动态维护 <code>/dev</code> 目录下的设备节点。</p>
+          <div class="sources-section">
+            <h4>📚 参考来源</h4>
+            <a class="source-link" href="https://lwn.net/Articles/242046/" target="_blank">📄 LWN: sysfs/hotplug 官方文档 (Rob Landley, 2007)</a>
+            <a class="source-link" href="https://linux-kernel-labs.github.io/refs/pull/189/merge/labs/device_model.html" target="_blank">📄 Linux Kernel Labs: Device Model</a>
+          </div>
+        </div>
+
+        <div class="card">
+          <div class="card-title"><span class="card-icon">🗂️</span>mdev 的定位</div>
+          <p><strong>mdev</strong> 是 BusyBox 提供的一个轻量级设备管理器，是 <code>udev</code> 的精简替代品，专为嵌入式 Linux 系统设计。</p>
+          <table>
+            <tr><th>特性</th><th>mdev（BusyBox）</th><th>udev（完整 Linux）</th></tr>
+            <tr><td>运行模式</td><td>由内核直接 fork（无守护进程）</td><td>守护进程 udevd 常驻内存</td></tr>
+            <tr><td>事件接收</td><td>uevent_helper（/proc/sys/kernel/hotplug）</td><td>Netlink 套接字</td></tr>
+            <tr><td>适用场景</td><td>嵌入式系统、内存受限环境</td><td>桌面/服务器 Linux</td></tr>
+            <tr><td>体积</td><td>约 5KB</td><td>较大</td></tr>
+            <tr><td>配置文件</td><td>/etc/mdev.conf</td><td>/etc/udev/rules.d/*.rules</td></tr>
+          </table>
+        </div>
+
+        <div class="diagram-wrap">
+          <div class="diagram-title">系统层次架构总览</div>
+          <svg viewBox="0 0 700 320" xmlns="http://www.w3.org/2000/svg" width="700" height="320">
+            <!-- Background -->
+            <rect width="700" height="320" fill="#f8fafc" rx="8"/>
+            <!-- Hardware Layer -->
+            <rect x="20" y="260" width="660" height="45" fill="#fef3c7" rx="8" stroke="#d97706" stroke-width="1.5"/>
+            <text x="350" y="287" text-anchor="middle" font-size="13" font-weight="700" fill="#92400e">硬件层：USB / PCI / I2C / 平台设备</text>
+            <!-- Kernel Layer -->
+            <rect x="20" y="140" width="660" height="105" fill="#dbeafe" rx="8" stroke="#2563eb" stroke-width="1.5"/>
+            <text x="350" y="160" text-anchor="middle" font-size="12" font-weight="700" fill="#1e40af">内核空间（Kernel Space）</text>
+            <!-- Kernel boxes -->
+            <rect x="40" y="168" width="130" height="60" fill="#bfdbfe" rx="6" stroke="#3b82f6" stroke-width="1"/>
+            <text x="105" y="193" text-anchor="middle" font-size="11" font-weight="600" fill="#1e3a8a">总线驱动</text>
+            <text x="105" y="208" text-anchor="middle" font-size="10" fill="#1e3a8a">device_add()</text>
+            <text x="105" y="220" text-anchor="middle" font-size="10" fill="#1e3a8a">device_register()</text>
+            <rect x="185" y="168" width="130" height="60" fill="#bfdbfe" rx="6" stroke="#3b82f6" stroke-width="1"/>
+            <text x="250" y="193" text-anchor="middle" font-size="11" font-weight="600" fill="#1e3a8a">Linux 设备模型</text>
+            <text x="250" y="208" text-anchor="middle" font-size="10" fill="#1e3a8a">kobject / kset</text>
+            <text x="250" y="220" text-anchor="middle" font-size="10" fill="#1e3a8a">sysfs 节点</text>
+            <rect x="330" y="168" width="150" height="60" fill="#c7d2fe" rx="6" stroke="#4f46e5" stroke-width="1"/>
+            <text x="405" y="190" text-anchor="middle" font-size="11" font-weight="600" fill="#312e81">uevent 子系统</text>
+            <text x="405" y="205" text-anchor="middle" font-size="10" fill="#312e81">kobject_uevent_env()</text>
+            <text x="405" y="220" text-anchor="middle" font-size="10" fill="#312e81">lib/kobject_uevent.c</text>
+            <rect x="495" y="168" width="165" height="60" fill="#bfdbfe" rx="6" stroke="#3b82f6" stroke-width="1"/>
+            <text x="577" y="193" text-anchor="middle" font-size="11" font-weight="600" fill="#1e3a8a">两种通知路径</text>
+            <text x="577" y="208" text-anchor="middle" font-size="10" fill="#1e3a8a">① Netlink 广播</text>
+            <text x="577" y="220" text-anchor="middle" font-size="10" fill="#1e3a8a">② call_usermodehelper</text>
+            <!-- User Layer -->
+            <rect x="20" y="20" width="660" height="105" fill="#d1fae5" rx="8" stroke="#059669" stroke-width="1.5"/>
+            <text x="350" y="42" text-anchor="middle" font-size="12" font-weight="700" fill="#065f46">用户空间（User Space）</text>
+            <!-- User boxes -->
+            <rect x="40" y="52" width="140" height="60" fill="#a7f3d0" rx="6" stroke="#10b981" stroke-width="1"/>
+            <text x="110" y="77" text-anchor="middle" font-size="11" font-weight="600" fill="#064e3b">mdev (BusyBox)</text>
+            <text x="110" y="92" text-anchor="middle" font-size="10" fill="#064e3b">mdev_main()</text>
+            <text x="110" y="106" text-anchor="middle" font-size="10" fill="#064e3b">make_device()</text>
+            <rect x="195" y="52" width="140" height="60" fill="#a7f3d0" rx="6" stroke="#10b981" stroke-width="1"/>
+            <text x="265" y="77" text-anchor="middle" font-size="11" font-weight="600" fill="#064e3b">/etc/mdev.conf</text>
+            <text x="265" y="92" text-anchor="middle" font-size="10" fill="#064e3b">规则匹配</text>
+            <text x="265" y="106" text-anchor="middle" font-size="10" fill="#064e3b">自定义脚本</text>
+            <rect x="350" y="52" width="140" height="60" fill="#a7f3d0" rx="6" stroke="#10b981" stroke-width="1"/>
+            <text x="420" y="77" text-anchor="middle" font-size="11" font-weight="600" fill="#064e3b">/dev 目录</text>
+            <text x="420" y="92" text-anchor="middle" font-size="10" fill="#064e3b">mknod() 创建节点</text>
+            <text x="420" y="106" text-anchor="middle" font-size="10" fill="#064e3b">tmpfs 挂载</text>
+            <rect x="505" y="52" width="155" height="60" fill="#a7f3d0" rx="6" stroke="#10b981" stroke-width="1"/>
+            <text x="582" y="77" text-anchor="middle" font-size="11" font-weight="600" fill="#064e3b">/sys 文件系统</text>
+            <text x="582" y="92" text-anchor="middle" font-size="10" fill="#064e3b">设备属性读取</text>
+            <text x="582" y="106" text-anchor="middle" font-size="10" fill="#064e3b">/sys/class/*/dev</text>
+            <!-- Arrows -->
+            <line x1="350" y1="140" x2="350" y2="125" stroke="#4f46e5" stroke-width="2" marker-end="url(#arrow-up)"/>
+            <line x1="350" y1="260" x2="350" y2="245" stroke="#d97706" stroke-width="2" marker-end="url(#arrow-up)"/>
+            <defs>
+              <marker id="arrow-up" markerWidth="8" markerHeight="8" refX="4" refY="4" orient="auto">
+                <path d="M0,8 L4,0 L8,8" fill="none" stroke="#6366f1" stroke-width="1.5"/>
+              </marker>
+            </defs>
+            <!-- Labels on arrows -->
+            <text x="360" y="136" font-size="10" fill="#4f46e5">uevent</text>
+            <text x="360" y="256" font-size="10" fill="#d97706">IRQ/检测</text>
+          </svg>
+        </div>
+
+        <div class="principle-box">
+          <div class="ptitle">🔭 第一性原理解读</div>
+          <p>热插拔的本质是一个<strong>状态变化通知系统</strong>：硬件状态从"不存在"变为"存在"（或反之），这个变化必须沿"硬件→内核→用户空间"的链路传播，使系统各层级保持一致的认知。mdev 是这个链路在用户空间的末端执行者——它的核心工作是将内核描述的设备信息（设备号、路径、子系统）物化为 <code>/dev</code> 下的节点文件，让应用程序能够通过文件系统接口访问硬件。</p>
+        </div>
+      </div>
+
+      <!-- Section 1: 设备模型基础 -->
+      <div class="section" id="sec-1">
+        <div class="section-header">
+          <div class="section-badge">第二章 · 内核层</div>
+          <h1>Linux 设备模型基础</h1>
+          <p class="section-desc">kobject、kset、bus_type、device、class 的层次结构</p>
+        </div>
+
+        <div class="card">
+          <div class="card-title"><span class="card-icon">🏗️</span>Linux 设备模型（Linux Device Model）</div>
+          <p>Linux 2.6 引入了统一设备模型（LDM），其核心目标是维护内部数据结构，反映系统的状态与结构。该模型通过 <strong>sysfs</strong> 虚拟文件系统（通常挂载于 <code>/sys</code>）向用户空间暴露内核数据结构。</p>
+          <p>模型中的核心实体包括：</p>
+          <ul>
+            <li><strong>device（设备）</strong>：连接到总线的物理设备</li>
+            <li><strong>driver（驱动）</strong>：与设备关联并操作设备的软件实体</li>
+            <li><strong>bus（总线）</strong>：设备连接到处理器的通信信道</li>
+            <li><strong>class（类）</strong>：按功能分组的设备类型（磁盘、串口等）</li>
+          </ul>
+        </div>
+
+        <div class="diagram-wrap">
+          <div class="diagram-title">Linux 设备模型层次结构</div>
+          <svg viewBox="0 0 680 380" xmlns="http://www.w3.org/2000/svg" width="680" height="380">
+            <rect width="680" height="380" fill="#f8fafc" rx="8"/>
+            <!-- kobject base -->
+            <rect x="250" y="300" width="180" height="50" fill="#fde68a" rx="8" stroke="#d97706" stroke-width="2"/>
+            <text x="340" y="322" text-anchor="middle" font-size="12" font-weight="700" fill="#92400e">struct kobject</text>
+            <text x="340" y="340" text-anchor="middle" font-size="10" fill="#92400e">name / kref / kset / ktype / sd</text>
+            <!-- kset -->
+            <rect x="80" y="210" width="160" height="50" fill="#c7d2fe" rx="8" stroke="#4f46e5" stroke-width="1.5"/>
+            <text x="160" y="232" text-anchor="middle" font-size="12" font-weight="700" fill="#312e81">struct kset</text>
+            <text x="160" y="248" text-anchor="middle" font-size="10" fill="#312e81">kobject + kset_uevent_ops</text>
+            <!-- struct device -->
+            <rect x="270" y="210" width="160" height="50" fill="#bbf7d0" rx="8" stroke="#059669" stroke-width="1.5"/>
+            <text x="350" y="232" text-anchor="middle" font-size="12" font-weight="700" fill="#065f46">struct device</text>
+            <text x="350" y="248" text-anchor="middle" font-size="10" fill="#065f46">parent / bus / driver / kobj</text>
+            <!-- struct device_driver -->
+            <rect x="450" y="210" width="160" height="50" fill="#a5f3fc" rx="8" stroke="#0284c7" stroke-width="1.5"/>
+            <text x="530" y="232" text-anchor="middle" font-size="12" font-weight="700" fill="#0c4a6e">struct device_driver</text>
+            <text x="530" y="248" text-anchor="middle" font-size="10" fill="#0c4a6e">name / bus / probe / remove</text>
+            <!-- struct bus_type -->
+            <rect x="80" y="110" width="160" height="60" fill="#fed7aa" rx="8" stroke="#ea580c" stroke-width="1.5"/>
+            <text x="160" y="135" text-anchor="middle" font-size="12" font-weight="700" fill="#7c2d12">struct bus_type</text>
+            <text x="160" y="152" text-anchor="middle" font-size="10" fill="#7c2d12">match() / uevent()</text>
+            <text x="160" y="164" text-anchor="middle" font-size="10" fill="#7c2d12">probe() / remove()</text>
+            <!-- struct class -->
+            <rect x="270" y="110" width="160" height="60" fill="#f0abfc" rx="8" stroke="#a21caf" stroke-width="1.5"/>
+            <text x="350" y="135" text-anchor="middle" font-size="12" font-weight="700" fill="#581c87">struct class</text>
+            <text x="350" y="152" text-anchor="middle" font-size="10" fill="#581c87">dev_uevent() / name</text>
+            <text x="350" y="164" text-anchor="middle" font-size="10" fill="#581c87">→ /sys/class/xxx</text>
+            <!-- device_create -->
+            <rect x="450" y="110" width="170" height="60" fill="#d9f99d" rx="8" stroke="#65a30d" stroke-width="1.5"/>
+            <text x="535" y="133" text-anchor="middle" font-size="12" font-weight="700" fill="#365314">device_create()</text>
+            <text x="535" y="150" text-anchor="middle" font-size="10" fill="#365314">创建 dev 属性</text>
+            <text x="535" y="165" text-anchor="middle" font-size="10" fill="#365314">触发 KOBJ_ADD uevent</text>
+            <!-- sysfs top -->
+            <rect x="200" y="20" width="280" height="50" fill="#e0e7ff" rx="8" stroke="#4f46e5" stroke-width="1.5"/>
+            <text x="340" y="42" text-anchor="middle" font-size="12" font-weight="700" fill="#1e1b4b">sysfs 虚拟文件系统 (/sys)</text>
+            <text x="340" y="58" text-anchor="middle" font-size="10" fill="#1e1b4b">/sys/bus /sys/class /sys/devices /sys/block</text>
+            <!-- Arrows -->
+            <defs>
+              <marker id="arrd" markerWidth="8" markerHeight="8" refX="4" refY="4" orient="auto">
+                <path d="M0,0 L8,4 L0,8 Z" fill="#64748b"/>
+              </marker>
+            </defs>
+            <line x1="340" y1="300" x2="240" y2="260" stroke="#64748b" stroke-width="1.5" marker-end="url(#arrd)"/>
+            <line x1="340" y1="300" x2="350" y2="260" stroke="#64748b" stroke-width="1.5" marker-end="url(#arrd)"/>
+            <line x1="340" y1="300" x2="490" y2="260" stroke="#64748b" stroke-width="1.5" marker-end="url(#arrd)"/>
+            <text x="250" y="288" font-size="9" fill="#64748b" font-style="italic">嵌入(embedded)</text>
+            <line x1="160" y1="210" x2="160" y2="170" stroke="#64748b" stroke-width="1.5" marker-end="url(#arrd)"/>
+            <line x1="350" y1="210" x2="350" y2="170" stroke="#64748b" stroke-width="1.5" marker-end="url(#arrd)"/>
+            <line x1="530" y1="210" x2="530" y2="170" stroke="#64748b" stroke-width="1.5" marker-end="url(#arrd)"/>
+            <line x1="230" y1="110" x2="340" y2="70" stroke="#64748b" stroke-width="1.5" marker-end="url(#arrd)" stroke-dasharray="5,3"/>
+            <line x1="340" y1="110" x2="340" y2="70" stroke="#64748b" stroke-width="1.5" marker-end="url(#arrd)" stroke-dasharray="5,3"/>
+            <line x1="480" y1="110" x2="400" y2="70" stroke="#64748b" stroke-width="1.5" marker-end="url(#arrd)" stroke-dasharray="5,3"/>
+            <text x="590" y="90" font-size="9" fill="#64748b" font-style="italic">映射到 /sys</text>
+          </svg>
+        </div>
+
+        <h2>sysfs 目录结构</h2>
+        <p>sysfs 的子目录与内核设备模型直接对应：</p>
+        <pre><code>/sys/
+├── block/          <span class="cmt"># 块设备（磁盘、分区）</span>
+├── bus/            <span class="cmt"># 总线类型（pci, usb, i2c, platform...）</span>
+│   └── usb/devices/1-1/dev   <span class="cmt"># 包含 major:minor</span>
+├── class/          <span class="cmt"># 设备类（net, input, tty, block...）</span>
+│   └── tty/ttyUSB0/dev       <span class="cmt"># 例: "188:0\n"</span>
+├── devices/        <span class="cmt"># 设备树层次结构</span>
+├── firmware/       <span class="cmt"># 固件信息（ACPI）</span>
+├── kernel/         <span class="cmt"># 内核状态（含 uevent_helper）</span>
+└── module/         <span class="cmt"># 已加载模块列表</span></code></pre>
+
+        <div class="info-box">
+          <strong>关键文件：</strong> <code>/sys/class/*/*/dev</code> 文件包含设备的主次设备号（格式 <code>MAJOR:MINOR</code>），mdev 通过读取此文件来调用 <code>mknod()</code> 创建 <code>/dev</code> 下的设备节点。
+          <br>例：<code>cat /sys/class/mem/zero/dev</code> → <code>1:5</code>
+        </div>
+
+        <h2>device_create() 触发 uevent</h2>
+        <p>驱动调用 <code>device_create()</code> 后，内核会在 sysfs 中创建 <code>dev</code> 属性文件（包含设备号），并自动触发 <code>KOBJ_ADD</code> uevent，通知用户空间新设备已就绪：</p>
+        <pre><code><span class="cmt">/* 驱动注册设备（典型代码路径） */</span>
+<span class="kw">struct</span> device *my_dev;
+my_dev = <span class="fn">device_create</span>(my_class, NULL,
+                        <span class="fn">MKDEV</span>(major, minor),
+                        NULL, <span class="str">"mydevice%d"</span>, minor);
+<span class="cmt">/* 内部调用链：
+ * device_create()
+ *   → device_register()
+ *     → device_add()
+ *       → kobject_uevent(&dev->kobj, KOBJ_ADD)  ← 触发热插拔通知
+ */</span></code></pre>
+
+        <div class="principle-box">
+          <div class="ptitle">🔭 第一性原理解读</div>
+          <p>Linux 设备模型的本质是用<strong>统一数据结构抽象差异硬件</strong>：不管是 USB、PCI 还是 I2C 设备，都通过 <code>struct device</code>（内嵌 <code>kobject</code>）表示，并以树形结构存储于 sysfs。这个"统一视图"是整个热插拔机制的信息源头——所有后续的 uevent 通知、设备节点创建，都依赖于 sysfs 中准确的设备信息（特别是 <code>dev</code> 文件的设备号）。</p>
+        </div>
+      </div>
+
+      <!-- Section 2: kobject uevent 机制 -->
+      <div class="section" id="sec-2">
+        <div class="section-header">
+          <div class="section-badge">第三章 · 内核层</div>
+          <h1>kobject 与 uevent 机制</h1>
+          <p class="section-desc">kobject_uevent_env() 源码解析与环境变量构建</p>
+        </div>
+
+        <div class="card">
+          <div class="card-title"><span class="card-icon">⚙️</span>kobject_uevent() 核心函数</div>
+          <p>uevent 框架实现于 <code>lib/kobject_uevent.c</code>，核心 API 为：</p>
+          <ul>
+            <li><code>kobject_uevent(kobj, action)</code> — 发送基础 uevent</li>
+            <li><code>kobject_uevent_env(kobj, action, envp_ext[])</code> — 发送带额外环境变量的 uevent</li>
+          </ul>
+        </div>
+
+        <h2>kobject_action 事件类型</h2>
+        <pre><code><span class="cmt">/* include/linux/kobject.h */</span>
+<span class="kw">enum</span> kobject_action {
+    KOBJ_ADD,      <span class="cmt">/* 设备/驱动添加 → "add"    */</span>
+    KOBJ_REMOVE,   <span class="cmt">/* 设备/驱动移除 → "remove" */</span>
+    KOBJ_CHANGE,   <span class="cmt">/* 设备状态变化  → "change" */</span>
+    KOBJ_MOVE,     <span class="cmt">/* kobject 重命名 → "move"  */</span>
+    KOBJ_ONLINE,   <span class="cmt">/* CPU 上线      → "online" */</span>
+    KOBJ_OFFLINE,  <span class="cmt">/* CPU 下线      → "offline"*/</span>
+};</code></pre>
+
+        <h2>kobject_uevent_env() 执行流程</h2>
+        <pre><code><span class="cmt">/* lib/kobject_uevent.c（简化） */</span>
+<span class="kw">int</span> <span class="fn">kobject_uevent_env</span>(<span class="kw">struct</span> kobject *kobj,
+                       <span class="kw">enum</span> kobject_action action,
+                       <span class="kw">char</span> *envp_ext[])
+{
+    <span class="kw">struct</span> kobj_uevent_env *env;
+    <span class="kw">struct</span> kset *kset;
+    <span class="kw">const struct</span> kset_uevent_ops *uevent_ops;
+
+    <span class="cmt">/* 1. 向上遍历父节点，找到所属的 kset（即 subsystem） */</span>
+    top_kobj = kobj;
+    <span class="kw">while</span> (!top_kobj->kset && top_kobj->parent)
+        top_kobj = top_kobj->parent;
+    kset = top_kobj->kset;
+    uevent_ops = kset->uevent_ops;
+
+    <span class="cmt">/* 2. 过滤检查（uevent_suppress 或 filter 函数） */</span>
+    <span class="kw">if</span> (kobj->uevent_suppress)  <span class="kw">return</span> <span class="num">0</span>;
+    <span class="kw">if</span> (uevent_ops && uevent_ops->filter)
+        <span class="kw">if</span> (!uevent_ops->filter(kset, kobj)) <span class="kw">return</span> <span class="num">0</span>;
+
+    <span class="cmt">/* 3. 构建默认环境变量 */</span>
+    env = <span class="fn">kzalloc</span>(<span class="kw">sizeof</span>(*env), GFP_KERNEL);
+    devpath = <span class="fn">kobject_get_path</span>(kobj, GFP_KERNEL);
+    <span class="fn">add_uevent_var</span>(env, <span class="str">"ACTION=%s"</span>, action_string);  <span class="cmt">/* "add"/"remove" 等 */</span>
+    <span class="fn">add_uevent_var</span>(env, <span class="str">"DEVPATH=%s"</span>, devpath);       <span class="cmt">/* /sys 中的路径 */</span>
+    <span class="fn">add_uevent_var</span>(env, <span class="str">"SUBSYSTEM=%s"</span>, subsystem);   <span class="cmt">/* kset 名（子系统）*/</span>
+
+    <span class="cmt">/* 4. 附加调用者传入的额外环境变量 */</span>
+    <span class="kw">for</span> (i = <span class="num">0</span>; envp_ext && envp_ext[i]; i++)
+        <span class="fn">add_uevent_var</span>(env, <span class="str">"%s"</span>, envp_ext[i]);
+
+    <span class="cmt">/* 5. 调用 kset->uevent_ops->uevent() 添加子系统专属变量
+     *    例如 bus/class 的 uevent() 会添加 MAJOR、MINOR、DEVNAME 等 */</span>
+    <span class="kw">if</span> (uevent_ops && uevent_ops->uevent)
+        uevent_ops->uevent(kset, kobj, env);
+
+    <span class="cmt">/* 6. 添加全局序列号 */</span>
+    <span class="fn">add_uevent_var</span>(env, <span class="str">"SEQNUM=%llu"</span>, ++uevent_seqnum);
+
+    <span class="cmt">/* 7a. 通过 Netlink 广播给监听守护进程（如 udevd）
+     *     需要 CONFIG_NET 支持 */</span>
+    <span class="fn">kobject_uevent_net_broadcast</span>(kobj, env, action_string, devpath);
+
+    <span class="cmt">/* 7b. 通过 uevent_helper（call_usermodehelper）调用 mdev */</span>
+    <span class="kw">if</span> (uevent_helper[<span class="num">0</span>]) {
+        <span class="kw">char</span> *argv[<span class="num">3</span>];
+        argv[<span class="num">0</span>] = uevent_helper;    <span class="cmt">/* 通常是 "/sbin/mdev" */</span>
+        argv[<span class="num">1</span>] = (<span class="kw">char</span> *)subsystem; <span class="cmt">/* 子系统名称 */</span>
+        argv[<span class="num">2</span>] = NULL;
+        <span class="fn">call_usermodehelper</span>(argv[<span class="num">0</span>], argv, envp, UMH_NO_WAIT);
+    }
+}</code></pre>
+
+        <div class="diagram-wrap">
+          <div class="diagram-title">kobject_uevent_env() 执行流程图</div>
+          <svg viewBox="0 0 660 420" xmlns="http://www.w3.org/2000/svg" width="660" height="420">
+            <rect width="660" height="420" fill="#f8fafc" rx="8"/>
+            <defs>
+              <marker id="arr2" markerWidth="8" markerHeight="8" refX="4" refY="4" orient="auto">
+                <path d="M0,0 L8,4 L0,8 Z" fill="#4f46e5"/>
+              </marker>
+            </defs>
+            <!-- Step 1 -->
+            <rect x="220" y="20" width="220" height="40" fill="#fde68a" rx="6" stroke="#d97706" stroke-width="1.5"/>
+            <text x="330" y="38" text-anchor="middle" font-size="11" font-weight="700" fill="#92400e">device_add() / kobject_uevent()</text>
+            <text x="330" y="52" text-anchor="middle" font-size="10" fill="#92400e">调用 kobject_uevent_env(kobj, KOBJ_ADD)</text>
+            <!-- Step 2 -->
+            <rect x="220" y="82" width="220" height="40" fill="#bfdbfe" rx="6" stroke="#3b82f6" stroke-width="1.5"/>
+            <text x="330" y="100" text-anchor="middle" font-size="11" font-weight="600" fill="#1e3a8a">向上查找所属 kset</text>
+            <text x="330" y="114" text-anchor="middle" font-size="10" fill="#1e3a8a">获取 subsystem 名称</text>
+            <!-- Step 3 -->
+            <rect x="220" y="144" width="220" height="40" fill="#bfdbfe" rx="6" stroke="#3b82f6" stroke-width="1.5"/>
+            <text x="330" y="162" text-anchor="middle" font-size="11" font-weight="600" fill="#1e3a8a">构建环境变量</text>
+            <text x="330" y="176" text-anchor="middle" font-size="10" fill="#1e3a8a">ACTION / DEVPATH / SUBSYSTEM / SEQNUM</text>
+            <!-- Step 4 -->
+            <rect x="220" y="206" width="220" height="40" fill="#c7d2fe" rx="6" stroke="#4f46e5" stroke-width="1.5"/>
+            <text x="330" y="224" text-anchor="middle" font-size="11" font-weight="600" fill="#312e81">kset->uevent_ops->uevent()</text>
+            <text x="330" y="238" text-anchor="middle" font-size="10" fill="#312e81">添加 MAJOR/MINOR/DEVNAME 等</text>
+            <!-- Fork -->
+            <line x1="330" y1="246" x2="330" y2="278" stroke="#4f46e5" stroke-width="1.5"/>
+            <line x1="330" y1="278" x2="120" y2="278" stroke="#4f46e5" stroke-width="1.5"/>
+            <line x1="330" y1="278" x2="540" y2="278" stroke="#4f46e5" stroke-width="1.5"/>
+            <line x1="120" y1="278" x2="120" y2="298" stroke="#4f46e5" stroke-width="1.5" marker-end="url(#arr2)"/>
+            <line x1="540" y1="278" x2="540" y2="298" stroke="#4f46e5" stroke-width="1.5" marker-end="url(#arr2)"/>
+            <text x="200" y="273" font-size="10" fill="#4f46e5">两条并行路径</text>
+            <!-- Left branch: Netlink -->
+            <rect x="20" y="298" width="200" height="70" fill="#d1fae5" rx="6" stroke="#059669" stroke-width="1.5"/>
+            <text x="120" y="320" text-anchor="middle" font-size="11" font-weight="700" fill="#065f46">路径①：Netlink</text>
+            <text x="120" y="336" text-anchor="middle" font-size="10" fill="#065f46">kobject_uevent_net_broadcast()</text>
+            <text x="120" y="350" text-anchor="middle" font-size="10" fill="#065f46">netlink_broadcast_filtered()</text>
+            <text x="120" y="362" text-anchor="middle" font-size="10" fill="#065f46">→ 发送给 udevd 监听 socket</text>
+            <!-- Right branch: uevent_helper -->
+            <rect x="440" y="298" width="200" height="70" fill="#fed7aa" rx="6" stroke="#ea580c" stroke-width="1.5"/>
+            <text x="540" y="320" text-anchor="middle" font-size="11" font-weight="700" fill="#7c2d12">路径②：uevent_helper</text>
+            <text x="540" y="336" text-anchor="middle" font-size="10" fill="#7c2d12">call_usermodehelper()</text>
+            <text x="540" y="350" text-anchor="middle" font-size="10" fill="#7c2d12">argv[0] = uevent_helper</text>
+            <text x="540" y="362" text-anchor="middle" font-size="10" fill="#7c2d12">→ fork() /sbin/mdev</text>
+            <!-- Result boxes -->
+            <rect x="20" y="388" width="200" height="25" fill="#a7f3d0" rx="4" stroke="#10b981" stroke-width="1"/>
+            <text x="120" y="404" text-anchor="middle" font-size="10" fill="#065f46">udevd / netlink 客户端接收</text>
+            <rect x="440" y="388" width="200" height="25" fill="#fed7aa" rx="4" stroke="#ea580c" stroke-width="1"/>
+            <text x="540" y="404" text-anchor="middle" font-size="10" fill="#7c2d12">mdev 进程 → make_device()</text>
+            <!-- Vertical arrows -->
+            <line x1="330" y1="60" x2="330" y2="82" stroke="#4f46e5" stroke-width="1.5" marker-end="url(#arr2)"/>
+            <line x1="330" y1="122" x2="330" y2="144" stroke="#4f46e5" stroke-width="1.5" marker-end="url(#arr2)"/>
+            <line x1="330" y1="184" x2="330" y2="206" stroke="#4f46e5" stroke-width="1.5" marker-end="url(#arr2)"/>
+            <line x1="120" y1="368" x2="120" y2="388" stroke="#059669" stroke-width="1.5" marker-end="url(#arr2)"/>
+            <line x1="540" y1="368" x2="540" y2="388" stroke="#ea580c" stroke-width="1.5" marker-end="url(#arr2)"/>
+          </svg>
+        </div>
+
+        <div class="principle-box">
+          <div class="ptitle">🔭 第一性原理解读</div>
+          <p><code>kobject_uevent_env()</code> 的本质是<strong>内核内部状态变化的"广播者"</strong>：它将内核数据结构中已经确定的事实（某设备已被注册，其设备号为 X:Y，路径为 P）翻译成一组键值对（环境变量），然后通过两条并行通道广播出去。这个设计体现了"生产者-消费者"模型：内核只负责产生事件和数据，用户空间工具（mdev/udev）负责消费和响应。</p>
+        </div>
+      </div>
+
+      <!-- Section 3: 两种通知路径 -->
+      <div class="section" id="sec-3">
+        <div class="section-header">
+          <div class="section-badge">第四章 · 内核层</div>
+          <h1>uevent 两种通知路径</h1>
+          <p class="section-desc">Usermode Helper（uevent_helper）与 Netlink 的对比与实现细节</p>
+        </div>
+
+        <div class="info-box">
+          <strong>官方文档原文（LWN.net 2007，Rob Landley）：</strong><br>
+          "Linux provides two interfaces to hotplug; the kernel can spawn a usermode helper process, or it can send a message to an existing daemon listening to a netlink socket."
+        </div>
+
+        <h2>路径一：Usermode Helper（uevent_helper）</h2>
+        <div class="card">
+          <div class="card-title"><span class="card-icon">🚀</span>调用机制</div>
+          <ul>
+            <li>内核为<strong>每个热插拔事件</strong>单独 fork 一个进程，运行 <code>uevent_helper</code> 指定的程序</li>
+            <li>子进程属于 root 用户（UID 0），是 init 进程（PID 1）的子进程</li>
+            <li>热插拔事件信息通过<strong>环境变量</strong>传递给子进程</li>
+            <li>默认调用 <code>/sbin/hotplug</code>，可通过写入 <code>/proc/sys/kernel/hotplug</code> 修改</li>
+          </ul>
+          <div class="warn-box">
+            <strong>注意：</strong>此机制需要内核配置项 <code>CONFIG_UEVENT_HELPER</code> 启用。现代内核中，该选项有时默认禁用，倾向于使用 Netlink 方式。
+          </div>
+        </div>
+
+        <h3>设置 mdev 为 uevent_helper</h3>
+        <pre><code><span class="cmt"># 方法1：运行时动态设置（最常用）</span>
+echo /sbin/mdev > /proc/sys/kernel/hotplug
+
+<span class="cmt"># 方法2：sysctl 接口（等价于方法1）</span>
+sysctl -w kernel.hotplug=/sbin/mdev
+
+<span class="cmt"># 方法3：内核编译时配置（Kconfig）</span>
+CONFIG_UEVENT_HELPER=y
+CONFIG_UEVENT_HELPER_PATH="/sbin/mdev"
+
+<span class="cmt"># 禁用 uevent_helper（让 udevd 通过 Netlink 处理）</span>
+echo "" > /proc/sys/kernel/hotplug</code></pre>
+
+        <h3>call_usermodehelper() 内核实现</h3>
+        <pre><code><span class="cmt">/* lib/kobject_uevent.c */</span>
+<span class="kw">if</span> (uevent_helper[<span class="num">0</span>]) {
+    <span class="kw">char</span> *argv[<span class="num">3</span>];
+    argv[<span class="num">0</span>] = uevent_helper;    <span class="cmt">/* "/sbin/mdev" */</span>
+    argv[<span class="num">1</span>] = (<span class="kw">char</span> *)subsystem; <span class="cmt">/* 子系统名，如 "block", "usb" */</span>
+    argv[<span class="num">2</span>] = NULL;
+
+    <span class="cmt">/* call_usermodehelper 将任务放入 system_unbound_wq 工作队列 */</span>
+    retval = <span class="fn">call_usermodehelper</span>(argv[<span class="num">0</span>], argv, env->envp, UMH_NO_WAIT);
+}
+<span class="cmt">/* 内核环境变量（env->envp）包含：
+ *   HOME=/
+ *   PATH=/sbin:/bin:/usr/sbin:/usr/bin
+ *   ACTION=add
+ *   DEVPATH=/class/xxx/yyy
+ *   SUBSYSTEM=xxx
+ *   MAJOR=189
+ *   MINOR=0
+ *   SEQNUM=1234
+ */</span></code></pre>
+
+        <h2>路径二：Netlink Socket（NETLINK_KOBJECT_UEVENT）</h2>
+        <div class="card">
+          <div class="card-title"><span class="card-icon">🔗</span>Netlink 广播机制</div>
+          <ul>
+            <li>需要 <code>CONFIG_NET</code> 内核配置</li>
+            <li>内核调用 <code>netlink_broadcast_filtered()</code> 向 <code>NETLINK_KOBJECT_UEVENT</code> family 广播</li>
+            <li>数据包包含一组以 <code>\0</code> 分隔的文本行（第一行为 <code>ACTION@DEVPATH</code>）</li>
+            <li>监听守护进程（udevd）在 socket 上 <code>recv()</code> 接收，无需每次 fork</li>
+            <li>udev/mdev 的 netlink 模式需要 busybox 的 <code>uevent</code> 守护进程支持</li>
+          </ul>
+        </div>
+
+        <h3>Netlink 数据包格式</h3>
+        <pre><code><span class="cmt">/* Netlink 数据包：以 \0 分隔的文本行 */</span>
+<span class="str">"add@/class/input/input9/mouse2\0"</span>  <span class="cmt">← 第一行：ACTION@DEVPATH</span>
+<span class="str">"ACTION=add\0"</span>
+<span class="str">"DEVPATH=/class/input/input9/mouse2\0"</span>
+<span class="str">"SUBSYSTEM=input\0"</span>
+<span class="str">"SEQNUM=1064\0"</span>
+<span class="str">"MAJOR=13\0"</span>
+<span class="str">"MINOR=34\0"</span>
+<span class="cmt">/* 来源：Stack Overflow "uevent sent from kernel to user space" */</span></code></pre>
+
+        <h3>用户空间监听 Netlink uevent（示例）</h3>
+        <pre><code><span class="cmt">/* 来源：LWN.net Articles/242046（Rob Landley, 2007） */</span>
+<span class="kw">int</span> fd = <span class="fn">socket</span>(PF_NETLINK, SOCK_DGRAM, NETLINK_KOBJECT_UEVENT);
+<span class="kw">struct</span> sockaddr_nl nls = {
+    .nl_family = AF_NETLINK,
+    .nl_pid    = <span class="fn">getpid</span>(),
+    .nl_groups = -<span class="num">1</span>   <span class="cmt">/* 订阅所有 multicast group */</span>
+};
+<span class="fn">bind</span>(fd, (<span class="kw">void</span>*)&nls, <span class="kw">sizeof</span>(nls));
+
+<span class="kw">char</span> buf[<span class="num">512</span>];
+<span class="kw">while</span> (<span class="num">1</span>) {
+    <span class="kw">int</span> len = <span class="fn">recv</span>(fd, buf, <span class="kw">sizeof</span>(buf), MSG_DONTWAIT);
+    <span class="kw">int</span> i = <span class="num">0</span>;
+    <span class="kw">while</span> (i < len) {
+        <span class="fn">printf</span>(<span class="str">"%s\n"</span>, buf+i);   <span class="cmt">/* 打印每一行键值对 */</span>
+        i += <span class="fn">strlen</span>(buf+i) + <span class="num">1</span>;
+    }
+}</code></pre>
+
+        <div class="diagram-wrap">
+          <div class="diagram-title">两种 uevent 通知路径对比</div>
+          <svg viewBox="0 0 680 280" xmlns="http://www.w3.org/2000/svg" width="680" height="280">
+            <rect width="680" height="280" fill="#f8fafc" rx="8"/>
+            <defs>
+              <marker id="arr3" markerWidth="8" markerHeight="8" refX="4" refY="4" orient="auto">
+                <path d="M0,0 L8,4 L0,8 Z" fill="#6366f1"/>
+              </marker>
+            </defs>
+            <!-- Kernel side -->
+            <rect x="240" y="20" width="200" height="50" fill="#c7d2fe" rx="8" stroke="#4f46e5" stroke-width="2"/>
+            <text x="340" y="42" text-anchor="middle" font-size="12" font-weight="700" fill="#312e81">kobject_uevent_env()</text>
+            <text x="340" y="58" text-anchor="middle" font-size="10" fill="#312e81">lib/kobject_uevent.c</text>
+            <!-- Fork lines -->
+            <line x1="340" y1="70" x2="340" y2="100" stroke="#4f46e5" stroke-width="1.5"/>
+            <line x1="340" y1="100" x2="130" y2="100" stroke="#4f46e5" stroke-width="1.5"/>
+            <line x1="340" y1="100" x2="550" y2="100" stroke="#4f46e5" stroke-width="1.5"/>
+            <line x1="130" y1="100" x2="130" y2="120" stroke="#059669" stroke-width="2" marker-end="url(#arr3)"/>
+            <line x1="550" y1="100" x2="550" y2="120" stroke="#ea580c" stroke-width="2" marker-end="url(#arr3)"/>
+            <!-- Path 1: Netlink -->
+            <rect x="20" y="120" width="220" height="70" fill="#d1fae5" rx="8" stroke="#059669" stroke-width="1.5"/>
+            <text x="130" y="143" text-anchor="middle" font-size="12" font-weight="700" fill="#065f46">路径① Netlink</text>
+            <text x="130" y="160" text-anchor="middle" font-size="10" fill="#065f46">netlink_broadcast_filtered()</text>
+            <text x="130" y="175" text-anchor="middle" font-size="10" fill="#065f46">PF_NETLINK / SOCK_DGRAM</text>
+            <text x="130" y="186" text-anchor="middle" font-size="10" fill="#065f46">NETLINK_KOBJECT_UEVENT group=1</text>
+            <!-- Path 2: uevent_helper -->
+            <rect x="440" y="120" width="220" height="70" fill="#ffedd5" rx="8" stroke="#ea580c" stroke-width="1.5"/>
+            <text x="550" y="143" text-anchor="middle" font-size="12" font-weight="700" fill="#7c2d12">路径② uevent_helper</text>
+            <text x="550" y="160" text-anchor="middle" font-size="10" fill="#7c2d12">call_usermodehelper()</text>
+            <text x="550" y="175" text-anchor="middle" font-size="10" fill="#7c2d12">argv[0] = /sbin/mdev</text>
+            <text x="550" y="186" text-anchor="middle" font-size="10" fill="#7c2d12">每事件一个进程（fork）</text>
+            <!-- Userspace receivers -->
+            <line x1="130" y1="190" x2="130" y2="218" stroke="#059669" stroke-width="2" marker-end="url(#arr3)"/>
+            <line x1="550" y1="190" x2="550" y2="218" stroke="#ea580c" stroke-width="2" marker-end="url(#arr3)"/>
+            <rect x="20" y="218" width="220" height="45" fill="#a7f3d0" rx="6" stroke="#10b981" stroke-width="1"/>
+            <text x="130" y="238" text-anchor="middle" font-size="11" font-weight="600" fill="#065f46">udevd 守护进程</text>
+            <text x="130" y="254" text-anchor="middle" font-size="10" fill="#065f46">recv() 接收，规则匹配</text>
+            <rect x="440" y="218" width="220" height="45" fill="#fed7aa" rx="6" stroke="#ea580c" stroke-width="1"/>
+            <text x="550" y="238" text-anchor="middle" font-size="11" font-weight="600" fill="#7c2d12">mdev 进程（每事件新 fork）</text>
+            <text x="550" y="254" text-anchor="middle" font-size="10" fill="#7c2d12">读取环境变量 → make_device()</text>
+            <!-- Labels -->
+            <text x="130" y="115" font-size="10" fill="#059669" text-anchor="middle">需要 CONFIG_NET</text>
+            <text x="550" y="115" font-size="10" fill="#ea580c" text-anchor="middle">需要 CONFIG_UEVENT_HELPER</text>
+          </svg>
+        </div>
+
+        <table>
+          <tr><th>对比项</th><th>Netlink 路径</th><th>uevent_helper 路径</th></tr>
+          <tr><td>内核依赖</td><td>CONFIG_NET</td><td>CONFIG_UEVENT_HELPER</td></tr>
+          <tr><td>用户空间接收</td><td>守护进程 recv() socket</td><td>每事件 fork() 新进程</td></tr>
+          <tr><td>数据格式</td><td>Netlink 数据包</td><td>进程环境变量</td></tr>
+          <tr><td>接收程序</td><td>udevd / busybox uevent</td><td>mdev（直接执行）</td></tr>
+          <tr><td>性能</td><td>高（无 fork 开销）</td><td>低（每事件 fork）</td></tr>
+          <tr><td>initramfs 支持</td><td>需要 init 先启动守护进程</td><td>可在 init 前工作</td></tr>
+        </table>
+
+        <div class="principle-box">
+          <div class="ptitle">🔭 第一性原理解读</div>
+          <p>两种通知路径的根本差异在于<strong>进程模型的选择</strong>：Netlink 是"长连接多路复用"——一个守护进程处理所有事件；uevent_helper 是"短连接一次性"——每事件一个进程。mdev 选择后者，代价是每次 fork 的开销，换来的是极简的部署（无需守护进程）和在 init 前工作的能力——这是嵌入式系统对资源与简单性的折中。</p>
+        </div>
+      </div>
+
+      <!-- Section 4: mdev 工作原理 -->
+      <div class="section" id="sec-4">
+        <div class="section-header">
+          <div class="section-badge">第五章 · 用户空间</div>
+          <h1>mdev 工作原理</h1>
+          <p class="section-desc">BusyBox mdev 源码解析：mdev_main() 与 make_device()</p>
+        </div>
+
+        <div class="card">
+          <div class="card-title"><span class="card-icon">📦</span>mdev 两种工作模式</div>
+          <ol>
+            <li><strong>热插拔模式</strong>：由内核通过 <code>call_usermodehelper()</code> 直接调用（无参数），通过读取环境变量处理单个设备事件</li>
+            <li><strong>冷插拔扫描模式</strong>：系统启动时执行 <code>mdev -s</code>，递归扫描 <code>/sys/class</code> 和 <code>/sys/block</code>，为已存在设备补全 <code>/dev</code> 节点</li>
+          </ol>
+        </div>
+
+        <h2>mdev_main() 源码解析</h2>
+        <pre><code><span class="cmt">/* busybox/util-linux/mdev.c（基于 busybox-1.23.1）*/</span>
+<span class="kw">int</span> <span class="fn">mdev_main</span>(<span class="kw">int</span> argc, <span class="kw">char</span> **argv)
+{
+    <span class="fn">xchdir</span>(<span class="str">"/dev"</span>);   <span class="cmt">/* 切换工作目录到 /dev */</span>
+
+    <span class="kw">if</span> (argv[<span class="num">1</span>] && <span class="fn">strcmp</span>(argv[<span class="num">1</span>], <span class="str">"-s"</span>) == <span class="num">0</span>) {
+        <span class="cmt">/* ===== 冷插拔模式：mdev -s ===== */</span>
+        <span class="fn">putenv</span>((<span class="kw">char</span>*)<span class="str">"ACTION=add"</span>);
+
+        <span class="cmt">/* 若 /sys/class/block 不存在，才扫描旧的 /sys/block */</span>
+        <span class="kw">if</span> (<span class="fn">access</span>(<span class="str">"/sys/class/block"</span>, F_OK) != <span class="num">0</span>)
+            <span class="fn">recursive_action</span>(<span class="str">"/sys/block"</span>,
+                ACTION_RECURSE | ACTION_FOLLOWLINKS | ACTION_QUIET,
+                fileAction, dirAction, temp, <span class="num">0</span>);
+
+        <span class="cmt">/* 递归扫描 /sys/class，对每个含 "dev" 的目录调用 fileAction */</span>
+        <span class="fn">recursive_action</span>(<span class="str">"/sys/class"</span>,
+            ACTION_RECURSE | ACTION_FOLLOWLINKS,
+            fileAction, dirAction, temp, <span class="num">0</span>);
+    }
+    <span class="kw">else</span> {
+        <span class="cmt">/* ===== 热插拔模式：由内核直接 fork 调用 ===== */</span>
+        <span class="cmt">/* 读取内核通过 call_usermodehelper 设置的环境变量 */</span>
+        env_devname = <span class="fn">getenv</span>(<span class="str">"DEVNAME"</span>);   <span class="cmt">/* 可为 NULL */</span>
+        G.subsystem = <span class="fn">getenv</span>(<span class="str">"SUBSYSTEM"</span>);
+        action      = <span class="fn">getenv</span>(<span class="str">"ACTION"</span>);    <span class="cmt">/* "add" 或 "remove" */</span>
+        env_devpath = <span class="fn">getenv</span>(<span class="str">"DEVPATH"</span>);  <span class="cmt">/* /sys 中的路径 */</span>
+
+        <span class="cmt">/* 构建 sysfs 完整路径：/sys + DEVPATH */</span>
+        <span class="fn">snprintf</span>(temp, PATH_MAX, <span class="str">"/sys%s"</span>, env_devpath);
+
+        <span class="cmt">/* 核心函数：根据 sysfs 信息创建/删除 /dev 节点 */</span>
+        <span class="fn">make_device</span>(env_devname, temp, op);
+    }
+}</code></pre>
+
+        <h2>make_device() — 核心设备节点创建</h2>
+        <pre><code><span class="cmt">/* make_device() 关键逻辑（简化）*/</span>
+<span class="kw">static void</span> <span class="fn">make_device</span>(<span class="kw">char</span> *devname, <span class="kw">char</span> *path, <span class="kw">int</span> op)
+{
+    <span class="cmt">/* 1. 读取 /etc/mdev.conf 配置文件 */</span>
+    fd = <span class="fn">open</span>(<span class="str">"/etc/mdev.conf"</span>, O_RDONLY);
+
+    <span class="cmt">/* 2. 读取 sysfs dev 文件获取设备号
+     *    /sys/class/tty/ttyUSB0/dev → "188:0"
+     */</span>
+    fd = <span class="fn">open</span>(path <span class="str">"/dev"</span>, O_RDONLY);
+    <span class="fn">read</span>(fd, dev_info, ...);
+    major = ...; minor = ...;
+
+    <span class="cmt">/* 3. 匹配 mdev.conf 规则，获取权限/用户/组/命令 */</span>
+    <span class="fn">match_mdev_conf_rule</span>(devname, &uid, &gid, &mode, &command);
+
+    <span class="cmt">/* 4. 创建设备节点（ACTION=add 时） */</span>
+    <span class="kw">if</span> (op == OP_add) {
+        <span class="fn">mknod</span>(devname, mode | dev_type, <span class="fn">makedev</span>(major, minor));
+        <span class="fn">chown</span>(devname, uid, gid);
+
+        <span class="cmt">/* 5. 执行 mdev.conf 中 @ 标记的命令（创建后脚本）*/</span>
+        <span class="kw">if</span> (command && command[<span class="num">0</span>] == <span class="str">'@'</span>)
+            <span class="fn">system</span>(command + <span class="num">1</span>);
+    }
+    <span class="cmt">/* 6. 删除设备节点（ACTION=remove 时） */</span>
+    <span class="kw">else if</span> (op == OP_remove) {
+        <span class="cmt">/* 执行 $ 标记命令（删除前脚本）*/</span>
+        <span class="kw">if</span> (command && command[<span class="num">0</span>] == <span class="str">'$'</span>)
+            <span class="fn">system</span>(command + <span class="num">1</span>);
+        <span class="fn">unlink</span>(devname);
+    }
+}</code></pre>
+
+        <div class="diagram-wrap">
+          <div class="diagram-title">mdev 内部处理流程</div>
+          <svg viewBox="0 0 660 360" xmlns="http://www.w3.org/2000/svg" width="660" height="360">
+            <rect width="660" height="360" fill="#f8fafc" rx="8"/>
+            <defs>
+              <marker id="arr4" markerWidth="8" markerHeight="8" refX="4" refY="4" orient="auto">
+                <path d="M0,0 L8,4 L0,8 Z" fill="#059669"/>
+              </marker>
+            </defs>
+            <!-- Start -->
+            <rect x="230" y="15" width="200" height="40" fill="#fde68a" rx="20" stroke="#d97706" stroke-width="2"/>
+            <text x="330" y="40" text-anchor="middle" font-size="12" font-weight="700" fill="#92400e">mdev 进程启动</text>
+            <!-- Decision -->
+            <polygon points="330,80 430,110 330,140 230,110" fill="#bfdbfe" stroke="#3b82f6" stroke-width="1.5"/>
+            <text x="330" y="107" text-anchor="middle" font-size="11" font-weight="600" fill="#1e3a8a">argv[1] == "-s" ?</text>
+            <!-- Yes: mdev -s -->
+            <text x="165" y="105" text-anchor="middle" font-size="10" fill="#059669">是</text>
+            <rect x="20" y="155" width="190" height="45" fill="#d1fae5" rx="6" stroke="#059669" stroke-width="1.5"/>
+            <text x="115" y="174" text-anchor="middle" font-size="11" font-weight="600" fill="#065f46">冷插拔扫描模式</text>
+            <text x="115" y="191" text-anchor="middle" font-size="10" fill="#065f46">遍历 /sys/class /sys/block</text>
+            <!-- No: hotplug -->
+            <text x="470" y="105" text-anchor="middle" font-size="10" fill="#ea580c">否（热插拔）</text>
+            <rect x="450" y="155" width="190" height="45" fill="#ffedd5" rx="6" stroke="#ea580c" stroke-width="1.5"/>
+            <text x="545" y="174" text-anchor="middle" font-size="11" font-weight="600" fill="#7c2d12">热插拔模式</text>
+            <text x="545" y="191" text-anchor="middle" font-size="10" fill="#7c2d12">getenv(ACTION/DEVPATH...)</text>
+            <!-- Common path: make_device -->
+            <line x1="115" y1="200" x2="115" y2="230" stroke="#059669" stroke-width="1.5"/>
+            <line x1="545" y1="200" x2="545" y2="230" stroke="#ea580c" stroke-width="1.5"/>
+            <line x1="115" y1="230" x2="330" y2="230" stroke="#6366f1" stroke-width="1.5"/>
+            <line x1="545" y1="230" x2="330" y2="230" stroke="#6366f1" stroke-width="1.5"/>
+            <line x1="330" y1="230" x2="330" y2="245" stroke="#6366f1" stroke-width="1.5" marker-end="url(#arr4)"/>
+            <rect x="180" y="245" width="300" height="45" fill="#c7d2fe" rx="6" stroke="#4f46e5" stroke-width="1.5"/>
+            <text x="330" y="265" text-anchor="middle" font-size="12" font-weight="700" fill="#312e81">make_device(devname, syspath, op)</text>
+            <text x="330" y="282" text-anchor="middle" font-size="10" fill="#312e81">读 /etc/mdev.conf → 匹配规则</text>
+            <!-- Results -->
+            <line x1="330" y1="290" x2="330" y2="312" stroke="#4f46e5" stroke-width="1.5" marker-end="url(#arr4)"/>
+            <rect x="90" y="312" width="150" height="35" fill="#a7f3d0" rx="6" stroke="#10b981" stroke-width="1"/>
+            <text x="165" y="328" text-anchor="middle" font-size="10" font-weight="600" fill="#065f46">ACTION=add：</text>
+            <text x="165" y="342" text-anchor="middle" font-size="10" fill="#065f46">mknod() 创建节点</text>
+            <rect x="270" y="312" width="130" height="35" fill="#ede9fe" rx="6" stroke="#7c3aed" stroke-width="1"/>
+            <text x="335" y="328" text-anchor="middle" font-size="10" font-weight="600" fill="#5b21b6">执行脚本</text>
+            <text x="335" y="342" text-anchor="middle" font-size="10" fill="#5b21b6">mdev.conf 命令</text>
+            <rect x="420" y="312" width="150" height="35" fill="#fee2e2" rx="6" stroke="#dc2626" stroke-width="1"/>
+            <text x="495" y="328" text-anchor="middle" font-size="10" font-weight="600" fill="#991b1b">ACTION=remove：</text>
+            <text x="495" y="342" text-anchor="middle" font-size="10" fill="#991b1b">unlink() 删除节点</text>
+            <!-- Arrow from start to decision -->
+            <line x1="330" y1="55" x2="330" y2="80" stroke="#d97706" stroke-width="1.5" marker-end="url(#arr4)"/>
+            <line x1="230" y1="110" x2="210" y2="155" stroke="#059669" stroke-width="1.5" marker-end="url(#arr4)"/>
+            <line x1="430" y1="110" x2="450" y2="155" stroke="#ea580c" stroke-width="1.5" marker-end="url(#arr4)"/>
+          </svg>
+        </div>
+
+        <div class="principle-box">
+          <div class="ptitle">🔭 第一性原理解读</div>
+          <p>mdev 的本质是一个<strong>翻译器</strong>：它将内核用"文件路径+键值对"描述的设备（sysfs 树 + 环境变量）翻译为操作系统文件系统中的<strong>特殊文件</strong>（字符/块设备节点）。这个翻译工作的核心是两个系统调用：从 <code>/sys/class/xxx/dev</code> 读取设备号，然后调用 <code>mknod()</code> 以该设备号创建节点。设备节点的本质是内核设备驱动的文件系统入口点。</p>
+        </div>
+      </div>
+
+      <!-- Section 5: 完整 MSC 交互流程 -->
+      <div class="section" id="sec-5">
+        <div class="section-header">
+          <div class="section-badge">第六章 · 核心</div>
+          <h1>完整交互流程（MSC 序列图）</h1>
+          <p class="section-desc">从硬件插入到 /dev 节点创建的全链路时序</p>
+        </div>
+
+        <div class="info-box">
+          本章以 USB 设备热插入为例，展示从硬件层到应用层的完整事件序列，包含内核函数调用链与用户空间 mdev 的完整响应流程。
+        </div>
+
+        <div class="diagram-wrap">
+          <div class="diagram-title">MSC 消息序列图：热插拔完整交互流程（设备插入）</div>
+          <svg viewBox="0 0 780 820" xmlns="http://www.w3.org/2000/svg" width="780" height="820">
+            <rect width="780" height="820" fill="#fafafa" rx="8"/>
+            <defs>
+              <marker id="ma" markerWidth="8" markerHeight="6" refX="7" refY="3" orient="auto">
+                <path d="M0,0 L8,3 L0,6 Z" fill="#1e40af"/>
+              </marker>
+              <marker id="mb" markerWidth="8" markerHeight="6" refX="7" refY="3" orient="auto">
+                <path d="M0,0 L8,3 L0,6 Z" fill="#059669"/>
+              </marker>
+              <marker id="mc" markerWidth="8" markerHeight="6" refX="7" refY="3" orient="auto">
+                <path d="M0,0 L8,3 L0,6 Z" fill="#ea580c"/>
+              </marker>
+              <marker id="md" markerWidth="8" markerHeight="6" refX="7" refY="3" orient="auto">
+                <path d="M0,0 L8,3 L0,6 Z" fill="#7c3aed"/>
+              </marker>
+              <marker id="me" markerWidth="8" markerHeight="6" refX="7" refY="3" orient="auto">
+                <path d="M0,0 L8,3 L0,6 Z" fill="#dc2626"/>
+              </marker>
+            </defs>
+
+            <!-- Column headers -->
+            <!-- HW: x=60 -->
+            <rect x="10" y="10" width="100" height="44" fill="#fef3c7" rx="6" stroke="#d97706" stroke-width="1.5"/>
+            <text x="60" y="30" text-anchor="middle" font-size="11" font-weight="700" fill="#92400e">硬件层</text>
+            <text x="60" y="46" text-anchor="middle" font-size="9" fill="#92400e">USB/PCI 控制器</text>
+
+            <!-- Bus Driver: x=190 -->
+            <rect x="130" y="10" width="120" height="44" fill="#dbeafe" rx="6" stroke="#2563eb" stroke-width="1.5"/>
+            <text x="190" y="30" text-anchor="middle" font-size="11" font-weight="700" fill="#1e40af">总线驱动</text>
+            <text x="190" y="46" text-anchor="middle" font-size="9" fill="#1e40af">USB Core / PCI</text>
+
+            <!-- Device Model: x=340 -->
+            <rect x="270" y="10" width="140" height="44" fill="#e0e7ff" rx="6" stroke="#4f46e5" stroke-width="1.5"/>
+            <text x="340" y="30" text-anchor="middle" font-size="11" font-weight="700" fill="#312e81">设备模型/uevent</text>
+            <text x="340" y="46" text-anchor="middle" font-size="9" fill="#312e81">kobject_uevent_env()</text>
+
+            <!-- Kernel interface: x=490 -->
+            <rect x="420" y="10" width="140" height="44" fill="#fce7f3" rx="6" stroke="#9d174d" stroke-width="1.5"/>
+            <text x="490" y="30" text-anchor="middle" font-size="11" font-weight="700" fill="#831843">内核接口层</text>
+            <text x="490" y="46" text-anchor="middle" font-size="9" fill="#831843">sysfs / netlink</text>
+
+            <!-- mdev: x=650 -->
+            <rect x="570" y="10" width="140" height="44" fill="#d1fae5" rx="6" stroke="#059669" stroke-width="1.5"/>
+            <text x="640" y="30" text-anchor="middle" font-size="11" font-weight="700" fill="#065f46">用户空间 mdev</text>
+            <text x="640" y="46" text-anchor="middle" font-size="9" fill="#065f46">/sbin/mdev</text>
+
+            <!-- Lifelines -->
+            <line x1="60" y1="54" x2="60" y2="800" stroke="#d97706" stroke-width="1" stroke-dasharray="4,3" opacity="0.5"/>
+            <line x1="190" y1="54" x2="190" y2="800" stroke="#2563eb" stroke-width="1" stroke-dasharray="4,3" opacity="0.5"/>
+            <line x1="340" y1="54" x2="340" y2="800" stroke="#4f46e5" stroke-width="1" stroke-dasharray="4,3" opacity="0.5"/>
+            <line x1="490" y1="54" x2="490" y2="800" stroke="#9d174d" stroke-width="1" stroke-dasharray="4,3" opacity="0.5"/>
+            <line x1="640" y1="54" x2="640" y2="800" stroke="#059669" stroke-width="1" stroke-dasharray="4,3" opacity="0.5"/>
+
+            <!-- Step 1: Hardware interrupt -->
+            <rect x="0" y="75" width="780" height="18" fill="#fef9c3" rx="2" opacity="0.5"/>
+            <text x="8" y="88" font-size="9" fill="#92400e" font-weight="700">① 硬件检测阶段</text>
+            <line x1="60" y1="100" x2="180" y2="100" stroke="#1e40af" stroke-width="1.8" marker-end="url(#ma)"/>
+            <rect x="70" y="86" width="100" height="15" fill="white" opacity="0.8"/>
+            <text x="120" y="98" text-anchor="middle" font-size="9.5" fill="#1e40af">硬件中断 / 设备检测信号</text>
+
+            <!-- Step 2: USB enumerate -->
+            <line x1="190" y1="125" x2="190" y2="115" stroke="none"/>
+            <rect x="150" y="113" width="80" height="25" fill="#bfdbfe" rx="4" stroke="#3b82f6" stroke-width="1"/>
+            <text x="190" y="124" text-anchor="middle" font-size="9" fill="#1e3a8a">usb_new_device()</text>
+            <text x="190" y="134" text-anchor="middle" font-size="9" fill="#1e3a8a">设备枚举/识别</text>
+            <line x1="190" y1="148" x2="330" y2="148" stroke="#1e40af" stroke-width="1.8" marker-end="url(#ma)"/>
+            <text x="265" y="143" text-anchor="middle" font-size="9" fill="#1e40af">device_register(&udev->dev)</text>
+
+            <!-- Step 3: device_add -->
+            <rect x="0" y="160" width="780" height="18" fill="#e0e7ff" rx="2" opacity="0.4"/>
+            <text x="8" y="173" font-size="9" fill="#312e81" font-weight="700">② 设备注册阶段</text>
+            <rect x="280" y="178" width="120" height="38" fill="#c7d2fe" rx="4" stroke="#4f46e5" stroke-width="1"/>
+            <text x="340" y="195" text-anchor="middle" font-size="9" fill="#312e81">device_add()</text>
+            <text x="340" y="207" text-anchor="middle" font-size="9" fill="#312e81">kobject_add() → sysfs 创建目录</text>
+
+            <!-- Step 4: sysfs dev attr -->
+            <line x1="340" y1="228" x2="480" y2="228" stroke="#4f46e5" stroke-width="1.8" marker-end="url(#md)"/>
+            <text x="410" y="223" text-anchor="middle" font-size="9" fill="#4f46e5">创建 /sys/class/xxx/dev</text>
+            <rect x="430" y="232" width="120" height="22" fill="#fce7f3" rx="4" stroke="#9d174d" stroke-width="1"/>
+            <text x="490" y="247" text-anchor="middle" font-size="9" fill="#831843">写入 MAJOR:MINOR 内容</text>
+
+            <!-- Step 5: kobject_uevent -->
+            <rect x="0" y="265" width="780" height="18" fill="#fce7f3" rx="2" opacity="0.4"/>
+            <text x="8" y="278" font-size="9" fill="#831843" font-weight="700">③ uevent 发送阶段</text>
+            <rect x="280" y="285" width="120" height="38" fill="#c7d2fe" rx="4" stroke="#4f46e5" stroke-width="1"/>
+            <text x="340" y="300" text-anchor="middle" font-size="9" fill="#312e81">kobject_uevent(kobj,</text>
+            <text x="340" y="312" text-anchor="middle" font-size="9" fill="#312e81">KOBJ_ADD)</text>
+
+            <!-- Step 6: Build env vars -->
+            <rect x="280" y="332" width="120" height="50" fill="#e0e7ff" rx="4" stroke="#4f46e5" stroke-width="1"/>
+            <text x="340" y="348" text-anchor="middle" font-size="9" fill="#312e81">构建环境变量</text>
+            <text x="340" y="360" text-anchor="middle" font-size="8.5" fill="#4f46e5">ACTION=add</text>
+            <text x="340" y="371" text-anchor="middle" font-size="8.5" fill="#4f46e5">DEVPATH=...</text>
+            <text x="340" y="382" text-anchor="middle" font-size="8.5" fill="#4f46e5">MAJOR=x MINOR=y</text>
+
+            <!-- Step 7a: Netlink broadcast -->
+            <line x1="340" y1="395" x2="480" y2="395" stroke="#4f46e5" stroke-width="1.5" stroke-dasharray="5,3" marker-end="url(#md)"/>
+            <text x="410" y="390" text-anchor="middle" font-size="8.5" fill="#7c3aed">netlink_broadcast() [可选]</text>
+
+            <!-- Step 7b: call_usermodehelper -->
+            <line x1="340" y1="420" x2="480" y2="420" stroke="#4f46e5" stroke-width="1.8" marker-end="url(#md)"/>
+            <text x="410" y="415" text-anchor="middle" font-size="9" fill="#4f46e5">call_usermodehelper()</text>
+            <rect x="430" y="424" width="120" height="30" fill="#fce7f3" rx="4" stroke="#9d174d" stroke-width="1"/>
+            <text x="490" y="438" text-anchor="middle" font-size="9" fill="#831843">uevent_helper="/sbin/mdev"</text>
+            <text x="490" y="450" text-anchor="middle" font-size="8.5" fill="#831843">fork() + execve()</text>
+
+            <!-- Step 8: mdev starts -->
+            <rect x="0" y="465" width="780" height="18" fill="#d1fae5" rx="2" opacity="0.5"/>
+            <text x="8" y="478" font-size="9" fill="#065f46" font-weight="700">④ mdev 处理阶段（用户空间）</text>
+            <line x1="490" y1="490" x2="630" y2="490" stroke="#059669" stroke-width="1.8" marker-end="url(#mb)"/>
+            <text x="560" y="485" text-anchor="middle" font-size="9" fill="#059669">execve("/sbin/mdev", env)</text>
+
+            <!-- Step 9: mdev reads env -->
+            <rect x="580" y="498" width="120" height="40" fill="#a7f3d0" rx="4" stroke="#10b981" stroke-width="1"/>
+            <text x="640" y="514" text-anchor="middle" font-size="9" fill="#065f46">getenv(ACTION)</text>
+            <text x="640" y="526" text-anchor="middle" font-size="9" fill="#065f46">getenv(DEVPATH)</text>
+            <text x="640" y="538" text-anchor="middle" font-size="9" fill="#065f46">getenv(SUBSYSTEM)...</text>
+
+            <!-- Step 10: read sysfs -->
+            <line x1="640" y1="548" x2="500" y2="548" stroke="#059669" stroke-width="1.5" marker-end="url(#mb)"/>
+            <text x="570" y="543" text-anchor="middle" font-size="9" fill="#059669">读取 /sys/class/xxx/dev</text>
+            <line x1="500" y1="562" x2="640" y2="562" stroke="#9d174d" stroke-width="1.5" marker-end="url(#mb)"/>
+            <text x="570" y="557" text-anchor="middle" font-size="8.5" fill="#831843">返回 "188:0" (MAJOR:MINOR)</text>
+
+            <!-- Step 11: read mdev.conf -->
+            <rect x="580" y="572" width="120" height="30" fill="#a7f3d0" rx="4" stroke="#10b981" stroke-width="1"/>
+            <text x="640" y="585" text-anchor="middle" font-size="9" fill="#065f46">读取 /etc/mdev.conf</text>
+            <text x="640" y="598" text-anchor="middle" font-size="9" fill="#065f46">规则匹配（正则）</text>
+
+            <!-- Step 12: mknod -->
+            <rect x="0" y="615" width="780" height="18" fill="#fef3c7" rx="2" opacity="0.4"/>
+            <text x="8" y="628" font-size="9" fill="#92400e" font-weight="700">⑤ 设备节点创建阶段</text>
+            <rect x="580" y="635" width="120" height="50" fill="#bbf7d0" rx="4" stroke="#059669" stroke-width="1.5"/>
+            <text x="640" y="652" text-anchor="middle" font-size="9" font-weight="700" fill="#065f46">make_device()</text>
+            <text x="640" y="664" text-anchor="middle" font-size="9" fill="#065f46">mknod("/dev/ttyUSB0",</text>
+            <text x="640" y="676" text-anchor="middle" font-size="9" fill="#065f46">  c, 188, 0)</text>
+            <text x="640" y="688" text-anchor="middle" font-size="9" fill="#065f46">chown() / chmod()</text>
+
+            <!-- Step 13: execute script -->
+            <rect x="580" y="696" width="120" height="30" fill="#d1fae5" rx="4" stroke="#10b981" stroke-width="1"/>
+            <text x="640" y="711" text-anchor="middle" font-size="9" fill="#065f46">执行 mdev.conf 脚本</text>
+            <text x="640" y="723" text-anchor="middle" font-size="9" fill="#065f46">（@ 创建后命令）</text>
+
+            <!-- Step 14: done -->
+            <rect x="0" y="738" width="780" height="18" fill="#d1fae5" rx="2" opacity="0.5"/>
+            <text x="8" y="751" font-size="9" fill="#065f46" font-weight="700">⑥ 完成</text>
+            <line x1="640" y1="762" x2="500" y2="762" stroke="#059669" stroke-width="1.5" stroke-dasharray="4,3" marker-end="url(#mb)"/>
+            <text x="570" y="757" text-anchor="middle" font-size="9" fill="#059669">进程退出（exit 0）</text>
+            <rect x="430" y="770" width="120" height="25" fill="#bbf7d0" rx="4" stroke="#10b981" stroke-width="1"/>
+            <text x="490" y="787" text-anchor="middle" font-size="9" fill="#065f46">/dev/ttyUSB0 创建完成</text>
+
+            <!-- Right side summary box -->
+            <rect x="5" y="795" width="770" height="20" fill="#1e293b" rx="4"/>
+            <text x="390" y="809" text-anchor="middle" font-size="9" fill="#94a3b8">结果：/dev/ttyUSB0 节点可用，应用程序可通过 open("/dev/ttyUSB0", ...) 访问设备</text>
+          </svg>
+        </div>
+
+        <h2>设备移除序列</h2>
+        <div class="diagram-wrap">
+          <div class="diagram-title">MSC 消息序列图：热插拔完整交互流程（设备移除）</div>
+          <svg viewBox="0 0 780 480" xmlns="http://www.w3.org/2000/svg" width="780" height="480">
+            <rect width="780" height="480" fill="#fafafa" rx="8"/>
+            <defs>
+              <marker id="mr1" markerWidth="8" markerHeight="6" refX="7" refY="3" orient="auto">
+                <path d="M0,0 L8,3 L0,6 Z" fill="#dc2626"/>
+              </marker>
+              <marker id="mr2" markerWidth="8" markerHeight="6" refX="7" refY="3" orient="auto">
+                <path d="M0,0 L8,3 L0,6 Z" fill="#4f46e5"/>
+              </marker>
+            </defs>
+            <!-- Column headers -->
+            <rect x="10" y="10" width="100" height="44" fill="#fee2e2" rx="6" stroke="#dc2626" stroke-width="1.5"/>
+            <text x="60" y="30" text-anchor="middle" font-size="11" font-weight="700" fill="#991b1b">硬件层</text>
+            <text x="60" y="46" text-anchor="middle" font-size="9" fill="#991b1b">USB/PCI 控制器</text>
+            <rect x="130" y="10" width="120" height="44" fill="#fee2e2" rx="6" stroke="#dc2626" stroke-width="1.5"/>
+            <text x="190" y="30" text-anchor="middle" font-size="11" font-weight="700" fill="#991b1b">总线驱动</text>
+            <text x="190" y="46" text-anchor="middle" font-size="9" fill="#991b1b">USB Core / PCI</text>
+            <rect x="270" y="10" width="140" height="44" fill="#fee2e2" rx="6" stroke="#dc2626" stroke-width="1.5"/>
+            <text x="340" y="30" text-anchor="middle" font-size="11" font-weight="700" fill="#991b1b">设备模型/uevent</text>
+            <text x="340" y="46" text-anchor="middle" font-size="9" fill="#991b1b">kobject_uevent_env()</text>
+            <rect x="420" y="10" width="140" height="44" fill="#fee2e2" rx="6" stroke="#dc2626" stroke-width="1.5"/>
+            <text x="490" y="30" text-anchor="middle" font-size="11" font-weight="700" fill="#991b1b">内核接口层</text>
+            <text x="490" y="46" text-anchor="middle" font-size="9" fill="#991b1b">sysfs / hotplug</text>
+            <rect x="570" y="10" width="140" height="44" fill="#fee2e2" rx="6" stroke="#dc2626" stroke-width="1.5"/>
+            <text x="640" y="30" text-anchor="middle" font-size="11" font-weight="700" fill="#991b1b">用户空间 mdev</text>
+            <text x="640" y="46" text-anchor="middle" font-size="9" fill="#991b1b">/sbin/mdev</text>
+            <!-- Lifelines -->
+            <line x1="60" y1="54" x2="60" y2="465" stroke="#dc2626" stroke-width="1" stroke-dasharray="4,3" opacity="0.4"/>
+            <line x1="190" y1="54" x2="190" y2="465" stroke="#dc2626" stroke-width="1" stroke-dasharray="4,3" opacity="0.4"/>
+            <line x1="340" y1="54" x2="340" y2="465" stroke="#dc2626" stroke-width="1" stroke-dasharray="4,3" opacity="0.4"/>
+            <line x1="490" y1="54" x2="490" y2="465" stroke="#dc2626" stroke-width="1" stroke-dasharray="4,3" opacity="0.4"/>
+            <line x1="640" y1="54" x2="640" y2="465" stroke="#dc2626" stroke-width="1" stroke-dasharray="4,3" opacity="0.4"/>
+            <!-- Events -->
+            <line x1="60" y1="85" x2="180" y2="85" stroke="#dc2626" stroke-width="1.8" marker-end="url(#mr1)"/>
+            <text x="120" y="80" text-anchor="middle" font-size="9" fill="#dc2626">设备断开检测信号</text>
+            <line x1="190" y1="108" x2="330" y2="108" stroke="#dc2626" stroke-width="1.8" marker-end="url(#mr1)"/>
+            <text x="260" y="103" text-anchor="middle" font-size="9" fill="#dc2626">device_unregister() / usb_disconnect()</text>
+            <rect x="280" y="118" width="120" height="35" fill="#fee2e2" rx="4" stroke="#dc2626" stroke-width="1"/>
+            <text x="340" y="134" text-anchor="middle" font-size="9" fill="#991b1b">device_del() → 从 sysfs 移除</text>
+            <text x="340" y="147" text-anchor="middle" font-size="9" fill="#991b1b">kobject_uevent(KOBJ_REMOVE)</text>
+            <line x1="340" y1="165" x2="480" y2="165" stroke="#dc2626" stroke-width="1.8" marker-end="url(#mr1)"/>
+            <text x="410" y="160" text-anchor="middle" font-size="9" fill="#dc2626">call_usermodehelper(ACTION=remove)</text>
+            <line x1="490" y1="188" x2="630" y2="188" stroke="#dc2626" stroke-width="1.8" marker-end="url(#mr1)"/>
+            <text x="560" y="183" text-anchor="middle" font-size="9" fill="#dc2626">execve("/sbin/mdev", env)</text>
+            <rect x="580" y="198" width="120" height="50" fill="#fee2e2" rx="4" stroke="#dc2626" stroke-width="1"/>
+            <text x="640" y="214" text-anchor="middle" font-size="9" fill="#991b1b">getenv(ACTION) = "remove"</text>
+            <text x="640" y="228" text-anchor="middle" font-size="9" fill="#991b1b">make_device(..., OP_remove)</text>
+            <text x="640" y="242" text-anchor="middle" font-size="9" fill="#991b1b">执行 $ 命令（删除前脚本）</text>
+            <rect x="580" y="260" width="120" height="35" fill="#fee2e2" rx="4" stroke="#dc2626" stroke-width="1.5"/>
+            <text x="640" y="276" text-anchor="middle" font-size="9" font-weight="700" fill="#991b1b">unlink("/dev/ttyUSB0")</text>
+            <text x="640" y="290" text-anchor="middle" font-size="9" fill="#991b1b">删除设备节点</text>
+            <line x1="640" y1="305" x2="500" y2="305" stroke="#dc2626" stroke-width="1.5" stroke-dasharray="4,3" marker-end="url(#mr1)"/>
+            <text x="570" y="300" text-anchor="middle" font-size="9" fill="#dc2626">进程退出</text>
+            <!-- Result -->
+            <rect x="5" y="325" width="770" height="22" fill="#fee2e2" rx="4"/>
+            <text x="390" y="340" text-anchor="middle" font-size="9" fill="#991b1b">结果：/dev/ttyUSB0 节点已删除，后续 open() 调用将返回 ENOENT</text>
+
+            <!-- mdev.conf scripts note -->
+            <rect x="20" y="360" width="740" height="90" fill="#fffbeb" rx="6" stroke="#d97706" stroke-width="1"/>
+            <text x="390" y="378" text-anchor="middle" font-size="11" font-weight="700" fill="#92400e">mdev.conf 脚本执行时机说明</text>
+            <text x="30" y="400" font-size="9.5" fill="#92400e">  @ 命令（After create）：设备节点创建 后 执行，适用于：挂载文件系统、发送通知、建立符号链接</text>
+            <text x="30" y="420" font-size="9.5" fill="#92400e">  $ 命令（before Delete）：设备节点删除 前 执行，适用于：卸载文件系统、安全弹出、清理资源</text>
+            <text x="30" y="440" font-size="9.5" fill="#92400e">  * 命令（both）：创建后和删除前都执行</text>
+          </svg>
+        </div>
+
+        <div class="principle-box">
+          <div class="ptitle">🔭 第一性原理解读</div>
+          <p>完整流程揭示了一条清晰的<strong>因果链</strong>：物理信号变化（电气连接/断开）→ 内核中断处理 → 内核数据结构更新（sysfs）→ 事件广播（uevent）→ 用户程序响应（mknod/unlink）。每个环节都是前一个环节的必然结果，体现了"事件驱动"架构的精髓：系统不轮询状态，而是响应变化。整个链路的可靠性依赖于每个环节的顺序保证——sysfs 节点必须在 uevent 发送前就绪，这正是 2004 年内核 API 修改的原因（将 kobject_hotplug 从 kobject_add 中分离）。</p>
+        </div>
+      </div>
+
+      <!-- Section 6: 冷插拔 -->
+      <div class="section" id="sec-6">
+        <div class="section-header">
+          <div class="section-badge">第七章 · 深入分析</div>
+          <h1>冷插拔：mdev -s</h1>
+          <p class="section-desc">系统启动时的设备节点批量创建机制</p>
+        </div>
+
+        <div class="card">
+          <div class="card-title"><span class="card-icon">🔄</span>冷插拔（Cold Plug）问题</div>
+          <p>系统启动时，内核在 <code>init</code> 进程启动之前就已经完成了大量设备的检测和注册。由于此时 mdev 还未运行，这些设备的 uevent 事件已经错过。</p>
+          <p>解决方案：<strong><code>mdev -s</code></strong>（scan 模式）— 主动扫描 sysfs，补全所有已存在设备的 <code>/dev</code> 节点。</p>
+          <div class="warn-box">
+            <strong>另一种方法（较新内核）：</strong> 通过向 <code>/sys/*/uevent</code> 文件写入 "add" 重新触发 uevent 事件：<br>
+            <code>for i in $(find /sys -name uevent); do echo add > $i; done</code>
+          </div>
+        </div>
+
+        <h2>系统初始化标准脚本</h2>
+        <pre><code><span class="cmt">#!/bin/sh
+# /etc/init.d/rcS — 系统启动初始化脚本
+# 来源：BusyBox mdev 文档（busybox-mdev.sh）</span>
+
+<span class="cmt"># 1. 挂载必要的虚拟文件系统</span>
+mount -t tmpfs -o size=64k,mode=0755 tmpfs /dev  <span class="cmt"># /dev 使用 tmpfs</span>
+mount -t sysfs sysfs /sys                          <span class="cmt"># sysfs 暴露内核数据</span>
+mount -t proc proc /proc                           <span class="cmt"># procfs（含 /proc/sys）</span>
+
+<span class="cmt"># 2. 创建常用设备目录</span>
+mkdir /dev/pts
+mount -t devpts devpts /dev/pts                    <span class="cmt"># 伪终端支持</span>
+
+<span class="cmt"># 3. 注册 mdev 为内核热插拔 helper
+#    写入后，内核 uevent_helper 变量被更新
+#    /sys/kernel/uevent_helper 也同步变化</span>
+echo /sbin/mdev > /proc/sys/kernel/hotplug
+
+<span class="cmt"># 4. 冷插拔扫描：为已存在设备创建 /dev 节点
+#    扫描 /sys/class 和 /sys/block 下所有含 "dev" 的目录</span>
+mdev -s
+
+<span class="cmt"># 5. 启动用户空间服务...</span>
+exec /sbin/init "$@"</code></pre>
+
+        <div class="diagram-wrap">
+          <div class="diagram-title">mdev -s 冷插拔扫描流程</div>
+          <svg viewBox="0 0 680 380" xmlns="http://www.w3.org/2000/svg" width="680" height="380">
+            <rect width="680" height="380" fill="#f8fafc" rx="8"/>
+            <defs>
+              <marker id="arrs" markerWidth="8" markerHeight="6" refX="7" refY="3" orient="auto">
+                <path d="M0,0 L8,3 L0,6 Z" fill="#4f46e5"/>
+              </marker>
+            </defs>
+            <!-- mdev -s start -->
+            <rect x="240" y="20" width="200" height="38" fill="#bbf7d0" rx="20" stroke="#059669" stroke-width="2"/>
+            <text x="340" y="44" text-anchor="middle" font-size="12" font-weight="700" fill="#065f46">执行 mdev -s</text>
+            <line x1="340" y1="58" x2="340" y2="78" stroke="#4f46e5" stroke-width="1.5" marker-end="url(#arrs)"/>
+            <!-- putenv ACTION=add -->
+            <rect x="255" y="78" width="170" height="28" fill="#c7d2fe" rx="6" stroke="#4f46e5" stroke-width="1"/>
+            <text x="340" y="97" text-anchor="middle" font-size="10" fill="#312e81">putenv("ACTION=add")</text>
+            <line x1="340" y1="106" x2="340" y2="126" stroke="#4f46e5" stroke-width="1.5" marker-end="url(#arrs)"/>
+            <!-- Scan sysfs -->
+            <rect x="255" y="126" width="170" height="38" fill="#dbeafe" rx="6" stroke="#3b82f6" stroke-width="1.5"/>
+            <text x="340" y="144" text-anchor="middle" font-size="10" font-weight="600" fill="#1e3a8a">recursive_action()</text>
+            <text x="340" y="158" text-anchor="middle" font-size="9.5" fill="#1e3a8a">扫描 /sys/class, /sys/block</text>
+            <!-- Fork to fileAction -->
+            <line x1="340" y1="164" x2="340" y2="190" stroke="#4f46e5" stroke-width="1.5"/>
+            <line x1="340" y1="190" x2="120" y2="190" stroke="#4f46e5" stroke-width="1.5"/>
+            <line x1="340" y1="190" x2="560" y2="190" stroke="#4f46e5" stroke-width="1.5"/>
+            <line x1="120" y1="190" x2="120" y2="210" stroke="#4f46e5" stroke-width="1.5" marker-end="url(#arrs)"/>
+            <line x1="560" y1="190" x2="560" y2="210" stroke="#4f46e5" stroke-width="1.5" marker-end="url(#arrs)"/>
+            <!-- fileAction boxes -->
+            <rect x="30" y="210" width="180" height="50" fill="#fde68a" rx="6" stroke="#d97706" stroke-width="1.5"/>
+            <text x="120" y="230" text-anchor="middle" font-size="10" font-weight="600" fill="#92400e">fileAction()</text>
+            <text x="120" y="245" text-anchor="middle" font-size="9.5" fill="#92400e">发现含 "dev" 的文件</text>
+            <text x="120" y="258" text-anchor="middle" font-size="9" fill="#92400e">读取 MAJOR:MINOR</text>
+            <rect x="470" y="210" width="180" height="50" fill="#fde68a" rx="6" stroke="#d97706" stroke-width="1.5"/>
+            <text x="560" y="230" text-anchor="middle" font-size="10" font-weight="600" fill="#92400e">dirAction()</text>
+            <text x="560" y="245" text-anchor="middle" font-size="9.5" fill="#92400e">遍历子目录</text>
+            <text x="560" y="258" text-anchor="middle" font-size="9" fill="#92400e">递归处理</text>
+            <!-- make_device -->
+            <line x1="120" y1="260" x2="340" y2="290" stroke="#059669" stroke-width="1.5" marker-end="url(#arrs)"/>
+            <line x1="560" y1="260" x2="340" y2="290" stroke="#059669" stroke-width="1.5" marker-end="url(#arrs)"/>
+            <rect x="240" y="290" width="200" height="38" fill="#a7f3d0" rx="6" stroke="#059669" stroke-width="1.5"/>
+            <text x="340" y="308" text-anchor="middle" font-size="10" font-weight="700" fill="#065f46">make_device()</text>
+            <text x="340" y="322" text-anchor="middle" font-size="9.5" fill="#065f46">mknod() 创建 /dev 节点</text>
+            <!-- Result -->
+            <line x1="340" y1="328" x2="340" y2="348" stroke="#059669" stroke-width="1.5" marker-end="url(#arrs)"/>
+            <rect x="200" y="348" width="280" height="25" fill="#064e3b" rx="12"/>
+            <text x="340" y="365" text-anchor="middle" font-size="10" fill="#a7f3d0">所有已存在设备的 /dev 节点创建完毕</text>
+          </svg>
+        </div>
+
+        <h2>典型初始化顺序</h2>
+        <ul class="step-list">
+          <li class="step-item">
+            <div class="step-num">1</div>
+            <div class="step-content">
+              <div class="step-title">挂载 tmpfs 到 /dev</div>
+              <div class="step-desc">使用内存文件系统，设备节点在每次启动时重新创建，不持久化到磁盘</div>
+            </div>
+          </li>
+          <li class="step-item">
+            <div class="step-num">2</div>
+            <div class="step-content">
+              <div class="step-title">挂载 sysfs 到 /sys</div>
+              <div class="step-desc">sysfs 是 mdev 读取设备信息（设备号、路径）的数据源，必须在 mdev -s 前就绪</div>
+            </div>
+          </li>
+          <li class="step-item">
+            <div class="step-num">3</div>
+            <div class="step-content">
+              <div class="step-title">注册 mdev 为热插拔 helper</div>
+              <div class="step-desc"><code>echo /sbin/mdev > /proc/sys/kernel/hotplug</code> — 此后内核每次 uevent 都会 fork mdev</div>
+            </div>
+          </li>
+          <li class="step-item">
+            <div class="step-num">4</div>
+            <div class="step-content">
+              <div class="step-title">执行 mdev -s 冷插拔扫描</div>
+              <div class="step-desc">一次性为所有已注册设备创建 /dev 节点，弥补启动阶段丢失的 uevent</div>
+            </div>
+          </li>
+          <li class="step-item">
+            <div class="step-num">5</div>
+            <div class="step-content">
+              <div class="step-title">后续热插拔自动处理</div>
+              <div class="step-desc">通过 uevent_helper 机制，每次设备插入/拔出都自动触发 mdev</div>
+            </div>
+          </li>
+        </ul>
+
+        <div class="principle-box">
+          <div class="ptitle">🔭 第一性原理解读</div>
+          <p>冷插拔问题的根源是<strong>时序依赖</strong>：用户空间工具（mdev）必须先于它需要处理的事件启动，但在启动早期，内核已经在没有用户空间的情况下独立注册了设备。<code>mdev -s</code> 的本质是一次<strong>状态同步操作</strong>——将内核当前的设备状态（sysfs 树）与用户空间的期望状态（/dev 目录）强制对齐。这类似于数据库的"全量同步"，之后的热插拔则是"增量同步"。</p>
+        </div>
+      </div>
+
+      <!-- Section 7: 环境变量详解 -->
+      <div class="section" id="sec-7">
+        <div class="section-header">
+          <div class="section-badge">第八章 · 深入分析</div>
+          <h1>环境变量详解</h1>
+          <p class="section-desc">内核传递给 mdev 的完整环境变量说明</p>
+        </div>
+
+        <div class="info-box">
+          <strong>官方文档原文（LWN.net 2007，Rob Landley）：</strong><br>
+          "Every hotplug event should provide at least the following variables: ACTION, DEVPATH, SUBSYSTEM. The following variables are also provided for some devices: MAJOR, MINOR, DRIVER, INTERFACE, IFINDEX, FIRMWARE."
+        </div>
+
+        <h2>必须存在的环境变量</h2>
+        <table class="env-table">
+          <tr><th>变量名</th><th>示例值</th><th>说明</th></tr>
+          <tr>
+            <td><span class="env-var">ACTION</span></td>
+            <td><code>add</code> / <code>remove</code> / <code>change</code> / <code>move</code></td>
+            <td>热插拔动作类型，对应 kobject_action 枚举值转换的字符串</td>
+          </tr>
+          <tr>
+            <td><span class="env-var">DEVPATH</span></td>
+            <td><code>/class/tty/ttyUSB0</code></td>
+            <td>设备在 /sys 下的路径（不含 /sys 前缀），以 /block/ 开头为块设备，否则为字符设备</td>
+          </tr>
+          <tr>
+            <td><span class="env-var">SUBSYSTEM</span></td>
+            <td><code>usb</code> / <code>block</code> / <code>input</code> / <code>net</code></td>
+            <td>设备所属子系统（kset 的名称），"block" 表示块设备，其他为字符设备</td>
+          </tr>
+          <tr>
+            <td><span class="env-var">SEQNUM</span></td>
+            <td><code>1064</code></td>
+            <td>全局递增序列号，用于事件排序（各 namespace 独立计数，不保证连续）</td>
+          </tr>
+        </table>
+
+        <h2>可选环境变量</h2>
+        <table class="env-table">
+          <tr><th>变量名</th><th>示例值</th><th>说明</th></tr>
+          <tr>
+            <td><span class="env-var">MAJOR</span></td>
+            <td><code>188</code></td>
+            <td>设备主设备号，与 MINOR 一起用于 mknod() 创建设备节点</td>
+          </tr>
+          <tr>
+            <td><span class="env-var">MINOR</span></td>
+            <td><code>0</code></td>
+            <td>设备次设备号</td>
+          </tr>
+          <tr>
+            <td><span class="env-var">DEVNAME</span></td>
+            <td><code>ttyUSB0</code></td>
+            <td>建议的设备节点名称，mdev 优先使用此名称创建 /dev 节点</td>
+          </tr>
+          <tr>
+            <td><span class="env-var">DRIVER</span></td>
+            <td><code>ftdi_sio</code></td>
+            <td>建议使用的驱动模块名，与设备是否有驱动无关</td>
+          </tr>
+          <tr>
+            <td><span class="env-var">INTERFACE</span></td>
+            <td><code>eth0</code></td>
+            <td>当 SUBSYSTEM=net 时，网络接口名称</td>
+          </tr>
+          <tr>
+            <td><span class="env-var">IFINDEX</span></td>
+            <td><code>2</code></td>
+            <td>当 SUBSYSTEM=net 时，接口唯一整数标识</td>
+          </tr>
+          <tr>
+            <td><span class="env-var">FIRMWARE</span></td>
+            <td><code>dvb-usb-vp7045-01.fw</code></td>
+            <td>固件文件名，内核请求用户空间提供固件时设置（触发固件加载流程）</td>
+          </tr>
+          <tr>
+            <td><span class="env-var">MODALIAS</span></td>
+            <td><code>usb:v0403pFA00d0600...</code></td>
+            <td>设备别名，用于 modprobe 自动加载驱动模块</td>
+          </tr>
+        </table>
+
+        <h2>内核设置的固定环境变量</h2>
+        <pre><code><span class="cmt">/* kobject_uevent_env() 总是为 uevent_helper 设置的变量 */</span>
+HOME=/
+PATH=/sbin:/bin:/usr/sbin:/usr/bin
+ACTION=add
+DEVPATH=/class/sixth_drv/buttons
+SUBSYSTEM=sixth_drv
+SEQNUM=42
+
+<span class="cmt">/* 完整示例（USB 串口设备插入） */</span>
+HOME=/
+PATH=/sbin:/bin:/usr/sbin:/usr/bin
+ACTION=add
+DEVPATH=/devices/pci0000:00/0000:00:1d.1/usb2/2-2/2-2:1.0/ttyUSB0
+SUBSYSTEM=tty
+DEVNAME=ttyUSB0
+MAJOR=188
+MINOR=0
+DRIVER=ftdi_sio
+SEQNUM=1247</code></pre>
+
+        <div class="diagram-wrap">
+          <div class="diagram-title">环境变量数据流向图</div>
+          <svg viewBox="0 0 680 300" xmlns="http://www.w3.org/2000/svg" width="680" height="300">
+            <rect width="680" height="300" fill="#f8fafc" rx="8"/>
+            <defs>
+              <marker id="arrev" markerWidth="8" markerHeight="6" refX="7" refY="3" orient="auto">
+                <path d="M0,0 L8,3 L0,6 Z" fill="#4f46e5"/>
+              </marker>
+            </defs>
+            <!-- Sources -->
+            <rect x="10" y="40" width="130" height="80" fill="#fde68a" rx="6" stroke="#d97706" stroke-width="1.5"/>
+            <text x="75" y="62" text-anchor="middle" font-size="11" font-weight="700" fill="#92400e">kobject 系统</text>
+            <text x="75" y="80" text-anchor="middle" font-size="9.5" fill="#92400e">ACTION</text>
+            <text x="75" y="93" text-anchor="middle" font-size="9.5" fill="#92400e">DEVPATH</text>
+            <text x="75" y="106" text-anchor="middle" font-size="9.5" fill="#92400e">SUBSYSTEM / SEQNUM</text>
+            <rect x="10" y="140" width="130" height="70" fill="#c7d2fe" rx="6" stroke="#4f46e5" stroke-width="1.5"/>
+            <text x="75" y="162" text-anchor="middle" font-size="11" font-weight="700" fill="#312e81">kset->uevent()</text>
+            <text x="75" y="179" text-anchor="middle" font-size="9.5" fill="#312e81">MAJOR / MINOR</text>
+            <text x="75" y="192" text-anchor="middle" font-size="9.5" fill="#312e81">DEVNAME / DRIVER</text>
+            <text x="75" y="205" text-anchor="middle" font-size="9.5" fill="#312e81">FIRMWARE / MODALIAS</text>
+            <!-- env container -->
+            <rect x="215" y="40" width="160" height="190" fill="#e0e7ff" rx="8" stroke="#4f46e5" stroke-width="2"/>
+            <text x="295" y="65" text-anchor="middle" font-size="11" font-weight="700" fill="#312e81">kobj_uevent_env</text>
+            <text x="295" y="84" text-anchor="middle" font-size="9" fill="#312e81">char buf[2048]</text>
+            <text x="295" y="104" text-anchor="middle" font-size="9" fill="#4f46e5">HOME=/</text>
+            <text x="295" y="119" text-anchor="middle" font-size="9" fill="#4f46e5">PATH=...</text>
+            <text x="295" y="134" text-anchor="middle" font-size="9" fill="#4f46e5">ACTION=add</text>
+            <text x="295" y="149" text-anchor="middle" font-size="9" fill="#4f46e5">DEVPATH=...</text>
+            <text x="295" y="164" text-anchor="middle" font-size="9" fill="#4f46e5">SUBSYSTEM=tty</text>
+            <text x="295" y="179" text-anchor="middle" font-size="9" fill="#4f46e5">MAJOR=188</text>
+            <text x="295" y="194" text-anchor="middle" font-size="9" fill="#4f46e5">MINOR=0</text>
+            <text x="295" y="209" text-anchor="middle" font-size="9" fill="#4f46e5">SEQNUM=1247</text>
+            <text x="295" y="222" text-anchor="middle" font-size="9" fill="#64748b">（最大 2048 字节）</text>
+            <!-- Arrows from sources to container -->
+            <line x1="140" y1="80" x2="215" y2="120" stroke="#d97706" stroke-width="1.5" marker-end="url(#arrev)"/>
+            <line x1="140" y1="175" x2="215" y2="155" stroke="#4f46e5" stroke-width="1.5" marker-end="url(#arrev)"/>
+            <!-- fork to two paths -->
+            <line x1="375" y1="135" x2="440" y2="100" stroke="#4f46e5" stroke-width="1.5" marker-end="url(#arrev)"/>
+            <line x1="375" y1="165" x2="440" y2="200" stroke="#4f46e5" stroke-width="1.5" marker-end="url(#arrev)"/>
+            <!-- Netlink path -->
+            <rect x="440" y="60" width="220" height="70" fill="#d1fae5" rx="6" stroke="#059669" stroke-width="1.5"/>
+            <text x="550" y="84" text-anchor="middle" font-size="11" font-weight="700" fill="#065f46">Netlink 数据包</text>
+            <text x="550" y="100" text-anchor="middle" font-size="9.5" fill="#065f46">以 \0 分隔的文本行</text>
+            <text x="550" y="115" text-anchor="middle" font-size="9" fill="#065f46">第一行："add@/dev/path"</text>
+            <text x="550" y="126" text-anchor="middle" font-size="9" fill="#065f46">后续行："KEY=VALUE"</text>
+            <!-- uevent_helper path -->
+            <rect x="440" y="165" width="220" height="70" fill="#ffedd5" rx="6" stroke="#ea580c" stroke-width="1.5"/>
+            <text x="550" y="189" text-anchor="middle" font-size="11" font-weight="700" fill="#7c2d12">进程环境变量</text>
+            <text x="550" y="205" text-anchor="middle" font-size="9.5" fill="#7c2d12">execve() argv[] + envp[]</text>
+            <text x="550" y="220" text-anchor="middle" font-size="9" fill="#7c2d12">mdev 通过 getenv() 读取</text>
+            <text x="550" y="232" text-anchor="middle" font-size="9" fill="#7c2d12">最大 2048 字节限制</text>
+            <!-- Labels -->
+            <text x="410" y="90" font-size="9" fill="#059669">Netlink</text>
+            <text x="400" y="195" font-size="9" fill="#ea580c">uevent_helper</text>
+          </svg>
+        </div>
+
+        <div class="principle-box">
+          <div class="ptitle">🔭 第一性原理解读</div>
+          <p>环境变量是内核与用户空间之间的<strong>语义契约</strong>：内核承诺提供 ACTION、DEVPATH、SUBSYSTEM 这三个最小集合，使用户空间能够确定"什么事件、发生在哪个设备上、属于哪个子系统"。MAJOR/MINOR 是设备节点创建的充分条件，其余变量提供可选的附加语义。这种基于键值对的接口设计具有良好的前向兼容性——新增变量不会破坏旧的处理程序。</p>
+        </div>
+      </div>
+
+      <!-- Section 8: mdev.conf -->
+      <div class="section" id="sec-8">
+        <div class="section-header">
+          <div class="section-badge">第九章 · 深入分析</div>
+          <h1>mdev.conf 配置详解</h1>
+          <p class="section-desc">规则格式、权限设置与自动挂载脚本</p>
+        </div>
+
+        <div class="card">
+          <div class="card-title"><span class="card-icon">📋</span>mdev.conf 规则格式</div>
+          <p>来源：BusyBox 官方文档。mdev.conf 每行定义一条规则：</p>
+          <pre><code><span class="cmt"># 格式（BusyBox mdev 文档）：
+# &lt;设备名正则&gt; &lt;uid&gt;:&lt;gid&gt; &lt;权限八进制&gt; [=路径] [&lt;@$*&gt;&lt;命令&gt;]
+#
+# 命令触发时机：
+#   @ 命令：设备节点创建 之后 执行
+#   $ 命令：设备节点删除 之前 执行
+#   * 命令：创建后和删除前都执行</span>
+
+<span class="cmt"># 示例：USB 串口设备</span>
+ttyUSB[0-9]+    0:0 0660 @/etc/hotplug/usb/serial_insert
+
+<span class="cmt"># 示例：SD 卡插入/拔出</span>
+mmcblk[0-9]p[0-9]  0:0 0660  @/etc/hotplug/sd/sd_insert
+mmcblk[0-9]        0:0 0660  $/etc/hotplug/sd/sd_remove
+
+<span class="cmt"># 示例：U 盘插入/拔出</span>
+sd[a-z][0-9]       0:0 0660  @/etc/hotplug/usb/udisk_insert
+sd[a-z]            0:0 0660  $/etc/hotplug/usb/udisk_remove
+
+<span class="cmt"># 示例：设置特定设备的权限（允许普通用户访问视频设备）</span>
+video[0-9]+        0:44 0660</code></pre>
+        </div>
+
+        <h2>自动挂载 U 盘脚本示例</h2>
+        <pre><code><span class="cmt">#!/bin/sh
+# /etc/hotplug/usb/udisk_insert — U 盘插入后自动挂载</span>
+
+MOUNT_POINT=/mnt/usb
+
+<span class="cmt"># 等待设备节点就绪</span>
+sleep 1
+
+<span class="cmt"># 自动检测文件系统类型并挂载</span>
+mkdir -p $MOUNT_POINT
+mount -t auto /dev/${MDEV} $MOUNT_POINT && \
+    echo "U盘已挂载到 $MOUNT_POINT" > /dev/console</code></pre>
+
+        <pre><code><span class="cmt">#!/bin/sh
+# /etc/hotplug/usb/udisk_remove — U 盘拔出前自动卸载</span>
+
+sync
+umount /mnt/usb 2>/dev/null
+echo "U盘已安全弹出" > /dev/console</code></pre>
+
+        <div class="diagram-wrap">
+          <div class="diagram-title">mdev.conf 规则匹配与执行流程</div>
+          <svg viewBox="0 0 680 340" xmlns="http://www.w3.org/2000/svg" width="680" height="340">
+            <rect width="680" height="340" fill="#f8fafc" rx="8"/>
+            <defs>
+              <marker id="arrc" markerWidth="8" markerHeight="6" refX="7" refY="3" orient="auto">
+                <path d="M0,0 L8,3 L0,6 Z" fill="#4f46e5"/>
+              </marker>
+            </defs>
+            <!-- Start -->
+            <rect x="240" y="15" width="200" height="35" fill="#bbf7d0" rx="16" stroke="#059669" stroke-width="2"/>
+            <text x="340" y="37" text-anchor="middle" font-size="11" font-weight="700" fill="#065f46">make_device(devname, path, op)</text>
+            <!-- Read conf -->
+            <line x1="340" y1="50" x2="340" y2="72" stroke="#4f46e5" stroke-width="1.5" marker-end="url(#arrc)"/>
+            <rect x="240" y="72" width="200" height="30" fill="#dbeafe" rx="6" stroke="#3b82f6" stroke-width="1.5"/>
+            <text x="340" y="91" text-anchor="middle" font-size="10" fill="#1e3a8a">打开 /etc/mdev.conf 逐行读取</text>
+            <!-- Match loop -->
+            <line x1="340" y1="102" x2="340" y2="120" stroke="#4f46e5" stroke-width="1.5" marker-end="url(#arrc)"/>
+            <polygon points="340,120 430,145 340,170 250,145" fill="#fde68a" stroke="#d97706" stroke-width="1.5"/>
+            <text x="340" y="143" text-anchor="middle" font-size="10" font-weight="600" fill="#92400e">正则匹配</text>
+            <text x="340" y="157" text-anchor="middle" font-size="9.5" fill="#92400e">devname 匹配行规则?</text>
+            <!-- No match -->
+            <text x="445" y="142" font-size="9" fill="#dc2626">否</text>
+            <line x1="430" y1="145" x2="530" y2="145" stroke="#dc2626" stroke-width="1.5" marker-end="url(#arrc)"/>
+            <rect x="530" y="130" width="130" height="30" fill="#fee2e2" rx="6" stroke="#dc2626" stroke-width="1"/>
+            <text x="595" y="149" text-anchor="middle" font-size="9.5" fill="#991b1b">使用默认权限 0660</text>
+            <!-- Yes match -->
+            <text x="295" y="180" font-size="9" fill="#059669">是</text>
+            <line x1="340" y1="170" x2="340" y2="195" stroke="#059669" stroke-width="1.5" marker-end="url(#arrc)"/>
+            <rect x="240" y="195" width="200" height="35" fill="#d1fae5" rx="6" stroke="#059669" stroke-width="1.5"/>
+            <text x="340" y="210" text-anchor="middle" font-size="10" fill="#065f46">应用 uid:gid 权限设置</text>
+            <text x="340" y="224" text-anchor="middle" font-size="9.5" fill="#065f46">解析 [@$*] 和命令字符串</text>
+            <!-- ACTION check -->
+            <line x1="340" y1="230" x2="340" y2="252" stroke="#4f46e5" stroke-width="1.5" marker-end="url(#arrc)"/>
+            <polygon points="340,252 420,272 340,292 260,272" fill="#c7d2fe" stroke="#4f46e5" stroke-width="1.5"/>
+            <text x="340" y="276" text-anchor="middle" font-size="9.5" font-weight="600" fill="#312e81">ACTION=?</text>
+            <!-- add path -->
+            <line x1="260" y1="272" x2="120" y2="272" stroke="#059669" stroke-width="1.5"/>
+            <line x1="120" y1="272" x2="120" y2="295" stroke="#059669" stroke-width="1.5" marker-end="url(#arrc)"/>
+            <text x="185" y="267" font-size="9" fill="#059669">add</text>
+            <rect x="30" y="295" width="180" height="38" fill="#a7f3d0" rx="6" stroke="#10b981" stroke-width="1.5"/>
+            <text x="120" y="311" text-anchor="middle" font-size="9.5" fill="#065f46">mknod() + chown()</text>
+            <text x="120" y="326" text-anchor="middle" font-size="9" fill="#065f46">执行 @ 命令（创建后）</text>
+            <!-- remove path -->
+            <line x1="420" y1="272" x2="560" y2="272" stroke="#dc2626" stroke-width="1.5"/>
+            <line x1="560" y1="272" x2="560" y2="295" stroke="#dc2626" stroke-width="1.5" marker-end="url(#arrc)"/>
+            <text x="490" y="267" font-size="9" fill="#dc2626">remove</text>
+            <rect x="470" y="295" width="180" height="38" fill="#fee2e2" rx="6" stroke="#dc2626" stroke-width="1.5"/>
+            <text x="560" y="311" text-anchor="middle" font-size="9.5" fill="#991b1b">执行 $ 命令（删除前）</text>
+            <text x="560" y="326" text-anchor="middle" font-size="9" fill="#991b1b">unlink() 删除节点</text>
+          </svg>
+        </div>
+
+        <div class="principle-box">
+          <div class="ptitle">🔭 第一性原理解读</div>
+          <p><code>mdev.conf</code> 是一个<strong>策略引擎</strong>：它将"当什么设备出现时，做什么操作"的策略与机制分离。机制由 mdev 内核代码实现（固定的 mknod/unlink 流程），策略由管理员通过配置文件定制（权限、自动挂载脚本）。这种分离使得嵌入式系统可以在不重新编译 mdev 的情况下，灵活定制设备管理行为，体现了"机制与策略分离"的 Unix 哲学。</p>
+        </div>
+      </div>
+
+      <!-- Section 9: 固件加载 -->
+      <div class="section" id="sec-9">
+        <div class="section-header">
+          <div class="section-badge">第十章 · 深入分析</div>
+          <h1>固件加载流程</h1>
+          <p class="section-desc">内核请求固件时的 uevent 交互与用户空间响应</p>
+        </div>
+
+        <div class="info-box">
+          <strong>官方文档原文（LWN.net 2007，Rob Landley）：</strong><br>
+          "If the hotplug variable FIRMWARE is set, the kernel is requesting firmware for a device (identified by $DEVPATH). To provide the firmware to the kernel, do the following:<br>
+          <code>echo 1 > /sys/$DEVPATH/loading</code><br>
+          <code>cat /path/to/$FIRMWARE > /sys/$DEVPATH/data</code><br>
+          <code>echo 0 > /sys/$DEVPATH/loading</code>"
+        </div>
+
+        <div class="card">
+          <div class="card-title"><span class="card-icon">📡</span>固件加载触发条件</div>
+          <p>当设备驱动在 probe 阶段调用 <code>request_firmware()</code> 时，内核会通过 uevent 机制向用户空间发出固件请求，环境变量中设置 <code>FIRMWARE=固件文件名</code>。</p>
+          <ul>
+            <li>固件加载超时时间在 <code>/sys/class/firmware/timeout</code> 中配置（单位：秒）</li>
+            <li>可通过 <code>echo -1 > /sys/$DEVPATH/loading</code> 取消固件加载</li>
+            <li>uevent_helper 的一个优势：可在 initramfs 中的 init 启动前就处理固件请求（Netlink 方式无法做到）</li>
+          </ul>
+        </div>
+
+        <h2>固件加载交互流程</h2>
+        <div class="diagram-wrap">
+          <div class="diagram-title">固件加载 MSC 序列图</div>
+          <svg viewBox="0 0 720 480" xmlns="http://www.w3.org/2000/svg" width="720" height="480">
+            <rect width="720" height="480" fill="#fafafa" rx="8"/>
+            <defs>
+              <marker id="arrfw" markerWidth="8" markerHeight="6" refX="7" refY="3" orient="auto">
+                <path d="M0,0 L8,3 L0,6 Z" fill="#4f46e5"/>
+              </marker>
+            </defs>
+            <!-- Headers -->
+            <rect x="10" y="10" width="130" height="44" fill="#fce7f3" rx="6" stroke="#9d174d" stroke-width="1.5"/>
+            <text x="75" y="30" text-anchor="middle" font-size="11" font-weight="700" fill="#831843">设备驱动</text>
+            <text x="75" y="46" text-anchor="middle" font-size="9" fill="#831843">probe() 调用方</text>
+            <rect x="160" y="10" width="140" height="44" fill="#e0e7ff" rx="6" stroke="#4f46e5" stroke-width="1.5"/>
+            <text x="230" y="30" text-anchor="middle" font-size="11" font-weight="700" fill="#312e81">固件子系统</text>
+            <text x="230" y="46" text-anchor="middle" font-size="9" fill="#312e81">firmware_class.c</text>
+            <rect x="320" y="10" width="140" height="44" fill="#fde68a" rx="6" stroke="#d97706" stroke-width="1.5"/>
+            <text x="390" y="30" text-anchor="middle" font-size="11" font-weight="700" fill="#92400e">sysfs / uevent</text>
+            <text x="390" y="46" text-anchor="middle" font-size="9" fill="#92400e">内核接口层</text>
+            <rect x="480" y="10" width="140" height="44" fill="#d1fae5" rx="6" stroke="#059669" stroke-width="1.5"/>
+            <text x="550" y="30" text-anchor="middle" font-size="11" font-weight="700" fill="#065f46">mdev / 固件加载脚本</text>
+            <text x="550" y="46" text-anchor="middle" font-size="9" fill="#065f46">用户空间</text>
+            <!-- Lifelines -->
+            <line x1="75" y1="54" x2="75" y2="465" stroke="#9d174d" stroke-width="1" stroke-dasharray="4,3" opacity="0.4"/>
+            <line x1="230" y1="54" x2="230" y2="465" stroke="#4f46e5" stroke-width="1" stroke-dasharray="4,3" opacity="0.4"/>
+            <line x1="390" y1="54" x2="390" y2="465" stroke="#d97706" stroke-width="1" stroke-dasharray="4,3" opacity="0.4"/>
+            <line x1="550" y1="54" x2="550" y2="465" stroke="#059669" stroke-width="1" stroke-dasharray="4,3" opacity="0.4"/>
+            <!-- Steps -->
+            <line x1="75" y1="85" x2="220" y2="85" stroke="#9d174d" stroke-width="1.8" marker-end="url(#arrfw)"/>
+            <text x="148" y="80" text-anchor="middle" font-size="9" fill="#9d174d">request_firmware("dvb.fw", dev)</text>
+            <rect x="165" y="95" width="130" height="35" fill="#e0e7ff" rx="4" stroke="#4f46e5" stroke-width="1"/>
+            <text x="230" y="111" text-anchor="middle" font-size="9" fill="#312e81">创建 /sys/class/firmware/</text>
+            <text x="230" y="125" text-anchor="middle" font-size="9" fill="#312e81">dvb.fw/{loading,data,device}</text>
+            <line x1="230" y1="142" x2="380" y2="142" stroke="#4f46e5" stroke-width="1.8" marker-end="url(#arrfw)"/>
+            <text x="305" y="137" text-anchor="middle" font-size="9" fill="#4f46e5">uevent(FIRMWARE=dvb.fw)</text>
+            <line x1="390" y1="160" x2="540" y2="160" stroke="#d97706" stroke-width="1.8" marker-end="url(#arrfw)"/>
+            <text x="465" y="155" text-anchor="middle" font-size="9" fill="#d97706">call_usermodehelper("/sbin/mdev")</text>
+            <text x="465" y="169" text-anchor="middle" font-size="8.5" fill="#d97706">env: ACTION=add, FIRMWARE=dvb.fw</text>
+            <!-- mdev fw loading -->
+            <rect x="485" y="178" width="130" height="55" fill="#a7f3d0" rx="4" stroke="#059669" stroke-width="1"/>
+            <text x="550" y="196" text-anchor="middle" font-size="9.5" font-weight="600" fill="#065f46">固件加载脚本执行</text>
+            <text x="550" y="210" text-anchor="middle" font-size="9" fill="#065f46">echo 1 > .../loading</text>
+            <text x="550" y="223" text-anchor="middle" font-size="9" fill="#065f46">cat dvb.fw > .../data</text>
+            <text x="550" y="236" text-anchor="middle" font-size="9" fill="#065f46">echo 0 > .../loading</text>
+            <!-- Write back to kernel -->
+            <line x1="540" y1="248" x2="400" y2="248" stroke="#059669" stroke-width="1.8" marker-end="url(#arrfw)"/>
+            <text x="470" y="243" text-anchor="middle" font-size="9" fill="#059691">写入固件数据到 sysfs</text>
+            <line x1="390" y1="265" x2="240" y2="265" stroke="#d97706" stroke-width="1.8" marker-end="url(#arrfw)"/>
+            <text x="315" y="260" text-anchor="middle" font-size="9" fill="#d97706">通知固件就绪（loading=0）</text>
+            <!-- Driver receives firmware -->
+            <line x1="230" y1="283" x2="85" y2="283" stroke="#4f46e5" stroke-width="1.8" marker-end="url(#arrfw)"/>
+            <text x="157" y="278" text-anchor="middle" font-size="9" fill="#4f46e5">返回固件数据（unblock）</text>
+            <rect x="10" y="293" width="130" height="35" fill="#fce7f3" rx="4" stroke="#9d174d" stroke-width="1"/>
+            <text x="75" y="310" text-anchor="middle" font-size="9.5" fill="#831843">驱动继续 probe()</text>
+            <text x="75" y="325" text-anchor="middle" font-size="9" fill="#831843">使用固件完成初始化</text>
+            <!-- Error path -->
+            <rect x="140" y="360" width="540" height="95" fill="#fffbeb" rx="8" stroke="#d97706" stroke-width="1"/>
+            <text x="410" y="382" text-anchor="middle" font-size="11" font-weight="700" fill="#92400e">固件加载失败处理</text>
+            <text x="155" y="402" font-size="9.5" fill="#92400e">• 超时：/sys/class/firmware/timeout 秒后取消，返回 -ETIMEDOUT</text>
+            <text x="155" y="420" font-size="9.5" fill="#92400e">• 取消：echo -1 > /sys/$DEVPATH/loading → 返回 -ECANCELED</text>
+            <text x="155" y="438" font-size="9.5" fill="#92400e">• 固件不存在：用户空间返回错误，驱动 probe() 返回 -ENOENT</text>
+            <text x="155" y="455" font-size="9.5" fill="#92400e">• initramfs 优势：uevent_helper 可在 init 前处理固件，Netlink 方式无法做到</text>
+          </svg>
+        </div>
+
+        <h2>固件加载用户空间脚本示例</h2>
+        <pre><code><span class="cmt">#!/bin/sh
+# 固件加载脚本（由 mdev.conf 或直接由 mdev 调用）
+# 环境变量由内核 kobject_uevent_env() 设置</span>
+
+FIRMWARE_DIR=/lib/firmware
+
+<span class="kw">if</span> [ "$ACTION" = "add" ] && [ -n "$FIRMWARE" ]; then
+    <span class="kw">if</span> [ -f "$FIRMWARE_DIR/$FIRMWARE" ]; then
+        <span class="cmt"># 告知内核开始接收固件</span>
+        echo 1 > /sys/$DEVPATH/loading
+        <span class="cmt"># 将固件文件写入内核接口</span>
+        cat $FIRMWARE_DIR/$FIRMWARE > /sys/$DEVPATH/data
+        <span class="cmt"># 告知内核固件传输完成</span>
+        echo 0 > /sys/$DEVPATH/loading
+    <span class="kw">else</span>
+        <span class="cmt"># 取消固件加载（触发 -ECANCELED）</span>
+        echo -1 > /sys/$DEVPATH/loading
+    fi
+fi</code></pre>
+
+        <div class="principle-box">
+          <div class="ptitle">🔭 第一性原理解读</div>
+          <p>固件加载流程揭示了一个优雅的<strong>双向交互模式</strong>：通常 uevent 是内核→用户空间的单向通知，但固件加载建立了一个<strong>请求-响应</strong>对话——内核通过 uevent 提问（"我需要固件 X"），用户空间通过 sysfs 文件接口回答（写入固件数据）。sysfs 此时充当了内核与用户空间之间的<strong>共享内存缓冲区</strong>，实现了跨越内核/用户边界的数据传输，而无需额外的系统调用接口。</p>
+        </div>
+      </div>
+
+      <!-- Section 10: 对比与总结 -->
+      <div class="section" id="sec-10">
+        <div class="section-header">
+          <div class="section-badge">第十一章 · 总结</div>
+          <h1>架构对比与总结</h1>
+          <p class="section-desc">热插拔全链路架构总结与第一性原理综合解读</p>
+        </div>
+
+        <div class="diagram-wrap">
+          <div class="diagram-title">Linux 热插拔完整架构总图</div>
+          <svg viewBox="0 0 720 500" xmlns="http://www.w3.org/2000/svg" width="720" height="500">
+            <rect width="720" height="500" fill="#0f172a" rx="12"/>
+            <defs>
+              <marker id="arga" markerWidth="8" markerHeight="6" refX="7" refY="3" orient="auto">
+                <path d="M0,0 L8,3 L0,6 Z" fill="#94a3b8"/>
+              </marker>
+            </defs>
+            <!-- Title -->
+            <text x="360" y="28" text-anchor="middle" font-size="14" font-weight="700" fill="#e2e8f0">Linux 内核热插拔 + mdev 完整架构</text>
+            <!-- Hardware Layer -->
+            <rect x="15" y="440" width="690" height="45" fill="#1e293b" rx="6" stroke="#d97706" stroke-width="1.5"/>
+            <text x="360" y="460" text-anchor="middle" font-size="11" fill="#fbbf24" font-weight="700">硬件层</text>
+            <text x="360" y="477" text-anchor="middle" font-size="10" fill="#94a3b8">USB / PCI / I2C / SPI / Platform 设备 → 硬件中断 / 总线枚举</text>
+            <!-- Kernel layer -->
+            <rect x="15" y="230" width="690" height="195" fill="#1e3a5f" rx="6" stroke="#3b82f6" stroke-width="1.5"/>
+            <text x="360" y="252" text-anchor="middle" font-size="12" fill="#60a5fa" font-weight="700">内核空间（Kernel Space）</text>
+            <!-- Kernel boxes -->
+            <rect x="25" y="262" width="145" height="145" fill="#1e293b" rx="6" stroke="#4f46e5" stroke-width="1"/>
+            <text x="97" y="282" text-anchor="middle" font-size="10" fill="#a5b4fc" font-weight="700">总线驱动</text>
+            <text x="97" y="299" text-anchor="middle" font-size="9" fill="#94a3b8">device_register()</text>
+            <text x="97" y="314" text-anchor="middle" font-size="9" fill="#94a3b8">device_add()</text>
+            <text x="97" y="329" text-anchor="middle" font-size="9" fill="#94a3b8">USB Core / PCI / I2C</text>
+            <text x="97" y="344" text-anchor="middle" font-size="9" fill="#94a3b8">bus_type::match()</text>
+            <text x="97" y="359" text-anchor="middle" font-size="9" fill="#94a3b8">bus_type::uevent()</text>
+            <text x="97" y="374" text-anchor="middle" font-size="9" fill="#94a3b8">driver::probe()</text>
+            <text x="97" y="389" text-anchor="middle" font-size="9" fill="#94a3b8">driver::remove()</text>
+
+            <rect x="182" y="262" width="175" height="145" fill="#1e293b" rx="6" stroke="#4f46e5" stroke-width="1"/>
+            <text x="270" y="282" text-anchor="middle" font-size="10" fill="#a5b4fc" font-weight="700">Linux 设备模型</text>
+            <text x="270" y="299" text-anchor="middle" font-size="9" fill="#94a3b8">struct kobject</text>
+            <text x="270" y="314" text-anchor="middle" font-size="9" fill="#94a3b8">struct kset</text>
+            <text x="270" y="329" text-anchor="middle" font-size="9" fill="#94a3b8">struct device</text>
+            <text x="270" y="344" text-anchor="middle" font-size="9" fill="#94a3b8">struct device_driver</text>
+            <text x="270" y="359" text-anchor="middle" font-size="9" fill="#94a3b8">struct class</text>
+            <text x="270" y="374" text-anchor="middle" font-size="9" fill="#94a3b8">sysfs: /sys/class/*/dev</text>
+
+            <rect x="370" y="262" width="175" height="145" fill="#1e293b" rx="6" stroke="#7c3aed" stroke-width="1"/>
+            <text x="457" y="282" text-anchor="middle" font-size="10" fill="#c4b5fd" font-weight="700">uevent 子系统</text>
+            <text x="457" y="299" text-anchor="middle" font-size="9" fill="#94a3b8">kobject_uevent_env()</text>
+            <text x="457" y="314" text-anchor="middle" font-size="9" fill="#94a3b8">lib/kobject_uevent.c</text>
+            <text x="457" y="332" text-anchor="middle" font-size="8.5" fill="#60a5fa">路径①: Netlink广播</text>
+            <text x="457" y="347" text-anchor="middle" font-size="8.5" fill="#94a3b8">netlink_broadcast_filtered()</text>
+            <text x="457" y="365" text-anchor="middle" font-size="8.5" fill="#fb923c">路径②: uevent_helper</text>
+            <text x="457" y="380" text-anchor="middle" font-size="8.5" fill="#94a3b8">call_usermodehelper()</text>
+            <text x="457" y="395" text-anchor="middle" font-size="8.5" fill="#94a3b8">/proc/sys/kernel/hotplug</text>
+
+            <rect x="557" y="262" width="143" height="145" fill="#1e293b" rx="6" stroke="#4f46e5" stroke-width="1"/>
+            <text x="628" y="282" text-anchor="middle" font-size="10" fill="#a5b4fc" font-weight="700">内核接口层</text>
+            <text x="628" y="299" text-anchor="middle" font-size="9" fill="#94a3b8">sysfs (virtual FS)</text>
+            <text x="628" y="314" text-anchor="middle" font-size="9" fill="#94a3b8">/sys 目录树</text>
+            <text x="628" y="329" text-anchor="middle" font-size="9" fill="#94a3b8">procfs</text>
+            <text x="628" y="344" text-anchor="middle" font-size="9" fill="#94a3b8">/proc/sys/kernel/</text>
+            <text x="628" y="359" text-anchor="middle" font-size="9" fill="#94a3b8">Netlink socket</text>
+            <text x="628" y="374" text-anchor="middle" font-size="9" fill="#94a3b8">NETLINK_KOBJECT_UEVENT</text>
+
+            <!-- User layer -->
+            <rect x="15" y="45" width="690" height="170" fill="#064e3b" rx="6" stroke="#059669" stroke-width="1.5"/>
+            <text x="360" y="67" text-anchor="middle" font-size="12" fill="#34d399" font-weight="700">用户空间（User Space）</text>
+            <rect x="25" y="77" width="160" height="128" fill="#1e293b" rx="6" stroke="#059669" stroke-width="1"/>
+            <text x="105" y="98" text-anchor="middle" font-size="10" fill="#6ee7b7" font-weight="700">mdev 进程</text>
+            <text x="105" y="116" text-anchor="middle" font-size="9" fill="#94a3b8">mdev_main()</text>
+            <text x="105" y="131" text-anchor="middle" font-size="9" fill="#94a3b8">make_device()</text>
+            <text x="105" y="146" text-anchor="middle" font-size="9" fill="#94a3b8">mknod() / unlink()</text>
+            <text x="105" y="161" text-anchor="middle" font-size="9" fill="#94a3b8">chown() / chmod()</text>
+            <text x="105" y="176" text-anchor="middle" font-size="9" fill="#94a3b8">mdev -s（冷插拔）</text>
+            <text x="105" y="191" text-anchor="middle" font-size="9" fill="#94a3b8">每事件 fork 一次</text>
+
+            <rect x="200" y="77" width="160" height="128" fill="#1e293b" rx="6" stroke="#059669" stroke-width="1"/>
+            <text x="280" y="98" text-anchor="middle" font-size="10" fill="#6ee7b7" font-weight="700">/etc/mdev.conf</text>
+            <text x="280" y="116" text-anchor="middle" font-size="9" fill="#94a3b8">正则匹配规则</text>
+            <text x="280" y="131" text-anchor="middle" font-size="9" fill="#94a3b8">权限 uid:gid mode</text>
+            <text x="280" y="146" text-anchor="middle" font-size="9" fill="#94a3b8">@ 创建后脚本</text>
+            <text x="280" y="161" text-anchor="middle" font-size="9" fill="#94a3b8">$ 删除前脚本</text>
+            <text x="280" y="176" text-anchor="middle" font-size="9" fill="#94a3b8">* 两者都执行</text>
+
+            <rect x="375" y="77" width="160" height="128" fill="#1e293b" rx="6" stroke="#059669" stroke-width="1"/>
+            <text x="455" y="98" text-anchor="middle" font-size="10" fill="#6ee7b7" font-weight="700">/dev 目录</text>
+            <text x="455" y="116" text-anchor="middle" font-size="9" fill="#94a3b8">tmpfs 挂载（内存）</text>
+            <text x="455" y="131" text-anchor="middle" font-size="9" fill="#94a3b8">字符/块设备节点</text>
+            <text x="455" y="146" text-anchor="middle" font-size="9" fill="#94a3b8">/dev/ttyUSB0</text>
+            <text x="455" y="161" text-anchor="middle" font-size="9" fill="#94a3b8">/dev/sda1</text>
+            <text x="455" y="176" text-anchor="middle" font-size="9" fill="#94a3b8">/dev/input/event0</text>
+
+            <rect x="550" y="77" width="150" height="128" fill="#1e293b" rx="6" stroke="#059669" stroke-width="1"/>
+            <text x="625" y="98" text-anchor="middle" font-size="10" fill="#6ee7b7" font-weight="700">应用程序</text>
+            <text x="625" y="116" text-anchor="middle" font-size="9" fill="#94a3b8">open("/dev/xxx")</text>
+            <text x="625" y="131" text-anchor="middle" font-size="9" fill="#94a3b8">read() / write()</text>
+            <text x="625" y="146" text-anchor="middle" font-size="9" fill="#94a3b8">ioctl()</text>
+            <text x="625" y="161" text-anchor="middle" font-size="9" fill="#94a3b8">通过 VFS 访问驱动</text>
+            <text x="625" y="176" text-anchor="middle" font-size="9" fill="#94a3b8">file_operations</text>
+
+            <!-- Arrows between layers -->
+            <line x1="360" y1="215" x2="360" y2="230" stroke="#60a5fa" stroke-width="2" marker-end="url(#arga)"/>
+            <text x="380" y="226" font-size="9" fill="#60a5fa">uevent</text>
+            <line x1="360" y1="440" x2="360" y2="425" stroke="#d97706" stroke-width="2" marker-end="url(#arga)"/>
+            <text x="380" y="436" font-size="9" fill="#d97706">中断/检测</text>
+          </svg>
+        </div>
+
+        <h2>关键知识点汇总</h2>
+        <div class="card">
+          <table>
+            <tr><th>概念</th><th>内核实现</th><th>用户空间表现</th></tr>
+            <tr><td>设备检测</td><td>总线驱动中断处理、设备枚举</td><td>—</td></tr>
+            <tr><td>设备注册</td><td><code>device_register()</code> → <code>device_add()</code></td><td><code>/sys/class/xxx</code> 目录出现</td></tr>
+            <tr><td>uevent 触发</td><td><code>kobject_uevent(kobj, KOBJ_ADD)</code></td><td>mdev 进程被 fork</td></tr>
+            <tr><td>事件传递①</td><td>Netlink broadcast（<code>CONFIG_NET</code>）</td><td>udevd/uevent 守护进程接收</td></tr>
+            <tr><td>事件传递②</td><td>call_usermodehelper（<code>CONFIG_UEVENT_HELPER</code>）</td><td>mdev 进程执行（环境变量）</td></tr>
+            <tr><td>节点创建</td><td>—</td><td><code>mknod()</code> 以 MAJOR:MINOR 创建</td></tr>
+            <tr><td>冷插拔</td><td>—</td><td><code>mdev -s</code> 扫描 sysfs</td></tr>
+            <tr><td>固件加载</td><td><code>request_firmware()</code>→ FIRMWARE uevent</td><td>写 sysfs loading/data 文件</td></tr>
+          </table>
+        </div>
+
+        <h2>mdev 与 udev 核心差异</h2>
+        <div class="diagram-wrap">
+          <div class="diagram-title">mdev vs udev 架构对比</div>
+          <svg viewBox="0 0 680 220" xmlns="http://www.w3.org/2000/svg" width="680" height="220">
+            <rect width="680" height="220" fill="#f8fafc" rx="8"/>
+            <!-- mdev side -->
+            <rect x="10" y="20" width="310" height="180" fill="#d1fae5" rx="8" stroke="#059669" stroke-width="2"/>
+            <text x="165" y="45" text-anchor="middle" font-size="13" font-weight="700" fill="#065f46">mdev（BusyBox）</text>
+            <text x="165" y="70" text-anchor="middle" font-size="10" fill="#065f46">⚙️ 无守护进程，每事件 fork</text>
+            <text x="165" y="90" text-anchor="middle" font-size="10" fill="#065f46">📥 uevent_helper 接收事件</text>
+            <text x="165" y="110" text-anchor="middle" font-size="10" fill="#065f46">📏 体积约 5KB</text>
+            <text x="165" y="130" text-anchor="middle" font-size="10" fill="#065f46">🔧 /etc/mdev.conf 配置</text>
+            <text x="165" y="150" text-anchor="middle" font-size="10" fill="#065f46">📦 适用于嵌入式/内存受限系统</text>
+            <text x="165" y="170" text-anchor="middle" font-size="10" fill="#065f46">✅ 可在 initramfs/init 前工作</text>
+            <text x="165" y="190" text-anchor="middle" font-size="10" fill="#065f46">⚠️ 需要 CONFIG_UEVENT_HELPER</text>
+            <!-- udev side -->
+            <rect x="360" y="20" width="310" height="180" fill="#dbeafe" rx="8" stroke="#2563eb" stroke-width="2"/>
+            <text x="515" y="45" text-anchor="middle" font-size="13" font-weight="700" fill="#1e3a8a">udev（systemd/eudev）</text>
+            <text x="515" y="70" text-anchor="middle" font-size="10" fill="#1e3a8a">⚙️ 常驻守护进程 udevd</text>
+            <text x="515" y="90" text-anchor="middle" font-size="10" fill="#1e3a8a">📥 Netlink socket 接收事件</text>
+            <text x="515" y="110" text-anchor="middle" font-size="10" fill="#1e3a8a">📏 体积较大（依赖多）</text>
+            <text x="515" y="130" text-anchor="middle" font-size="10" fill="#1e3a8a">🔧 /etc/udev/rules.d/*.rules</text>
+            <text x="515" y="150" text-anchor="middle" font-size="10" fill="#1e3a8a">📦 适用于桌面/服务器 Linux</text>
+            <text x="515" y="170" text-anchor="middle" font-size="10" fill="#1e3a8a">✅ 高性能（无 fork 开销）</text>
+            <text x="515" y="190" text-anchor="middle" font-size="10" fill="#1e3a8a">⚠️ 需要 CONFIG_NET</text>
+          </svg>
+        </div>
+
+        <div class="sources-section">
+          <h4>📚 本文参考的权威来源</h4>
+          <a class="source-link" href="https://lwn.net/Articles/242046/" target="_blank">📄 LWN.net: sysfs/hotplug/firmware 官方文档 (Rob Landley, 2007)</a>
+          <a class="source-link" href="https://linux-kernel-labs.github.io/refs/pull/189/merge/labs/device_model.html" target="_blank">📄 Linux Kernel Labs: Device Model</a>
+          <a class="source-link" href="https://landley.net/kdocs/pending/hotplug.txt" target="_blank">📄 Rob Landley: hotplug.txt</a>
+          <a class="source-link" href="https://stackoverflow.com/questions/22803469" target="_blank">📄 Stack Overflow: uevent to userspace</a>
+          <a class="source-link" href="https://terenceli.github.io/%E6%8A%80%E6%9C%AF/2018/06/10/linux-device-driver-model" target="_blank">📄 Linux Device Driver Model 解析</a>
+          <a class="source-link" href="https://blog.csdn.net/iriczhao/article/details/123762356" target="_blank">📄 CSDN: mdev 详解（busybox-1.23.1）</a>
+        </div>
+
+        <div class="principle-box">
+          <div class="ptitle">🔭 综合第一性原理解读</div>
+          <p>Linux 热插拔机制的整体设计体现了几个核心原则：</p>
+          <p><strong>1. 分层解耦：</strong>每层只关心自己的职责——硬件检测交给总线驱动，设备模型维护交给 kobject 子系统，事件传播交给 uevent 框架，节点创建交给 mdev。</p>
+          <p><strong>2. 事件驱动：</strong>整个系统由状态变化驱动，而非轮询。uevent 是内核对状态变化的"广播"，mdev 是订阅者的"响应"。</p>
+          <p><strong>3. sysfs 作为真相源：</strong>所有设备信息最终存储在 sysfs 中，用户空间工具总是从 sysfs 读取权威数据（设备号、路径），而非依赖事件消息本身——这使得系统即使在错过事件时也能通过扫描 sysfs 恢复正确状态（mdev -s）。</p>
+          <p><strong>4. 机制与策略分离：</strong>内核提供机制（uevent、sysfs、call_usermodehelper），用户空间定义策略（mdev.conf 规则、挂载脚本）——这是 Unix 设计哲学的直接体现。</p>
+        </div>
+      </div>
+
+    </div><!-- /content -->
+  </main>
+</div><!-- /layout -->
+
+<script>
+  // Section management
+  const sections = document.querySelectorAll('.section');
+  const navItems = document.querySelectorAll('.nav-item');
+  let currentSection = 0;
+  const totalSections = sections.length;
+
+  function showSection(idx) {
+    if (idx < 0 || idx >= totalSections) return;
+    sections.forEach(s => s.classList.remove('active'));
+    navItems.forEach(n => n.classList.remove('active'));
+    sections[idx].classList.add('active');
+    navItems[idx].classList.add('active');
+    currentSection = idx;
+    // Update nav buttons
+    document.getElementById('btn-prev').disabled = idx === 0;
+    document.getElementById('btn-next').disabled = idx === totalSections - 1;
+    // Scroll to top
+    window.scrollTo({ top: 0, behavior: 'smooth' });
+    // Scroll sidebar item into view
+    navItems[idx].scrollIntoView({ block: 'nearest', behavior: 'smooth' });
+    // Close mobile sidebar
+    if (window.innerWidth <= 768) {
+      closeSidebar();
+    }
+  }
+
+  navItems.forEach((item, idx) => {
+    item.addEventListener('click', () => showSection(idx));
+  });
+
+  document.getElementById('btn-prev').addEventListener('click', () => showSection(currentSection - 1));
+  document.getElementById('btn-next').addEventListener('click', () => showSection(currentSection + 1));
+
+  // Keyboard navigation
+  document.addEventListener('keydown', (e) => {
+    if (e.target.tagName === 'INPUT' || e.target.tagName === 'TEXTAREA') return;
+    if (e.key === 'ArrowRight' || e.key === 'ArrowDown') {
+      e.preventDefault();
+      showSection(currentSection + 1);
+    } else if (e.key === 'ArrowLeft' || e.key === 'ArrowUp') {
+      e.preventDefault();
+      showSection(currentSection - 1);
+    }
+  });
+
+  // Progress bar
+  function updateProgress() {
+    const scrollTop = window.pageYOffset || document.documentElement.scrollTop;
+    const docHeight = document.documentElement.scrollHeight - window.innerHeight;
+    const progress = docHeight > 0 ? (scrollTop / docHeight) * 100 : 0;
+    document.getElementById('progress-bar').style.width = progress + '%';
+  }
+  window.addEventListener('scroll', updateProgress, { passive: true });
+
+  // Mobile sidebar
+  const hamburger = document.getElementById('hamburger');
+  const sidebar = document.getElementById('sidebar');
+  const overlay = document.getElementById('sidebar-overlay');
+
+  function openSidebar() {
+    sidebar.classList.add('open');
+    overlay.classList.add('show');
+    hamburger.classList.add('active');
+  }
+  function closeSidebar() {
+    sidebar.classList.remove('open');
+    overlay.classList.remove('show');
+    hamburger.classList.remove('active');
+  }
+
+  hamburger.addEventListener('click', () => {
+    if (sidebar.classList.contains('open')) closeSidebar();
+    else openSidebar();
+  });
+  overlay.addEventListener('click', closeSidebar);
+
+  // Init
+  showSection(0);
+  updateProgress();
+</script>
+</body>
+</html>

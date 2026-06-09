@@ -1,0 +1,2570 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Linux 5.4 蓝牙 HCI UART 驱动深度解析</title>
+<style>
+  :root {
+    --bg: #0f1117;
+    --sidebar-bg: #161b22;
+    --card-bg: #1c2128;
+    --border: #30363d;
+    --accent: #58a6ff;
+    --accent2: #7ee787;
+    --accent3: #ffa657;
+    --accent4: #ff7b72;
+    --accent5: #bc8cff;
+    --text: #e6edf3;
+    --text-muted: #8b949e;
+    --text-dim: #6e7681;
+    --code-bg: #161b22;
+    --highlight: #264f78;
+    --progress-h: 3px;
+    --sidebar-w: 280px;
+    --font-mono: 'Cascadia Code', 'Fira Code', 'Consolas', monospace;
+  }
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  html { scroll-behavior: smooth; }
+  body {
+    background: var(--bg);
+    color: var(--text);
+    font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', 'PingFang SC', 'Hiragino Sans GB', sans-serif;
+    font-size: 15px;
+    line-height: 1.7;
+    overflow-x: hidden;
+  }
+
+  /* ===== PROGRESS BAR ===== */
+  #progress-bar {
+    position: fixed;
+    top: 0; left: 0;
+    height: var(--progress-h);
+    background: linear-gradient(90deg, var(--accent), var(--accent5), var(--accent2));
+    width: 0%;
+    z-index: 9999;
+    transition: width 0.1s;
+  }
+
+  /* ===== TOPBAR ===== */
+  #topbar {
+    position: fixed;
+    top: var(--progress-h);
+    left: 0; right: 0;
+    height: 52px;
+    background: rgba(22, 27, 34, 0.95);
+    border-bottom: 1px solid var(--border);
+    display: flex;
+    align-items: center;
+    padding: 0 16px;
+    z-index: 1000;
+    backdrop-filter: blur(8px);
+  }
+  #hamburger {
+    display: none;
+    flex-direction: column;
+    gap: 4px;
+    cursor: pointer;
+    padding: 8px;
+    margin-right: 12px;
+    border: none;
+    background: none;
+  }
+  #hamburger span {
+    display: block;
+    width: 22px;
+    height: 2px;
+    background: var(--text);
+    border-radius: 2px;
+    transition: all 0.3s;
+  }
+  #topbar-title {
+    font-size: 14px;
+    font-weight: 600;
+    color: var(--accent);
+    letter-spacing: 0.3px;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+  }
+  #topbar-kernel {
+    margin-left: auto;
+    font-size: 11px;
+    color: var(--text-muted);
+    background: var(--card-bg);
+    border: 1px solid var(--border);
+    border-radius: 12px;
+    padding: 2px 10px;
+    white-space: nowrap;
+  }
+
+  /* ===== LAYOUT ===== */
+  #layout {
+    display: flex;
+    padding-top: calc(var(--progress-h) + 52px);
+    min-height: 100vh;
+  }
+
+  /* ===== SIDEBAR ===== */
+  #sidebar {
+    position: fixed;
+    top: calc(var(--progress-h) + 52px);
+    left: 0;
+    width: var(--sidebar-w);
+    height: calc(100vh - var(--progress-h) - 52px);
+    overflow-y: auto;
+    background: var(--sidebar-bg);
+    border-right: 1px solid var(--border);
+    z-index: 900;
+    transition: transform 0.3s ease;
+    padding-bottom: 24px;
+  }
+  #sidebar::-webkit-scrollbar { width: 4px; }
+  #sidebar::-webkit-scrollbar-thumb { background: var(--border); border-radius: 2px; }
+
+  .nav-group-title {
+    font-size: 10px;
+    font-weight: 700;
+    text-transform: uppercase;
+    letter-spacing: 1px;
+    color: var(--text-dim);
+    padding: 16px 16px 6px;
+    user-select: none;
+  }
+  .nav-item {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    padding: 6px 16px;
+    font-size: 13px;
+    color: var(--text-muted);
+    cursor: pointer;
+    border-left: 3px solid transparent;
+    transition: all 0.2s;
+    text-decoration: none;
+    line-height: 1.4;
+  }
+  .nav-item:hover { color: var(--text); background: rgba(88,166,255,0.05); }
+  .nav-item.active {
+    color: var(--accent);
+    border-left-color: var(--accent);
+    background: rgba(88,166,255,0.08);
+  }
+  .nav-item .nav-num {
+    font-size: 10px;
+    color: var(--text-dim);
+    min-width: 18px;
+    font-family: var(--font-mono);
+  }
+
+  /* ===== MAIN CONTENT ===== */
+  #main {
+    margin-left: var(--sidebar-w);
+    flex: 1;
+    min-width: 0;
+    max-width: 900px;
+    padding: 40px 48px 80px;
+  }
+
+  /* ===== SECTIONS ===== */
+  .section {
+    margin-bottom: 72px;
+    scroll-margin-top: 72px;
+  }
+  .section-header {
+    display: flex;
+    align-items: center;
+    gap: 12px;
+    margin-bottom: 24px;
+    padding-bottom: 12px;
+    border-bottom: 1px solid var(--border);
+  }
+  .section-num {
+    font-family: var(--font-mono);
+    font-size: 12px;
+    color: var(--text-dim);
+    background: var(--card-bg);
+    border: 1px solid var(--border);
+    border-radius: 4px;
+    padding: 2px 8px;
+    white-space: nowrap;
+  }
+  h1 { font-size: 28px; font-weight: 700; color: var(--text); }
+  h2 { font-size: 20px; font-weight: 600; color: var(--text); flex: 1; }
+  h3 { font-size: 16px; font-weight: 600; color: var(--accent3); margin: 24px 0 12px; }
+  h4 { font-size: 14px; font-weight: 600; color: var(--accent5); margin: 18px 0 8px; }
+
+  p { margin-bottom: 14px; color: var(--text); }
+
+  /* ===== CODE ===== */
+  pre {
+    background: var(--code-bg);
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    padding: 16px 20px;
+    overflow-x: auto;
+    margin: 16px 0;
+    font-family: var(--font-mono);
+    font-size: 12.5px;
+    line-height: 1.6;
+    position: relative;
+  }
+  pre::-webkit-scrollbar { height: 4px; }
+  pre::-webkit-scrollbar-thumb { background: var(--border); border-radius: 2px; }
+  .code-label {
+    position: absolute;
+    top: 8px; right: 12px;
+    font-size: 10px;
+    color: var(--text-dim);
+    font-family: var(--font-mono);
+  }
+  code { font-family: var(--font-mono); }
+  p code, li code {
+    background: var(--code-bg);
+    border: 1px solid var(--border);
+    border-radius: 3px;
+    padding: 1px 5px;
+    font-size: 12.5px;
+    color: var(--accent3);
+  }
+
+  /* ===== COLORS IN CODE ===== */
+  .kw { color: #ff7b72; }
+  .fn { color: #d2a8ff; }
+  .st { color: #a5d6ff; }
+  .cm { color: #8b949e; font-style: italic; }
+  .num { color: #79c0ff; }
+  .pp { color: #ffa657; }
+  .ty { color: #7ee787; }
+  .op { color: #e6edf3; }
+  .str { color: #a5d6ff; }
+  .mac { color: #ffa657; font-weight: bold; }
+
+  /* ===== CARDS ===== */
+  .card {
+    background: var(--card-bg);
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    padding: 20px 24px;
+    margin: 16px 0;
+  }
+  .card-title {
+    font-size: 13px;
+    font-weight: 600;
+    color: var(--accent3);
+    margin-bottom: 12px;
+    display: flex;
+    align-items: center;
+    gap: 8px;
+  }
+
+  /* ===== TABLES ===== */
+  .table-wrap { overflow-x: auto; margin: 16px 0; border-radius: 8px; border: 1px solid var(--border); }
+  table { width: 100%; border-collapse: collapse; font-size: 13px; }
+  th {
+    background: var(--card-bg);
+    color: var(--text-muted);
+    font-weight: 600;
+    padding: 10px 14px;
+    text-align: left;
+    border-bottom: 1px solid var(--border);
+    white-space: nowrap;
+  }
+  td {
+    padding: 9px 14px;
+    border-bottom: 1px solid rgba(48,54,61,0.5);
+    vertical-align: top;
+  }
+  tr:last-child td { border-bottom: none; }
+  tr:hover td { background: rgba(88,166,255,0.03); }
+  .tag {
+    display: inline-block;
+    font-size: 11px;
+    font-family: var(--font-mono);
+    border-radius: 4px;
+    padding: 1px 7px;
+    margin: 1px;
+  }
+  .tag-blue { background: rgba(88,166,255,0.15); color: var(--accent); border: 1px solid rgba(88,166,255,0.3); }
+  .tag-green { background: rgba(126,231,135,0.15); color: var(--accent2); border: 1px solid rgba(126,231,135,0.3); }
+  .tag-orange { background: rgba(255,166,87,0.15); color: var(--accent3); border: 1px solid rgba(255,166,87,0.3); }
+  .tag-red { background: rgba(255,123,114,0.15); color: var(--accent4); border: 1px solid rgba(255,123,114,0.3); }
+  .tag-purple { background: rgba(188,140,255,0.15); color: var(--accent5); border: 1px solid rgba(188,140,255,0.3); }
+
+  /* ===== PRINCIPLE BOX ===== */
+  .principle-box {
+    background: linear-gradient(135deg, rgba(88,166,255,0.07), rgba(126,231,135,0.05));
+    border: 1px solid rgba(88,166,255,0.25);
+    border-left: 4px solid var(--accent);
+    border-radius: 8px;
+    padding: 18px 22px;
+    margin: 28px 0 0;
+  }
+  .principle-box .ptitle {
+    font-size: 12px;
+    font-weight: 700;
+    color: var(--accent);
+    text-transform: uppercase;
+    letter-spacing: 1px;
+    margin-bottom: 8px;
+    display: flex;
+    align-items: center;
+    gap: 6px;
+  }
+  .principle-box p { margin: 0; color: var(--text-muted); font-size: 14px; }
+
+  /* ===== INFO BOXES ===== */
+  .info-box {
+    border-radius: 8px;
+    padding: 14px 18px;
+    margin: 12px 0;
+    font-size: 13.5px;
+    border-left: 3px solid;
+  }
+  .info-box.note { background: rgba(88,166,255,0.08); border-color: var(--accent); }
+  .info-box.warn { background: rgba(255,166,87,0.08); border-color: var(--accent3); }
+  .info-box.tip { background: rgba(126,231,135,0.08); border-color: var(--accent2); }
+
+  /* ===== SOURCE LINK ===== */
+  .src-link {
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+    font-size: 12px;
+    color: var(--accent);
+    text-decoration: none;
+    background: rgba(88,166,255,0.08);
+    border: 1px solid rgba(88,166,255,0.2);
+    border-radius: 4px;
+    padding: 3px 10px;
+    margin: 4px 4px 4px 0;
+    transition: all 0.2s;
+  }
+  .src-link:hover { background: rgba(88,166,255,0.15); }
+
+  /* ===== SVG DIAGRAMS ===== */
+  .svg-wrap {
+    background: var(--card-bg);
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    padding: 20px;
+    margin: 16px 0;
+    overflow-x: auto;
+    text-align: center;
+  }
+  .svg-caption {
+    font-size: 12px;
+    color: var(--text-dim);
+    text-align: center;
+    margin-top: 8px;
+    font-style: italic;
+  }
+
+  /* ===== NAV ARROWS ===== */
+  #nav-arrows {
+    position: fixed;
+    bottom: 24px;
+    right: 24px;
+    display: flex;
+    gap: 8px;
+    z-index: 800;
+  }
+  .nav-arrow-btn {
+    width: 40px;
+    height: 40px;
+    border-radius: 50%;
+    background: var(--card-bg);
+    border: 1px solid var(--border);
+    color: var(--text-muted);
+    font-size: 18px;
+    cursor: pointer;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    transition: all 0.2s;
+    user-select: none;
+  }
+  .nav-arrow-btn:hover { border-color: var(--accent); color: var(--accent); }
+
+  /* ===== OVERLAY ===== */
+  #overlay {
+    display: none;
+    position: fixed;
+    inset: 0;
+    background: rgba(0,0,0,0.6);
+    z-index: 800;
+  }
+
+  /* ===== RESPONSIVE ===== */
+  @media (max-width: 768px) {
+    #hamburger { display: flex; }
+    #sidebar {
+      transform: translateX(-100%);
+    }
+    #sidebar.open {
+      transform: translateX(0);
+    }
+    #overlay.open { display: block; }
+    #main {
+      margin-left: 0;
+      padding: 24px 16px 80px;
+    }
+    h1 { font-size: 22px; }
+    h2 { font-size: 17px; }
+    pre { font-size: 11.5px; padding: 12px 14px; }
+  }
+
+  /* ===== LISTS ===== */
+  ul, ol { padding-left: 20px; margin: 10px 0; }
+  li { margin-bottom: 6px; color: var(--text); }
+
+  /* ===== HERO ===== */
+  .hero {
+    background: linear-gradient(135deg, rgba(88,166,255,0.08), rgba(188,140,255,0.05));
+    border: 1px solid var(--border);
+    border-radius: 12px;
+    padding: 28px 32px;
+    margin-bottom: 32px;
+  }
+  .hero-meta {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 8px;
+    margin-top: 16px;
+  }
+  .hero-badge {
+    font-size: 12px;
+    padding: 4px 12px;
+    border-radius: 20px;
+    font-family: var(--font-mono);
+  }
+
+  /* grid 2col */
+  .grid2 { display: grid; grid-template-columns: 1fr 1fr; gap: 16px; margin: 16px 0; }
+  @media (max-width: 600px) { .grid2 { grid-template-columns: 1fr; } }
+
+  .flex-row { display: flex; gap: 10px; flex-wrap: wrap; margin: 10px 0; }
+
+  hr.section-sep { border: none; border-top: 1px solid var(--border); margin: 40px 0; }
+</style>
+</head>
+<body>
+
+<div id="progress-bar"></div>
+
+<!-- TOPBAR -->
+<div id="topbar">
+  <button id="hamburger" onclick="toggleSidebar()" aria-label="菜单">
+    <span></span><span></span><span></span>
+  </button>
+  <div id="topbar-title">Linux 5.4 蓝牙 HCI UART 驱动深度解析</div>
+  <div id="topbar-kernel">kernel v5.4</div>
+</div>
+
+<div id="overlay" onclick="closeSidebar()"></div>
+
+<!-- SIDEBAR -->
+<nav id="sidebar">
+  <div class="nav-group-title">概览</div>
+  <a class="nav-item" data-sec="s0" onclick="goSection('s0')"><span class="nav-num">00</span>引言与背景</a>
+
+  <div class="nav-group-title">架构设计</div>
+  <a class="nav-item" data-sec="s1" onclick="goSection('s1')"><span class="nav-num">01</span>整体分层架构</a>
+  <a class="nav-item" data-sec="s2" onclick="goSection('s2')"><span class="nav-num">02</span>设计原理与模式</a>
+
+  <div class="nav-group-title">核心机制</div>
+  <a class="nav-item" data-sec="s3" onclick="goSection('s3')"><span class="nav-num">03</span>TTY 线路规程</a>
+  <a class="nav-item" data-sec="s4" onclick="goSection('s4')"><span class="nav-num">04</span>核心数据结构</a>
+  <a class="nav-item" data-sec="s5" onclick="goSection('s5')"><span class="nav-num">05</span>协议插件系统</a>
+
+  <div class="nav-group-title">数据流</div>
+  <a class="nav-item" data-sec="s6" onclick="goSection('s6')"><span class="nav-num">06</span>发送路径</a>
+  <a class="nav-item" data-sec="s7" onclick="goSection('s7')"><span class="nav-num">07</span>接收路径</a>
+
+  <div class="nav-group-title">协议实现</div>
+  <a class="nav-item" data-sec="s8" onclick="goSection('s8')"><span class="nav-num">08</span>H4 协议实现</a>
+  <a class="nav-item" data-sec="s9" onclick="goSection('s9')"><span class="nav-num">09</span>H5 (3-Wire) 协议</a>
+  <a class="nav-item" data-sec="s10" onclick="goSection('s10')"><span class="nav-num">10</span>BCSP 协议</a>
+
+  <div class="nav-group-title">高级机制</div>
+  <a class="nav-item" data-sec="s11" onclick="goSection('s11')"><span class="nav-num">11</span>初始化与注册流程</a>
+  <a class="nav-item" data-sec="s12" onclick="goSection('s12')"><span class="nav-num">12</span>并发与锁机制</a>
+  <a class="nav-item" data-sec="s13" onclick="goSection('s13')"><span class="nav-num">13</span>波特率与流控</a>
+  <a class="nav-item" data-sec="s14" onclick="goSection('s14')"><span class="nav-num">14</span>serdev 扩展</a>
+
+  <div class="nav-group-title">总结</div>
+  <a class="nav-item" data-sec="s15" onclick="goSection('s15')"><span class="nav-num">15</span>设计总结</a>
+</nav>
+
+<!-- MAIN -->
+<main id="main">
+
+<!-- ==================== S0: 引言 ==================== -->
+<section class="section" id="s0">
+  <div class="section-header">
+    <span class="section-num">00</span>
+    <h2>引言与背景</h2>
+  </div>
+
+  <div class="hero">
+    <h1>Linux 5.4 蓝牙 HCI UART 驱动深度解析</h1>
+    <p style="color:var(--text-muted);margin-top:10px;font-size:14px;">
+      基于 Linux kernel v5.4 官方源码，深入分析蓝牙 Host Controller Interface (HCI) 在 UART 物理层上的完整实现，涵盖设计原理、分层架构到代码落地。
+    </p>
+    <div class="hero-meta">
+      <span class="hero-badge tag-blue">kernel v5.4</span>
+      <span class="hero-badge tag-green">drivers/bluetooth/</span>
+      <span class="hero-badge tag-orange">hci_ldisc.c</span>
+      <span class="hero-badge tag-purple">hci_h4.c / hci_h5.c</span>
+      <span class="hero-badge tag-red">hci_bcsp.c</span>
+    </div>
+  </div>
+
+  <div class="flex-row">
+    <a class="src-link" href="https://github.com/torvalds/linux/blob/v5.4/drivers/bluetooth/hci_ldisc.c" target="_blank">📄 hci_ldisc.c (v5.4)</a>
+    <a class="src-link" href="https://github.com/torvalds/linux/blob/v5.4/drivers/bluetooth/hci_uart.h" target="_blank">📄 hci_uart.h (v5.4)</a>
+    <a class="src-link" href="https://github.com/torvalds/linux/blob/v5.4/drivers/bluetooth/hci_h4.c" target="_blank">📄 hci_h4.c (v5.4)</a>
+    <a class="src-link" href="https://github.com/torvalds/linux/blob/v5.4/drivers/bluetooth/hci_h5.c" target="_blank">📄 hci_h5.c (v5.4)</a>
+    <a class="src-link" href="https://github.com/torvalds/linux/blob/v5.4/drivers/bluetooth/hci_bcsp.c" target="_blank">📄 hci_bcsp.c (v5.4)</a>
+  </div>
+
+  <h3>为什么需要 HCI UART 驱动？</h3>
+  <p>
+    蓝牙规范（Bluetooth Core Specification）定义了 <strong>HCI（Host Controller Interface）</strong> 作为主机软件与蓝牙控制器硬件之间的标准接口。当蓝牙控制器通过 <strong>UART（通用异步收发器）</strong> 连接时，需要一套专门的驱动将 Linux 蓝牙协议栈（BlueZ）与串行物理层对接。
+  </p>
+  <p>
+    这在嵌入式系统（ARM SoC、IoT 设备）中极为普遍——蓝牙芯片（BCM、QCA、Intel、MTK 等）往往通过 UART 接口与主机 SoC 相连。Linux 5.4 中的 HCI UART 驱动版本为 <strong>2.3</strong>，由 Qualcomm、Maxim Krasnyansky 和 Marcel Holtmann 等人持续演进。
+  </p>
+
+  <div class="info-box note">
+    <strong>📌 源码版本说明：</strong> 本文档严格基于 Linux kernel <strong>v5.4 tag</strong> 的官方源码（<code>drivers/bluetooth/</code> 目录），所有代码引用均可在
+    <a href="https://github.com/torvalds/linux/tree/v5.4/drivers/bluetooth" target="_blank" style="color:var(--accent)">GitHub torvalds/linux @ v5.4</a> 得到验证。
+  </div>
+
+  <div class="principle-box">
+    <div class="ptitle">⚡ 第一性原理概述</div>
+    <p>蓝牙控制器是独立的硬件实体，它只"说" HCI 协议。UART 只是一根串行管道。问题的本质是：<strong>如何把一个面向消息的协议（HCI packet）安全、高效地塞进一根连续字节流的管道（UART），再从另一端完整取出？</strong> HCI UART 驱动存在的全部理由，就是解决这一个问题。</p>
+  </div>
+</section>
+
+<!-- ==================== S1: 整体分层架构 ==================== -->
+<section class="section" id="s1">
+  <div class="section-header">
+    <span class="section-num">01</span>
+    <h2>整体分层架构</h2>
+  </div>
+
+  <p>Linux 蓝牙 HCI UART 子系统采用严格的分层设计，从用户空间到物理线路，共跨越五个层次：</p>
+
+  <div class="svg-wrap">
+    <svg viewBox="0 0 780 480" width="100%" style="max-width:780px" xmlns="http://www.w3.org/2000/svg">
+      <defs>
+        <linearGradient id="gb" x1="0" y1="0" x2="1" y2="0">
+          <stop offset="0%" stop-color="#58a6ff" stop-opacity="0.3"/>
+          <stop offset="100%" stop-color="#58a6ff" stop-opacity="0.08"/>
+        </linearGradient>
+        <linearGradient id="gg" x1="0" y1="0" x2="1" y2="0">
+          <stop offset="0%" stop-color="#7ee787" stop-opacity="0.3"/>
+          <stop offset="100%" stop-color="#7ee787" stop-opacity="0.08"/>
+        </linearGradient>
+        <linearGradient id="go" x1="0" y1="0" x2="1" y2="0">
+          <stop offset="0%" stop-color="#ffa657" stop-opacity="0.3"/>
+          <stop offset="100%" stop-color="#ffa657" stop-opacity="0.08"/>
+        </linearGradient>
+        <linearGradient id="gp" x1="0" y1="0" x2="1" y2="0">
+          <stop offset="0%" stop-color="#bc8cff" stop-opacity="0.3"/>
+          <stop offset="100%" stop-color="#bc8cff" stop-opacity="0.08"/>
+        </linearGradient>
+        <linearGradient id="gr" x1="0" y1="0" x2="1" y2="0">
+          <stop offset="0%" stop-color="#ff7b72" stop-opacity="0.3"/>
+          <stop offset="100%" stop-color="#ff7b72" stop-opacity="0.08"/>
+        </linearGradient>
+        <marker id="arr" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="6" markerHeight="6" orient="auto">
+          <path d="M0,0 L10,5 L0,10 z" fill="#8b949e"/>
+        </marker>
+      </defs>
+
+      <!-- Layer boxes -->
+      <!-- L5: User/BlueZ -->
+      <rect x="40" y="20" width="700" height="56" rx="8" fill="url(#gb)" stroke="#58a6ff" stroke-width="1"/>
+      <text x="60" y="42" font-size="11" fill="#8b949e" font-family="monospace">LAYER 5</text>
+      <text x="60" y="58" font-size="14" fill="#58a6ff" font-weight="bold">BlueZ 用户空间 / HCI 核心层 (net/bluetooth/hci_core.c)</text>
+      <text x="560" y="58" font-size="11" fill="#8b949e">hci_dev, hci_send_frame()</text>
+
+      <!-- L4: hci_dev ops -->
+      <rect x="40" y="92" width="700" height="56" rx="8" fill="url(#gg)" stroke="#7ee787" stroke-width="1"/>
+      <text x="60" y="114" font-size="11" fill="#8b949e" font-family="monospace">LAYER 4</text>
+      <text x="60" y="130" font-size="14" fill="#7ee787" font-weight="bold">HCI UART 接口层 (hci_ldisc.c)</text>
+      <text x="500" y="130" font-size="11" fill="#8b949e">open/close/send/flush/setup</text>
+
+      <!-- L3: proto -->
+      <rect x="40" y="164" width="700" height="56" rx="8" fill="url(#go)" stroke="#ffa657" stroke-width="1"/>
+      <text x="60" y="186" font-size="11" fill="#8b949e" font-family="monospace">LAYER 3</text>
+      <text x="60" y="202" font-size="14" fill="#ffa657" font-weight="bold">协议插件层 (hci_uart_proto)</text>
+      <!-- protocol boxes -->
+      <rect x="170" y="174" width="76" height="28" rx="4" fill="rgba(255,166,87,0.15)" stroke="#ffa657" stroke-width="1"/>
+      <text x="208" y="192" font-size="11" fill="#ffa657" text-anchor="middle">H4</text>
+      <rect x="254" y="174" width="76" height="28" rx="4" fill="rgba(255,166,87,0.15)" stroke="#ffa657" stroke-width="1"/>
+      <text x="292" y="192" font-size="11" fill="#ffa657" text-anchor="middle">H5/3Wire</text>
+      <rect x="338" y="174" width="76" height="28" rx="4" fill="rgba(255,166,87,0.15)" stroke="#ffa657" stroke-width="1"/>
+      <text x="376" y="192" font-size="11" fill="#ffa657" text-anchor="middle">BCSP</text>
+      <rect x="422" y="174" width="76" height="28" rx="4" fill="rgba(255,166,87,0.15)" stroke="#ffa657" stroke-width="1"/>
+      <text x="460" y="192" font-size="11" fill="#ffa657" text-anchor="middle">Intel/BCM</text>
+      <rect x="506" y="174" width="76" height="28" rx="4" fill="rgba(255,166,87,0.15)" stroke="#ffa657" stroke-width="1"/>
+      <text x="544" y="192" font-size="11" fill="#ffa657" text-anchor="middle">QCA/LL</text>
+      <rect x="590" y="174" width="76" height="28" rx="4" fill="rgba(255,166,87,0.15)" stroke="#ffa657" stroke-width="1"/>
+      <text x="628" y="192" font-size="11" fill="#ffa657" text-anchor="middle">MRVL...</text>
+
+      <!-- L2: TTY ldisc -->
+      <rect x="40" y="236" width="700" height="56" rx="8" fill="url(#gp)" stroke="#bc8cff" stroke-width="1"/>
+      <text x="60" y="258" font-size="11" fill="#8b949e" font-family="monospace">LAYER 2</text>
+      <text x="60" y="274" font-size="14" fill="#bc8cff" font-weight="bold">TTY 线路规程层 (N_HCI = 15, tty_ldisc_ops)</text>
+      <text x="520" y="274" font-size="11" fill="#8b949e">receive_buf / write_wakeup</text>
+
+      <!-- L1: TTY driver -->
+      <rect x="40" y="308" width="700" height="56" rx="8" fill="url(#gr)" stroke="#ff7b72" stroke-width="1"/>
+      <text x="60" y="330" font-size="11" fill="#8b949e" font-family="monospace">LAYER 1</text>
+      <text x="60" y="346" font-size="14" fill="#ff7b72" font-weight="bold">TTY 驱动层 (8250, PL011, imx-uart 等)</text>
+      <text x="520" y="346" font-size="11" fill="#8b949e">tty_driver, ops->write()</text>
+
+      <!-- L0: HW -->
+      <rect x="40" y="380" width="700" height="56" rx="8" fill="rgba(48,54,61,0.5)" stroke="#30363d" stroke-width="1"/>
+      <text x="60" y="402" font-size="11" fill="#8b949e" font-family="monospace">HARDWARE</text>
+      <text x="60" y="418" font-size="14" fill="#6e7681" font-weight="bold">物理 UART 接口 + 蓝牙控制器 (BCM43xx / QCA / Intel 等)</text>
+
+      <!-- arrows between layers -->
+      <line x1="390" y1="76" x2="390" y2="90" stroke="#8b949e" stroke-width="1.5" marker-end="url(#arr)"/>
+      <line x1="390" y1="148" x2="390" y2="162" stroke="#8b949e" stroke-width="1.5" marker-end="url(#arr)"/>
+      <line x1="390" y1="220" x2="390" y2="234" stroke="#8b949e" stroke-width="1.5" marker-end="url(#arr)"/>
+      <line x1="390" y1="292" x2="390" y2="306" stroke="#8b949e" stroke-width="1.5" marker-end="url(#arr)"/>
+      <line x1="390" y1="364" x2="390" y2="378" stroke="#8b949e" stroke-width="1.5" marker-end="url(#arr)"/>
+
+      <!-- bi-directional label -->
+      <text x="400" y="88" font-size="10" fill="#8b949e">↕ sk_buff</text>
+      <text x="400" y="160" font-size="10" fill="#8b949e">↕ enqueue/recv</text>
+      <text x="400" y="232" font-size="10" fill="#8b949e">↕ receive_buf/write</text>
+      <text x="400" y="304" font-size="10" fill="#8b949e">↕ IRQ/DMA</text>
+      <text x="400" y="376" font-size="10" fill="#8b949e">↕ UART 字节流</text>
+    </svg>
+    <div class="svg-caption">图1：Linux 5.4 蓝牙 HCI UART 驱动五层架构</div>
+  </div>
+
+  <h3>各层职责划分</h3>
+  <div class="table-wrap">
+    <table>
+      <thead>
+        <tr><th>层次</th><th>文件</th><th>职责</th><th>关键接口</th></tr>
+      </thead>
+      <tbody>
+        <tr>
+          <td><span class="tag tag-blue">HCI核心层</span></td>
+          <td><code>net/bluetooth/hci_core.c</code></td>
+          <td>管理 hci_dev 设备，处理 HCI 命令/事件/数据包逻辑</td>
+          <td><code>hci_register_dev()</code><br><code>hci_recv_frame()</code></td>
+        </tr>
+        <tr>
+          <td><span class="tag tag-green">HCI UART接口层</span></td>
+          <td><code>drivers/bluetooth/hci_ldisc.c</code></td>
+          <td>实现 hci_dev 回调，将 HCI 操作映射到 TTY 操作，管理工作队列</td>
+          <td><code>hci_uart_open/close/send_frame</code></td>
+        </tr>
+        <tr>
+          <td><span class="tag tag-orange">协议插件层</span></td>
+          <td><code>hci_h4.c / hci_h5.c / hci_bcsp.c</code></td>
+          <td>实现具体的串行帧协议（封装、解封装、重传、CRC等）</td>
+          <td><code>hci_uart_proto</code> 函数表</td>
+        </tr>
+        <tr>
+          <td><span class="tag tag-purple">TTY线路规程层</span></td>
+          <td><code>hci_ldisc.c</code>（ldisc部分）</td>
+          <td>注册为线路规程 N_HCI=15，拦截 TTY 数据流</td>
+          <td><code>tty_ldisc_ops</code></td>
+        </tr>
+        <tr>
+          <td><span class="tag tag-red">TTY驱动层</span></td>
+          <td>各平台串口驱动</td>
+          <td>管理 UART 硬件，产生接收中断，提供 write() 接口</td>
+          <td><code>tty_driver, tty_operations</code></td>
+        </tr>
+      </tbody>
+    </table>
+  </div>
+
+  <div class="principle-box">
+    <div class="ptitle">⚡ 第一性原理</div>
+    <p>分层的本质是<strong>关注点隔离（Separation of Concerns）</strong>。每一层只解决一类问题：TTY 层解决字节的物理搬运；线路规程层解决协议切换的可配置性；协议插件层解决不同芯片厂商的帧格式差异；HCI接口层解决与上层协议栈的标准对接。层与层之间通过明确定义的接口（函数指针表）通信，修改任一层不影响其它层。</p>
+  </div>
+</section>
+
+<!-- ==================== S2: 设计原理与模式 ==================== -->
+<section class="section" id="s2">
+  <div class="section-header">
+    <span class="section-num">02</span>
+    <h2>设计原理与模式</h2>
+  </div>
+
+  <h3>核心设计模式</h3>
+
+  <div class="grid2">
+    <div class="card">
+      <div class="card-title">🔌 策略模式（Strategy Pattern）</div>
+      <p style="font-size:13px;color:var(--text-muted)">
+        <code>hci_uart_proto</code> 结构体定义了协议操作的抽象接口（函数指针表）。H4、H5、BCSP 等各自实现这些接口，运行时通过 IOCTL <code>HCIUARTSETPROTO</code> 动态切换。上层代码无需感知具体协议。
+      </p>
+    </div>
+    <div class="card">
+      <div class="card-title">🏭 注册-发现模式（Registry）</div>
+      <p style="font-size:13px;color:var(--text-muted)">
+        全局数组 <code>hup[HCI_UART_MAX_PROTO]</code> 作为协议注册表。各协议模块在 <code>module_init</code> 时调用 <code>hci_uart_register_proto()</code> 注册自身，系统可动态加卸载。
+      </p>
+    </div>
+    <div class="card">
+      <div class="card-title">🔀 线路规程（Line Discipline）</div>
+      <p style="font-size:13px;color:var(--text-muted)">
+        TTY 线路规程是 Linux 的标准扩展机制。<code>N_HCI=15</code> 这个 ldisc ID 让内核知道：当此 TTY 设备被设置为蓝牙模式时，所有收发数据都由 HCI 驱动接管，而无需修改任何底层串口驱动。
+      </p>
+    </div>
+    <div class="card">
+      <div class="card-title">🔒 生产者-消费者模式</div>
+      <p style="font-size:13px;color:var(--text-muted)">
+        发送路径：HCI 核心层（生产者）将 <code>sk_buff</code> 通过 <code>proto->enqueue()</code> 放入协议队列，工作队列（消费者）<code>hci_uart_write_work</code> 异步从队列取出并写入 TTY。
+      </p>
+    </div>
+  </div>
+
+  <h3>关键设计决策分析</h3>
+
+  <div class="svg-wrap">
+    <svg viewBox="0 0 760 320" width="100%" style="max-width:760px" xmlns="http://www.w3.org/2000/svg">
+      <defs>
+        <marker id="arr2" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="6" markerHeight="6" orient="auto">
+          <path d="M0,0 L10,5 L0,10 z" fill="#58a6ff"/>
+        </marker>
+      </defs>
+
+      <!-- Decision 1: IOCTL-based proto selection -->
+      <rect x="20" y="20" width="220" height="80" rx="8" fill="rgba(88,166,255,0.08)" stroke="#58a6ff" stroke-width="1"/>
+      <text x="130" y="42" font-size="12" fill="#58a6ff" text-anchor="middle" font-weight="bold">IOCTL 协议选择</text>
+      <text x="130" y="62" font-size="10" fill="#8b949e" text-anchor="middle">HCIUARTSETPROTO</text>
+      <text x="130" y="78" font-size="10" fill="#8b949e" text-anchor="middle">用户态控制协议切换</text>
+      <text x="130" y="94" font-size="10" fill="#8b949e" text-anchor="middle">无需重新加载驱动</text>
+
+      <!-- Decision 2: workqueue -->
+      <rect x="270" y="20" width="220" height="80" rx="8" fill="rgba(126,231,135,0.08)" stroke="#7ee787" stroke-width="1"/>
+      <text x="380" y="42" font-size="12" fill="#7ee787" text-anchor="middle" font-weight="bold">工作队列异步发送</text>
+      <text x="380" y="62" font-size="10" fill="#8b949e" text-anchor="middle">write_work (workqueue)</text>
+      <text x="380" y="78" font-size="10" fill="#8b949e" text-anchor="middle">避免阻塞 HCI 核心</text>
+      <text x="380" y="94" font-size="10" fill="#8b949e" text-anchor="middle">TTY 写满时可重试</text>
+
+      <!-- Decision 3: percpu rwsem -->
+      <rect x="520" y="20" width="220" height="80" rx="8" fill="rgba(188,140,255,0.08)" stroke="#bc8cff" stroke-width="1"/>
+      <text x="630" y="42" font-size="12" fill="#bc8cff" text-anchor="middle" font-weight="bold">percpu 读写信号量</text>
+      <text x="630" y="62" font-size="10" fill="#8b949e" text-anchor="middle">proto_lock (percpu_rw_sem)</text>
+      <text x="630" y="78" font-size="10" fill="#8b949e" text-anchor="middle">高并发下保护协议引用</text>
+      <text x="630" y="94" font-size="10" fill="#8b949e" text-anchor="middle">IRQ 上下文可 trylock</text>
+
+      <!-- Decision 4: sk_buff queue -->
+      <rect x="20" y="160" width="220" height="80" rx="8" fill="rgba(255,166,87,0.08)" stroke="#ffa657" stroke-width="1"/>
+      <text x="130" y="182" font-size="12" fill="#ffa657" text-anchor="middle" font-weight="bold">sk_buff 为载体</text>
+      <text x="130" y="202" font-size="10" fill="#8b949e" text-anchor="middle">复用网络子系统缓冲</text>
+      <text x="130" y="218" font-size="10" fill="#8b949e" text-anchor="middle">zero-copy 友好</text>
+      <text x="130" y="234" font-size="10" fill="#8b949e" text-anchor="middle">统一的 DMA 支持</text>
+
+      <!-- Decision 5: tty receive_room -->
+      <rect x="270" y="160" width="220" height="80" rx="8" fill="rgba(255,123,114,0.08)" stroke="#ff7b72" stroke-width="1"/>
+      <text x="380" y="182" font-size="12" fill="#ff7b72" text-anchor="middle" font-weight="bold">接收缓冲 65536 字节</text>
+      <text x="380" y="202" font-size="10" fill="#8b949e" text-anchor="middle">tty->receive_room = 65536</text>
+      <text x="380" y="218" font-size="10" fill="#8b949e" text-anchor="middle">防止 TTY 层过早 throttle</text>
+      <text x="380" y="234" font-size="10" fill="#8b949e" text-anchor="middle">接收后调用 tty_unthrottle</text>
+
+      <!-- Decision 6: vendor-specific setup -->
+      <rect x="520" y="160" width="220" height="80" rx="8" fill="rgba(126,231,135,0.08)" stroke="#7ee787" stroke-width="1"/>
+      <text x="630" y="182" font-size="12" fill="#7ee787" text-anchor="middle" font-weight="bold">厂商 setup 钩子</text>
+      <text x="630" y="202" font-size="10" fill="#8b949e" text-anchor="middle">proto->setup() 回调</text>
+      <text x="630" y="218" font-size="10" fill="#8b949e" text-anchor="middle">固件下载/波特率协商</text>
+      <text x="630" y="234" font-size="10" fill="#8b949e" text-anchor="middle">VND_DETECT 自动检测</text>
+    </svg>
+    <div class="svg-caption">图2：HCI UART 驱动六大核心设计决策</div>
+  </div>
+
+  <h3>HCI 数据包类型</h3>
+  <p>HCI 协议定义了四种基本数据包类型，所有 UART 协议都必须支持其区分和路由：</p>
+  <div class="table-wrap">
+    <table>
+      <thead>
+        <tr><th>包类型</th><th>标识字节</th><th>头部大小</th><th>长度字段</th><th>用途</th></tr>
+      </thead>
+      <tbody>
+        <tr><td><code>HCI_COMMAND_PKT</code></td><td><code>0x01</code></td><td>3 字节</td><td>1 字节（offset 2）</td><td>主机→控制器命令</td></tr>
+        <tr><td><code>HCI_ACLDATA_PKT</code></td><td><code>0x02</code></td><td>4 字节</td><td>2 字节（offset 2）</td><td>ACL 数据包（L2CAP等）</td></tr>
+        <tr><td><code>HCI_SCODATA_PKT</code></td><td><code>0x03</code></td><td>3 字节</td><td>1 字节（offset 2）</td><td>SCO 语音数据</td></tr>
+        <tr><td><code>HCI_EVENT_PKT</code></td><td><code>0x04</code></td><td>2 字节</td><td>1 字节（offset 1）</td><td>控制器→主机事件</td></tr>
+      </tbody>
+    </table>
+  </div>
+
+  <div class="principle-box">
+    <div class="ptitle">⚡ 第一性原理</div>
+    <p>所有设计决策都源于同一个约束：<strong>UART 是串行、无帧边界的字节流</strong>。因此必须解决：①如何区分包类型（包类型字节）；②如何知道包的边界（头部长度字段）；③如何处理部分接收（状态机+sk_buff）；④如何不阻塞调用方（工作队列+异步发送）；⑤如何安全地关闭（proto_lock 保护）。每一个设计选择都直接对应着这些约束。</p>
+  </div>
+</section>
+
+<!-- ==================== S3: TTY 线路规程 ==================== -->
+<section class="section" id="s3">
+  <div class="section-header">
+    <span class="section-num">03</span>
+    <h2>TTY 线路规程（Line Discipline）</h2>
+  </div>
+
+  <p>
+    TTY 线路规程（ldisc）是 Linux 内核提供的 TTY 子系统扩展机制。每个 TTY 设备在同一时刻只能关联一个线路规程。HCI UART 驱动将自身注册为 <code>N_HCI = 15</code> 号线路规程，名为 <code>"n_hci"</code>。
+  </p>
+
+  <h3>线路规程注册（module_init）</h3>
+  <pre><span class="cm">// hci_ldisc.c - hci_uart_init()</span>
+<span class="kw">static int</span> __init <span class="fn">hci_uart_init</span>(<span class="kw">void</span>)
+{
+    <span class="kw">static struct</span> <span class="ty">tty_ldisc_ops</span> hci_uart_ldisc;
+    <span class="kw">int</span> err;
+
+    <span class="fn">BT_INFO</span>(<span class="str">"HCI UART driver ver %s"</span>, VERSION);  <span class="cm">/* VERSION = "2.3" */</span>
+
+    <span class="fn">memset</span>(&amp;hci_uart_ldisc, <span class="num">0</span>, <span class="kw">sizeof</span>(hci_uart_ldisc));
+    hci_uart_ldisc.magic        = <span class="mac">TTY_LDISC_MAGIC</span>;
+    hci_uart_ldisc.name         = <span class="str">"n_hci"</span>;
+    hci_uart_ldisc.open         = <span class="fn">hci_uart_tty_open</span>;
+    hci_uart_ldisc.close        = <span class="fn">hci_uart_tty_close</span>;
+    hci_uart_ldisc.read         = <span class="fn">hci_uart_tty_read</span>;    <span class="cm">/* 返回0，不提供用户态读 */</span>
+    hci_uart_ldisc.write        = <span class="fn">hci_uart_tty_write</span>;   <span class="cm">/* 返回0，不提供用户态写 */</span>
+    hci_uart_ldisc.ioctl        = <span class="fn">hci_uart_tty_ioctl</span>;
+    hci_uart_ldisc.compat_ioctl = <span class="fn">hci_uart_tty_ioctl</span>;
+    hci_uart_ldisc.poll         = <span class="fn">hci_uart_tty_poll</span>;    <span class="cm">/* 返回0 */</span>
+    hci_uart_ldisc.receive_buf  = <span class="fn">hci_uart_tty_receive</span>; <span class="cm">/* 核心：接收数据 */</span>
+    hci_uart_ldisc.write_wakeup = <span class="fn">hci_uart_tty_wakeup</span>;  <span class="cm">/* 核心：可以继续写 */</span>
+    hci_uart_ldisc.owner        = <span class="mac">THIS_MODULE</span>;
+
+    err = <span class="fn">tty_register_ldisc</span>(<span class="mac">N_HCI</span>, &amp;hci_uart_ldisc);
+    <span class="kw">if</span> (err) {
+        <span class="fn">BT_ERR</span>(<span class="str">"HCI line discipline registration failed. (%d)"</span>, err);
+        <span class="kw">return</span> err;
+    }
+    <span class="cm">/* 注册各协议子模块 */</span>
+<span class="pp">#ifdef CONFIG_BT_HCIUART_H4</span>
+    <span class="fn">h4_init</span>();
+<span class="pp">#endif</span>
+<span class="pp">#ifdef CONFIG_BT_HCIUART_3WIRE</span>
+    <span class="fn">h5_init</span>();
+<span class="pp">#endif</span>
+    <span class="cm">/* ... 其他协议 ... */</span>
+    <span class="kw">return</span> <span class="num">0</span>;
+}
+<span class="mac">MODULE_ALIAS_LDISC</span>(<span class="mac">N_HCI</span>);
+<div class="code-label">hci_ldisc.c</div></pre>
+
+  <h3>线路规程的打开（tty_open）</h3>
+  <p>当用户态程序（如 <code>btattach</code>）通过 <code>ioctl(fd, TIOCSETD, &ldisc)</code> 将 TTY 设备切换为 N_HCI 线路规程时，内核调用 <code>hci_uart_tty_open()</code>：</p>
+  <pre><span class="kw">static int</span> <span class="fn">hci_uart_tty_open</span>(<span class="kw">struct</span> <span class="ty">tty_struct</span> *tty)
+{
+    <span class="kw">struct</span> <span class="ty">hci_uart</span> *hu;
+
+    <span class="cm">/* 若 TTY 没有 write 操作，拒绝打开（安全校验） */</span>
+    <span class="kw">if</span> (tty-&gt;ops-&gt;write == <span class="mac">NULL</span>)
+        <span class="kw">return</span> -<span class="mac">EOPNOTSUPP</span>;
+
+    hu = <span class="fn">kzalloc</span>(<span class="kw">sizeof</span>(<span class="kw">struct</span> <span class="ty">hci_uart</span>), <span class="mac">GFP_KERNEL</span>);
+    <span class="kw">if</span> (!hu) {
+        <span class="fn">BT_ERR</span>(<span class="str">"Can't allocate control structure"</span>);
+        <span class="kw">return</span> -<span class="mac">ENFILE</span>;
+    }
+
+    tty-&gt;disc_data = hu;    <span class="cm">/* 将 hci_uart 挂在 tty 的私有数据 */</span>
+    hu-&gt;tty = tty;
+    tty-&gt;receive_room = <span class="num">65536</span>;  <span class="cm">/* 告知 TTY 层接收缓冲大小 */</span>
+
+    hu-&gt;alignment = <span class="num">1</span>;   <span class="cm">/* 默认无对齐要求 */</span>
+    hu-&gt;padding   = <span class="num">0</span>;
+
+    <span class="fn">INIT_WORK</span>(&amp;hu-&gt;init_ready, <span class="fn">hci_uart_init_work</span>);   <span class="cm">/* 异步注册 hci_dev */</span>
+    <span class="fn">INIT_WORK</span>(&amp;hu-&gt;write_work, <span class="fn">hci_uart_write_work</span>);  <span class="cm">/* 异步发送工作 */</span>
+    <span class="fn">percpu_init_rwsem</span>(&amp;hu-&gt;proto_lock);
+
+    <span class="fn">tty_driver_flush_buffer</span>(tty);  <span class="cm">/* 清除残留字节 */</span>
+    <span class="kw">return</span> <span class="num">0</span>;
+}
+<div class="code-label">hci_ldisc.c</div></pre>
+
+  <h3>线路规程激活流程</h3>
+  <div class="svg-wrap">
+    <svg viewBox="0 0 720 200" width="100%" style="max-width:720px" xmlns="http://www.w3.org/2000/svg">
+      <defs>
+        <marker id="ar3" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="6" markerHeight="6" orient="auto">
+          <path d="M0,0 L10,5 L0,10 z" fill="#8b949e"/>
+        </marker>
+      </defs>
+      <!-- steps -->
+      <rect x="10" y="70" width="130" height="50" rx="6" fill="rgba(88,166,255,0.1)" stroke="#58a6ff" stroke-width="1"/>
+      <text x="75" y="90" font-size="11" fill="#58a6ff" text-anchor="middle">btattach / hciattach</text>
+      <text x="75" y="108" font-size="10" fill="#8b949e" text-anchor="middle">用户态工具</text>
+
+      <line x1="142" y1="95" x2="170" y2="95" stroke="#8b949e" stroke-width="1.5" marker-end="url(#ar3)"/>
+      <text x="156" y="88" font-size="9" fill="#8b949e" text-anchor="middle">TIOCSETD</text>
+
+      <rect x="172" y="70" width="130" height="50" rx="6" fill="rgba(126,231,135,0.1)" stroke="#7ee787" stroke-width="1"/>
+      <text x="237" y="90" font-size="11" fill="#7ee787" text-anchor="middle">tty_set_ldisc()</text>
+      <text x="237" y="108" font-size="10" fill="#8b949e" text-anchor="middle">内核 TTY 子系统</text>
+
+      <line x1="304" y1="95" x2="332" y2="95" stroke="#8b949e" stroke-width="1.5" marker-end="url(#ar3)"/>
+      <text x="318" y="88" font-size="9" fill="#8b949e" text-anchor="middle">ldisc.open</text>
+
+      <rect x="334" y="70" width="140" height="50" rx="6" fill="rgba(255,166,87,0.1)" stroke="#ffa657" stroke-width="1"/>
+      <text x="404" y="90" font-size="11" fill="#ffa657" text-anchor="middle">hci_uart_tty_open()</text>
+      <text x="404" y="108" font-size="10" fill="#8b949e" text-anchor="middle">分配 hci_uart 结构</text>
+
+      <line x1="476" y1="95" x2="504" y2="95" stroke="#8b949e" stroke-width="1.5" marker-end="url(#ar3)"/>
+      <text x="490" y="88" font-size="9" fill="#8b949e" text-anchor="middle">HCIUARTSETPROTO</text>
+
+      <rect x="506" y="70" width="140" height="50" rx="6" fill="rgba(188,140,255,0.1)" stroke="#bc8cff" stroke-width="1"/>
+      <text x="576" y="90" font-size="11" fill="#bc8cff" text-anchor="middle">hci_uart_set_proto()</text>
+      <text x="576" y="108" font-size="10" fill="#8b949e" text-anchor="middle">绑定协议, 注册hci_dev</text>
+
+      <!-- 时间轴 -->
+      <line x1="10" y1="160" x2="710" y2="160" stroke="#30363d" stroke-width="1" marker-end="url(#ar3)"/>
+      <text x="360" y="178" font-size="10" fill="#6e7681" text-anchor="middle">时间轴 →</text>
+      <text x="75" y="148" font-size="9" fill="#6e7681" text-anchor="middle">步骤1</text>
+      <text x="237" y="148" font-size="9" fill="#6e7681" text-anchor="middle">步骤2</text>
+      <text x="404" y="148" font-size="9" fill="#6e7681" text-anchor="middle">步骤3</text>
+      <text x="576" y="148" font-size="9" fill="#6e7681" text-anchor="middle">步骤4</text>
+    </svg>
+    <div class="svg-caption">图3：TTY 线路规程激活流程（用户态到内核态）</div>
+  </div>
+
+  <div class="info-box note">
+    <strong>注意：</strong> 线路规程的 <code>read()</code>、<code>write()</code>、<code>poll()</code> 回调均返回 0 或空操作。这是刻意设计的——HCI UART 不提供用户态直接读写接口，所有数据流都通过蓝牙协议栈（HCI 核心层）进行，避免绕过协议栈的不安全直接访问。
+  </div>
+
+  <div class="principle-box">
+    <div class="ptitle">⚡ 第一性原理</div>
+    <p>线路规程的本质是<strong>在不改变硬件驱动的前提下改变数据的处理方式</strong>。同一个 UART 硬件，切换 ldisc 前是终端（n_tty），切换后变成蓝牙控制器接口。这体现了 Unix "一切皆文件" 的哲学——通过配置而非代码改变行为。</p>
+  </div>
+</section>
+
+<!-- ==================== S4: 核心数据结构 ==================== -->
+<section class="section" id="s4">
+  <div class="section-header">
+    <span class="section-num">04</span>
+    <h2>核心数据结构</h2>
+  </div>
+
+  <h3>hci_uart_proto — 协议操作表</h3>
+  <p>这是协议插件系统的核心接口，类似于面向对象语言中的"接口（Interface）"或"虚函数表（vtable）"：</p>
+  <pre><span class="cm">/* hci_uart.h - v5.4 */</span>
+<span class="kw">struct</span> <span class="ty">hci_uart_proto</span> {
+    <span class="kw">unsigned int</span>  id;            <span class="cm">/* 协议 ID，如 HCI_UART_H4=0 */</span>
+    <span class="kw">const char</span>   *name;          <span class="cm">/* 协议名称字符串，如 "H4" */</span>
+    <span class="kw">unsigned int</span>  manufacturer;  <span class="cm">/* 制造商 ID（用于 VND_DETECT） */</span>
+    <span class="kw">unsigned int</span>  init_speed;    <span class="cm">/* 初始化波特率（0=使用默认） */</span>
+    <span class="kw">unsigned int</span>  oper_speed;    <span class="cm">/* 工作波特率 */</span>
+
+    <span class="cm">/* --- 生命周期回调 --- */</span>
+    <span class="kw">int</span>  (*<span class="fn">open</span>)(<span class="kw">struct</span> <span class="ty">hci_uart</span> *hu);   <span class="cm">/* 分配协议私有数据 */</span>
+    <span class="kw">int</span>  (*<span class="fn">close</span>)(<span class="kw">struct</span> <span class="ty">hci_uart</span> *hu);  <span class="cm">/* 释放协议私有数据 */</span>
+    <span class="kw">int</span>  (*<span class="fn">flush</span>)(<span class="kw">struct</span> <span class="ty">hci_uart</span> *hu);  <span class="cm">/* 清空发送队列 */</span>
+    <span class="kw">int</span>  (*<span class="fn">setup</span>)(<span class="kw">struct</span> <span class="ty">hci_uart</span> *hu);  <span class="cm">/* 硬件初始化（固件下载等） */</span>
+
+    <span class="cm">/* --- 波特率协商 --- */</span>
+    <span class="kw">int</span>  (*<span class="fn">set_baudrate</span>)(<span class="kw">struct</span> <span class="ty">hci_uart</span> *hu, <span class="kw">unsigned int</span> speed);
+
+    <span class="cm">/* --- 数据收发 --- */</span>
+    <span class="kw">int</span>  (*<span class="fn">recv</span>)(<span class="kw">struct</span> <span class="ty">hci_uart</span> *hu, <span class="kw">const void</span> *data, <span class="kw">int</span> len);
+    <span class="kw">int</span>  (*<span class="fn">enqueue</span>)(<span class="kw">struct</span> <span class="ty">hci_uart</span> *hu, <span class="kw">struct</span> <span class="ty">sk_buff</span> *skb);
+    <span class="kw">struct</span> <span class="ty">sk_buff</span> *(*<span class="fn">dequeue</span>)(<span class="kw">struct</span> <span class="ty">hci_uart</span> *hu);
+};
+<div class="code-label">hci_uart.h</div></pre>
+
+  <h3>hci_uart — 连接上下文</h3>
+  <p>每个已激活 N_HCI 线路规程的 TTY 设备，都有一个对应的 <code>hci_uart</code> 实例（存于 <code>tty->disc_data</code>）：</p>
+  <pre><span class="kw">struct</span> <span class="ty">hci_uart</span> {
+    <span class="cm">/* --- 传输层绑定 --- */</span>
+    <span class="kw">struct</span> <span class="ty">tty_struct</span>         *tty;      <span class="cm">/* 关联的 TTY（传统模式）*/</span>
+    <span class="kw">struct</span> <span class="ty">serdev_device</span>      *serdev;   <span class="cm">/* 关联的 serdev（新模式）*/</span>
+
+    <span class="cm">/* --- HCI 设备 --- */</span>
+    <span class="kw">struct</span> <span class="ty">hci_dev</span>            *hdev;     <span class="cm">/* 上层 HCI 设备抽象 */</span>
+    <span class="kw">unsigned long</span>              flags;    <span class="cm">/* HCI_UART_PROTO_SET 等 */</span>
+    <span class="kw">unsigned long</span>              hdev_flags; <span class="cm">/* HCI_UART_RAW_DEVICE 等 */</span>
+
+    <span class="cm">/* --- 异步工作 --- */</span>
+    <span class="kw">struct</span> <span class="ty">work_struct</span>         init_ready;  <span class="cm">/* 注册 hci_dev 的工作 */</span>
+    <span class="kw">struct</span> <span class="ty">work_struct</span>         write_work;  <span class="cm">/* 异步发送工作 */</span>
+
+    <span class="cm">/* --- 协议管理 --- */</span>
+    <span class="kw">const struct</span> <span class="ty">hci_uart_proto</span> *proto;      <span class="cm">/* 当前绑定的协议 */</span>
+    <span class="kw">struct</span> <span class="ty">percpu_rw_semaphore</span>  proto_lock;  <span class="cm">/* 保护协议操作的 percpu 锁 */</span>
+    <span class="kw">void</span>                       *priv;       <span class="cm">/* 协议私有数据指针 */</span>
+
+    <span class="cm">/* --- 发送状态 --- */</span>
+    <span class="kw">struct</span> <span class="ty">sk_buff</span>             *tx_skb;    <span class="cm">/* 当前未发送完的 skb */</span>
+    <span class="kw">unsigned long</span>               tx_state;  <span class="cm">/* HCI_UART_SENDING 等 */</span>
+
+    <span class="cm">/* --- 速率配置 --- */</span>
+    <span class="kw">unsigned int</span>  init_speed;   <span class="cm">/* 初始波特率 */</span>
+    <span class="kw">unsigned int</span>  oper_speed;   <span class="cm">/* 工作波特率 */</span>
+
+    <span class="cm">/* --- 对齐支持（某些芯片要求字节对齐） --- */</span>
+    <span class="ty">u8</span>  alignment;  <span class="cm">/* 对齐字节数（0或1=不对齐）*/</span>
+    <span class="ty">u8</span>  padding;    <span class="cm">/* 当前包的填充字节计数 */</span>
+};
+<div class="code-label">hci_uart.h</div></pre>
+
+  <h3>标志位说明</h3>
+  <div class="table-wrap">
+    <table>
+      <thead>
+        <tr><th>标志位</th><th>所属字段</th><th>值</th><th>含义</th></tr>
+      </thead>
+      <tbody>
+        <tr><td><code>HCI_UART_PROTO_SET</code></td><td><code>flags</code></td><td>bit 0</td><td>已调用 HCIUARTSETPROTO，防止重复设置</td></tr>
+        <tr><td><code>HCI_UART_REGISTERED</code></td><td><code>flags</code></td><td>bit 1</td><td>hci_dev 已成功注册到蓝牙核心</td></tr>
+        <tr><td><code>HCI_UART_PROTO_READY</code></td><td><code>flags</code></td><td>bit 2</td><td>协议已就绪，可以收发数据</td></tr>
+        <tr><td><code>HCI_UART_SENDING</code></td><td><code>tx_state</code></td><td>bit 1</td><td>write_work 正在运行中，防止重入</td></tr>
+        <tr><td><code>HCI_UART_TX_WAKEUP</code></td><td><code>tx_state</code></td><td>bit 2</td><td>发送中途有新数据，需重新调度</td></tr>
+        <tr><td><code>HCI_UART_RAW_DEVICE</code></td><td><code>hdev_flags</code></td><td>bit 0</td><td>原始设备模式（不经过 HCI 过滤）</td></tr>
+        <tr><td><code>HCI_UART_RESET_ON_INIT</code></td><td><code>hdev_flags</code></td><td>bit 1</td><td>初始化时先发复位命令</td></tr>
+        <tr><td><code>HCI_UART_INIT_PENDING</code></td><td><code>hdev_flags</code></td><td>bit 3</td><td>等待异步初始化完成（固件下载场景）</td></tr>
+        <tr><td><code>HCI_UART_VND_DETECT</code></td><td><code>hdev_flags</code></td><td>bit 5</td><td>自动检测厂商类型</td></tr>
+      </tbody>
+    </table>
+  </div>
+
+  <h3>h4_recv_pkt — 包类型描述符</h3>
+  <p>这是 H4 接收解析框架的配置结构，用一个静态数组描述所有支持的包类型，使解析逻辑完全数据驱动：</p>
+  <pre><span class="kw">struct</span> <span class="ty">h4_recv_pkt</span> {
+    <span class="ty">u8</span>   type;    <span class="cm">/* 包类型标识字节（如 0x04 = EVENT） */</span>
+    <span class="ty">u8</span>   hlen;    <span class="cm">/* 固定头部长度（字节数）*/</span>
+    <span class="ty">u8</span>   loff;    <span class="cm">/* 数据长度字段在头部的偏移 */</span>
+    <span class="ty">u8</span>   lsize;   <span class="cm">/* 数据长度字段的字节数（1或2）*/</span>
+    <span class="ty">u16</span>  maxlen;  <span class="cm">/* 最大总长度（用于 skb 预分配）*/</span>
+    <span class="kw">int</span> (*<span class="fn">recv</span>)(<span class="kw">struct</span> <span class="ty">hci_dev</span> *hdev, <span class="kw">struct</span> <span class="ty">sk_buff</span> *skb);
+};
+
+<span class="cm">/* 三个宏定义标准包类型的默认配置 */</span>
+<span class="pp">#define H4_RECV_ACL</span>   .type = HCI_ACLDATA_PKT, .hlen = HCI_ACL_HDR_SIZE,   \
+                       .loff = 2, .lsize = 2, .maxlen = HCI_MAX_FRAME_SIZE
+<span class="pp">#define H4_RECV_SCO</span>   .type = HCI_SCODATA_PKT, .hlen = HCI_SCO_HDR_SIZE,   \
+                       .loff = 2, .lsize = 1, .maxlen = HCI_MAX_SCO_SIZE
+<span class="pp">#define H4_RECV_EVENT</span> .type = HCI_EVENT_PKT,   .hlen = HCI_EVENT_HDR_SIZE,  \
+                       .loff = 1, .lsize = 1, .maxlen = HCI_MAX_EVENT_SIZE
+<div class="code-label">hci_uart.h</div></pre>
+
+  <div class="principle-box">
+    <div class="ptitle">⚡ 第一性原理</div>
+    <p>数据结构的设计反映了系统的<strong>信息模型</strong>。<code>hci_uart</code> 把"物理传输"（tty/serdev）、"协议逻辑"（proto）和"HCI抽象"（hdev）三者捏合在一起——这三样东西的结合，正好是"在串行线上跑HCI"这件事的完整定义。<code>h4_recv_pkt</code> 则是将"如何解析一种包"这个过程用数据而非代码表达，让同一段解析逻辑可以服务所有包类型。</p>
+  </div>
+</section>
+
+<!-- ==================== S5: 协议插件系统 ==================== -->
+<section class="section" id="s5">
+  <div class="section-header">
+    <span class="section-num">05</span>
+    <h2>协议插件系统</h2>
+  </div>
+
+  <h3>协议注册表</h3>
+  <p>内核中维护一个全局静态数组，以协议 ID 为索引：</p>
+  <pre><span class="cm">/* hci_ldisc.c */</span>
+<span class="kw">static const struct</span> <span class="ty">hci_uart_proto</span> *hup[<span class="mac">HCI_UART_MAX_PROTO</span>];  <span class="cm">/* [12] */</span>
+
+<span class="kw">int</span> <span class="fn">hci_uart_register_proto</span>(<span class="kw">const struct</span> <span class="ty">hci_uart_proto</span> *p)
+{
+    <span class="kw">if</span> (p-&gt;id &gt;= <span class="mac">HCI_UART_MAX_PROTO</span>)  <span class="kw">return</span> -<span class="mac">EINVAL</span>;
+    <span class="kw">if</span> (hup[p-&gt;id])                     <span class="kw">return</span> -<span class="mac">EEXIST</span>;  <span class="cm">/* 防重复注册 */</span>
+    hup[p-&gt;id] = p;
+    <span class="fn">BT_INFO</span>(<span class="str">"HCI UART protocol %s registered"</span>, p-&gt;name);
+    <span class="kw">return</span> <span class="num">0</span>;
+}
+
+<span class="kw">int</span> <span class="fn">hci_uart_unregister_proto</span>(<span class="kw">const struct</span> <span class="ty">hci_uart_proto</span> *p)
+{
+    <span class="kw">if</span> (p-&gt;id &gt;= <span class="mac">HCI_UART_MAX_PROTO</span>)  <span class="kw">return</span> -<span class="mac">EINVAL</span>;
+    <span class="kw">if</span> (!hup[p-&gt;id])                    <span class="kw">return</span> -<span class="mac">EINVAL</span>;
+    hup[p-&gt;id] = <span class="mac">NULL</span>;
+    <span class="kw">return</span> <span class="num">0</span>;
+}
+<div class="code-label">hci_ldisc.c</div></pre>
+
+  <h3>协议 ID 全表（v5.4）</h3>
+  <div class="table-wrap">
+    <table>
+      <thead>
+        <tr><th>ID</th><th>宏定义</th><th>名称</th><th>源文件</th><th>特性</th></tr>
+      </thead>
+      <tbody>
+        <tr><td><code>0</code></td><td><code>HCI_UART_H4</code></td><td>H4</td><td>hci_h4.c</td><td><span class="tag tag-green">标准</span> 最简单的4线HCI协议</td></tr>
+        <tr><td><code>1</code></td><td><code>HCI_UART_BCSP</code></td><td>BCSP</td><td>hci_bcsp.c</td><td><span class="tag tag-orange">可靠</span> CSR 蓝牙串行协议，含 CRC 和重传</td></tr>
+        <tr><td><code>2</code></td><td><code>HCI_UART_3WIRE</code></td><td>H5</td><td>hci_h5.c</td><td><span class="tag tag-orange">可靠</span> 3线HCI，SLIP编码，序列号确认</td></tr>
+        <tr><td><code>3</code></td><td><code>HCI_UART_H4DS</code></td><td>H4DS</td><td>-</td><td>H4 深度睡眠协议（较少用）</td></tr>
+        <tr><td><code>4</code></td><td><code>HCI_UART_LL</code></td><td>LL</td><td>hci_ll.c</td><td>Texas Instruments 低功耗协议</td></tr>
+        <tr><td><code>5</code></td><td><code>HCI_UART_ATH3K</code></td><td>ATH3K</td><td>hci_ath.c</td><td>Qualcomm Atheros AR3K/AR5K</td></tr>
+        <tr><td><code>6</code></td><td><code>HCI_UART_INTEL</code></td><td>Intel</td><td>hci_intel.c</td><td><span class="tag tag-blue">厂商</span> Intel 芯片固件下载</td></tr>
+        <tr><td><code>7</code></td><td><code>HCI_UART_BCM</code></td><td>BCM</td><td>hci_bcm.c</td><td><span class="tag tag-blue">厂商</span> Broadcom/Cypress 系列</td></tr>
+        <tr><td><code>8</code></td><td><code>HCI_UART_QCA</code></td><td>QCA</td><td>hci_qca.c</td><td><span class="tag tag-blue">厂商</span> Qualcomm WCN/QCA 系列</td></tr>
+        <tr><td><code>9</code></td><td><code>HCI_UART_AG6XX</code></td><td>AG6XX</td><td>hci_ag6xx.c</td><td>Intel AG620 系列</td></tr>
+        <tr><td><code>10</code></td><td><code>HCI_UART_NOKIA</code></td><td>Nokia</td><td>hci_nokia.c</td><td>Nokia 蓝牙芯片</td></tr>
+        <tr><td><code>11</code></td><td><code>HCI_UART_MRVL</code></td><td>MRVL</td><td>hci_mrvl.c</td><td>Marvell 蓝牙模块</td></tr>
+      </tbody>
+    </table>
+  </div>
+
+  <h3>IOCTL 接口（用户态控制）</h3>
+  <pre><span class="cm">/* 用户态可用的 IOCTL 命令（hci_uart.h）*/</span>
+<span class="pp">#define HCIUARTSETPROTO</span>  <span class="fn">_IOW</span>(<span class="str">'U'</span>, <span class="num">200</span>, <span class="kw">int</span>)  <span class="cm">/* 设置协议 */</span>
+<span class="pp">#define HCIUARTGETPROTO</span>  <span class="fn">_IOR</span>(<span class="str">'U'</span>, <span class="num">201</span>, <span class="kw">int</span>)  <span class="cm">/* 获取当前协议 ID */</span>
+<span class="pp">#define HCIUARTGETDEVICE</span> <span class="fn">_IOR</span>(<span class="str">'U'</span>, <span class="num">202</span>, <span class="kw">int</span>)  <span class="cm">/* 获取 hci_dev 的 ID */</span>
+<span class="pp">#define HCIUARTSETFLAGS</span>  <span class="fn">_IOW</span>(<span class="str">'U'</span>, <span class="num">203</span>, <span class="kw">int</span>)  <span class="cm">/* 设置标志位 */</span>
+<span class="pp">#define HCIUARTGETFLAGS</span>  <span class="fn">_IOR</span>(<span class="str">'U'</span>, <span class="num">204</span>, <span class="kw">int</span>)  <span class="cm">/* 获取标志位 */</span>
+
+<span class="cm">/* hci_uart_tty_ioctl() 中的处理 */</span>
+<span class="kw">case</span> <span class="mac">HCIUARTSETPROTO</span>:
+    <span class="kw">if</span> (!<span class="fn">test_and_set_bit</span>(<span class="mac">HCI_UART_PROTO_SET</span>, &amp;hu-&gt;flags)) {
+        err = <span class="fn">hci_uart_set_proto</span>(hu, arg);  <span class="cm">/* arg = 协议 ID (0~11) */</span>
+        <span class="kw">if</span> (err) <span class="fn">clear_bit</span>(<span class="mac">HCI_UART_PROTO_SET</span>, &amp;hu-&gt;flags);
+    } <span class="kw">else</span>
+        err = -<span class="mac">EBUSY</span>;  <span class="cm">/* 协议只能设置一次 */</span>
+    <span class="kw">break</span>;
+<div class="code-label">hci_ldisc.c</div></pre>
+
+  <div class="svg-wrap">
+    <svg viewBox="0 0 700 260" width="100%" style="max-width:700px" xmlns="http://www.w3.org/2000/svg">
+      <defs>
+        <marker id="ar4" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="6" markerHeight="6" orient="auto">
+          <path d="M0,0 L10,5 L0,10 z" fill="#8b949e"/>
+        </marker>
+      </defs>
+      <!-- Registry box -->
+      <rect x="10" y="10" width="200" height="240" rx="8" fill="rgba(28,33,40,0.8)" stroke="#30363d" stroke-width="1"/>
+      <text x="110" y="32" font-size="12" fill="#8b949e" text-anchor="middle" font-weight="bold">hup[12] 注册表</text>
+      <rect x="20" y="42" width="180" height="22" rx="4" fill="rgba(126,231,135,0.1)" stroke="#7ee787" stroke-width="1"/>
+      <text x="110" y="57" font-size="11" fill="#7ee787" text-anchor="middle">[0] H4</text>
+      <rect x="20" y="68" width="180" height="22" rx="4" fill="rgba(255,166,87,0.1)" stroke="#ffa657" stroke-width="1"/>
+      <text x="110" y="83" font-size="11" fill="#ffa657" text-anchor="middle">[1] BCSP</text>
+      <rect x="20" y="94" width="180" height="22" rx="4" fill="rgba(255,166,87,0.1)" stroke="#ffa657" stroke-width="1"/>
+      <text x="110" y="109" font-size="11" fill="#ffa657" text-anchor="middle">[2] H5/3WIRE</text>
+      <rect x="20" y="120" width="180" height="22" rx="4" fill="rgba(88,166,255,0.1)" stroke="#58a6ff" stroke-width="1"/>
+      <text x="110" y="135" font-size="11" fill="#58a6ff" text-anchor="middle">[6] INTEL</text>
+      <rect x="20" y="146" width="180" height="22" rx="4" fill="rgba(88,166,255,0.1)" stroke="#58a6ff" stroke-width="1"/>
+      <text x="110" y="161" font-size="11" fill="#58a6ff" text-anchor="middle">[7] BCM</text>
+      <rect x="20" y="172" width="180" height="22" rx="4" fill="rgba(88,166,255,0.1)" stroke="#58a6ff" stroke-width="1"/>
+      <text x="110" y="187" font-size="11" fill="#58a6ff" text-anchor="middle">[8] QCA</text>
+      <text x="110" y="230" font-size="10" fill="#6e7681" text-anchor="middle">... 共12槽位 ...</text>
+
+      <!-- IOCTL flow -->
+      <rect x="260" y="50" width="150" height="44" rx="6" fill="rgba(88,166,255,0.08)" stroke="#58a6ff" stroke-width="1"/>
+      <text x="335" y="68" font-size="11" fill="#58a6ff" text-anchor="middle">HCIUARTSETPROTO</text>
+      <text x="335" y="84" font-size="10" fill="#8b949e" text-anchor="middle">ioctl(fd, ..., proto_id)</text>
+
+      <line x1="210" y1="131" x2="258" y2="131" stroke="#8b949e" stroke-width="1.5" marker-end="url(#ar4)"/>
+      <line x1="335" y1="94" x2="335" y2="118" stroke="#8b949e" stroke-width="1.5" marker-end="url(#ar4)"/>
+
+      <rect x="260" y="120" width="150" height="44" rx="6" fill="rgba(255,166,87,0.08)" stroke="#ffa657" stroke-width="1"/>
+      <text x="335" y="138" font-size="11" fill="#ffa657" text-anchor="middle">hci_uart_get_proto(id)</text>
+      <text x="335" y="154" font-size="10" fill="#8b949e" text-anchor="middle">从 hup[] 查找</text>
+
+      <line x1="335" y1="164" x2="335" y2="188" stroke="#8b949e" stroke-width="1.5" marker-end="url(#ar4)"/>
+
+      <rect x="260" y="190" width="150" height="44" rx="6" fill="rgba(126,231,135,0.08)" stroke="#7ee787" stroke-width="1"/>
+      <text x="335" y="208" font-size="11" fill="#7ee787" text-anchor="middle">hu->proto = p</text>
+      <text x="335" y="224" font-size="10" fill="#8b949e" text-anchor="middle">绑定协议到 hci_uart</text>
+
+      <!-- proto ops -->
+      <rect x="470" y="20" width="210" height="220" rx="8" fill="rgba(28,33,40,0.8)" stroke="#30363d" stroke-width="1"/>
+      <text x="575" y="42" font-size="12" fill="#8b949e" text-anchor="middle" font-weight="bold">hci_uart_proto 操作表</text>
+      <text x="490" y="66" font-size="11" fill="#d2a8ff">open(hu)</text>
+      <text x="490" y="88" font-size="11" fill="#d2a8ff">close(hu)</text>
+      <text x="490" y="110" font-size="11" fill="#d2a8ff">flush(hu)</text>
+      <text x="490" y="132" font-size="11" fill="#d2a8ff">setup(hu)</text>
+      <text x="490" y="154" font-size="11" fill="#d2a8ff">set_baudrate(hu, spd)</text>
+      <text x="490" y="176" font-size="11" fill="#7ee787">recv(hu, data, len)</text>
+      <text x="490" y="198" font-size="11" fill="#ffa657">enqueue(hu, skb)</text>
+      <text x="490" y="220" font-size="11" fill="#ffa657">dequeue(hu) → skb</text>
+
+      <line x1="412" y1="212" x2="468" y2="160" stroke="#8b949e" stroke-width="1.5" marker-end="url(#ar4)"/>
+    </svg>
+    <div class="svg-caption">图4：协议注册表与 IOCTL 绑定流程</div>
+  </div>
+
+  <div class="principle-box">
+    <div class="ptitle">⚡ 第一性原理</div>
+    <p>协议插件系统的存在是因为：<strong>蓝牙芯片厂商众多，各有不同的串行协议方言，但 HCI 命令/事件的语义是统一的</strong>。插件系统把"如何搬运字节"和"字节代表什么意思"彻底分离。只要符合 <code>hci_uart_proto</code> 接口，任何新厂商都可以不改动通用代码而接入系统。</p>
+  </div>
+</section>
+
+<!-- ==================== S6: 发送路径 ==================== -->
+<section class="section" id="s6">
+  <div class="section-header">
+    <span class="section-num">06</span>
+    <h2>发送路径（TX Path）</h2>
+  </div>
+
+  <p>发送路径从 HCI 核心层向下直到 TTY 写入，核心是<strong>异步、非阻塞的工作队列机制</strong>。</p>
+
+  <div class="svg-wrap">
+    <svg viewBox="0 0 720 380" width="100%" style="max-width:720px" xmlns="http://www.w3.org/2000/svg">
+      <defs>
+        <marker id="ar5" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="6" markerHeight="6" orient="auto">
+          <path d="M0,0 L10,5 L0,10 z" fill="#58a6ff"/>
+        </marker>
+        <marker id="ar5g" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="6" markerHeight="6" orient="auto">
+          <path d="M0,0 L10,5 L0,10 z" fill="#7ee787"/>
+        </marker>
+        <marker id="ar5o" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="6" markerHeight="6" orient="auto">
+          <path d="M0,0 L10,5 L0,10 z" fill="#ffa657"/>
+        </marker>
+      </defs>
+
+      <!-- Step boxes -->
+      <rect x="10" y="20" width="200" height="50" rx="6" fill="rgba(88,166,255,0.1)" stroke="#58a6ff" stroke-width="1.5"/>
+      <text x="110" y="40" font-size="12" fill="#58a6ff" text-anchor="middle" font-weight="bold">① hci_uart_send_frame()</text>
+      <text x="110" y="58" font-size="10" fill="#8b949e" text-anchor="middle">HCI核心层调用，传入 sk_buff</text>
+
+      <line x1="110" y1="70" x2="110" y2="94" stroke="#58a6ff" stroke-width="1.5" marker-end="url(#ar5)"/>
+
+      <rect x="10" y="96" width="200" height="50" rx="6" fill="rgba(88,166,255,0.08)" stroke="#58a6ff" stroke-width="1"/>
+      <text x="110" y="116" font-size="12" fill="#58a6ff" text-anchor="middle">② proto→enqueue(hu, skb)</text>
+      <text x="110" y="132" font-size="10" fill="#8b949e" text-anchor="middle">协议层处理（加类型字节等）</text>
+
+      <line x1="110" y1="146" x2="110" y2="170" stroke="#58a6ff" stroke-width="1.5" marker-end="url(#ar5)"/>
+
+      <rect x="10" y="172" width="200" height="50" rx="6" fill="rgba(126,231,135,0.1)" stroke="#7ee787" stroke-width="1.5"/>
+      <text x="110" y="192" font-size="12" fill="#7ee787" text-anchor="middle">③ hci_uart_tx_wakeup()</text>
+      <text x="110" y="208" font-size="10" fill="#8b949e" text-anchor="middle">设置 SENDING 位，调度 work</text>
+
+      <line x1="110" y1="222" x2="110" y2="246" stroke="#7ee787" stroke-width="1.5" marker-end="url(#ar5g)"/>
+
+      <rect x="10" y="248" width="200" height="50" rx="6" fill="rgba(255,166,87,0.1)" stroke="#ffa657" stroke-width="1.5"/>
+      <text x="110" y="268" font-size="12" fill="#ffa657" text-anchor="middle">④ hci_uart_write_work()</text>
+      <text x="110" y="284" font-size="10" fill="#8b949e" text-anchor="middle">工作队列中异步执行</text>
+
+      <line x1="110" y1="298" x2="110" y2="322" stroke="#ffa657" stroke-width="1.5" marker-end="url(#ar5o)"/>
+
+      <rect x="10" y="324" width="200" height="50" rx="6" fill="rgba(255,123,114,0.1)" stroke="#ff7b72" stroke-width="1.5"/>
+      <text x="110" y="344" font-size="12" fill="#ff7b72" text-anchor="middle">⑤ tty→ops→write()</text>
+      <text x="110" y="360" font-size="10" fill="#8b949e" text-anchor="middle">写入 TTY/串口硬件</text>
+
+      <!-- Right side: write_work detail -->
+      <rect x="260" y="230" width="440" height="148" rx="8" fill="rgba(28,33,40,0.9)" stroke="#30363d" stroke-width="1"/>
+      <text x="480" y="252" font-size="12" fill="#ffa657" text-anchor="middle" font-weight="bold">hci_uart_write_work() 详细流程</text>
+
+      <text x="280" y="278" font-size="10" fill="#8b949e">restart:</text>
+      <text x="280" y="296" font-size="10" fill="#e6edf3">  clear_bit(HCI_UART_TX_WAKEUP, &amp;hu-&gt;tx_state)</text>
+      <text x="280" y="312" font-size="10" fill="#e6edf3">  while ((skb = hci_uart_dequeue(hu))) {</text>
+      <text x="280" y="328" font-size="10" fill="#e6edf3">    len = tty-&gt;ops-&gt;write(tty, skb-&gt;data, skb-&gt;len)</text>
+      <text x="280" y="344" font-size="10" fill="#e6edf3">    skb_pull(skb, len)  <span style="color:#8b949e">// 部分写入时保存剩余</span></text>
+      <text x="280" y="360" font-size="10" fill="#e6edf3">    if skb-&gt;len: hu-&gt;tx_skb=skb; break</text>
+      <text x="280" y="376" font-size="10" fill="#8b949e">  if TX_WAKEUP: goto restart  // 发送中有新数据</text>
+
+      <!-- wakeup detail -->
+      <rect x="260" y="30" width="440" height="190" rx="8" fill="rgba(28,33,40,0.9)" stroke="#30363d" stroke-width="1"/>
+      <text x="480" y="52" font-size="12" fill="#7ee787" text-anchor="middle" font-weight="bold">hci_uart_tx_wakeup() 详细逻辑</text>
+      <text x="280" y="78" font-size="10" fill="#8b949e">// 可在 IRQ 上下文调用，使用 trylock</text>
+      <text x="280" y="96" font-size="10" fill="#e6edf3">if (!percpu_down_read_trylock(&amp;hu-&gt;proto_lock))</text>
+      <text x="280" y="112" font-size="10" fill="#e6edf3">    return 0;  // tty 正在关闭，忽略</text>
+      <text x="280" y="130" font-size="10" fill="#e6edf3">if (!test_bit(HCI_UART_PROTO_READY, &amp;hu-&gt;flags))</text>
+      <text x="280" y="146" font-size="10" fill="#e6edf3">    goto no_schedule;</text>
+      <text x="280" y="164" font-size="10" fill="#ffa657">set_bit(HCI_UART_TX_WAKEUP, &amp;hu-&gt;tx_state)</text>
+      <text x="280" y="180" font-size="10" fill="#ffa657">if (test_and_set_bit(HCI_UART_SENDING, ...))</text>
+      <text x="280" y="196" font-size="10" fill="#8b949e">    goto no_schedule;  // 已在发送，TX_WAKEUP 已设</text>
+      <text x="280" y="212" font-size="10" fill="#7ee787">schedule_work(&amp;hu-&gt;write_work);  // 调度工作队列</text>
+
+      <line x1="212" y1="185" x2="258" y2="140" stroke="#7ee787" stroke-width="1" stroke-dasharray="4,2"/>
+      <line x1="212" y1="280" x2="258" y2="280" stroke="#ffa657" stroke-width="1" stroke-dasharray="4,2"/>
+    </svg>
+    <div class="svg-caption">图5：发送路径详细流程（含工作队列机制）</div>
+  </div>
+
+  <h3>hci_uart_send_frame — 入口函数</h3>
+  <pre><span class="cm">/* HCI 核心层调用此函数发送一帧 */</span>
+<span class="kw">static int</span> <span class="fn">hci_uart_send_frame</span>(<span class="kw">struct</span> <span class="ty">hci_dev</span> *hdev, <span class="kw">struct</span> <span class="ty">sk_buff</span> *skb)
+{
+    <span class="kw">struct</span> <span class="ty">hci_uart</span> *hu = <span class="fn">hci_get_drvdata</span>(hdev);
+
+    <span class="fn">BT_DBG</span>(<span class="str">"%s: type %d len %d"</span>, hdev-&gt;name,
+           <span class="fn">hci_skb_pkt_type</span>(skb), skb-&gt;len);
+
+    <span class="fn">percpu_down_read</span>(&amp;hu-&gt;proto_lock);
+
+    <span class="kw">if</span> (!<span class="fn">test_bit</span>(<span class="mac">HCI_UART_PROTO_READY</span>, &amp;hu-&gt;flags)) {
+        <span class="fn">percpu_up_read</span>(&amp;hu-&gt;proto_lock);
+        <span class="kw">return</span> -<span class="mac">EUNATCH</span>;  <span class="cm">/* 协议未就绪 */</span>
+    }
+
+    hu-&gt;proto-&gt;<span class="fn">enqueue</span>(hu, skb);  <span class="cm">/* 交给协议层处理并入队 */</span>
+    <span class="fn">percpu_up_read</span>(&amp;hu-&gt;proto_lock);
+
+    <span class="fn">hci_uart_tx_wakeup</span>(hu);  <span class="cm">/* 触发异步发送 */</span>
+    <span class="kw">return</span> <span class="num">0</span>;
+}
+<div class="code-label">hci_ldisc.c</div></pre>
+
+  <h3>发送统计更新</h3>
+  <pre><span class="kw">static inline void</span> <span class="fn">hci_uart_tx_complete</span>(<span class="kw">struct</span> <span class="ty">hci_uart</span> *hu, <span class="kw">int</span> pkt_type)
+{
+    <span class="kw">struct</span> <span class="ty">hci_dev</span> *hdev = hu-&gt;hdev;
+    <span class="kw">switch</span> (pkt_type) {
+    <span class="kw">case</span> <span class="mac">HCI_COMMAND_PKT</span>: hdev-&gt;stat.cmd_tx++; <span class="kw">break</span>;
+    <span class="kw">case</span> <span class="mac">HCI_ACLDATA_PKT</span>: hdev-&gt;stat.acl_tx++; <span class="kw">break</span>;
+    <span class="kw">case</span> <span class="mac">HCI_SCODATA_PKT</span>: hdev-&gt;stat.sco_tx++; <span class="kw">break</span>;
+    }
+}
+<div class="code-label">hci_ldisc.c</div></pre>
+
+  <div class="info-box tip">
+    <strong>💡 背压机制：</strong> 当 TTY 层缓冲满时，<code>tty->ops->write()</code> 可能只写入部分字节。此时 <code>hci_uart_write_work</code> 通过 <code>skb_pull()</code> 保存剩余数据到 <code>hu->tx_skb</code>，并设置 <code>TTY_DO_WRITE_WAKEUP</code> 标志。当 TTY 可再次写入时，会触发 <code>hci_uart_tty_wakeup()</code>，重新调度 write_work。
+  </div>
+
+  <div class="principle-box">
+    <div class="ptitle">⚡ 第一性原理</div>
+    <p>发送路径的核心矛盾是：HCI 核心层是同步调用 send_frame，但 UART 写入可能因硬件缓冲满而阻塞。<strong>工作队列（workqueue）将同步调用转化为异步任务</strong>，解除了阻塞。<code>test_and_set_bit(HCI_UART_SENDING)</code> 保证多次 wakeup 不会产生多个 work，<code>TX_WAKEUP</code> 标志保证发送中新来的数据不会丢失——这是一个标准的"懒唤醒"（lazy wakeup）模式。</p>
+  </div>
+</section>
+
+<!-- ==================== S7: 接收路径 ==================== -->
+<section class="section" id="s7">
+  <div class="section-header">
+    <span class="section-num">07</span>
+    <h2>接收路径（RX Path）</h2>
+  </div>
+
+  <p>接收路径从 TTY 层的中断/DMA 回调开始，向上传递到 HCI 核心层：</p>
+
+  <div class="svg-wrap">
+    <svg viewBox="0 0 720 320" width="100%" style="max-width:720px" xmlns="http://www.w3.org/2000/svg">
+      <defs>
+        <marker id="ar6" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="6" markerHeight="6" orient="auto">
+          <path d="M0,0 L10,5 L0,10 z" fill="#7ee787"/>
+        </marker>
+      </defs>
+
+      <rect x="10" y="20" width="200" height="50" rx="6" fill="rgba(255,123,114,0.1)" stroke="#ff7b72" stroke-width="1.5"/>
+      <text x="110" y="40" font-size="12" fill="#ff7b72" text-anchor="middle">① UART 中断/DMA</text>
+      <text x="110" y="58" font-size="10" fill="#8b949e" text-anchor="middle">串口硬件接收到字节</text>
+
+      <line x1="110" y1="70" x2="110" y2="94" stroke="#7ee787" stroke-width="1.5" marker-end="url(#ar6)"/>
+
+      <rect x="10" y="96" width="200" height="50" rx="6" fill="rgba(188,140,255,0.1)" stroke="#bc8cff" stroke-width="1.5"/>
+      <text x="110" y="116" font-size="12" fill="#bc8cff" text-anchor="middle">② tty_ldisc→receive_buf</text>
+      <text x="110" y="132" font-size="10" fill="#8b949e" text-anchor="middle">hci_uart_tty_receive()</text>
+
+      <line x1="110" y1="146" x2="110" y2="170" stroke="#7ee787" stroke-width="1.5" marker-end="url(#ar6)"/>
+
+      <rect x="10" y="172" width="200" height="50" rx="6" fill="rgba(255,166,87,0.1)" stroke="#ffa657" stroke-width="1.5"/>
+      <text x="110" y="192" font-size="12" fill="#ffa657" text-anchor="middle">③ proto→recv(hu, data, len)</text>
+      <text x="110" y="208" font-size="10" fill="#8b949e" text-anchor="middle">协议层解析帧（状态机）</text>
+
+      <line x1="110" y1="222" x2="110" y2="246" stroke="#7ee787" stroke-width="1.5" marker-end="url(#ar6)"/>
+
+      <rect x="10" y="248" width="200" height="50" rx="6" fill="rgba(88,166,255,0.1)" stroke="#58a6ff" stroke-width="1.5"/>
+      <text x="110" y="268" font-size="12" fill="#58a6ff" text-anchor="middle">④ hci_recv_frame(hdev, skb)</text>
+      <text x="110" y="284" font-size="10" fill="#8b949e" text-anchor="middle">提交给 HCI 核心层</text>
+
+      <!-- receive detail -->
+      <rect x="260" y="78" width="440" height="120" rx="8" fill="rgba(28,33,40,0.9)" stroke="#30363d" stroke-width="1"/>
+      <text x="480" y="100" font-size="12" fill="#bc8cff" text-anchor="middle" font-weight="bold">hci_uart_tty_receive() 实现</text>
+      <text x="280" y="124" font-size="10" fill="#8b949e">// 校验 tty 与 hu 的对应关系</text>
+      <text x="280" y="142" font-size="10" fill="#e6edf3">percpu_down_read(&amp;hu-&gt;proto_lock);</text>
+      <text x="280" y="158" font-size="10" fill="#e6edf3">if (test_bit(HCI_UART_PROTO_READY, &amp;hu-&gt;flags))</text>
+      <text x="280" y="174" font-size="10" fill="#ffa657">    hu-&gt;proto-&gt;recv(hu, data, count);</text>
+      <text x="280" y="190" font-size="10" fill="#7ee787">hu-&gt;hdev-&gt;stat.byte_rx += count;</text>
+
+      <!-- h4_recv_buf detail -->
+      <rect x="260" y="210" width="440" height="106" rx="8" fill="rgba(28,33,40,0.9)" stroke="#30363d" stroke-width="1"/>
+      <text x="480" y="232" font-size="12" fill="#ffa657" text-anchor="middle" font-weight="bold">h4_recv_buf() 状态机</text>
+      <text x="280" y="256" font-size="10" fill="#8b949e">while (count) {</text>
+      <text x="280" y="272" font-size="10" fill="#e6edf3">  if (!skb): 匹配包类型字节 → 分配 skb</text>
+      <text x="280" y="288" font-size="10" fill="#e6edf3">  skb_put_data(skb, buffer, len)  // 追加数据</text>
+      <text x="280" y="304" font-size="10" fill="#7ee787">  if (完整头部): 解析长度字段，期待数据体</text>
+      <text x="280" y="318" font-size="10" fill="#58a6ff">  if (完整包): pkts[i].recv(hdev, skb)</text>
+
+      <line x1="212" y1="120" x2="258" y2="120" stroke="#bc8cff" stroke-width="1" stroke-dasharray="4,2"/>
+      <line x1="212" y1="210" x2="258" y2="250" stroke="#ffa657" stroke-width="1" stroke-dasharray="4,2"/>
+    </svg>
+    <div class="svg-caption">图6：接收路径详细流程</div>
+  </div>
+
+  <h3>hci_uart_tty_receive — 接收入口</h3>
+  <pre><span class="kw">static void</span> <span class="fn">hci_uart_tty_receive</span>(<span class="kw">struct</span> <span class="ty">tty_struct</span> *tty,
+                                   <span class="kw">const</span> <span class="ty">u8</span> *data, <span class="kw">char</span> *flags, <span class="kw">int</span> count)
+{
+    <span class="kw">struct</span> <span class="ty">hci_uart</span> *hu = tty-&gt;disc_data;
+
+    <span class="kw">if</span> (!hu || tty != hu-&gt;tty) <span class="kw">return</span>;
+
+    <span class="fn">percpu_down_read</span>(&amp;hu-&gt;proto_lock);
+
+    <span class="kw">if</span> (!<span class="fn">test_bit</span>(<span class="mac">HCI_UART_PROTO_READY</span>, &amp;hu-&gt;flags)) {
+        <span class="fn">percpu_up_read</span>(&amp;hu-&gt;proto_lock);
+        <span class="kw">return</span>;
+    }
+
+    <span class="cm">/* TTY 互斥保护，无需额外锁 */</span>
+    hu-&gt;proto-&gt;<span class="fn">recv</span>(hu, data, count);
+
+    <span class="fn">percpu_up_read</span>(&amp;hu-&gt;proto_lock);
+
+    <span class="kw">if</span> (hu-&gt;hdev)
+        hu-&gt;hdev-&gt;stat.byte_rx += count;  <span class="cm">/* 统计字节数 */</span>
+
+    <span class="fn">tty_unthrottle</span>(tty);  <span class="cm">/* 通知 TTY 可以继续接收 */</span>
+}
+<div class="code-label">hci_ldisc.c</div></pre>
+
+  <div class="info-box note">
+    <strong>注意：</strong> 接收回调 <code>hci_uart_tty_receive</code> 的注释中说明：由于 TTY 层已通过互斥锁（tty caller）保护，协议层的 <code>recv()</code> 无需额外加锁。这是一个"信任上层保证"的设计决策，减少了锁开销。
+  </div>
+
+  <h3>h4_recv_buf — 通用帧重组引擎</h3>
+  <p>这是 H4 接收缓冲函数，也被 BCM、QCA、Intel 等厂商协议复用，是核心接收状态机：</p>
+  <pre><span class="kw">struct</span> <span class="ty">sk_buff</span> *<span class="fn">h4_recv_buf</span>(<span class="kw">struct</span> <span class="ty">hci_dev</span> *hdev, <span class="kw">struct</span> <span class="ty">sk_buff</span> *skb,
+                             <span class="kw">const unsigned char</span> *buffer, <span class="kw">int</span> count,
+                             <span class="kw">const struct</span> <span class="ty">h4_recv_pkt</span> *pkts, <span class="kw">int</span> pkts_count)
+{
+    <span class="kw">struct</span> <span class="ty">hci_uart</span> *hu = <span class="fn">hci_get_drvdata</span>(hdev);
+    <span class="ty">u8</span> alignment = hu-&gt;alignment ? hu-&gt;alignment : <span class="num">1</span>;
+
+    <span class="kw">if</span> (<span class="fn">IS_ERR</span>(skb)) skb = <span class="mac">NULL</span>;  <span class="cm">/* 清除上次错误 */</span>
+
+    <span class="kw">while</span> (count) {
+        <span class="kw">int</span> i, len;
+
+        <span class="cm">/* 跳过对齐填充字节 */</span>
+        <span class="kw">for</span> (; hu-&gt;padding &amp;&amp; count &gt; <span class="num">0</span>; hu-&gt;padding--) { count--; buffer++; }
+
+        <span class="kw">if</span> (!skb) {
+            <span class="cm">/* 状态1: 等待包类型字节 */</span>
+            <span class="kw">for</span> (i = <span class="num">0</span>; i &lt; pkts_count; i++) {
+                <span class="kw">if</span> (*buffer != (&amp;pkts[i])-&gt;type) <span class="kw">continue</span>;
+                skb = <span class="fn">bt_skb_alloc</span>((&amp;pkts[i])-&gt;maxlen, <span class="mac">GFP_ATOMIC</span>);
+                <span class="kw">if</span> (!skb) <span class="kw">return</span> <span class="fn">ERR_PTR</span>(-<span class="mac">ENOMEM</span>);
+                <span class="fn">hci_skb_pkt_type</span>(skb) = (&amp;pkts[i])-&gt;type;
+                <span class="fn">hci_skb_expect</span>(skb)   = (&amp;pkts[i])-&gt;hlen;  <span class="cm">/* 期待头部 */</span>
+                <span class="kw">break</span>;
+            }
+            <span class="kw">if</span> (!skb) <span class="kw">return</span> <span class="fn">ERR_PTR</span>(-<span class="mac">EILSEQ</span>);  <span class="cm">/* 未知包类型 */</span>
+            count--; buffer++;  <span class="cm">/* 消耗类型字节 */</span>
+        }
+
+        <span class="cm">/* 状态2/3: 追加数据直到期待量 */</span>
+        len = <span class="fn">min_t</span>(<span class="ty">uint</span>, <span class="fn">hci_skb_expect</span>(skb) - skb-&gt;len, count);
+        <span class="fn">skb_put_data</span>(skb, buffer, len);
+        count -= len; buffer += len;
+
+        <span class="kw">if</span> (skb-&gt;len &lt; <span class="fn">hci_skb_expect</span>(skb)) <span class="kw">continue</span>;  <span class="cm">/* 包不完整 */</span>
+
+        <span class="cm">/* 头部接收完毕，解析数据长度 */</span>
+        <span class="kw">if</span> (skb-&gt;len == (&amp;pkts[i])-&gt;hlen) {
+            <span class="ty">u16</span> dlen;
+            <span class="kw">switch</span> ((&amp;pkts[i])-&gt;lsize) {
+            <span class="kw">case</span> <span class="num">0</span>: dlen = <span class="num">0</span>; <span class="kw">break</span>;                          <span class="cm">/* 无数据体 */</span>
+            <span class="kw">case</span> <span class="num">1</span>: dlen = skb-&gt;data[(&amp;pkts[i])-&gt;loff]; <span class="kw">break</span>;  <span class="cm">/* 单字节长度 */</span>
+            <span class="kw">case</span> <span class="num">2</span>: dlen = <span class="fn">get_unaligned_le16</span>(                  <span class="cm">/* 双字节长度 */</span>
+                         skb-&gt;data + (&amp;pkts[i])-&gt;loff); <span class="kw">break</span>;
+            }
+            <span class="fn">hci_skb_expect</span>(skb) += dlen;  <span class="cm">/* 更新期待总量 */</span>
+            <span class="kw">if</span> (!dlen) { (&amp;pkts[i])-&gt;<span class="fn">recv</span>(hdev, skb); skb = <span class="mac">NULL</span>; }
+        } <span class="kw">else</span> {
+            <span class="cm">/* 完整包，计算对齐填充，上报 */</span>
+            hu-&gt;padding = (skb-&gt;len - <span class="num">1</span>) % alignment;
+            hu-&gt;padding = (alignment - hu-&gt;padding) % alignment;
+            (&amp;pkts[i])-&gt;<span class="fn">recv</span>(hdev, skb);
+            skb = <span class="mac">NULL</span>;
+        }
+    }
+    <span class="kw">return</span> skb;  <span class="cm">/* 返回未完成的 skb（跨调用保持）*/</span>
+}
+<span class="mac">EXPORT_SYMBOL_GPL</span>(<span class="fn">h4_recv_buf</span>);
+<div class="code-label">hci_h4.c</div></pre>
+
+  <div class="svg-wrap">
+    <svg viewBox="0 0 700 180" width="100%" style="max-width:700px" xmlns="http://www.w3.org/2000/svg">
+      <defs>
+        <marker id="ar7" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="6" markerHeight="6" orient="auto">
+          <path d="M0,0 L10,5 L0,10 z" fill="#8b949e"/>
+        </marker>
+      </defs>
+      <!-- State machine -->
+      <text x="350" y="20" font-size="13" fill="#e6edf3" text-anchor="middle" font-weight="bold">h4_recv_buf 接收状态机</text>
+
+      <ellipse cx="80" cy="90" rx="70" ry="32" fill="rgba(126,231,135,0.1)" stroke="#7ee787" stroke-width="1.5"/>
+      <text x="80" y="86" font-size="11" fill="#7ee787" text-anchor="middle">WAIT_TYPE</text>
+      <text x="80" y="102" font-size="9" fill="#8b949e" text-anchor="middle">等待包类型字节</text>
+
+      <line x1="152" y1="90" x2="224" y2="90" stroke="#8b949e" stroke-width="1.5" marker-end="url(#ar7)"/>
+      <text x="188" y="82" font-size="9" fill="#8b949e" text-anchor="middle">匹配类型</text>
+      <text x="188" y="108" font-size="9" fill="#ffa657" text-anchor="middle">分配 skb</text>
+
+      <ellipse cx="300" cy="90" rx="70" ry="32" fill="rgba(255,166,87,0.1)" stroke="#ffa657" stroke-width="1.5"/>
+      <text x="300" y="86" font-size="11" fill="#ffa657" text-anchor="middle">RECV_HEADER</text>
+      <text x="300" y="102" font-size="9" fill="#8b949e" text-anchor="middle">接收固定头部</text>
+
+      <line x1="372" y1="90" x2="444" y2="90" stroke="#8b949e" stroke-width="1.5" marker-end="url(#ar7)"/>
+      <text x="408" y="82" font-size="9" fill="#8b949e" text-anchor="middle">解析长度</text>
+      <text x="408" y="108" font-size="9" fill="#ffa657" text-anchor="middle">expect+=dlen</text>
+
+      <ellipse cx="520" cy="90" rx="70" ry="32" fill="rgba(88,166,255,0.1)" stroke="#58a6ff" stroke-width="1.5"/>
+      <text x="520" y="86" font-size="11" fill="#58a6ff" text-anchor="middle">RECV_DATA</text>
+      <text x="520" y="102" font-size="9" fill="#8b949e" text-anchor="middle">接收数据体</text>
+
+      <line x1="592" y1="90" x2="640" y2="90" stroke="#8b949e" stroke-width="1.5" marker-end="url(#ar7)"/>
+      <text x="640" y="86" font-size="9" fill="#7ee787">→ recv()</text>
+      <text x="640" y="100" font-size="9" fill="#7ee787">→ 上报</text>
+      <text x="640" y="114" font-size="9" fill="#7ee787">skb=NULL</text>
+
+      <!-- back arrow -->
+      <path d="M 590,122 Q 350,160 152,122" fill="none" stroke="#8b949e" stroke-width="1" stroke-dasharray="4,2" marker-end="url(#ar7)"/>
+      <text x="350" y="170" font-size="9" fill="#6e7681" text-anchor="middle">包完成后回到初始状态</text>
+
+      <!-- error path -->
+      <line x1="80" y1="58" x2="80" y2="32" stroke="#ff7b72" stroke-width="1" stroke-dasharray="4,2"/>
+      <text x="80" y="25" font-size="9" fill="#ff7b72" text-anchor="middle">未知类型 → ERR_PTR(-EILSEQ)</text>
+    </svg>
+    <div class="svg-caption">图7：h4_recv_buf 三状态接收机</div>
+  </div>
+
+  <div class="principle-box">
+    <div class="ptitle">⚡ 第一性原理</div>
+    <p>接收路径的本质问题是：UART 传来的是字节流，但 HCI 需要的是完整的帧。<code>h4_recv_buf</code> 用<strong>保持状态的 sk_buff 指针</strong>跨越多次 <code>receive_buf</code> 调用，像"拼图"一样逐步拼出完整的帧。这个设计精妙之处在于：它不需要额外的状态变量，skb 本身（NULL 或非NULL）就是状态，<code>hci_skb_expect</code> 就是期待量——状态与数据合一。</p>
+  </div>
+</section>
+
+<!-- ==================== S8: H4 协议 ==================== -->
+<section class="section" id="s8">
+  <div class="section-header">
+    <span class="section-num">08</span>
+    <h2>H4 协议实现</h2>
+  </div>
+
+  <p>
+    H4 是最基础的 HCI UART 协议（也称 UART Transport Layer），定义于蓝牙规范 HCI UART Transport Layer 章节。它在每个 HCI 数据包前添加一个<strong>1字节的包类型指示符</strong>，没有任何流控或重传机制。
+  </p>
+
+  <h3>H4 帧格式</h3>
+  <div class="svg-wrap">
+    <svg viewBox="0 0 700 120" width="100%" style="max-width:700px" xmlns="http://www.w3.org/2000/svg">
+      <!-- Packet layout -->
+      <text x="350" y="20" font-size="13" fill="#e6edf3" text-anchor="middle" font-weight="bold">H4 数据帧格式（以 ACL 包为例）</text>
+
+      <!-- Type byte -->
+      <rect x="40" y="35" width="80" height="50" rx="4" fill="rgba(255,166,87,0.2)" stroke="#ffa657" stroke-width="2"/>
+      <text x="80" y="58" font-size="12" fill="#ffa657" text-anchor="middle" font-weight="bold">类型字节</text>
+      <text x="80" y="75" font-size="11" fill="#ffa657" text-anchor="middle">0x02 (ACL)</text>
+      <text x="80" y="96" font-size="9" fill="#8b949e" text-anchor="middle">1 byte</text>
+
+      <!-- ACL Header -->
+      <rect x="126" y="35" width="160" height="50" rx="4" fill="rgba(88,166,255,0.15)" stroke="#58a6ff" stroke-width="1.5"/>
+      <text x="206" y="58" font-size="12" fill="#58a6ff" text-anchor="middle" font-weight="bold">ACL 头部</text>
+      <text x="206" y="75" font-size="10" fill="#8b949e" text-anchor="middle">Handle(12b)+Flags(4b)+Length(16b)</text>
+      <text x="206" y="96" font-size="9" fill="#8b949e" text-anchor="middle">4 bytes (HCI_ACL_HDR_SIZE)</text>
+
+      <!-- Data -->
+      <rect x="292" y="35" width="360" height="50" rx="4" fill="rgba(126,231,135,0.1)" stroke="#7ee787" stroke-width="1.5"/>
+      <text x="472" y="58" font-size="12" fill="#7ee787" text-anchor="middle" font-weight="bold">数据载荷 (L2CAP/ATT/...)</text>
+      <text x="472" y="75" font-size="10" fill="#8b949e" text-anchor="middle">length 字段指定的字节数</text>
+      <text x="472" y="96" font-size="9" fill="#8b949e" text-anchor="middle">0 ~ 65535 bytes (HCI_MAX_FRAME_SIZE)</text>
+
+      <!-- brace -->
+      <line x1="126" y1="30" x2="652" y2="30" stroke="#30363d" stroke-width="1"/>
+      <text x="390" y="24" font-size="9" fill="#6e7681" text-anchor="middle">← 原始 HCI 包（H4 类型字节之后）→</text>
+    </svg>
+    <div class="svg-caption">图8：H4 帧格式示意</div>
+  </div>
+
+  <h3>H4 私有数据结构</h3>
+  <pre><span class="cm">/* hci_h4.c */</span>
+<span class="kw">struct</span> <span class="ty">h4_struct</span> {
+    <span class="kw">struct</span> <span class="ty">sk_buff</span>      *rx_skb;  <span class="cm">/* 当前正在重组的接收 skb */</span>
+    <span class="kw">struct</span> <span class="ty">sk_buff_head</span>  txq;    <span class="cm">/* 发送队列 */</span>
+};
+<div class="code-label">hci_h4.c</div></pre>
+
+  <h3>H4 发送（enqueue）— 添加类型字节</h3>
+  <pre><span class="kw">static int</span> <span class="fn">h4_enqueue</span>(<span class="kw">struct</span> <span class="ty">hci_uart</span> *hu, <span class="kw">struct</span> <span class="ty">sk_buff</span> *skb)
+{
+    <span class="kw">struct</span> <span class="ty">h4_struct</span> *h4 = hu-&gt;priv;
+
+    <span class="cm">/* skb_push: 在 skb 头部预留1字节，写入包类型 */</span>
+    <span class="fn">memcpy</span>(<span class="fn">skb_push</span>(skb, <span class="num">1</span>), &amp;<span class="fn">hci_skb_pkt_type</span>(skb), <span class="num">1</span>);
+
+    <span class="fn">skb_queue_tail</span>(&amp;h4-&gt;txq, skb);  <span class="cm">/* 入队尾 */</span>
+    <span class="kw">return</span> <span class="num">0</span>;
+}
+<div class="code-label">hci_h4.c</div></pre>
+
+  <h3>H4 接收（recv）— 调用通用解析器</h3>
+  <pre><span class="kw">static const struct</span> <span class="ty">h4_recv_pkt</span> h4_recv_pkts[] = {
+    { <span class="mac">H4_RECV_ACL</span>,   .recv = <span class="fn">hci_recv_frame</span> },
+    { <span class="mac">H4_RECV_SCO</span>,   .recv = <span class="fn">hci_recv_frame</span> },
+    { <span class="mac">H4_RECV_EVENT</span>, .recv = <span class="fn">hci_recv_frame</span> },
+};
+
+<span class="kw">static int</span> <span class="fn">h4_recv</span>(<span class="kw">struct</span> <span class="ty">hci_uart</span> *hu, <span class="kw">const void</span> *data, <span class="kw">int</span> count)
+{
+    <span class="kw">struct</span> <span class="ty">h4_struct</span> *h4 = hu-&gt;priv;
+
+    <span class="kw">if</span> (!<span class="fn">test_bit</span>(<span class="mac">HCI_UART_REGISTERED</span>, &amp;hu-&gt;flags))
+        <span class="kw">return</span> -<span class="mac">EUNATCH</span>;
+
+    h4-&gt;rx_skb = <span class="fn">h4_recv_buf</span>(hu-&gt;hdev, h4-&gt;rx_skb, data, count,
+                               h4_recv_pkts, <span class="fn">ARRAY_SIZE</span>(h4_recv_pkts));
+    <span class="kw">if</span> (<span class="fn">IS_ERR</span>(h4-&gt;rx_skb)) {
+        <span class="kw">int</span> err = <span class="fn">PTR_ERR</span>(h4-&gt;rx_skb);
+        <span class="fn">bt_dev_err</span>(hu-&gt;hdev, <span class="str">"Frame reassembly failed (%d)"</span>, err);
+        h4-&gt;rx_skb = <span class="mac">NULL</span>;
+        <span class="kw">return</span> err;
+    }
+    <span class="kw">return</span> count;
+}
+<div class="code-label">hci_h4.c</div></pre>
+
+  <h3>H4 协议操作表注册</h3>
+  <pre><span class="kw">static const struct</span> <span class="ty">hci_uart_proto</span> h4p = {
+    .id      = <span class="mac">HCI_UART_H4</span>,  <span class="cm">/* ID = 0 */</span>
+    .name    = <span class="str">"H4"</span>,
+    .open    = <span class="fn">h4_open</span>,
+    .close   = <span class="fn">h4_close</span>,
+    .recv    = <span class="fn">h4_recv</span>,
+    .enqueue = <span class="fn">h4_enqueue</span>,
+    .dequeue = <span class="fn">h4_dequeue</span>,
+    .flush   = <span class="fn">h4_flush</span>,
+};
+
+<span class="kw">int</span> __init <span class="fn">h4_init</span>(<span class="kw">void</span>) { <span class="kw">return</span> <span class="fn">hci_uart_register_proto</span>(&amp;h4p); }
+<span class="kw">int</span> __exit <span class="fn">h4_deinit</span>(<span class="kw">void</span>) { <span class="kw">return</span> <span class="fn">hci_uart_unregister_proto</span>(&amp;h4p); }
+<div class="code-label">hci_h4.c</div></pre>
+
+  <div class="principle-box">
+    <div class="ptitle">⚡ 第一性原理</div>
+    <p>H4 的极简性体现了"够用就好"（just enough）原则：UART 可以是全双工的，硬件流控（RTS/CTS）可以保证数据完整性，因此不需要软件级别的重传和确认。H4 的全部贡献就是那 1 个字节的类型标记——用最小代价解决"字节流→帧"这个根本问题的类型消歧义部分。</p>
+  </div>
+</section>
+
+<!-- ==================== S9: H5 协议 ==================== -->
+<section class="section" id="s9">
+  <div class="section-header">
+    <span class="section-num">09</span>
+    <h2>H5（3-Wire）协议实现</h2>
+  </div>
+
+  <p>
+    H5（又称 3-Wire UART Transport）是蓝牙规范 Vol 4, Part A 中定义的可靠传输协议。它用于<strong>没有硬件流控（RTS/CTS）的3线UART</strong>（TX/RX/GND）。核心特性：SLIP 帧编码、序列号确认、CRC 校验、滑动窗口重传。
+  </p>
+
+  <h3>H5 帧格式</h3>
+  <div class="svg-wrap">
+    <svg viewBox="0 0 700 160" width="100%" style="max-width:700px" xmlns="http://www.w3.org/2000/svg">
+      <text x="350" y="20" font-size="13" fill="#e6edf3" text-anchor="middle" font-weight="bold">H5 帧结构</text>
+
+      <!-- SLIP START -->
+      <rect x="20" y="35" width="50" height="80" rx="4" fill="rgba(255,123,114,0.2)" stroke="#ff7b72" stroke-width="1.5"/>
+      <text x="45" y="68" font-size="10" fill="#ff7b72" text-anchor="middle">SLIP</text>
+      <text x="45" y="82" font-size="10" fill="#ff7b72" text-anchor="middle">START</text>
+      <text x="45" y="100" font-size="9" fill="#8b949e" text-anchor="middle">0xC0</text>
+
+      <!-- 4-byte header -->
+      <rect x="76" y="35" width="200" height="80" rx="4" fill="rgba(188,140,255,0.15)" stroke="#bc8cff" stroke-width="1.5"/>
+      <text x="176" y="56" font-size="11" fill="#bc8cff" text-anchor="middle" font-weight="bold">4字节 H5 头部</text>
+      <text x="100" y="76" font-size="9" fill="#e6edf3">SEQ[2:0]</text>
+      <text x="100" y="92" font-size="9" fill="#8b949e">发送序列号</text>
+      <text x="160" y="76" font-size="9" fill="#e6edf3">ACK[2:0]</text>
+      <text x="160" y="92" font-size="9" fill="#8b949e">确认号</text>
+      <text x="220" y="76" font-size="9" fill="#e6edf3">CRC/REL/Type</text>
+      <text x="220" y="92" font-size="9" fill="#8b949e">标志+包类型</text>
+      <text x="265" y="76" font-size="9" fill="#e6edf3">LEN[11:0]</text>
+      <text x="265" y="92" font-size="9" fill="#8b949e">载荷长度</text>
+      <text x="176" y="112" font-size="9" fill="#8b949e" text-anchor="middle">含1字节头部 checksum (字节和=0xFF)</text>
+
+      <!-- Payload (SLIP encoded) -->
+      <rect x="282" y="35" width="220" height="80" rx="4" fill="rgba(126,231,135,0.1)" stroke="#7ee787" stroke-width="1.5"/>
+      <text x="392" y="68" font-size="11" fill="#7ee787" text-anchor="middle">SLIP 编码后的载荷</text>
+      <text x="392" y="86" font-size="9" fill="#8b949e" text-anchor="middle">(0xC0→0xDB 0xDC, 0xDB→0xDB 0xDD)</text>
+
+      <!-- CRC -->
+      <rect x="508" y="35" width="80" height="80" rx="4" fill="rgba(255,166,87,0.15)" stroke="#ffa657" stroke-width="1.5"/>
+      <text x="548" y="68" font-size="10" fill="#ffa657" text-anchor="middle">CRC</text>
+      <text x="548" y="82" font-size="9" fill="#8b949e" text-anchor="middle">CCITT</text>
+      <text x="548" y="96" font-size="9" fill="#8b949e" text-anchor="middle">2 bytes</text>
+
+      <!-- SLIP END -->
+      <rect x="594" y="35" width="50" height="80" rx="4" fill="rgba(255,123,114,0.2)" stroke="#ff7b72" stroke-width="1.5"/>
+      <text x="619" y="68" font-size="10" fill="#ff7b72" text-anchor="middle">SLIP</text>
+      <text x="619" y="82" font-size="10" fill="#ff7b72" text-anchor="middle">END</text>
+      <text x="619" y="100" font-size="9" fill="#8b949e" text-anchor="middle">0xC0</text>
+    </svg>
+    <div class="svg-caption">图9：H5 帧结构（含 SLIP 编码和 4字节头部）</div>
+  </div>
+
+  <h3>H5 关键宏——头部字段解析</h3>
+  <pre><span class="cm">/* hci_h5.c - 头部字段位域解析宏 */</span>
+<span class="pp">#define H5_HDR_SEQ(hdr)</span>       ((hdr)[0] &amp; 0x07)         <span class="cm">/* 发送序列号 [2:0] */</span>
+<span class="pp">#define H5_HDR_ACK(hdr)</span>       (((hdr)[0] >> 3) &amp; 0x07)  <span class="cm">/* 确认序列号 [5:3] */</span>
+<span class="pp">#define H5_HDR_CRC(hdr)</span>       (((hdr)[0] >> 6) &amp; 0x01)  <span class="cm">/* CRC 存在标志 */</span>
+<span class="pp">#define H5_HDR_RELIABLE(hdr)</span>  (((hdr)[0] >> 7) &amp; 0x01)  <span class="cm">/* 可靠包标志 */</span>
+<span class="pp">#define H5_HDR_PKT_TYPE(hdr)</span>  ((hdr)[1] &amp; 0x0f)          <span class="cm">/* HCI 包类型 */</span>
+<span class="pp">#define H5_HDR_LEN(hdr)</span>       ((((hdr)[1] >> 4) &amp; 0xff) + ((hdr)[2] << 4))
+<span class="pp">#define H5_HDR_CHECKSUM(hdr)</span>  ((hdr)[3])                 <span class="cm">/* ~(hdr[0]+hdr[1]+hdr[2]) */</span>
+
+<span class="pp">#define SLIP_DELIMITER</span>  0xc0  <span class="cm">/* SLIP 帧边界 */</span>
+<span class="pp">#define SLIP_ESC</span>        0xdb  <span class="cm">/* SLIP 转义字符 */</span>
+<span class="pp">#define SLIP_ESC_DELIM</span>  0xdc  <span class="cm">/* 转义后的 0xC0 */</span>
+<span class="pp">#define SLIP_ESC_ESC</span>    0xdd  <span class="cm">/* 转义后的 0xDB */</span>
+<div class="code-label">hci_h5.c</div></pre>
+
+  <h3>H5 接收状态机（字节驱动）</h3>
+  <pre><span class="cm">/* H5 用函数指针实现状态机，每收一字节调用当前状态处理函数 */</span>
+<span class="kw">static int</span> <span class="fn">h5_rx_3wire_hdr</span>(<span class="kw">struct</span> <span class="ty">hci_uart</span> *hu, <span class="kw">unsigned char</span> c)
+{
+    <span class="kw">struct</span> <span class="ty">h5</span> *h5 = hu-&gt;priv;
+    <span class="kw">const unsigned char</span> *hdr = h5-&gt;rx_skb-&gt;data;
+
+    <span class="cm">/* 校验头部 checksum: 所有4字节之和必须为 0xFF */</span>
+    <span class="kw">if</span> (((hdr[<span class="num">0</span>] + hdr[<span class="num">1</span>] + hdr[<span class="num">2</span>] + hdr[<span class="num">3</span>]) &amp; <span class="num">0xff</span>) != <span class="num">0xff</span>) {
+        <span class="fn">bt_dev_err</span>(hu-&gt;hdev, <span class="str">"Invalid header checksum"</span>);
+        <span class="fn">h5_reset_rx</span>(h5);
+        <span class="kw">return</span> <span class="num">0</span>;
+    }
+
+    <span class="cm">/* 验证序列号（可靠包）*/</span>
+    <span class="kw">if</span> (<span class="fn">H5_HDR_RELIABLE</span>(hdr) &amp;&amp; <span class="fn">H5_HDR_SEQ</span>(hdr) != h5-&gt;tx_ack) {
+        <span class="fn">bt_dev_err</span>(hu-&gt;hdev, <span class="str">"Out-of-order packet arrived (%u != %u)"</span>,
+                   <span class="fn">H5_HDR_SEQ</span>(hdr), h5-&gt;tx_ack);
+        <span class="fn">set_bit</span>(<span class="mac">H5_TX_ACK_REQ</span>, &amp;h5-&gt;flags);
+        <span class="fn">hci_uart_tx_wakeup</span>(hu);  <span class="cm">/* 触发 NAK 回复 */</span>
+        <span class="fn">h5_reset_rx</span>(h5);
+        <span class="kw">return</span> <span class="num">0</span>;
+    }
+
+    h5-&gt;rx_func    = <span class="fn">h5_rx_payload</span>;   <span class="cm">/* 切换到载荷接收状态 */</span>
+    h5-&gt;rx_pending = <span class="fn">H5_HDR_LEN</span>(hdr); <span class="cm">/* 期待载荷长度 */</span>
+    <span class="kw">return</span> <span class="num">0</span>;
+}
+
+<span class="kw">static int</span> <span class="fn">h5_rx_crc</span>(<span class="kw">struct</span> <span class="ty">hci_uart</span> *hu, <span class="kw">unsigned char</span> c)
+{
+    <span class="kw">struct</span> <span class="ty">h5</span> *h5 = hu-&gt;priv;
+    <span class="kw">const unsigned char</span> *hdr = h5-&gt;rx_skb-&gt;data;
+    <span class="ty">u16</span> crc;
+    <span class="ty">__be16</span> crc_be;
+
+    crc    = <span class="fn">crc_ccitt</span>(<span class="num">0xffff</span>, hdr, <span class="num">4</span> + <span class="fn">H5_HDR_LEN</span>(hdr));
+    crc    = <span class="fn">bitrev16</span>(crc);
+    crc_be = <span class="fn">cpu_to_be16</span>(crc);
+
+    <span class="kw">if</span> (<span class="fn">memcmp</span>(&amp;crc_be, hdr + <span class="num">4</span> + <span class="fn">H5_HDR_LEN</span>(hdr), <span class="num">2</span>) != <span class="num">0</span>) {
+        <span class="fn">bt_dev_err</span>(hu-&gt;hdev, <span class="str">"Received packet with invalid CRC"</span>);
+        <span class="fn">h5_reset_rx</span>(h5);
+    } <span class="kw">else</span> {
+        <span class="fn">skb_trim</span>(h5-&gt;rx_skb, <span class="num">4</span> + <span class="fn">H5_HDR_LEN</span>(hdr));
+        <span class="fn">h5_complete_rx_pkt</span>(hu);  <span class="cm">/* CRC 通过，上报包 */</span>
+    }
+    <span class="kw">return</span> <span class="num">0</span>;
+}
+<div class="code-label">hci_h5.c</div></pre>
+
+  <h3>H5 链路状态机</h3>
+  <div class="svg-wrap">
+    <svg viewBox="0 0 700 200" width="100%" style="max-width:700px" xmlns="http://www.w3.org/2000/svg">
+      <defs>
+        <marker id="ar8" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="6" markerHeight="6" orient="auto">
+          <path d="M0,0 L10,5 L0,10 z" fill="#8b949e"/>
+        </marker>
+      </defs>
+
+      <text x="350" y="18" font-size="13" fill="#e6edf3" text-anchor="middle" font-weight="bold">H5 链路状态机（h5_state）</text>
+
+      <ellipse cx="100" cy="100" rx="80" ry="36" fill="rgba(255,123,114,0.1)" stroke="#ff7b72" stroke-width="1.5"/>
+      <text x="100" y="96" font-size="12" fill="#ff7b72" text-anchor="middle">H5_UNINITIALIZED</text>
+      <text x="100" y="112" font-size="9" fill="#8b949e" text-anchor="middle">等待 SYNC</text>
+
+      <line x1="182" y1="95" x2="248" y2="95" stroke="#8b949e" stroke-width="1.5" marker-end="url(#ar8)"/>
+      <text x="215" y="88" font-size="9" fill="#8b949e" text-anchor="middle">收 SYNC</text>
+      <text x="215" y="110" font-size="9" fill="#ffa657" text-anchor="middle">发 SYNC_RSP</text>
+
+      <ellipse cx="340" cy="100" rx="80" ry="36" fill="rgba(255,166,87,0.1)" stroke="#ffa657" stroke-width="1.5"/>
+      <text x="340" y="96" font-size="12" fill="#ffa657" text-anchor="middle">H5_INITIALIZED</text>
+      <text x="340" y="112" font-size="9" fill="#8b949e" text-anchor="middle">等待 CONF</text>
+
+      <line x1="422" y1="95" x2="488" y2="95" stroke="#8b949e" stroke-width="1.5" marker-end="url(#ar8)"/>
+      <text x="455" y="88" font-size="9" fill="#8b949e" text-anchor="middle">收 CONF</text>
+      <text x="455" y="110" font-size="9" fill="#7ee787" text-anchor="middle">发 CONF_RSP</text>
+
+      <ellipse cx="580" cy="100" rx="80" ry="36" fill="rgba(126,231,135,0.1)" stroke="#7ee787" stroke-width="1.5"/>
+      <text x="580" y="96" font-size="12" fill="#7ee787" text-anchor="middle">H5_ACTIVE</text>
+      <text x="580" y="112" font-size="9" fill="#8b949e" text-anchor="middle">正常数据传输</text>
+
+      <!-- reset arrow -->
+      <path d="M 100,136 Q 340,176 580,136" fill="none" stroke="#ff7b72" stroke-width="1" stroke-dasharray="4,2" marker-end="url(#ar8)"/>
+      <text x="340" y="172" font-size="9" fill="#ff7b72" text-anchor="middle">收 SYNC（重置）→ 回到 UNINITIALIZED</text>
+    </svg>
+    <div class="svg-caption">图10：H5 链路建立状态机（三阶段握手）</div>
+  </div>
+
+  <div class="principle-box">
+    <div class="ptitle">⚡ 第一性原理</div>
+    <p>H5 存在的根本原因是：<strong>物理连线减少了（3线 vs 4线），可靠性需求不减</strong>。没有 RTS/CTS 硬件流控，就必须在软件层面实现：SLIP 解决帧边界问题，序列号+ACK 解决丢包检测，滑动窗口控制流量，CRC 检测比特错误，链路状态机管理连接生命周期。每一个机制都对应着物理限制带来的具体风险。</p>
+  </div>
+</section>
+
+<!-- ==================== S10: BCSP ==================== -->
+<section class="section" id="s10">
+  <div class="section-header">
+    <span class="section-num">10</span>
+    <h2>BCSP 协议实现</h2>
+  </div>
+
+  <p>
+    BCSP（Bluetooth Core Specification Preamble，也称 BlueCore Serial Protocol）是 Cambridge Silicon Radio（CSR，即现在的高通蓝牙部门）为其蓝牙芯片设计的可靠串行传输协议，与 H5 类似但有所不同。
+  </p>
+
+  <h3>BCSP 关键数据结构</h3>
+  <pre><span class="cm">/* hci_bcsp.c */</span>
+<span class="kw">struct</span> <span class="ty">bcsp_struct</span> {
+    <span class="kw">struct</span> <span class="ty">hci_uart</span>  *hu;
+
+    <span class="cm">/* 接收状态机 */</span>
+    <span class="ty">u32</span>               rx_count;   <span class="cm">/* 当前期待接收字节数 */</span>
+    <span class="ty">u32</span>               rx_state;   <span class="cm">/* 接收状态 */</span>
+    <span class="kw">struct</span> <span class="ty">sk_buff</span>   *rx_skb;    <span class="cm">/* 正在重组的 skb */</span>
+    <span class="ty">u16</span>               rx_crc;    <span class="cm">/* 累积 CRC */</span>
+
+    <span class="cm">/* 发送队列 */</span>
+    <span class="kw">struct</span> <span class="ty">sk_buff_head</span>  unack;    <span class="cm">/* 已发未确认包（等待 ACK）*/</span>
+    <span class="kw">struct</span> <span class="ty">sk_buff_head</span>  rel;      <span class="cm">/* 可靠包发送队列 */</span>
+    <span class="kw">struct</span> <span class="ty">sk_buff_head</span>  unrel;    <span class="cm">/* 不可靠包发送队列 */</span>
+
+    <span class="cm">/* 序列号管理 */</span>
+    <span class="ty">unsigned long</span>  tx_state;
+    <span class="ty">u8</span>  rxseq_txack;  <span class="cm">/* 发送 ACK 时的期望接收序列号 */</span>
+    <span class="ty">u8</span>  rxack;        <span class="cm">/* 收到的 ACK 号 */</span>
+    <span class="ty">u8</span>  use_crc;      <span class="cm">/* 是否启用 CRC */</span>
+    <span class="ty">u8</span>  msgq_txseq;   <span class="cm">/* 下一个发送序列号 */</span>
+
+    <span class="cm">/* 重传定时器 */</span>
+    <span class="kw">struct</span> <span class="ty">timer_list</span>  tbcsp;
+};
+<div class="code-label">hci_bcsp.c</div></pre>
+
+  <h3>BCSP 重传机制（定时器驱动）</h3>
+  <pre><span class="cm">/* 重传所有未确认包 */</span>
+<span class="kw">static void</span> <span class="fn">bcsp_timed_event</span>(<span class="kw">struct</span> <span class="ty">timer_list</span> *t)
+{
+    <span class="kw">struct</span> <span class="ty">bcsp_struct</span> *bcsp = <span class="fn">timer_container_of</span>(bcsp, t, tbcsp);
+    <span class="kw">struct</span> <span class="ty">hci_uart</span>    *hu   = bcsp-&gt;hu;
+    <span class="kw">struct</span> <span class="ty">sk_buff</span>     *skb;
+    <span class="kw">unsigned long</span>       flags;
+
+    <span class="fn">BT_DBG</span>(<span class="str">"hu %p retransmitting %u pkts"</span>, hu, bcsp-&gt;unack.qlen);
+
+    <span class="cm">/* 将 unack 队列中所有包倒序放回 rel 队列首部（重发）*/</span>
+    <span class="fn">spin_lock_irqsave_nested</span>(&amp;bcsp-&gt;unack.lock, flags, <span class="mac">SINGLE_DEPTH_NESTING</span>);
+    <span class="kw">while</span> ((skb = <span class="fn">__skb_dequeue_tail</span>(&amp;bcsp-&gt;unack)) != <span class="mac">NULL</span>) {
+        bcsp-&gt;msgq_txseq = (bcsp-&gt;msgq_txseq - <span class="num">1</span>) &amp; <span class="num">0x07</span>;
+        <span class="fn">skb_queue_head</span>(&amp;bcsp-&gt;rel, skb);
+    }
+    <span class="fn">spin_unlock_irqrestore</span>(&amp;bcsp-&gt;unack.lock, flags);
+
+    <span class="fn">hci_uart_tx_wakeup</span>(hu);  <span class="cm">/* 触发重新发送 */</span>
+}
+<div class="code-label">hci_bcsp.c</div></pre>
+
+  <h3>BCSP 与 H5 对比</h3>
+  <div class="table-wrap">
+    <table>
+      <thead>
+        <tr><th>特性</th><th>BCSP</th><th>H5 (3-Wire)</th></tr>
+      </thead>
+      <tbody>
+        <tr><td>规范来源</td><td>CSR 私有规范</td><td>蓝牙官方规范 Vol4 Part A</td></tr>
+        <tr><td>帧编码</td><td>SLIP (0xC0 分隔)</td><td>SLIP (0xC0 分隔)</td></tr>
+        <tr><td>CRC</td><td>可选（txcrc 参数）</td><td>可选（头部标志位）</td></tr>
+        <tr><td>重传机制</td><td>定时器 + unack 队列</td><td>ACK 驱动 + 状态机</td></tr>
+        <tr><td>链路控制</td><td>独立消息队列（rel/unrel）</td><td>链路控制包（SYNC/CONF）</td></tr>
+        <tr><td>队列分离</td><td>可靠/不可靠双队列</td><td>统一队列 + reliable 标志</td></tr>
+        <tr><td>应用场景</td><td>CSR/QCA 芯片</td><td>通用 3线 UART 场景</td></tr>
+      </tbody>
+    </table>
+  </div>
+
+  <div class="principle-box">
+    <div class="ptitle">⚡ 第一性原理</div>
+    <p>BCSP 和 H5 都是为解决同一个物理问题（3线UART无硬件流控）的不同工程实现。BCSP 将可靠/不可靠数据分入不同队列，体现了"差异化服务"的思路——不是所有数据都需要重传（如音频SCO）。定时器驱动的重传是最朴素的可靠传输实现，但在拥塞时可能产生风暴，这正是 H5 改进之处。</p>
+  </div>
+</section>
+
+<!-- ==================== S11: 初始化与注册 ==================== -->
+<section class="section" id="s11">
+  <div class="section-header">
+    <span class="section-num">11</span>
+    <h2>初始化与注册流程</h2>
+  </div>
+
+  <h3>hci_uart_register_dev — hci_dev 注册</h3>
+  <pre><span class="kw">static int</span> <span class="fn">hci_uart_register_dev</span>(<span class="kw">struct</span> <span class="ty">hci_uart</span> *hu)
+{
+    <span class="kw">struct</span> <span class="ty">hci_dev</span> *hdev;
+    <span class="kw">int</span> err;
+
+    hdev = <span class="fn">hci_alloc_dev</span>();   <span class="cm">/* 从 HCI 核心分配设备 */</span>
+    <span class="kw">if</span> (!hdev) { ... <span class="kw">return</span> -<span class="mac">ENOMEM</span>; }
+
+    hu-&gt;hdev = hdev;
+    hdev-&gt;bus = <span class="mac">HCI_UART</span>;          <span class="cm">/* 总线类型标识 */</span>
+    <span class="fn">hci_set_drvdata</span>(hdev, hu);    <span class="cm">/* hdev → hu 的反向查找 */</span>
+
+    <span class="cm">/* 仅在有 setup 回调时认为制造商信息有效 */</span>
+    <span class="kw">if</span> (hu-&gt;proto-&gt;setup)
+        hdev-&gt;manufacturer = hu-&gt;proto-&gt;manufacturer;
+
+    <span class="cm">/* 注册 HCI 操作回调 */</span>
+    hdev-&gt;open  = <span class="fn">hci_uart_open</span>;
+    hdev-&gt;close = <span class="fn">hci_uart_close</span>;
+    hdev-&gt;flush = <span class="fn">hci_uart_flush</span>;
+    hdev-&gt;send  = <span class="fn">hci_uart_send_frame</span>;
+    hdev-&gt;setup = <span class="fn">hci_uart_setup</span>;   <span class="cm">/* 波特率+厂商初始化 */</span>
+
+    <span class="fn">SET_HCIDEV_DEV</span>(hdev, hu-&gt;tty-&gt;dev);  <span class="cm">/* 关联到 sysfs 设备树 */</span>
+
+    <span class="cm">/* 根据 hdev_flags 设置 quirks */</span>
+    <span class="kw">if</span> (<span class="fn">test_bit</span>(<span class="mac">HCI_UART_RAW_DEVICE</span>, &amp;hu-&gt;hdev_flags))
+        <span class="fn">set_bit</span>(<span class="mac">HCI_QUIRK_RAW_DEVICE</span>, &amp;hdev-&gt;quirks);
+    <span class="kw">if</span> (!<span class="fn">test_bit</span>(<span class="mac">HCI_UART_RESET_ON_INIT</span>, &amp;hu-&gt;hdev_flags))
+        <span class="fn">set_bit</span>(<span class="mac">HCI_QUIRK_RESET_ON_CLOSE</span>, &amp;hdev-&gt;quirks);
+
+    <span class="cm">/* 先 open 协议，再注册 hci_dev */</span>
+    err = hu-&gt;proto-&gt;<span class="fn">open</span>(hu);  <span class="cm">/* 分配协议私有数据 */</span>
+    <span class="kw">if</span> (err) { ... }
+
+    <span class="cm">/* INIT_PENDING: 等待异步初始化（如固件下载） */</span>
+    <span class="kw">if</span> (<span class="fn">test_bit</span>(<span class="mac">HCI_UART_INIT_PENDING</span>, &amp;hu-&gt;hdev_flags))
+        <span class="kw">return</span> <span class="num">0</span>;  <span class="cm">/* 延迟注册，由 hci_uart_init_ready() 完成 */</span>
+
+    err = <span class="fn">hci_register_dev</span>(hdev);
+    <span class="kw">if</span> (err) { ... }
+
+    <span class="fn">set_bit</span>(<span class="mac">HCI_UART_REGISTERED</span>, &amp;hu-&gt;flags);
+    <span class="kw">return</span> <span class="num">0</span>;
+}
+<div class="code-label">hci_ldisc.c</div></pre>
+
+  <h3>hci_uart_setup — 波特率与厂商初始化</h3>
+  <pre><span class="kw">static int</span> <span class="fn">hci_uart_setup</span>(<span class="kw">struct</span> <span class="ty">hci_dev</span> *hdev)
+{
+    <span class="kw">struct</span> <span class="ty">hci_uart</span> *hu = <span class="fn">hci_get_drvdata</span>(hdev);
+    <span class="kw">struct</span> <span class="ty">hci_rp_read_local_version</span> *ver;
+    <span class="kw">unsigned int</span> speed;
+
+    <span class="cm">/* 1. 设置初始化波特率（优先级：hu > proto > 默认）*/</span>
+    <span class="kw">if</span>      (hu-&gt;init_speed)        speed = hu-&gt;init_speed;
+    <span class="kw">else if</span> (hu-&gt;proto-&gt;init_speed) speed = hu-&gt;proto-&gt;init_speed;
+    <span class="kw">else</span>                            speed = <span class="num">0</span>;
+    <span class="kw">if</span> (speed) <span class="fn">hci_uart_set_baudrate</span>(hu, speed);
+
+    <span class="cm">/* 2. 协商工作波特率（厂商专用命令）*/</span>
+    <span class="kw">if</span>      (hu-&gt;oper_speed)        speed = hu-&gt;oper_speed;
+    <span class="kw">else if</span> (hu-&gt;proto-&gt;oper_speed) speed = hu-&gt;proto-&gt;oper_speed;
+    <span class="kw">else</span>                            speed = <span class="num">0</span>;
+    <span class="kw">if</span> (hu-&gt;proto-&gt;set_baudrate &amp;&amp; speed) {
+        err = hu-&gt;proto-&gt;<span class="fn">set_baudrate</span>(hu, speed);  <span class="cm">/* 发 HCI 命令给控制器 */</span>
+        <span class="kw">if</span> (!err) <span class="fn">hci_uart_set_baudrate</span>(hu, speed); <span class="cm">/* 同步更新主机波特率 */</span>
+    }
+
+    <span class="cm">/* 3. 厂商初始化（固件下载等）*/</span>
+    <span class="kw">if</span> (hu-&gt;proto-&gt;setup)
+        <span class="kw">return</span> hu-&gt;proto-&gt;<span class="fn">setup</span>(hu);
+
+    <span class="cm">/* 4. VND_DETECT: 通过 Read Local Version 自动检测厂商 */</span>
+    <span class="kw">if</span> (!<span class="fn">test_bit</span>(<span class="mac">HCI_UART_VND_DETECT</span>, &amp;hu-&gt;hdev_flags))
+        <span class="kw">return</span> <span class="num">0</span>;
+
+    skb = <span class="fn">__hci_cmd_sync</span>(hdev, <span class="mac">HCI_OP_READ_LOCAL_VERSION</span>,
+                         <span class="num">0</span>, <span class="mac">NULL</span>, <span class="mac">HCI_INIT_TIMEOUT</span>);
+    ver = (<span class="kw">struct</span> <span class="ty">hci_rp_read_local_version</span> *)skb-&gt;data;
+    <span class="kw">switch</span> (<span class="fn">le16_to_cpu</span>(ver-&gt;manufacturer)) {
+<span class="pp">#ifdef CONFIG_BT_HCIUART_INTEL</span>
+    <span class="kw">case</span> <span class="num">2</span>:  <span class="cm">/* Intel */</span>
+        hdev-&gt;set_bdaddr = <span class="fn">btintel_set_bdaddr</span>;
+        <span class="fn">btintel_check_bdaddr</span>(hdev); <span class="kw">break</span>;
+<span class="pp">#endif</span>
+<span class="pp">#ifdef CONFIG_BT_HCIUART_BCM</span>
+    <span class="kw">case</span> <span class="num">15</span>: <span class="cm">/* Broadcom */</span>
+        hdev-&gt;set_bdaddr = <span class="fn">btbcm_set_bdaddr</span>;
+        <span class="fn">btbcm_check_bdaddr</span>(hdev); <span class="kw">break</span>;
+<span class="pp">#endif</span>
+    }
+    <span class="kw">return</span> <span class="num">0</span>;
+}
+<div class="code-label">hci_ldisc.c</div></pre>
+
+  <h3>异步初始化（INIT_PENDING 机制）</h3>
+  <p>部分厂商协议（如 QCA、Intel）需要先下载固件才能注册 hci_dev，这通过 <code>HCI_UART_INIT_PENDING</code> 标志实现延迟注册：</p>
+  <div class="svg-wrap">
+    <svg viewBox="0 0 720 200" width="100%" style="max-width:720px" xmlns="http://www.w3.org/2000/svg">
+      <defs>
+        <marker id="ar9" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="6" markerHeight="6" orient="auto">
+          <path d="M0,0 L10,5 L0,10 z" fill="#8b949e"/>
+        </marker>
+      </defs>
+      <rect x="10" y="60" width="140" height="50" rx="6" fill="rgba(88,166,255,0.1)" stroke="#58a6ff" stroke-width="1"/>
+      <text x="80" y="80" font-size="11" fill="#58a6ff" text-anchor="middle">HCIUARTSETPROTO</text>
+      <text x="80" y="96" font-size="9" fill="#8b949e" text-anchor="middle">设置 INIT_PENDING</text>
+
+      <line x1="152" y1="85" x2="178" y2="85" stroke="#8b949e" stroke-width="1.5" marker-end="url(#ar9)"/>
+
+      <rect x="180" y="60" width="160" height="50" rx="6" fill="rgba(255,166,87,0.1)" stroke="#ffa657" stroke-width="1"/>
+      <text x="260" y="80" font-size="11" fill="#ffa657" text-anchor="middle">proto→open(hu)</text>
+      <text x="260" y="96" font-size="9" fill="#8b949e" text-anchor="middle">启动固件下载</text>
+
+      <line x1="342" y1="85" x2="368" y2="85" stroke="#8b949e" stroke-width="1.5" marker-end="url(#ar9)"/>
+      <text x="355" y="75" font-size="9" fill="#8b949e" text-anchor="middle">异步</text>
+      <text x="355" y="100" font-size="9" fill="#ffa657" text-anchor="middle">固件下载中...</text>
+
+      <rect x="370" y="60" width="160" height="50" rx="6" fill="rgba(188,140,255,0.1)" stroke="#bc8cff" stroke-width="1"/>
+      <text x="450" y="80" font-size="11" fill="#bc8cff" text-anchor="middle">hci_uart_init_ready()</text>
+      <text x="450" y="96" font-size="9" fill="#8b949e" text-anchor="middle">固件就绪，触发工作</text>
+
+      <line x1="532" y1="85" x2="558" y2="85" stroke="#8b949e" stroke-width="1.5" marker-end="url(#ar9)"/>
+
+      <rect x="560" y="60" width="150" height="50" rx="6" fill="rgba(126,231,135,0.1)" stroke="#7ee787" stroke-width="1"/>
+      <text x="635" y="80" font-size="11" fill="#7ee787" text-anchor="middle">hci_register_dev()</text>
+      <text x="635" y="96" font-size="9" fill="#8b949e" text-anchor="middle">正式注册 hci_dev</text>
+
+      <!-- init_ready work -->
+      <text x="450" y="140" font-size="10" fill="#bc8cff" text-anchor="middle">schedule_work(&amp;hu-&gt;init_ready)</text>
+      <text x="450" y="158" font-size="10" fill="#8b949e" text-anchor="middle">→ hci_uart_init_work() [工作队列]</text>
+      <line x1="450" y1="110" x2="450" y2="130" stroke="#bc8cff" stroke-width="1" stroke-dasharray="3,2" marker-end="url(#ar9)"/>
+    </svg>
+    <div class="svg-caption">图11：INIT_PENDING 异步初始化流程（固件下载场景）</div>
+  </div>
+
+  <div class="principle-box">
+    <div class="ptitle">⚡ 第一性原理</div>
+    <p>注册流程的核心设计原则是<strong>"就绪后才对外服务"</strong>。<code>HCI_UART_PROTO_READY</code> 标志就是这个不变量的守卫——只有协议完全初始化（包括可能的固件下载）后，收发路径才被允许执行。INIT_PENDING 机制则把这个"就绪"时刻从同步推迟到了异步，解决了固件下载耗时问题。</p>
+  </div>
+</section>
+
+<!-- ==================== S12: 并发与锁 ==================== -->
+<section class="section" id="s12">
+  <div class="section-header">
+    <span class="section-num">12</span>
+    <h2>并发与锁机制</h2>
+  </div>
+
+  <h3>percpu_rw_semaphore（proto_lock）</h3>
+  <p>
+    这是 v5.4 中最关键的并发控制机制。<code>proto_lock</code> 是一个 per-CPU 读写信号量，专门为以下场景设计：
+  </p>
+
+  <div class="table-wrap">
+    <table>
+      <thead>
+        <tr><th>场景</th><th>锁操作</th><th>原因</th></tr>
+      </thead>
+      <tbody>
+        <tr>
+          <td>接收数据（<code>hci_uart_tty_receive</code>）</td>
+          <td><code>percpu_down_read()</code></td>
+          <td>读锁：多个接收可并发</td>
+        </tr>
+        <tr>
+          <td>发送数据（<code>hci_uart_send_frame</code>）</td>
+          <td><code>percpu_down_read()</code></td>
+          <td>读锁：发送与接收可并发</td>
+        </tr>
+        <tr>
+          <td>TX wakeup（可能在 IRQ 中）</td>
+          <td><code>percpu_down_read_trylock()</code></td>
+          <td>非阻塞 trylock，防止 IRQ 死锁</td>
+        </tr>
+        <tr>
+          <td>关闭协议（<code>hci_uart_tty_close</code>）</td>
+          <td><code>percpu_down_write()</code></td>
+          <td>写锁：排他，等所有读完成后关闭</td>
+        </tr>
+      </tbody>
+    </table>
+  </div>
+
+  <pre><span class="cm">/* 关闭时的锁操作序列（保证安全关闭）*/</span>
+<span class="kw">if</span> (<span class="fn">test_bit</span>(<span class="mac">HCI_UART_PROTO_READY</span>, &amp;hu-&gt;flags)) {
+    <span class="fn">percpu_down_write</span>(&amp;hu-&gt;proto_lock);      <span class="cm">/* 取写锁：等待所有读操作完成 */</span>
+    <span class="fn">clear_bit</span>(<span class="mac">HCI_UART_PROTO_READY</span>, &amp;hu-&gt;flags); <span class="cm">/* 清就绪标志 */</span>
+    <span class="fn">percpu_up_write</span>(&amp;hu-&gt;proto_lock);        <span class="cm">/* 释放写锁 */</span>
+    <span class="fn">cancel_work_sync</span>(&amp;hu-&gt;write_work);       <span class="cm">/* 等 write_work 完成 */</span>
+    ...
+    hu-&gt;proto-&gt;<span class="fn">close</span>(hu);                    <span class="cm">/* 此后不会有新的收发操作 */</span>
+}
+<div class="code-label">hci_ldisc.c</div></pre>
+
+  <h3>tx_state 原子位操作</h3>
+  <pre><span class="cm">/* HCI_UART_SENDING 防止 write_work 重入 */</span>
+<span class="kw">int</span> <span class="fn">hci_uart_tx_wakeup</span>(<span class="kw">struct</span> <span class="ty">hci_uart</span> *hu)
+{
+    ...
+    <span class="fn">set_bit</span>(<span class="mac">HCI_UART_TX_WAKEUP</span>, &amp;hu-&gt;tx_state);
+
+    <span class="cm">/* test_and_set_bit: 原子操作，已在发送则不重新调度 */</span>
+    <span class="kw">if</span> (<span class="fn">test_and_set_bit</span>(<span class="mac">HCI_UART_SENDING</span>, &amp;hu-&gt;tx_state))
+        <span class="kw">goto</span> no_schedule;  <span class="cm">/* write_work 运行中会检查 TX_WAKEUP */</span>
+
+    <span class="fn">schedule_work</span>(&amp;hu-&gt;write_work);
+    ...
+}
+
+<span class="cm">/* write_work 结束时 */</span>
+<span class="fn">clear_bit</span>(<span class="mac">HCI_UART_SENDING</span>, &amp;hu-&gt;tx_state);
+<span class="fn">wake_up_bit</span>(&amp;hu-&gt;tx_state, <span class="mac">HCI_UART_SENDING</span>);  <span class="cm">/* 唤醒 wait_until_sent() */</span>
+<div class="code-label">hci_ldisc.c</div></pre>
+
+  <h3>并发场景示意</h3>
+  <div class="svg-wrap">
+    <svg viewBox="0 0 700 240" width="100%" style="max-width:700px" xmlns="http://www.w3.org/2000/svg">
+      <text x="350" y="20" font-size="13" fill="#e6edf3" text-anchor="middle" font-weight="bold">proto_lock 读写锁并发场景</text>
+
+      <!-- Timeline -->
+      <line x1="40" y1="50" x2="680" y2="50" stroke="#30363d" stroke-width="1"/>
+      <text x="20" y="54" font-size="10" fill="#8b949e">时间→</text>
+
+      <!-- RX task -->
+      <rect x="60" y="60" width="200" height="28" rx="4" fill="rgba(126,231,135,0.2)" stroke="#7ee787" stroke-width="1"/>
+      <text x="160" y="78" font-size="10" fill="#7ee787" text-anchor="middle">接收 (percpu_down_read)</text>
+
+      <!-- TX task concurrent with RX -->
+      <rect x="100" y="94" width="280" height="28" rx="4" fill="rgba(88,166,255,0.2)" stroke="#58a6ff" stroke-width="1"/>
+      <text x="240" y="112" font-size="10" fill="#58a6ff" text-anchor="middle">发送 (percpu_down_read) — 与接收并发 ✓</text>
+
+      <!-- IRQ wakeup -->
+      <rect x="300" y="128" width="120" height="28" rx="4" fill="rgba(255,166,87,0.2)" stroke="#ffa657" stroke-width="1"/>
+      <text x="360" y="146" font-size="10" fill="#ffa657" text-anchor="middle">IRQ wakeup (trylock)</text>
+
+      <!-- Close: write lock, must wait -->
+      <rect x="500" y="60" width="170" height="62" rx="4" fill="rgba(255,123,114,0.15)" stroke="#ff7b72" stroke-width="1.5" stroke-dasharray="4,2"/>
+      <text x="585" y="80" font-size="10" fill="#ff7b72" text-anchor="middle">关闭 (percpu_down_write)</text>
+      <text x="585" y="96" font-size="9" fill="#8b949e" text-anchor="middle">阻塞等待所有读锁释放</text>
+      <text x="585" y="112" font-size="9" fill="#ff7b72" text-anchor="middle">→ 独占访问 ✓</text>
+
+      <!-- cancel_work_sync -->
+      <rect x="500" y="130" width="170" height="28" rx="4" fill="rgba(188,140,255,0.15)" stroke="#bc8cff" stroke-width="1"/>
+      <text x="585" y="148" font-size="10" fill="#bc8cff" text-anchor="middle">cancel_work_sync(write_work)</text>
+
+      <!-- Legend -->
+      <rect x="40" y="190" width="16" height="12" fill="rgba(126,231,135,0.3)" stroke="#7ee787" stroke-width="1"/>
+      <text x="62" y="201" font-size="10" fill="#8b949e">读锁（可并发）</text>
+      <rect x="160" y="190" width="16" height="12" fill="rgba(255,123,114,0.2)" stroke="#ff7b72" stroke-width="1"/>
+      <text x="182" y="201" font-size="10" fill="#8b949e">写锁（独占）</text>
+      <rect x="270" y="190" width="16" height="12" fill="rgba(255,166,87,0.2)" stroke="#ffa657" stroke-width="1"/>
+      <text x="292" y="201" font-size="10" fill="#8b949e">trylock（IRQ安全）</text>
+    </svg>
+    <div class="svg-caption">图12：proto_lock 并发控制示意</div>
+  </div>
+
+  <div class="principle-box">
+    <div class="ptitle">⚡ 第一性原理</div>
+    <p>并发设计的根本是：<strong>读多写少，读可并发，写必独占</strong>。正常工作时（发送/接收）都是读锁，可以在多 CPU 上并发执行，性能最优。关闭是稀少的一次性操作，用写锁确保安全。per-CPU 读写信号量相比普通互斥锁，在读路径上几乎无竞争开销——这正是高频收发所需要的。</p>
+  </div>
+</section>
+
+<!-- ==================== S13: 波特率与流控 ==================== -->
+<section class="section" id="s13">
+  <div class="section-header">
+    <span class="section-num">13</span>
+    <h2>波特率协商与流量控制</h2>
+  </div>
+
+  <h3>波特率设置流程</h3>
+  <pre><span class="kw">void</span> <span class="fn">hci_uart_set_baudrate</span>(<span class="kw">struct</span> <span class="ty">hci_uart</span> *hu, <span class="kw">unsigned int</span> speed)
+{
+    <span class="kw">struct</span> <span class="ty">tty_struct</span> *tty = hu-&gt;tty;
+    <span class="kw">struct</span> <span class="ty">ktermios</span> ktermios;
+
+    ktermios = tty-&gt;termios;
+    ktermios.c_cflag &amp;= ~<span class="mac">CBAUD</span>;                          <span class="cm">/* 清除波特率位 */</span>
+    <span class="fn">tty_termios_encode_baud_rate</span>(&amp;ktermios, speed, speed); <span class="cm">/* 编码新波特率 */</span>
+    <span class="fn">tty_set_termios</span>(tty, &amp;ktermios);                      <span class="cm">/* 应用到 TTY */</span>
+
+    <span class="fn">BT_DBG</span>(<span class="str">"%s: New tty speeds: %d/%d"</span>, hu-&gt;hdev-&gt;name,
+           tty-&gt;termios.c_ispeed, tty-&gt;termios.c_ospeed);
+}
+<div class="code-label">hci_ldisc.c</div></pre>
+
+  <h3>双波特率协商机制</h3>
+  <div class="svg-wrap">
+    <svg viewBox="0 0 700 220" width="100%" style="max-width:700px" xmlns="http://www.w3.org/2000/svg">
+      <defs>
+        <marker id="ar10" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="6" markerHeight="6" orient="auto">
+          <path d="M0,0 L10,5 L0,10 z" fill="#8b949e"/>
+        </marker>
+        <marker id="ar10b" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="6" markerHeight="6" orient="auto">
+          <path d="M0,0 L10,5 L0,10 z" fill="#ffa657"/>
+        </marker>
+      </defs>
+
+      <text x="350" y="20" font-size="13" fill="#e6edf3" text-anchor="middle" font-weight="bold">双阶段波特率协商</text>
+
+      <!-- Phase 1 -->
+      <rect x="20" y="40" width="660" height="70" rx="6" fill="rgba(88,166,255,0.05)" stroke="#58a6ff" stroke-width="1"/>
+      <text x="40" y="62" font-size="11" fill="#58a6ff" font-weight="bold">阶段1：初始化波特率 (init_speed)</text>
+      <text x="40" y="82" font-size="10" fill="#8b949e">通常为 115200 bps（所有芯片上电默认速率）</text>
+      <text x="40" y="100" font-size="10" fill="#e6edf3">主机设置 → 发送厂商专用命令（如 BCM: 0xfc18）→ 控制器切换</text>
+
+      <line x1="350" y1="112" x2="350" y2="130" stroke="#8b949e" stroke-width="1.5" marker-end="url(#ar10)"/>
+
+      <!-- Phase 2 -->
+      <rect x="20" y="132" width="660" height="70" rx="6" fill="rgba(255,166,87,0.05)" stroke="#ffa657" stroke-width="1"/>
+      <text x="40" y="154" font-size="11" fill="#ffa657" font-weight="bold">阶段2：工作波特率 (oper_speed)</text>
+      <text x="40" y="174" font-size="10" fill="#8b949e">如 3000000 / 4000000 bps（高速传输）</text>
+      <text x="40" y="192" font-size="10" fill="#e6edf3">proto→set_baudrate(hu, speed) → 控制器切换 → hci_uart_set_baudrate(hu, speed) 主机同步</text>
+    </svg>
+    <div class="svg-caption">图13：蓝牙 UART 双阶段波特率协商流程</div>
+  </div>
+
+  <h3>硬件流量控制（RTS/CTS）</h3>
+  <pre><span class="kw">void</span> <span class="fn">hci_uart_set_flow_control</span>(<span class="kw">struct</span> <span class="ty">hci_uart</span> *hu, <span class="kw">bool</span> enable)
+{
+    <span class="kw">struct</span> <span class="ty">tty_struct</span> *tty = hu-&gt;tty;
+    <span class="kw">struct</span> <span class="ty">ktermios</span> ktermios;
+
+    <span class="kw">if</span> (hu-&gt;serdev) {
+        <span class="fn">serdev_device_set_flow_control</span>(hu-&gt;serdev, !enable);
+        <span class="fn">serdev_device_set_rts</span>(hu-&gt;serdev, !enable);
+        <span class="kw">return</span>;
+    }
+
+    <span class="kw">if</span> (enable) {
+        <span class="cm">/* 禁用硬件流控（波特率协商期间，避免 CTS 阻塞发送）*/</span>
+        ktermios = tty-&gt;termios;
+        ktermios.c_cflag &amp;= ~<span class="mac">CRTSCTS</span>;
+        <span class="fn">tty_set_termios</span>(tty, &amp;ktermios);
+        <span class="cm">/* 清 RTS，防止控制器发送 */</span>
+        <span class="fn">tty</span>-&gt;driver-&gt;ops-&gt;<span class="fn">tiocmset</span>(tty, <span class="num">0</span>, <span class="mac">TIOCM_RTS</span> | <span class="mac">TIOCM_OUT2</span>);
+    } <span class="kw">else</span> {
+        <span class="cm">/* 重新启用硬件流控 */</span>
+        <span class="fn">tty</span>-&gt;driver-&gt;ops-&gt;<span class="fn">tiocmset</span>(tty, <span class="mac">TIOCM_RTS</span> | <span class="mac">TIOCM_OUT2</span>, <span class="num">0</span>);
+        ktermios = tty-&gt;termios;
+        ktermios.c_cflag |= <span class="mac">CRTSCTS</span>;
+        <span class="fn">tty_set_termios</span>(tty, &amp;ktermios);
+    }
+}
+<div class="code-label">hci_ldisc.c</div></pre>
+
+  <div class="info-box warn">
+    <strong>⚠️ 波特率切换时序：</strong> 厂商协议在切换到高速波特率时，必须先通过 <code>hci_uart_set_flow_control(hu, true)</code> 暂时关闭硬件流控，发送波特率切换命令，然后在控制器应答（或超时）后重新开启流控。这个时序如果出错，会导致控制器接收到乱码。
+  </div>
+
+  <div class="principle-box">
+    <div class="ptitle">⚡ 第一性原理</div>
+    <p>波特率协商的本质是一个<strong>鸡生蛋问题</strong>：想用高速传输，但高速传输要先协商，而协商本身要用低速。所以必须两阶段：先用低速（所有设备通用的"普通话"）建立联系，再切换到双方都支持的最高速度（"方言"）。流控的暂时关闭是因为：切换中间有一段时间主机和控制器波特率不同步，这段时间必须没有数据传输。</p>
+  </div>
+</section>
+
+<!-- ==================== S14: serdev 扩展 ==================== -->
+<section class="section" id="s14">
+  <div class="section-header">
+    <span class="section-num">14</span>
+    <h2>serdev 扩展</h2>
+  </div>
+
+  <p>
+    Linux 4.11 引入的 <strong>serdev（Serial Device Bus）</strong> 是一种更现代的 UART 设备枚举方式，特别适合嵌入式平台的 Device Tree 描述。相比传统的 TTY+ldisc 方式，serdev 无需用户态工具手动配置。
+  </p>
+
+  <h3>两种接入方式对比</h3>
+  <div class="table-wrap">
+    <table>
+      <thead>
+        <tr><th>特性</th><th>TTY + ldisc (传统)</th><th>serdev (现代)</th></tr>
+      </thead>
+      <tbody>
+        <tr><td>配置方式</td><td>用户态 btattach/hciattach</td><td>设备树 DTS 描述</td></tr>
+        <tr><td>适用场景</td><td>PC、外置蓝牙模块</td><td>嵌入式 SoC，芯片直连</td></tr>
+        <tr><td>热插拔支持</td><td>是</td><td>通常固定连接</td></tr>
+        <tr><td>波特率设置</td><td><code>hci_uart_set_baudrate()</code></td><td><code>serdev_device_set_baudrate()</code></td></tr>
+        <tr><td>流控设置</td><td><code>tiocmset()</code></td><td><code>serdev_device_set_flow_control()</code></td></tr>
+        <tr><td>hci_uart 中的字段</td><td><code>hu->tty != NULL</code></td><td><code>hu->serdev != NULL</code></td></tr>
+      </tbody>
+    </table>
+  </div>
+
+  <h3>serdev 判断分支示例</h3>
+  <pre><span class="cm">/* 在 hci_ldisc.c 中，serdev 和 tty 路径的统一处理 */</span>
+<span class="kw">bool</span> <span class="fn">hci_uart_has_flow_control</span>(<span class="kw">struct</span> <span class="ty">hci_uart</span> *hu)
+{
+    <span class="cm">/* serdev: 始终认为支持流控（由 serdev 驱动保证）*/</span>
+    <span class="kw">if</span> (hu-&gt;serdev)
+        <span class="kw">return</span> <span class="kw">true</span>;
+
+    <span class="cm">/* TTY 路径: 检查底层驱动是否实现了 tiocmget/tiocmset */</span>
+    <span class="kw">if</span> (hu-&gt;tty-&gt;driver-&gt;ops-&gt;tiocmget &amp;&amp;
+        hu-&gt;tty-&gt;driver-&gt;ops-&gt;tiocmset)
+        <span class="kw">return</span> <span class="kw">true</span>;
+
+    <span class="kw">return</span> <span class="kw">false</span>;
+}
+
+<span class="cm">/* 在厂商驱动（如 hci_bcm.c）中 */</span>
+<span class="kw">static inline void</span> <span class="fn">host_set_baudrate</span>(<span class="kw">struct</span> <span class="ty">hci_uart</span> *hu, <span class="kw">unsigned int</span> speed)
+{
+    <span class="kw">if</span> (hu-&gt;serdev)
+        <span class="fn">serdev_device_set_baudrate</span>(hu-&gt;serdev, speed);
+    <span class="kw">else</span>
+        <span class="fn">hci_uart_set_baudrate</span>(hu, speed);
+}
+<div class="code-label">hci_ldisc.c / hci_bcm.c</div></pre>
+
+  <h3>serdev 注册路径</h3>
+  <pre><span class="cm">/* 厂商驱动（如 hci_bcm.c）实现 serdev_device_driver */</span>
+<span class="kw">static struct</span> <span class="ty">serdev_device_driver</span> bcm_serdev_driver = {
+    .probe          = <span class="fn">bcm_serdev_probe</span>,
+    .remove         = <span class="fn">bcm_serdev_remove</span>,
+    .driver = {
+        .name          = <span class="str">"hci_bcm"</span>,
+        .of_match_table = <span class="fn">of_match_ptr</span>(bcm_bluetooth_of_match),
+        .acpi_match_table = <span class="fn">ACPI_PTR</span>(bcm_acpi_match),
+        .pm            = &amp;bcm_pm_ops,
+    },
+};
+
+<span class="cm">/* probe 中调用 hci_uart_register_device() 替代 ldisc 流程 */</span>
+<span class="kw">static int</span> <span class="fn">bcm_serdev_probe</span>(<span class="kw">struct</span> <span class="ty">serdev_device</span> *serdev)
+{
+    ...
+    <span class="kw">return</span> <span class="fn">hci_uart_register_device</span>(&amp;bcmdev-&gt;serdev_hu, &amp;bcm_proto);
+}
+<div class="code-label">hci_bcm.c</div></pre>
+
+  <div class="principle-box">
+    <div class="ptitle">⚡ 第一性原理</div>
+    <p>serdev 的引入是<strong>消除"手工配置"中间状态</strong>的过程。传统 TTY ldisc 方式需要用户态程序（btattach）来"宣布"这个 UART 是蓝牙设备，这是因为内核无法从 UART 硬件本身判断连接了什么。设备树让硬件连接关系成为内核可知的信息，serdev 则是把这个信息转化为自动枚举的机制——回到"内核知道一切，自动做一切"的理想状态。</p>
+  </div>
+</section>
+
+<!-- ==================== S15: 设计总结 ==================== -->
+<section class="section" id="s15">
+  <div class="section-header">
+    <span class="section-num">15</span>
+    <h2>设计总结</h2>
+  </div>
+
+  <h3>全局架构回顾</h3>
+  <div class="svg-wrap">
+    <svg viewBox="0 0 720 400" width="100%" style="max-width:720px" xmlns="http://www.w3.org/2000/svg">
+      <defs>
+        <marker id="ar11" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="6" markerHeight="6" orient="auto">
+          <path d="M0,0 L10,5 L0,10 z" fill="#58a6ff"/>
+        </marker>
+        <marker id="ar11r" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="6" markerHeight="6" orient="auto">
+          <path d="M0,0 L10,5 L0,10 z" fill="#7ee787"/>
+        </marker>
+      </defs>
+
+      <text x="360" y="22" font-size="13" fill="#e6edf3" text-anchor="middle" font-weight="bold">Linux 5.4 HCI UART 完整数据流</text>
+
+      <!-- HCI Core -->
+      <rect x="240" y="35" width="240" height="40" rx="6" fill="rgba(88,166,255,0.15)" stroke="#58a6ff" stroke-width="1.5"/>
+      <text x="360" y="60" font-size="12" fill="#58a6ff" text-anchor="middle" font-weight="bold">HCI 核心层 (hci_core)</text>
+
+      <!-- TX arrow down -->
+      <line x1="340" y1="75" x2="340" y2="100" stroke="#58a6ff" stroke-width="2" marker-end="url(#ar11)"/>
+      <text x="270" y="92" font-size="10" fill="#58a6ff">TX: hci_uart_send_frame()</text>
+      <!-- RX arrow up -->
+      <line x1="390" y1="100" x2="390" y2="76" stroke="#7ee787" stroke-width="2" marker-end="url(#ar11r)"/>
+      <text x="396" y="92" font-size="10" fill="#7ee787">RX: hci_recv_frame()</text>
+
+      <!-- HCI UART Interface -->
+      <rect x="160" y="102" width="400" height="40" rx="6" fill="rgba(126,231,135,0.1)" stroke="#7ee787" stroke-width="1.5"/>
+      <text x="360" y="127" font-size="12" fill="#7ee787" text-anchor="middle">HCI UART 接口层 (hci_ldisc.c)</text>
+
+      <line x1="340" y1="142" x2="340" y2="165" stroke="#58a6ff" stroke-width="2" marker-end="url(#ar11)"/>
+      <text x="200" y="158" font-size="10" fill="#58a6ff">proto→enqueue() + tx_wakeup()</text>
+      <line x1="390" y1="165" x2="390" y2="143" stroke="#7ee787" stroke-width="2" marker-end="url(#ar11r)"/>
+      <text x="396" y="158" font-size="10" fill="#7ee787">proto→recv(hu, data, len)</text>
+
+      <!-- Protocol Layer -->
+      <rect x="60" y="167" width="560" height="50" rx="6" fill="rgba(255,166,87,0.1)" stroke="#ffa657" stroke-width="1.5"/>
+      <text x="360" y="186" font-size="12" fill="#ffa657" text-anchor="middle" font-weight="bold">协议插件层 (hci_uart_proto)</text>
+      <text x="160" y="204" font-size="10" fill="#8b949e" text-anchor="middle">H4: 添加/去除类型字节</text>
+      <text x="360" y="204" font-size="10" fill="#8b949e" text-anchor="middle">H5: SLIP编码/解码+序号+CRC</text>
+      <text x="560" y="204" font-size="10" fill="#8b949e" text-anchor="middle">BCSP: 可靠队列+定时重传</text>
+
+      <!-- Write work -->
+      <rect x="200" y="233" width="160" height="30" rx="4" fill="rgba(188,140,255,0.1)" stroke="#bc8cff" stroke-width="1"/>
+      <text x="280" y="252" font-size="10" fill="#bc8cff" text-anchor="middle">write_work (workqueue)</text>
+
+      <line x1="280" y1="263" x2="280" y2="285" stroke="#58a6ff" stroke-width="1.5" marker-end="url(#ar11)"/>
+
+      <!-- TTY ldisc -->
+      <rect x="60" y="287" width="560" height="40" rx="6" fill="rgba(188,140,255,0.1)" stroke="#bc8cff" stroke-width="1.5"/>
+      <text x="360" y="312" font-size="12" fill="#bc8cff" text-anchor="middle">TTY 线路规程层 (N_HCI=15, ldisc)</text>
+
+      <line x1="340" y1="327" x2="340" y2="348" stroke="#58a6ff" stroke-width="2" marker-end="url(#ar11)"/>
+      <text x="200" y="343" font-size="10" fill="#58a6ff">tty→ops→write(tty, data, len)</text>
+      <line x1="390" y1="348" x2="390" y2="328" stroke="#7ee787" stroke-width="2" marker-end="url(#ar11r)"/>
+      <text x="396" y="343" font-size="10" fill="#7ee787">receive_buf 回调</text>
+
+      <!-- TTY Driver / HW -->
+      <rect x="60" y="350" width="560" height="40" rx="6" fill="rgba(48,54,61,0.5)" stroke="#30363d" stroke-width="1"/>
+      <text x="360" y="375" font-size="12" fill="#6e7681" text-anchor="middle">TTY 驱动 + UART 硬件 + 蓝牙控制器</text>
+    </svg>
+    <div class="svg-caption">图14：Linux 5.4 HCI UART 完整数据流全景图</div>
+  </div>
+
+  <h3>关键设计原则汇总</h3>
+  <div class="grid2">
+    <div class="card">
+      <div class="card-title">① 分层解耦</div>
+      <p style="font-size:13px;color:var(--text-muted)">5层架构，每层通过明确定义的函数指针接口通信，修改任一层不影响其它层。新协议、新芯片只需实现接口。</p>
+    </div>
+    <div class="card">
+      <div class="card-title">② 异步非阻塞</div>
+      <p style="font-size:13px;color:var(--text-muted)">发送路径全程异步：send_frame 入队即返回，write_work 在内核工作队列中独立执行，TTY 缓冲满时自动背压。</p>
+    </div>
+    <div class="card">
+      <div class="card-title">③ 状态机驱动接收</div>
+      <p style="font-size:13px;color:var(--text-muted)">h4_recv_buf 用 sk_buff 本身承载状态，跨越多次 receive_buf 调用逐步重组帧，无额外状态变量，零拷贝友好。</p>
+    </div>
+    <div class="card">
+      <div class="card-title">④ 精细化锁策略</div>
+      <p style="font-size:13px;color:var(--text-muted)">percpu_rw_sem 允许读并发，只在关闭时独占。IRQ 上下文用 trylock。原子位操作保护发送状态，无需互斥锁。</p>
+    </div>
+    <div class="card">
+      <div class="card-title">⑤ 数据驱动解析</div>
+      <p style="font-size:13px;color:var(--text-muted)">h4_recv_pkt 数组描述包类型，同一解析函数服务所有包类型。厂商协议只需扩展此数组即可添加私有包类型。</p>
+    </div>
+    <div class="card">
+      <div class="card-title">⑥ 两种接入路径</div>
+      <p style="font-size:13px;color:var(--text-muted)">TTY ldisc（传统/灵活）和 serdev（现代/嵌入式）并存，统一的 hci_uart 结构抽象两者差异，上层代码透明。</p>
+    </div>
+  </div>
+
+  <h3>版本演进说明</h3>
+  <div class="table-wrap">
+    <table>
+      <thead>
+        <tr><th>内核版本</th><th>重要变化</th></tr>
+      </thead>
+      <tbody>
+        <tr><td>2.4.x</td><td>初始 HCI UART 实现，单一驱动，无协议插件体系</td></tr>
+        <tr><td>2.6.x</td><td>引入 hci_uart_proto 插件体系，分离 H4/BCSP 等</td></tr>
+        <tr><td>4.11</td><td>引入 serdev 支持，BCM/QCA 迁移到 serdev 路径</td></tr>
+        <tr><td>4.15</td><td>引入 percpu_rw_semaphore 替换原有锁机制</td></tr>
+        <tr><td><strong>5.4 (LTS)</strong></td><td>稳定版本：VERSION="2.3"，12种协议，双接入路径，完整的 percpu 锁体系</td></tr>
+      </tbody>
+    </table>
+  </div>
+
+  <div class="principle-box">
+    <div class="ptitle">⚡ 终极第一性原理</div>
+    <p>
+      整个 Linux 5.4 HCI UART 驱动系统，从最根本的角度看，是在回答一个问题：
+      <strong>如何让一根串行线成为蓝牙控制器与主机协议栈之间的透明管道？</strong>
+    </p>
+    <p style="margin-top: 10px;">
+      答案是：①用"帧协议"（H4/H5/BCSP）给无边界的字节流加上边界；②用"线路规程"在不改变硬件的前提下改变字节的语义；③用"协议插件"隔离不同芯片厂商的差异；④用"异步工作队列"让协议栈不被硬件限速阻塞；⑤用"精细锁"让收发并发而关闭安全。每一个机制都有且仅有一个根本原因，不多也不少。
+    </p>
+  </div>
+
+  <hr class="section-sep">
+
+  <div class="card" style="margin-top: 24px;">
+    <div class="card-title">📚 参考资料（官方权威来源）</div>
+    <div style="display:flex;flex-direction:column;gap:8px;margin-top:8px;">
+      <a class="src-link" href="https://github.com/torvalds/linux/tree/v5.4/drivers/bluetooth" target="_blank">Linux kernel v5.4 drivers/bluetooth/（源码总目录）</a>
+      <a class="src-link" href="https://raw.githubusercontent.com/torvalds/linux/v5.4/drivers/bluetooth/hci_ldisc.c" target="_blank">hci_ldisc.c v5.4（核心 ldisc 实现）</a>
+      <a class="src-link" href="https://raw.githubusercontent.com/torvalds/linux/v5.4/drivers/bluetooth/hci_uart.h" target="_blank">hci_uart.h v5.4（接口定义）</a>
+      <a class="src-link" href="https://raw.githubusercontent.com/torvalds/linux/v5.4/drivers/bluetooth/hci_h4.c" target="_blank">hci_h4.c v5.4（H4 协议实现）</a>
+      <a class="src-link" href="https://github.com/torvalds/linux/blob/v5.4/drivers/bluetooth/hci_h5.c" target="_blank">hci_h5.c v5.4（H5/3Wire 协议实现）</a>
+      <a class="src-link" href="https://github.com/torvalds/linux/blob/v5.4/drivers/bluetooth/hci_bcsp.c" target="_blank">hci_bcsp.c v5.4（BCSP 协议实现）</a>
+      <a class="src-link" href="https://github.com/torvalds/linux/blob/v5.4/drivers/bluetooth/hci_bcm.c" target="_blank">hci_bcm.c v5.4（Broadcom 厂商驱动）</a>
+    </div>
+  </div>
+</section>
+
+</main>
+
+<!-- NAV ARROWS -->
+<div id="nav-arrows">
+  <button class="nav-arrow-btn" onclick="prevSection()" title="上一章 (←)">←</button>
+  <button class="nav-arrow-btn" onclick="nextSection()" title="下一章 (→)">→</button>
+</div>
+
+<script>
+// ===== SECTIONS =====
+const sectionIds = ['s0','s1','s2','s3','s4','s5','s6','s7','s8','s9','s10','s11','s12','s13','s14','s15'];
+let currentSection = 0;
+
+// ===== PROGRESS BAR =====
+const progressBar = document.getElementById('progress-bar');
+const mainEl = document.getElementById('main');
+
+function updateProgress() {
+  const scrollTop = window.scrollY || document.documentElement.scrollTop;
+  const docHeight = document.documentElement.scrollHeight - window.innerHeight;
+  const pct = docHeight > 0 ? (scrollTop / docHeight) * 100 : 0;
+  progressBar.style.width = pct + '%';
+}
+
+// ===== ACTIVE NAV TRACKING =====
+function updateActiveNav() {
+  const scrollPos = window.scrollY + 100;
+  let found = -1;
+  for (let i = sectionIds.length - 1; i >= 0; i--) {
+    const el = document.getElementById(sectionIds[i]);
+    if (el && el.offsetTop <= scrollPos) { found = i; break; }
+  }
+  if (found < 0) found = 0;
+  currentSection = found;
+
+  document.querySelectorAll('.nav-item').forEach(item => {
+    item.classList.toggle('active', item.dataset.sec === sectionIds[found]);
+  });
+}
+
+window.addEventListener('scroll', () => { updateProgress(); updateActiveNav(); }, { passive: true });
+
+// ===== NAV FUNCTIONS =====
+function goSection(id) {
+  const el = document.getElementById(id);
+  if (el) { el.scrollIntoView({ behavior: 'smooth', block: 'start' }); }
+  closeSidebar();
+}
+
+function nextSection() {
+  const next = Math.min(currentSection + 1, sectionIds.length - 1);
+  goSection(sectionIds[next]);
+}
+
+function prevSection() {
+  const prev = Math.max(currentSection - 1, 0);
+  goSection(sectionIds[prev]);
+}
+
+// ===== KEYBOARD NAVIGATION =====
+document.addEventListener('keydown', e => {
+  if (e.target.tagName === 'INPUT' || e.target.tagName === 'TEXTAREA') return;
+  if (e.key === 'ArrowRight') nextSection();
+  if (e.key === 'ArrowLeft')  prevSection();
+});
+
+// ===== SIDEBAR MOBILE =====
+function toggleSidebar() {
+  document.getElementById('sidebar').classList.toggle('open');
+  document.getElementById('overlay').classList.toggle('open');
+}
+
+function closeSidebar() {
+  document.getElementById('sidebar').classList.remove('open');
+  document.getElementById('overlay').classList.remove('open');
+}
+
+// ===== INIT =====
+updateProgress();
+updateActiveNav();
+</script>
+</body>
+</html>

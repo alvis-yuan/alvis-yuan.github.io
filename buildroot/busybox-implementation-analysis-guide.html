@@ -1,0 +1,1794 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>BusyBox 深度解析：设计原理、模式与实现</title>
+<style>
+  :root {
+    --primary: #e8531a;
+    --primary-dark: #c44510;
+    --bg: #0f1117;
+    --bg2: #1a1d27;
+    --bg3: #22263a;
+    --border: #2e3350;
+    --text: #e2e8f0;
+    --text-muted: #8b92a8;
+    --accent: #4fc3f7;
+    --accent2: #a78bfa;
+    --green: #4ade80;
+    --yellow: #fbbf24;
+    --red: #f87171;
+    --nav-width: 260px;
+    --content-max: 820px;
+  }
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+  html { scroll-behavior: smooth; }
+  body {
+    font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', 'PingFang SC', 'Hiragino Sans GB', 'Microsoft YaHei', sans-serif;
+    background: var(--bg);
+    color: var(--text);
+    line-height: 1.75;
+    overflow-x: hidden;
+  }
+
+  /* Progress Bar */
+  #progress-bar {
+    position: fixed; top: 0; left: 0; height: 3px;
+    background: linear-gradient(90deg, var(--primary), var(--accent));
+    z-index: 1000; width: 0%; transition: width 0.1s;
+  }
+
+  /* Sidebar */
+  #sidebar {
+    position: fixed; left: 0; top: 0; bottom: 0;
+    width: var(--nav-width);
+    background: var(--bg2);
+    border-right: 1px solid var(--border);
+    overflow-y: auto;
+    z-index: 200;
+    transition: transform 0.3s ease;
+    padding-bottom: 2rem;
+  }
+  #sidebar::-webkit-scrollbar { width: 4px; }
+  #sidebar::-webkit-scrollbar-track { background: transparent; }
+  #sidebar::-webkit-scrollbar-thumb { background: var(--border); border-radius: 2px; }
+  .sidebar-logo {
+    padding: 1.2rem 1rem;
+    border-bottom: 1px solid var(--border);
+    display: flex; align-items: center; gap: 0.7rem;
+  }
+  .sidebar-logo svg { flex-shrink: 0; }
+  .sidebar-logo span { font-size: 0.85rem; font-weight: 700; color: var(--primary); line-height: 1.2; }
+  .nav-group { padding: 0.6rem 0; border-bottom: 1px solid var(--border); }
+  .nav-group-label {
+    font-size: 0.65rem; font-weight: 700; letter-spacing: 0.1em;
+    color: var(--text-muted); padding: 0.5rem 1rem 0.3rem;
+    text-transform: uppercase;
+  }
+  .nav-item {
+    display: block; padding: 0.4rem 1rem 0.4rem 1.3rem;
+    font-size: 0.82rem; color: var(--text-muted);
+    cursor: pointer; transition: all 0.15s;
+    border-left: 2px solid transparent;
+    text-decoration: none;
+    line-height: 1.4;
+  }
+  .nav-item:hover { color: var(--text); background: var(--bg3); }
+  .nav-item.active {
+    color: var(--primary); border-left-color: var(--primary);
+    background: rgba(232,83,26,0.08);
+  }
+
+  /* Top bar (mobile) */
+  #topbar {
+    display: none;
+    position: fixed; top: 0; left: 0; right: 0; height: 52px;
+    background: var(--bg2); border-bottom: 1px solid var(--border);
+    z-index: 300; align-items: center; padding: 0 1rem; gap: 0.8rem;
+  }
+  #menu-btn {
+    background: none; border: none; cursor: pointer;
+    color: var(--text); padding: 0.3rem; flex-shrink: 0;
+  }
+  #topbar-title { font-size: 0.9rem; font-weight: 600; color: var(--primary); }
+  .sidebar-overlay {
+    display: none; position: fixed; inset: 0;
+    background: rgba(0,0,0,0.6); z-index: 199;
+  }
+
+  /* Main */
+  #main {
+    margin-left: var(--nav-width);
+    min-height: 100vh;
+    padding: 3rem 2rem 4rem;
+  }
+  .content-wrap {
+    max-width: var(--content-max);
+    margin: 0 auto;
+  }
+
+  /* Sections */
+  .section { margin-bottom: 4rem; }
+  .section-header {
+    display: flex; align-items: center; gap: 0.8rem;
+    margin-bottom: 1.5rem; padding-bottom: 0.8rem;
+    border-bottom: 2px solid var(--border);
+  }
+  .section-num {
+    background: var(--primary); color: #fff;
+    font-size: 0.75rem; font-weight: 700;
+    padding: 0.2rem 0.55rem; border-radius: 4px;
+    flex-shrink: 0;
+  }
+  h1 { font-size: 1.8rem; font-weight: 800; color: var(--text); }
+  h2 { font-size: 1.35rem; font-weight: 700; color: var(--text); }
+  h3 { font-size: 1.05rem; font-weight: 600; color: var(--accent); margin: 1.5rem 0 0.6rem; }
+  p { margin-bottom: 1rem; color: #c8d0e0; font-size: 0.95rem; }
+  strong { color: var(--text); }
+  a { color: var(--accent); text-decoration: none; }
+  a:hover { text-decoration: underline; }
+  ul, ol { padding-left: 1.5rem; margin-bottom: 1rem; color: #c8d0e0; font-size: 0.95rem; }
+  li { margin-bottom: 0.35rem; }
+
+  /* Code */
+  code {
+    font-family: 'JetBrains Mono', 'Fira Code', 'Cascadia Code', monospace;
+    font-size: 0.83em;
+    background: var(--bg3);
+    border: 1px solid var(--border);
+    padding: 0.1em 0.4em;
+    border-radius: 3px;
+    color: #fda172;
+  }
+  pre {
+    background: var(--bg3); border: 1px solid var(--border);
+    border-radius: 8px; padding: 1.1rem 1.3rem;
+    overflow-x: auto; margin: 1rem 0 1.3rem;
+    font-family: 'JetBrains Mono', 'Fira Code', monospace;
+    font-size: 0.82rem; line-height: 1.6;
+  }
+  pre code { background: none; border: none; padding: 0; color: #a8d8ea; font-size: 1em; }
+  .c-comment { color: #6a7b99; }
+  .c-key { color: #c792ea; }
+  .c-fn { color: #82aaff; }
+  .c-str { color: #c3e88d; }
+  .c-num { color: #f78c6c; }
+  .c-type { color: #ffcb6b; }
+  .c-macro { color: #89ddff; }
+
+  /* Callout */
+  .callout {
+    border-radius: 8px; padding: 1rem 1.2rem;
+    margin: 1.2rem 0; border-left: 3px solid;
+  }
+  .callout.info { background: rgba(79,195,247,0.08); border-color: var(--accent); }
+  .callout.warn { background: rgba(251,191,36,0.08); border-color: var(--yellow); }
+  .callout.tip  { background: rgba(74,222,128,0.08); border-color: var(--green); }
+  .callout.red  { background: rgba(248,113,113,0.08); border-color: var(--red); }
+  .callout-title { font-size: 0.8rem; font-weight: 700; letter-spacing: 0.05em; text-transform: uppercase; margin-bottom: 0.4rem; }
+  .callout.info .callout-title { color: var(--accent); }
+  .callout.warn .callout-title { color: var(--yellow); }
+  .callout.tip  .callout-title { color: var(--green); }
+  .callout.red  .callout-title { color: var(--red); }
+  .callout p { margin: 0; font-size: 0.9rem; }
+
+  /* First Principle Box */
+  .first-principle {
+    background: linear-gradient(135deg, rgba(232,83,26,0.1), rgba(167,139,250,0.08));
+    border: 1px solid rgba(232,83,26,0.35);
+    border-radius: 10px; padding: 1.2rem 1.4rem; margin: 2rem 0 0;
+  }
+  .first-principle-title {
+    font-size: 0.75rem; font-weight: 800; letter-spacing: 0.12em;
+    text-transform: uppercase; color: var(--primary); margin-bottom: 0.6rem;
+    display: flex; align-items: center; gap: 0.5rem;
+  }
+  .first-principle p { color: #d4b8ff; font-size: 0.88rem; margin: 0; }
+
+  /* Table */
+  .tbl-wrap { overflow-x: auto; margin: 1rem 0; }
+  table { width: 100%; border-collapse: collapse; font-size: 0.87rem; }
+  th {
+    background: var(--bg3); color: var(--accent);
+    padding: 0.6rem 0.9rem; text-align: left;
+    border-bottom: 2px solid var(--border); font-weight: 600;
+    font-size: 0.8rem; letter-spacing: 0.04em; white-space: nowrap;
+  }
+  td {
+    padding: 0.55rem 0.9rem; border-bottom: 1px solid var(--border);
+    color: #c8d0e0; vertical-align: top;
+  }
+  tr:hover td { background: rgba(255,255,255,0.02); }
+
+  /* Badge */
+  .badge {
+    display: inline-block; font-size: 0.7rem; font-weight: 700;
+    padding: 0.1rem 0.5rem; border-radius: 99px;
+    text-transform: uppercase; letter-spacing: 0.05em;
+  }
+  .badge-green { background: rgba(74,222,128,0.15); color: var(--green); border: 1px solid rgba(74,222,128,0.3); }
+  .badge-blue  { background: rgba(79,195,247,0.15); color: var(--accent); border: 1px solid rgba(79,195,247,0.3); }
+  .badge-purple{ background: rgba(167,139,250,0.15); color: var(--accent2); border: 1px solid rgba(167,139,250,0.3); }
+  .badge-orange{ background: rgba(232,83,26,0.15); color: var(--primary); border: 1px solid rgba(232,83,26,0.3); }
+
+  /* SVG figures */
+  .fig-wrap { margin: 1.5rem 0; }
+  .fig-caption { text-align: center; font-size: 0.78rem; color: var(--text-muted); margin-top: 0.5rem; }
+  svg text { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif; }
+
+  /* Nav arrows */
+  .chapter-nav {
+    display: flex; justify-content: space-between; align-items: center;
+    margin-top: 3rem; padding-top: 1.5rem;
+    border-top: 1px solid var(--border);
+  }
+  .chapter-nav button {
+    background: var(--bg3); border: 1px solid var(--border);
+    color: var(--text); padding: 0.5rem 1.1rem;
+    border-radius: 6px; cursor: pointer; font-size: 0.85rem;
+    transition: all 0.15s;
+  }
+  .chapter-nav button:hover { background: var(--primary); border-color: var(--primary); }
+  .chapter-nav button:disabled { opacity: 0.3; cursor: default; }
+
+  /* Source link */
+  .source-tag {
+    display: inline-flex; align-items: center; gap: 0.3rem;
+    font-size: 0.72rem; background: var(--bg3);
+    border: 1px solid var(--border); border-radius: 4px;
+    padding: 0.15rem 0.5rem; color: var(--text-muted);
+    vertical-align: middle; margin-left: 0.4rem;
+  }
+
+  /* Mobile */
+  @media (max-width: 768px) {
+    #sidebar { transform: translateX(-100%); }
+    #sidebar.open { transform: translateX(0); }
+    .sidebar-overlay.open { display: block; }
+    #topbar { display: flex; }
+    #main { margin-left: 0; padding: 4.5rem 1rem 3rem; }
+    #progress-bar { top: 52px; }
+    h1 { font-size: 1.4rem; }
+    h2 { font-size: 1.15rem; }
+    pre { font-size: 0.75rem; }
+  }
+</style>
+</head>
+<body>
+
+<div id="progress-bar"></div>
+
+<!-- Sidebar overlay -->
+<div class="sidebar-overlay" id="overlay" onclick="closeSidebar()"></div>
+
+<!-- Sidebar -->
+<nav id="sidebar">
+  <div class="sidebar-logo">
+    <svg width="32" height="32" viewBox="0 0 32 32">
+      <rect width="32" height="32" rx="6" fill="#e8531a"/>
+      <text x="16" y="22" font-size="14" font-weight="800" fill="white" text-anchor="middle">BB</text>
+    </svg>
+    <span>BusyBox<br>深度解析</span>
+  </div>
+
+  <div class="nav-group">
+    <div class="nav-group-label">导论</div>
+    <a class="nav-item" href="#s0">概述与历史</a>
+  </div>
+  <div class="nav-group">
+    <div class="nav-group-label">设计原理</div>
+    <a class="nav-item" href="#s1">设计哲学</a>
+    <a class="nav-item" href="#s2">Multi-Call Binary 模式</a>
+    <a class="nav-item" href="#s3">Applet 架构</a>
+  </div>
+  <div class="nav-group">
+    <div class="nav-group-label">构建体系</div>
+    <a class="nav-item" href="#s4">Kconfig 配置系统</a>
+    <a class="nav-item" href="#s5">构建流程与代码生成</a>
+  </div>
+  <div class="nav-group">
+    <div class="nav-group-label">核心实现</div>
+    <a class="nav-item" href="#s6">运行时分发机制</a>
+    <a class="nav-item" href="#s7">libbb 公共库</a>
+    <a class="nav-item" href="#s8">尺寸优化技术</a>
+    <a class="nav-item" href="#s9">Shell 实现</a>
+  </div>
+  <div class="nav-group">
+    <div class="nav-group-label">评估与对比</div>
+    <a class="nav-item" href="#s10">应用场景</a>
+    <a class="nav-item" href="#s11">安全与限制</a>
+    <a class="nav-item" href="#s12">横向对比</a>
+  </div>
+</nav>
+
+<!-- Top bar (mobile) -->
+<div id="topbar">
+  <button id="menu-btn" onclick="toggleSidebar()" aria-label="菜单">
+    <svg width="22" height="22" fill="none" stroke="currentColor" stroke-width="2">
+      <line x1="3" y1="6" x2="19" y2="6"/><line x1="3" y1="12" x2="19" y2="12"/><line x1="3" y1="18" x2="19" y2="18"/>
+    </svg>
+  </button>
+  <span id="topbar-title">BusyBox 深度解析</span>
+</div>
+
+<!-- Main Content -->
+<main id="main">
+<div class="content-wrap">
+
+<!-- ═══════════════════ SECTION 0 ═══════════════════ -->
+<section class="section" id="s0">
+  <div class="section-header">
+    <span class="section-num">00</span>
+    <h2>概述与历史</h2>
+  </div>
+
+  <p>BusyBox 是嵌入式 Linux 世界中最广泛部署的开源项目之一，它将数百个精简版 UNIX 实用程序整合进<strong>单一可执行文件</strong>，为资源受限系统提供完整的 POSIX 环境。截至 2026 年，最新稳定版本为 <strong>1.38.0</strong>（2026 年 5 月发布）。</p>
+  <p>官方网站：<a href="https://busybox.net" target="_blank">https://busybox.net</a> &nbsp;|&nbsp; 源码：<a href="https://git.busybox.net/busybox" target="_blank">git.busybox.net/busybox</a></p>
+
+  <h3>发展时间线</h3>
+  <div class="fig-wrap">
+    <svg viewBox="0 0 760 200" xmlns="http://www.w3.org/2000/svg" style="width:100%;max-width:760px;display:block;margin:0 auto;">
+      <defs>
+        <marker id="arr" markerWidth="6" markerHeight="6" refX="3" refY="3" orient="auto">
+          <path d="M0,0 L6,3 L0,6 Z" fill="#4fc3f7"/>
+        </marker>
+      </defs>
+      <!-- Timeline line -->
+      <line x1="40" y1="100" x2="720" y2="100" stroke="#4fc3f7" stroke-width="2" marker-end="url(#arr)"/>
+      <!-- Events -->
+      <!-- 1995 -->
+      <circle cx="80" cy="100" r="7" fill="#e8531a"/>
+      <line x1="80" y1="93" x2="80" y2="50" stroke="#e8531a" stroke-width="1.5" stroke-dasharray="3,2"/>
+      <text x="80" y="43" font-size="11" fill="#e2e8f0" text-anchor="middle" font-weight="600">1995</text>
+      <text x="80" y="32" font-size="9.5" fill="#8b92a8" text-anchor="middle">Bruce Perens 创建</text>
+      <!-- 1998 -->
+      <circle cx="200" cy="100" r="7" fill="#e8531a"/>
+      <line x1="200" y1="107" x2="200" y2="155" stroke="#e8531a" stroke-width="1.5" stroke-dasharray="3,2"/>
+      <text x="200" y="168" font-size="11" fill="#e2e8f0" text-anchor="middle" font-weight="600">1998</text>
+      <text x="200" y="179" font-size="9.5" fill="#8b92a8" text-anchor="middle">Erik Andersen 接手</text>
+      <!-- 2005 -->
+      <circle cx="350" cy="100" r="7" fill="#4ade80"/>
+      <line x1="350" y1="93" x2="350" y2="50" stroke="#4ade80" stroke-width="1.5" stroke-dasharray="3,2"/>
+      <text x="350" y="43" font-size="11" fill="#e2e8f0" text-anchor="middle" font-weight="600">2005</text>
+      <text x="350" y="32" font-size="9.5" fill="#8b92a8" text-anchor="middle">v1.0 正式发布</text>
+      <!-- 2006 -->
+      <circle cx="440" cy="100" r="7" fill="#fbbf24"/>
+      <line x1="440" y1="107" x2="440" y2="155" stroke="#fbbf24" stroke-width="1.5" stroke-dasharray="3,2"/>
+      <text x="440" y="168" font-size="11" fill="#e2e8f0" text-anchor="middle" font-weight="600">2006</text>
+      <text x="440" y="179" font-size="9.5" fill="#8b92a8" text-anchor="middle">Denys Vlasenko 维护</text>
+      <!-- 2007 -->
+      <circle cx="540" cy="100" r="7" fill="#f87171"/>
+      <line x1="540" y1="93" x2="540" y2="50" stroke="#f87171" stroke-width="1.5" stroke-dasharray="3,2"/>
+      <text x="540" y="43" font-size="11" fill="#e2e8f0" text-anchor="middle" font-weight="600">2007</text>
+      <text x="540" y="32" font-size="9.5" fill="#8b92a8" text-anchor="middle">GPL 首次诉讼</text>
+      <!-- 2026 -->
+      <circle cx="680" cy="100" r="7" fill="#a78bfa"/>
+      <line x1="680" y1="107" x2="680" y2="155" stroke="#a78bfa" stroke-width="1.5" stroke-dasharray="3,2"/>
+      <text x="680" y="168" font-size="11" fill="#e2e8f0" text-anchor="middle" font-weight="600">2026</text>
+      <text x="680" y="179" font-size="9.5" fill="#8b92a8" text-anchor="middle">v1.38.0 发布</text>
+    </svg>
+    <div class="fig-caption">图 0-1：BusyBox 历史里程碑（来源：busybox.net, grokipedia.com）</div>
+  </div>
+
+  <h3>核心定位</h3>
+  <div class="callout info">
+    <div class="callout-title">官方定义</div>
+    <p>「BusyBox combines tiny versions of many common UNIX utilities into a single small executable. It provides a fairly complete environment for any small or embedded system.」—— busybox.net/about.html</p>
+  </div>
+  <p>其核心优势在于：以<strong>极小的存储占用</strong>，在嵌入式设备、路由器、initramfs、Docker 基础镜像等资源受限场景中，提供接近完整的 Unix 工具链体验。</p>
+
+  <div class="first-principle">
+    <div class="first-principle-title">⚡ 第一性原理概述</div>
+    <p>问题的本质是：嵌入式系统存储有限，却需要 N 个工具。传统方案是携带 N 个独立二进制，产生 N 份 ELF 头、N 份 libc 链接开销。BusyBox 从根本上质疑「一个工具一个二进制」这一前提，发现所有工具共享大量基础代码，合并后只需一份公共层即可，将 O(N) 的存储复杂度降为接近 O(1) 的常数级基础开销加上增量功能代码。</p>
+  </div>
+</section>
+
+<!-- ═══════════════════ SECTION 1 ═══════════════════ -->
+<section class="section" id="s1">
+  <div class="section-header">
+    <span class="section-num">01</span>
+    <h2>设计哲学</h2>
+  </div>
+
+  <h3>三大核心原则</h3>
+  <div class="tbl-wrap">
+    <table>
+      <thead><tr><th>原则</th><th>内容</th><th>体现</th></tr></thead>
+      <tbody>
+        <tr>
+          <td><span class="badge badge-orange">小即是美</span></td>
+          <td>Size-optimization first（尺寸优先）</td>
+          <td>静态 musl 构建仅约 1MB，远小于 GNU coreutils</td>
+        </tr>
+        <tr>
+          <td><span class="badge badge-blue">高度模块化</span></td>
+          <td>编译时自由选择任意 applet 组合</td>
+          <td>可从 233+ 个 applet 中任意裁剪，互不干扰</td>
+        </tr>
+        <tr>
+          <td><span class="badge badge-purple">共享代码</span></td>
+          <td>公共功能集中在 libbb</td>
+          <td>I/O、错误处理、字符串操作全局复用</td>
+        </tr>
+      </tbody>
+    </table>
+  </div>
+
+  <h3>尺寸实测数据（官方来源）</h3>
+  <div class="callout tip">
+    <div class="callout-title">来源：busybox.net 发布日志</div>
+    <p>busybox-1.37.0 vs 1.38.0（等价配置，静态 musl 构建）：</p>
+  </div>
+  <pre><code><span class="c-comment"># busybox.net 官方发布对比数据</span>
+   text    data     bss     dec     hex  filename
+<span class="c-num">1031155</span>     559    4988 <span class="c-num">1036702</span>  fd19e  busybox-1.37.0/busybox
+<span class="c-num">1037438</span>     555    4832 <span class="c-num">1042825</span>  fe989  busybox-1.38.0/busybox</code></pre>
+  <p>整个 busybox 二进制约 <strong>1 MB</strong>，却包含 200+ 个常用 Unix 工具的实现。</p>
+
+  <h3>「够用就好」原则（Good Enough）</h3>
+  <p>BusyBox 的各 applet 通常实现 GNU 工具约 70-90% 的功能，刻意省略罕见选项。这不是偷懒，而是经过权衡的设计决策：</p>
+  <ul>
+    <li>99% 的实际用例只用核心功能子集</li>
+    <li>省略的选项代码节省宝贵的 flash 存储</li>
+    <li>更少的代码路径意味着更小的攻击面</li>
+    <li>官方文档明确指出：<em>「The utilities in BusyBox generally have fewer options than their full-featured GNU cousins」</em></li>
+  </ul>
+
+  <div class="fig-wrap">
+    <svg viewBox="0 0 500 220" xmlns="http://www.w3.org/2000/svg" style="width:100%;max-width:500px;display:block;margin:0 auto;">
+      <!-- GNU Coreutils bar -->
+      <rect x="60" y="30" width="340" height="36" rx="4" fill="rgba(248,113,113,0.2)" stroke="#f87171" stroke-width="1.5"/>
+      <rect x="60" y="30" width="340" height="36" rx="4" fill="url(#rg1)"/>
+      <defs>
+        <linearGradient id="rg1" x1="0" y1="0" x2="1" y2="0">
+          <stop offset="0%" stop-color="#f87171" stop-opacity="0.4"/>
+          <stop offset="100%" stop-color="#f87171" stop-opacity="0.1"/>
+        </linearGradient>
+        <linearGradient id="rg2" x1="0" y1="0" x2="1" y2="0">
+          <stop offset="0%" stop-color="#4ade80" stop-opacity="0.5"/>
+          <stop offset="100%" stop-color="#4ade80" stop-opacity="0.1"/>
+        </linearGradient>
+      </defs>
+      <text x="240" y="54" font-size="13" fill="#f87171" text-anchor="middle" font-weight="600">GNU Coreutils（完整功能）~150 MB</text>
+
+      <!-- BusyBox bar -->
+      <rect x="60" y="86" width="100" height="36" rx="4" fill="url(#rg2)" stroke="#4ade80" stroke-width="1.5"/>
+      <text x="110" y="110" font-size="11" fill="#4ade80" text-anchor="middle" font-weight="700">~1 MB</text>
+      <rect x="164" y="93" width="2" height="22" fill="#8b92a8"/>
+      <text x="200" y="110" font-size="11" fill="#8b92a8">80% 核心功能 / 1% 存储</text>
+
+      <!-- Ratio annotation -->
+      <line x1="60" y1="145" x2="160" y2="145" stroke="#4ade80" stroke-width="1.5"/>
+      <line x1="60" y1="145" x2="60" y2="140" stroke="#4ade80" stroke-width="1.5"/>
+      <line x1="160" y1="145" x2="160" y2="140" stroke="#4ade80" stroke-width="1.5"/>
+      <text x="110" y="160" font-size="10" fill="#4ade80" text-anchor="middle">BusyBox</text>
+
+      <line x1="60" y1="175" x2="400" y2="175" stroke="#f87171" stroke-width="1.5"/>
+      <line x1="60" y1="175" x2="60" y2="170" stroke="#f87171" stroke-width="1.5"/>
+      <line x1="400" y1="175" x2="400" y2="170" stroke="#f87171" stroke-width="1.5"/>
+      <text x="230" y="192" font-size="10" fill="#f87171" text-anchor="middle">GNU Coreutils（示意比例）</text>
+    </svg>
+    <div class="fig-caption">图 1-1：BusyBox vs GNU Coreutils 尺寸对比示意</div>
+  </div>
+
+  <div class="first-principle">
+    <div class="first-principle-title">⚡ 第一性原理概述</div>
+    <p>设计哲学的本质是<strong>约束驱动创新</strong>：当存储/内存极其有限时，每一字节都有代价，这迫使设计者必须问「什么是真正必须的？」而非「能加多少功能？」。BusyBox 的答案是：<em>共享所有可共享的，仅保留最高频使用的功能路径</em>。这一约束最终产生了比不受限系统更优雅的架构。</p>
+  </div>
+</section>
+
+<!-- ═══════════════════ SECTION 2 ═══════════════════ -->
+<section class="section" id="s2">
+  <div class="section-header">
+    <span class="section-num">02</span>
+    <h2>Multi-Call Binary 模式</h2>
+  </div>
+
+  <p>Multi-Call Binary（多调用二进制）是 BusyBox 最核心的<strong>设计模式</strong>。一个可执行文件根据被调用时的名字（<code>argv[0]</code>）决定运行哪个工具，行为就像多个独立程序。</p>
+
+  <div class="callout info">
+    <div class="callout-title">官方手册原文</div>
+    <p>「A multi-call binary is an executable program that performs the same job as more than one utility program. That means there is just a single BusyBox binary, but that single binary acts like a large number of utilities.」—— man.archlinux.org/man/busybox.1.en</p>
+  </div>
+
+  <h3>调用方式</h3>
+  <p>BusyBox 支持三种等价调用方式：</p>
+  <pre><code><span class="c-comment"># 方式 1：直接以 busybox 调用（显式 applet 名）</span>
+<span class="c-str">$ busybox ls -la /tmp</span>
+
+<span class="c-comment"># 方式 2：符号链接（symlink）—— 最常用的生产方式</span>
+<span class="c-str">$ ls -la /tmp</span>          <span class="c-comment"># /bin/ls -> /bin/busybox</span>
+
+<span class="c-comment"># 方式 3：硬链接（hardlink）</span>
+<span class="c-str">$ ln /bin/busybox /bin/ls</span>
+
+<span class="c-comment"># 方式 4：#!/bin/busybox shebang 脚本</span>
+<span class="c-str">#!/bin/busybox sh</span></code></pre>
+
+  <h3>Symlink 安装原理</h3>
+  <div class="fig-wrap">
+    <svg viewBox="0 0 640 280" xmlns="http://www.w3.org/2000/svg" style="width:100%;max-width:640px;display:block;margin:0 auto;">
+      <!-- Filesystem -->
+      <rect x="20" y="20" width="200" height="240" rx="6" fill="rgba(30,34,52,0.8)" stroke="#2e3350" stroke-width="1.5"/>
+      <text x="120" y="45" font-size="12" fill="#8b92a8" text-anchor="middle" font-weight="700">/bin /usr/bin</text>
+      <!-- Symlinks -->
+      <g fill="none" stroke="#4fc3f7" stroke-width="1">
+        <text x="35" y="75" font-size="11" fill="#4fc3f7">ls →</text>
+        <text x="35" y="100" font-size="11" fill="#4fc3f7">cat →</text>
+        <text x="35" y="125" font-size="11" fill="#4fc3f7">grep →</text>
+        <text x="35" y="150" font-size="11" fill="#4fc3f7">wget →</text>
+        <text x="35" y="175" font-size="11" fill="#4fc3f7">sh →</text>
+        <text x="35" y="200" font-size="11" fill="#4fc3f7">mount →</text>
+        <text x="35" y="225" font-size="11" fill="#4fc3f7">...</text>
+      </g>
+      <!-- Arrow lines to busybox -->
+      <g stroke="#4fc3f7" stroke-width="1" stroke-dasharray="4,3" opacity="0.6">
+        <line x1="75" y1="71" x2="290" y2="140"/>
+        <line x1="75" y1="96" x2="290" y2="140"/>
+        <line x1="75" y1="121" x2="290" y2="140"/>
+        <line x1="90" y1="146" x2="290" y2="140"/>
+        <line x1="75" y1="171" x2="290" y2="140"/>
+        <line x1="95" y1="196" x2="290" y2="140"/>
+      </g>
+      <!-- BusyBox binary -->
+      <rect x="290" y="90" width="200" height="100" rx="8" fill="rgba(232,83,26,0.15)" stroke="#e8531a" stroke-width="2"/>
+      <text x="390" y="120" font-size="14" fill="#e8531a" text-anchor="middle" font-weight="800">busybox</text>
+      <text x="390" y="140" font-size="10" fill="#8b92a8" text-anchor="middle">单一可执行文件</text>
+      <text x="390" y="158" font-size="10" fill="#fbbf24" text-anchor="middle">~1 MB</text>
+      <!-- argv[0] label -->
+      <rect x="510" y="115" width="120" height="50" rx="6" fill="rgba(79,195,247,0.1)" stroke="#4fc3f7" stroke-width="1"/>
+      <text x="570" y="135" font-size="10" fill="#4fc3f7" text-anchor="middle">read argv[0]</text>
+      <text x="570" y="152" font-size="10" fill="#8b92a8" text-anchor="middle">basename(argv[0])</text>
+      <line x1="490" y1="140" x2="510" y2="140" stroke="#4fc3f7" stroke-width="1.5"/>
+    </svg>
+    <div class="fig-caption">图 2-1：符号链接调用机制 —— 所有链接指向同一个 busybox 二进制文件</div>
+  </div>
+
+  <h3>make install 自动生成链接</h3>
+  <p>BusyBox 的 <code>make install</code> 会读取编译期生成的 <code>busybox.links</code> 文件，批量创建 symlink 或 hardlink：</p>
+  <pre><code><span class="c-comment">/* applets/busybox.c — install_links 函数（来源：github.com/jgunthorpe/busybox）*/</span>
+<span class="c-key">static</span> <span class="c-type">void</span> <span class="c-fn">install_links</span>(<span class="c-key">const</span> <span class="c-type">char</span> *busybox, <span class="c-type">int</span> use_symbolic_links)
+{
+    __link_f Link = link;
+    <span class="c-key">if</span> (use_symbolic_links) Link = symlink;
+
+    <span class="c-key">for</span> (i = <span class="c-num">0</span>; applets[i].name != <span class="c-num">NULL</span>; i++) {
+        fpc = <span class="c-fn">concat_path_file</span>(install_dir[applets[i].location],
+                               applets[i].name);
+        rc = <span class="c-fn">Link</span>(busybox, fpc);  <span class="c-comment">/* 创建链接到 busybox */</span>
+        <span class="c-key">if</span> (rc != <span class="c-num">0</span> && errno != EEXIST)
+            <span class="c-fn">bb_perror_msg</span>(<span class="c-str">"%s"</span>, fpc);
+        <span class="c-fn">free</span>(fpc);
+    }
+}</code></pre>
+
+  <h3>单二进制的存储优势</h3>
+  <div class="tbl-wrap">
+    <table>
+      <thead><tr><th>指标</th><th>独立二进制（N 个工具）</th><th>BusyBox 单二进制</th></tr></thead>
+      <tbody>
+        <tr><td>ELF 头开销</td><td>N × (头 + 节表)</td><td>1 × (头 + 节表)</td></tr>
+        <tr><td>libc 链接</td><td>N 份（动态链接重复加载）</td><td>1 份（静态链接只含一次）</td></tr>
+        <tr><td>公共代码</td><td>每个工具各自实现</td><td>libbb 中统一共享</td></tr>
+        <tr><td>压缩边界</td><td>每个文件单独压缩</td><td>一次压缩，更高压缩率</td></tr>
+        <tr><td>文件系统节点</td><td>N 个 inode</td><td>1 个 inode + N 个链接</td></tr>
+      </tbody>
+    </table>
+  </div>
+
+  <div class="first-principle">
+    <div class="first-principle-title">⚡ 第一性原理概述</div>
+    <p>Multi-Call Binary 的本质是识别到「程序名」只是一个字符串参数，而操作系统并无「每个工具必须独立文件」的物理限制。当我们把这个约定还原为其本质——<em>程序名决定行为入口</em>——就会发现可以用 <code>argv[0]</code> 模拟无限个独立程序。这一洞察将 N 个文件的问题降维为 N 个函数指针的查表问题。</p>
+  </div>
+</section>
+
+<!-- ═══════════════════ SECTION 3 ═══════════════════ -->
+<section class="section" id="s3">
+  <div class="section-header">
+    <span class="section-num">03</span>
+    <h2>Applet 架构</h2>
+  </div>
+
+  <p>Applet（小程序）是 BusyBox 对每个工具实现的称谓。每个 applet 是一个独立的 C 模块，包含自己的 <code>xxx_main()</code> 入口函数。</p>
+
+  <h3>Applet 的组织结构</h3>
+  <div class="fig-wrap">
+    <svg viewBox="0 0 680 320" xmlns="http://www.w3.org/2000/svg" style="width:100%;max-width:680px;display:block;margin:0 auto;">
+      <!-- Directory boxes -->
+      <g>
+        <rect x="20" y="20" width="110" height="60" rx="6" fill="rgba(79,195,247,0.1)" stroke="#4fc3f7" stroke-width="1.5"/>
+        <text x="75" y="46" font-size="11" fill="#4fc3f7" text-anchor="middle" font-weight="700">coreutils/</text>
+        <text x="75" y="62" font-size="9" fill="#8b92a8" text-anchor="middle">ls.c cat.c cp.c</text>
+        <text x="75" y="74" font-size="9" fill="#8b92a8" text-anchor="middle">mv.c echo.c ...</text>
+      </g>
+      <g>
+        <rect x="145" y="20" width="110" height="60" rx="6" fill="rgba(79,195,247,0.1)" stroke="#4fc3f7" stroke-width="1.5"/>
+        <text x="200" y="46" font-size="11" fill="#4fc3f7" text-anchor="middle" font-weight="700">shell/</text>
+        <text x="200" y="62" font-size="9" fill="#8b92a8" text-anchor="middle">ash.c hush.c</text>
+        <text x="200" y="74" font-size="9" fill="#8b92a8" text-anchor="middle">shell_common.c</text>
+      </g>
+      <g>
+        <rect x="270" y="20" width="110" height="60" rx="6" fill="rgba(79,195,247,0.1)" stroke="#4fc3f7" stroke-width="1.5"/>
+        <text x="325" y="46" font-size="11" fill="#4fc3f7" text-anchor="middle" font-weight="700">networking/</text>
+        <text x="325" y="62" font-size="9" fill="#8b92a8" text-anchor="middle">wget.c nc.c</text>
+        <text x="325" y="74" font-size="9" fill="#8b92a8" text-anchor="middle">httpd.c ...</text>
+      </g>
+      <g>
+        <rect x="395" y="20" width="110" height="60" rx="6" fill="rgba(79,195,247,0.1)" stroke="#4fc3f7" stroke-width="1.5"/>
+        <text x="450" y="46" font-size="11" fill="#4fc3f7" text-anchor="middle" font-weight="700">util-linux/</text>
+        <text x="450" y="62" font-size="9" fill="#8b92a8" text-anchor="middle">mount.c fdisk.c</text>
+        <text x="450" y="74" font-size="9" fill="#8b92a8" text-anchor="middle">losetup.c ...</text>
+      </g>
+      <g>
+        <rect x="520" y="20" width="120" height="60" rx="6" fill="rgba(79,195,247,0.1)" stroke="#4fc3f7" stroke-width="1.5"/>
+        <text x="580" y="46" font-size="11" fill="#4fc3f7" text-anchor="middle" font-weight="700">editors/ procps/</text>
+        <text x="580" y="62" font-size="9" fill="#8b92a8" text-anchor="middle">vi.c awk.c sed.c</text>
+        <text x="580" y="74" font-size="9" fill="#8b92a8" text-anchor="middle">ps.c top.c ...</text>
+      </g>
+
+      <!-- Arrow down to applets.h -->
+      <line x1="340" y1="80" x2="340" y2="115" stroke="#e8531a" stroke-width="1.5" marker-end="url(#arr2)"/>
+      <defs>
+        <marker id="arr2" markerWidth="7" markerHeight="7" refX="3.5" refY="3.5" orient="auto">
+          <path d="M0,0 L7,3.5 L0,7 Z" fill="#e8531a"/>
+        </marker>
+        <marker id="arr3" markerWidth="7" markerHeight="7" refX="3.5" refY="3.5" orient="auto">
+          <path d="M0,0 L7,3.5 L0,7 Z" fill="#4ade80"/>
+        </marker>
+      </defs>
+
+      <!-- include/applets.h -->
+      <rect x="170" y="115" width="340" height="45" rx="6" fill="rgba(232,83,26,0.12)" stroke="#e8531a" stroke-width="1.5"/>
+      <text x="340" y="137" font-size="12" fill="#e8531a" text-anchor="middle" font-weight="700">include/applets.h</text>
+      <text x="340" y="152" font-size="9.5" fill="#8b92a8" text-anchor="middle">IF_LS(APPLET(ls, BB_DIR_BIN, BB_SUID_DROP))</text>
+
+      <!-- Arrow to applet_tables.h -->
+      <line x1="340" y1="160" x2="340" y2="193" stroke="#4ade80" stroke-width="1.5" marker-end="url(#arr3)"/>
+      <text x="380" y="180" font-size="9" fill="#8b92a8">applet_tables.c 生成</text>
+
+      <!-- include/applet_tables.h -->
+      <rect x="130" y="193" width="420" height="55" rx="6" fill="rgba(74,222,128,0.1)" stroke="#4ade80" stroke-width="1.5"/>
+      <text x="340" y="215" font-size="12" fill="#4ade80" text-anchor="middle" font-weight="700">include/applet_tables.h（构建期生成）</text>
+      <text x="340" y="232" font-size="9.5" fill="#8b92a8" text-anchor="middle">applet_names[] 字符串表 | applet_main[] 函数指针表</text>
+      <text x="340" y="243" font-size="9.5" fill="#8b92a8" text-anchor="middle">applet_nameofs[] 分段偏移（加速查找）</text>
+
+      <!-- Arrow to libbb/appletlib.c -->
+      <line x1="340" y1="248" x2="340" y2="280" stroke="#a78bfa" stroke-width="1.5" marker-end="url(#arr4)"/>
+      <defs>
+        <marker id="arr4" markerWidth="7" markerHeight="7" refX="3.5" refY="3.5" orient="auto">
+          <path d="M0,0 L7,3.5 L0,7 Z" fill="#a78bfa"/>
+        </marker>
+      </defs>
+      <rect x="160" y="280" width="360" height="35" rx="6" fill="rgba(167,139,250,0.12)" stroke="#a78bfa" stroke-width="1.5"/>
+      <text x="340" y="303" font-size="11" fill="#a78bfa" text-anchor="middle" font-weight="700">libbb/appletlib.c → main() 运行时查表分发</text>
+    </svg>
+    <div class="fig-caption">图 3-1：Applet 从源码到运行时的完整链路</div>
+  </div>
+
+  <h3>单个 Applet 的源码结构（以 wget 为例）</h3>
+  <p>每个 applet 的 <code>.c</code> 文件通过特殊注释声明配置元数据，构建系统会解析这些注释自动集成到全局注册表：<span class="source-tag">📄 specular.fi/post/what-is-busybox</span></p>
+  <pre><code><span class="c-comment">// networking/wget.c</span>
+
+<span class="c-comment">//config:config WGET
+//config:    bool "wget (41 kb)"
+//config:    default y
+//config:    help
+//config:      wget is a utility for non-interactive download of files
+//config:      from HTTP and FTP servers.</span>
+
+<span class="c-comment">//applet:IF_WGET(APPLET(wget, BB_DIR_USR_BIN, BB_SUID_DROP))</span>
+
+<span class="c-comment">//kbuild:lib-$(CONFIG_WGET) += wget.o</span>
+
+<span class="c-key">int</span> <span class="c-fn">wget_main</span>(<span class="c-type">int</span> argc, <span class="c-type">char</span> **argv)
+{
+    <span class="c-comment">/* wget 的具体实现 */</span>
+    ...
+}</code></pre>
+
+  <h3>Applet 注册宏展开</h3>
+  <p><code>include/applets.h</code> 中每行定义一个 applet，使用条件编译宏 <code>IF_XXX()</code>：</p>
+  <pre><code><span class="c-comment">/* include/applets.h (片段) */</span>
+<span class="c-macro">IF_CAT</span>(<span class="c-fn">APPLET_NOEXEC</span>(cat,  BB_DIR_BIN, BB_SUID_DROP))
+<span class="c-macro">IF_LS</span>(<span class="c-fn">APPLET_NOEXEC</span>(ls,   BB_DIR_BIN, BB_SUID_DROP))
+<span class="c-macro">IF_WGET</span>(<span class="c-fn">APPLET</span>(wget, BB_DIR_USR_BIN, BB_SUID_DROP))
+<span class="c-macro">IF_SH</span>(<span class="c-fn">APPLET</span>(sh,   BB_DIR_BIN, BB_SUID_DROP))
+<span class="c-comment">/* APPLET vs APPLET_NOEXEC vs APPLET_NOFORK:
+ * NOFORK: 无需 fork，直接在当前进程调用（如 echo）
+ * NOEXEC: 可用 fork+exit 替代 fork+exec（节省 exec 开销）
+ * APPLET:  需要完整 fork+exec 语义 */</span></code></pre>
+
+  <div class="tbl-wrap">
+    <table>
+      <thead><tr><th>宏类型</th><th>含义</th><th>适用场景</th><th>性能</th></tr></thead>
+      <tbody>
+        <tr><td><code>APPLET_NOFORK</code></td><td>直接调用，无需 fork</td><td>echo, true, false</td><td>最快</td></tr>
+        <tr><td><code>APPLET_NOEXEC</code></td><td>fork+exit 即可</td><td>ls, cat, grep</td><td>较快</td></tr>
+        <tr><td><code>APPLET</code></td><td>完整 fork+exec 语义</td><td>wget, sh, mount</td><td>标准</td></tr>
+      </tbody>
+    </table>
+  </div>
+
+  <div class="first-principle">
+    <div class="first-principle-title">⚡ 第一性原理概述</div>
+    <p>Applet 架构的本质是将「工具」从<strong>文件系统实体</strong>降维为<strong>函数调用条目</strong>。每个工具的本质是：接收参数 → 执行逻辑 → 返回结果。用函数指针表替代独立二进制文件，仅需在查找机制上做一层额外映射。这也揭示了为什么 NOFORK applet 可以在 shell 的同一进程中执行——进程本身只是执行上下文，不是工具存在的必要条件。</p>
+  </div>
+</section>
+
+<!-- ═══════════════════ SECTION 4 ═══════════════════ -->
+<section class="section" id="s4">
+  <div class="section-header">
+    <span class="section-num">04</span>
+    <h2>Kconfig 配置系统</h2>
+  </div>
+
+  <p>BusyBox 采用与 Linux 内核完全相同的 <strong>Kconfig</strong> 配置系统，允许开发者以菜单形式精确控制编译内容。</p>
+
+  <div class="callout info">
+    <div class="callout-title">来源：deepwiki.com/mirror/busybox</div>
+    <p>「BusyBox uses a Kconfig-style configuration system that allows fine-grained control over which applets and features are included in the build.」</p>
+  </div>
+
+  <h3>常用配置命令</h3>
+  <pre><code><span class="c-comment"># 交互式图形菜单配置（最常用）</span>
+<span class="c-str">$ make menuconfig</span>
+
+<span class="c-comment"># Qt 图形界面</span>
+<span class="c-str">$ make xconfig</span>
+
+<span class="c-comment"># 使用默认配置</span>
+<span class="c-str">$ make defconfig</span>
+
+<span class="c-comment"># 所有选项关闭</span>
+<span class="c-str">$ make allnoconfig</span>
+
+<span class="c-comment"># 所有选项开启</span>
+<span class="c-str">$ make allyesconfig</span></code></pre>
+
+  <h3>Config.in 配置层级</h3>
+  <p>每个 applet 在源码注释中嵌入 config 片段（构建时提取到 <code>Config.in</code>），形成树状配置：<span class="source-tag">📄 Config.in source</span></p>
+  <pre><code><span class="c-comment"># Config.in (片段，来源：github.com/insane-adding-machines/busybox)</span>
+<span class="c-key">config</span> STATIC
+    bool <span class="c-str">"Build static binary (no shared libs)"</span>
+    <span class="c-key">default</span> n
+    <span class="c-key">help</span>
+      If you want to build a static BusyBox, turn on this option.
+
+<span class="c-key">config</span> NOMMU
+    bool <span class="c-str">"Force NOMMU build"</span>
+    <span class="c-key">default</span> n
+
+<span class="c-key">config</span> BUILD_LIBBUSYBOX
+    bool <span class="c-str">"Build shared libbusybox"</span>
+    <span class="c-key">default</span> n
+    <span class="c-key">depends on</span> !FEATURE_PREFER_APPLETS && !PIE && !STATIC
+
+<span class="c-key">config</span> LFS
+    bool <span class="c-str">"Build with Large File Support (for accessing files > 2 GB)"</span>
+    <span class="c-key">default</span> y</code></pre>
+
+  <h3>配置项分类</h3>
+  <div class="fig-wrap">
+    <svg viewBox="0 0 600 260" xmlns="http://www.w3.org/2000/svg" style="width:100%;max-width:600px;display:block;margin:0 auto;">
+      <!-- Root -->
+      <rect x="230" y="15" width="140" height="35" rx="6" fill="rgba(232,83,26,0.2)" stroke="#e8531a" stroke-width="2"/>
+      <text x="300" y="38" font-size="12" fill="#e8531a" text-anchor="middle" font-weight="700">BusyBox Config</text>
+      <!-- Level 2 -->
+      <g>
+        <line x1="300" y1="50" x2="80" y2="95" stroke="#4fc3f7" stroke-width="1.5" opacity="0.6"/>
+        <line x1="300" y1="50" x2="200" y2="95" stroke="#4fc3f7" stroke-width="1.5" opacity="0.6"/>
+        <line x1="300" y1="50" x2="320" y2="95" stroke="#4fc3f7" stroke-width="1.5" opacity="0.6"/>
+        <line x1="300" y1="50" x2="440" y2="95" stroke="#4fc3f7" stroke-width="1.5" opacity="0.6"/>
+        <line x1="300" y1="50" x2="555" y2="95" stroke="#4fc3f7" stroke-width="1.5" opacity="0.6"/>
+      </g>
+      <rect x="20" y="95" width="120" height="45" rx="5" fill="rgba(79,195,247,0.1)" stroke="#4fc3f7" stroke-width="1.3"/>
+      <text x="80" y="116" font-size="10" fill="#4fc3f7" text-anchor="middle" font-weight="600">Settings</text>
+      <text x="80" y="130" font-size="8.5" fill="#8b92a8" text-anchor="middle">STATIC/LFS/SELINUX</text>
+
+      <rect x="150" y="95" width="110" height="45" rx="5" fill="rgba(79,195,247,0.1)" stroke="#4fc3f7" stroke-width="1.3"/>
+      <text x="205" y="116" font-size="10" fill="#4fc3f7" text-anchor="middle" font-weight="600">Coreutils</text>
+      <text x="205" y="130" font-size="8.5" fill="#8b92a8" text-anchor="middle">ls/cat/cp/mv...</text>
+
+      <rect x="270" y="95" width="100" height="45" rx="5" fill="rgba(79,195,247,0.1)" stroke="#4fc3f7" stroke-width="1.3"/>
+      <text x="320" y="116" font-size="10" fill="#4fc3f7" text-anchor="middle" font-weight="600">Shell</text>
+      <text x="320" y="130" font-size="8.5" fill="#8b92a8" text-anchor="middle">ash/hush</text>
+
+      <rect x="385" y="95" width="120" height="45" rx="5" fill="rgba(79,195,247,0.1)" stroke="#4fc3f7" stroke-width="1.3"/>
+      <text x="445" y="116" font-size="10" fill="#4fc3f7" text-anchor="middle" font-weight="600">Networking</text>
+      <text x="445" y="130" font-size="8.5" fill="#8b92a8" text-anchor="middle">wget/nc/httpd...</text>
+
+      <rect x="515" y="95" width="75" height="45" rx="5" fill="rgba(79,195,247,0.1)" stroke="#4fc3f7" stroke-width="1.3"/>
+      <text x="552" y="116" font-size="10" fill="#4fc3f7" text-anchor="middle" font-weight="600">...</text>
+      <text x="552" y="130" font-size="8.5" fill="#8b92a8" text-anchor="middle">30+ 类别</text>
+
+      <!-- Level 3 detail -->
+      <line x1="205" y1="140" x2="205" y2="180" stroke="#4ade80" stroke-width="1.2" opacity="0.6"/>
+      <rect x="130" y="180" width="150" height="65" rx="5" fill="rgba(74,222,128,0.08)" stroke="#4ade80" stroke-width="1.2"/>
+      <text x="205" y="200" font-size="9.5" fill="#4ade80" text-anchor="middle">CONFIG_LS=y</text>
+      <text x="205" y="215" font-size="9.5" fill="#4ade80" text-anchor="middle">CONFIG_CAT=y</text>
+      <text x="205" y="230" font-size="9.5" fill="#4ade80" text-anchor="middle">CONFIG_CP=y</text>
+      <text x="205" y="238" font-size="8" fill="#8b92a8" text-anchor="middle">→ .config 文件</text>
+    </svg>
+    <div class="fig-caption">图 4-1：Kconfig 配置树层级结构</div>
+  </div>
+
+  <h3>构建选项对比</h3>
+  <div class="tbl-wrap">
+    <table>
+      <thead><tr><th>选项</th><th>描述</th><th>适用场景</th></tr></thead>
+      <tbody>
+        <tr><td><code>STATIC=y</code></td><td>静态链接，无共享库依赖</td><td>initramfs、独立 rescue 系统</td></tr>
+        <tr><td><code>STATIC=n</code></td><td>动态链接，依赖 libc</td><td>桌面/服务器系统</td></tr>
+        <tr><td><code>BUILD_LIBBUSYBOX=y</code></td><td>构建 libbusybox.so 共享库</td><td>允许其他程序调用 busybox 功能</td></tr>
+        <tr><td><code>FEATURE_INDIVIDUAL=y</code></td><td>每个 applet 单独链接到 libbusybox</td><td>多 applet 同时运行、共享内存页</td></tr>
+        <tr><td><code>LFS=y</code></td><td>支持 >2GB 大文件</td><td>现代系统默认开启</td></tr>
+      </tbody>
+    </table>
+  </div>
+
+  <div class="first-principle">
+    <div class="first-principle-title">⚡ 第一性原理概述</div>
+    <p>Kconfig 解决的本质问题是：如何在<strong>编译时</strong>做出运行时才会体现的功能取舍？传统方式是运行时判断（if/else），代价是将所有分支代码都编译进二进制。Kconfig 将这一判断前移到编译期，通过预处理宏 <code>#ifdef CONFIG_XXX</code> 让编译器直接裁掉未选择的代码，实现零运行时开销的功能裁剪——这是软件领域「把决策时机尽量前移」这一第一性原理的完美实践。</p>
+  </div>
+</section>
+
+<!-- ═══════════════════ SECTION 5 ═══════════════════ -->
+<section class="section" id="s5">
+  <div class="section-header">
+    <span class="section-num">05</span>
+    <h2>构建流程与代码生成</h2>
+  </div>
+
+  <p>BusyBox 的构建系统在编译期生成关键的头文件，这是其 applet 分发机制的基础。</p>
+
+  <h3>完整构建流程</h3>
+  <div class="fig-wrap">
+    <svg viewBox="0 0 680 340" xmlns="http://www.w3.org/2000/svg" style="width:100%;max-width:680px;display:block;margin:0 auto;">
+      <defs>
+        <marker id="ab" markerWidth="8" markerHeight="8" refX="4" refY="4" orient="auto">
+          <path d="M0,0 L8,4 L0,8 Z" fill="#8b92a8"/>
+        </marker>
+      </defs>
+      <!-- Step 1 -->
+      <rect x="20" y="20" width="180" height="50" rx="6" fill="rgba(79,195,247,0.12)" stroke="#4fc3f7" stroke-width="1.5"/>
+      <text x="110" y="42" font-size="11" fill="#4fc3f7" text-anchor="middle" font-weight="700">make menuconfig</text>
+      <text x="110" y="57" font-size="9" fill="#8b92a8" text-anchor="middle">用户选择 applet 和功能</text>
+      <line x1="200" y1="45" x2="240" y2="45" stroke="#8b92a8" stroke-width="1.5" marker-end="url(#ab)"/>
+
+      <!-- Step 2 -->
+      <rect x="240" y="20" width="160" height="50" rx="6" fill="rgba(251,191,36,0.1)" stroke="#fbbf24" stroke-width="1.5"/>
+      <text x="320" y="42" font-size="11" fill="#fbbf24" text-anchor="middle" font-weight="700">.config 生成</text>
+      <text x="320" y="57" font-size="9" fill="#8b92a8" text-anchor="middle">CONFIG_XXX=y/n/m</text>
+      <line x1="400" y1="45" x2="440" y2="45" stroke="#8b92a8" stroke-width="1.5" marker-end="url(#ab)"/>
+
+      <!-- Step 3 -->
+      <rect x="440" y="20" width="220" height="50" rx="6" fill="rgba(74,222,128,0.1)" stroke="#4ade80" stroke-width="1.5"/>
+      <text x="550" y="42" font-size="11" fill="#4ade80" text-anchor="middle" font-weight="700">include/autoconf.h</text>
+      <text x="550" y="57" font-size="9" fill="#8b92a8" text-anchor="middle">#define ENABLE_XXX 0/1</text>
+
+      <!-- Step 4 -->
+      <line x1="110" y1="70" x2="110" y2="115" stroke="#8b92a8" stroke-width="1.5" marker-end="url(#ab)"/>
+      <rect x="20" y="115" width="200" height="55" rx="6" fill="rgba(167,139,250,0.1)" stroke="#a78bfa" stroke-width="1.5"/>
+      <text x="120" y="138" font-size="11" fill="#a78bfa" text-anchor="middle" font-weight="700">applets/applet_tables.c</text>
+      <text x="120" y="153" font-size="9" fill="#8b92a8" text-anchor="middle">宿主机上运行的代码生成器</text>
+      <text x="120" y="164" font-size="8.5" fill="#8b92a8" text-anchor="middle">qsort() 对 applet 名字排序</text>
+      <line x1="220" y1="142" x2="260" y2="142" stroke="#8b92a8" stroke-width="1.5" marker-end="url(#ab)"/>
+
+      <!-- Step 5 -->
+      <rect x="260" y="115" width="200" height="55" rx="6" fill="rgba(232,83,26,0.12)" stroke="#e8531a" stroke-width="1.5"/>
+      <text x="360" y="138" font-size="11" fill="#e8531a" text-anchor="middle" font-weight="700">include/applet_tables.h</text>
+      <text x="360" y="153" font-size="9" fill="#8b92a8" text-anchor="middle">applet_names[] 字符串表</text>
+      <text x="360" y="164" font-size="8.5" fill="#8b92a8" text-anchor="middle">applet_main[] 函数指针</text>
+      <line x1="460" y1="142" x2="500" y2="142" stroke="#8b92a8" stroke-width="1.5" marker-end="url(#ab)"/>
+
+      <!-- Step 6 -->
+      <rect x="500" y="115" width="160" height="55" rx="6" fill="rgba(79,195,247,0.1)" stroke="#4fc3f7" stroke-width="1.5"/>
+      <text x="580" y="138" font-size="11" fill="#4fc3f7" text-anchor="middle" font-weight="700">libbb/appletlib.c</text>
+      <text x="580" y="153" font-size="9" fill="#8b92a8" text-anchor="middle">包含生成的头文件</text>
+      <text x="580" y="164" font-size="8.5" fill="#8b92a8" text-anchor="middle">运行时查表分发</text>
+
+      <!-- Step 7: Compile -->
+      <line x1="360" y1="170" x2="360" y2="215" stroke="#8b92a8" stroke-width="1.5" marker-end="url(#ab)"/>
+      <rect x="180" y="215" width="360" height="55" rx="6" fill="rgba(232,83,26,0.15)" stroke="#e8531a" stroke-width="2"/>
+      <text x="360" y="240" font-size="13" fill="#e8531a" text-anchor="middle" font-weight="800">gcc/clang 编译 + 链接</text>
+      <text x="360" y="258" font-size="9.5" fill="#8b92a8" text-anchor="middle">-Os 优化 | 段级垃圾回收 --gc-sections | strip</text>
+      <line x1="360" y1="270" x2="360" y2="305" stroke="#8b92a8" stroke-width="1.5" marker-end="url(#ab)"/>
+
+      <!-- Final binary -->
+      <rect x="240" y="305" width="240" height="30" rx="6" fill="rgba(74,222,128,0.18)" stroke="#4ade80" stroke-width="2"/>
+      <text x="360" y="325" font-size="12" fill="#4ade80" text-anchor="middle" font-weight="700">./busybox  (~1 MB)</text>
+    </svg>
+    <div class="fig-caption">图 5-1：BusyBox 完整构建流程</div>
+  </div>
+
+  <h3>applet_tables.c 核心逻辑</h3>
+  <p>这是运行在宿主机上的代码生成工具，负责生成运行时分发所需的数据表：<span class="source-tag">📄 github.com/yashdsaraf/busybox</span></p>
+  <pre><code><span class="c-comment">/* applets/applet_tables.c (关键片段) */</span>
+
+<span class="c-comment">/* 按名字对所有 applet 排序 → 支持后续二分查找 */</span>
+<span class="c-fn">qsort</span>(applets, NUM_APPLETS, <span class="c-key">sizeof</span>(applets[<span class="c-num">0</span>]), cmp_name);
+
+<span class="c-comment">/* 选择分段偏移数（KNOWN_APPNAME_OFFSETS）
+ * ~350 applets: 8 段，理论比较次数从 9057 降至 1342
+ * ~128 applets: 4 段
+ * < 32 applets:  0 段（纯线性搜索）       */</span>
+<span class="c-key">int</span> KNOWN_APPNAME_OFFSETS = <span class="c-num">8</span>;
+<span class="c-key">if</span> (NUM_APPLETS < <span class="c-num">128</span>) KNOWN_APPNAME_OFFSETS = <span class="c-num">4</span>;
+<span class="c-key">if</span> (NUM_APPLETS < <span class="c-num">32</span>)  KNOWN_APPNAME_OFFSETS = <span class="c-num">0</span>;
+
+<span class="c-comment">/* 输出 applet_names[]：所有名字连续存储（\0 分隔）
+ * 输出 applet_main[]：函数指针数组
+ * 输出 applet_nameofs[]：等距分段偏移，加速线性搜索 */</span></code></pre>
+
+  <h3>生成的数据结构示意</h3>
+  <pre><code><span class="c-comment">/* include/applet_tables.h (生成内容示意) */</span>
+
+<span class="c-comment">/* 所有 applet 名字，字母序排列，NUL 分隔 */</span>
+<span class="c-key">static const</span> <span class="c-type">char</span> applet_names[] <span class="c-macro">ALIGN1</span> =
+    <span class="c-str">"["</span> <span class="c-str">"\0"</span> <span class="c-str">"ash"</span> <span class="c-str">"\0"</span> <span class="c-str">"cat"</span> <span class="c-str">"\0"</span> <span class="c-str">"cp"</span> <span class="c-str">"\0"</span>
+    <span class="c-str">"grep"</span> <span class="c-str">"\0"</span> <span class="c-str">"ls"</span> <span class="c-str">"\0"</span> <span class="c-str">"sh"</span> <span class="c-str">"\0"</span> <span class="c-str">"wget"</span> <span class="c-str">"\0"</span> ...;
+
+<span class="c-comment">/* 函数指针数组，与 applet_names 一一对应 */</span>
+<span class="c-macro">IF_TEST</span>(<span class="c-key">extern</span> <span class="c-type">int</span> <span class="c-fn">test_main</span>(<span class="c-type">int</span>, <span class="c-type">char</span>**);)
+<span class="c-key">static const</span> <span class="c-type">int</span> (*<span class="c-key">const</span> applet_main[])(<span class="c-type">int</span>, <span class="c-type">char</span>**) = {
+    <span class="c-macro">IF_TEST</span>(test_main,)
+    <span class="c-fn">ash_main</span>, <span class="c-fn">cat_main</span>, <span class="c-fn">cp_main</span>, <span class="c-fn">grep_main</span>,
+    <span class="c-fn">ls_main</span>, <span class="c-fn">sh_main</span>, <span class="c-fn">wget_main</span>, ...
+};
+
+<span class="c-comment">/* 分段偏移：加速查找（KNOWN_APPNAME_OFFSETS 个等距锚点）*/</span>
+<span class="c-key">static const</span> <span class="c-type">uint16_t</span> applet_nameofs[] = {
+    <span class="c-comment">/* 每隔 NUM_APPLETS/8 个 applet 记录一个字符串偏移 */</span>
+    <span class="c-num">0x1234</span>, <span class="c-num">0x2468</span>, <span class="c-num">0x369c</span>, ...
+};</code></pre>
+
+  <div class="first-principle">
+    <div class="first-principle-title">⚡ 第一性原理概述</div>
+    <p>代码生成（Code Generation）的本质是：将<strong>重复性的人工劳动</strong>和<strong>可推导的结构性信息</strong>交给机器完成。applet_tables.c 在构建期扫描所有 applet、排序、计算偏移，生成完美的数据结构，这是「信息的最优时机获取」——在配置固定后立即固化为静态表，避免运行时重复计算，将 O(n) 的搜索查找进一步优化为分段线性搜索。</p>
+  </div>
+</section>
+
+<!-- ═══════════════════ SECTION 6 ═══════════════════ -->
+<section class="section" id="s6">
+  <div class="section-header">
+    <span class="section-num">06</span>
+    <h2>运行时分发机制</h2>
+  </div>
+
+  <p>这是 BusyBox 最核心的运行时逻辑，位于 <code>libbb/appletlib.c</code>，决定了每次调用的执行路径。</p>
+
+  <h3>main() 入口逻辑</h3>
+  <pre><code><span class="c-comment">/* libbb/appletlib.c — main() (来源：git.busybox.net) */</span>
+<span class="c-type">int</span> <span class="c-fn">main</span>(<span class="c-type">int</span> argc <span class="c-macro">UNUSED_PARAM</span>, <span class="c-type">char</span> **argv)
+{
+    <span class="c-fn">lbb_prepare</span>(<span class="c-str">"busybox"</span> <span class="c-macro">IF_FEATURE_INDIVIDUAL</span>(, argv));
+
+    <span class="c-comment">/* NOMMU re-exec trick: 高位字节标记 re-exec 状态 */</span>
+    <span class="c-key">if</span> (argv[<span class="c-num">0</span>][<span class="c-num">0</span>] & <span class="c-num">0x80</span>) { re_execed = <span class="c-num">1</span>; argv[<span class="c-num">0</span>][<span class="c-num">0</span>] &= <span class="c-num">0x7f</span>; }
+
+    applet_name = argv[<span class="c-num">0</span>];
+    <span class="c-key">if</span> (applet_name[<span class="c-num">0</span>] == <span class="c-str">'-'</span>) applet_name++;  <span class="c-comment">/* 跳过 login shell '-' */</span>
+
+    <span class="c-comment">/* 提取 basename: "/bin/ls" → "ls" */</span>
+    applet_name = <span class="c-fn">bb_basename</span>(applet_name);
+
+    <span class="c-fn">parse_config_file</span>();  <span class="c-comment">/* 可选：读取 /etc/busybox.conf SUID 配置 */</span>
+
+    <span class="c-fn">run_applet_and_exit</span>(applet_name, argv);
+    <span class="c-comment">/* 未找到则打印错误并退出 */</span>
+}</code></pre>
+
+  <h3>分发函数</h3>
+  <pre><code><span class="c-comment">/* run_applet_and_exit (来源：git.busybox.net/busybox) */</span>
+<span class="c-key">static</span> <span class="c-macro">NORETURN</span> <span class="c-type">void</span> <span class="c-fn">run_applet_and_exit</span>(<span class="c-key">const</span> <span class="c-type">char</span> *name, <span class="c-type">char</span> **argv)
+{
+    <span class="c-comment">/* 先检查是否以 "busybox" 开头（busybox busybox cmd 的情况）*/</span>
+    <span class="c-key">if</span> (<span class="c-macro">ENABLE_BUSYBOX</span> && <span class="c-fn">is_prefixed_with</span>(name, <span class="c-str">"busybox"</span>))
+        <span class="c-fn">exit</span>(<span class="c-fn">busybox_main</span>(argv));
+
+    <span class="c-comment">/* 在已排序的 applet 表中查找（带分段加速）*/</span>
+    <span class="c-type">int</span> applet = <span class="c-fn">find_applet_by_name</span>(name);
+    <span class="c-key">if</span> (applet >= <span class="c-num">0</span>)
+        <span class="c-fn">run_applet_no_and_exit</span>(applet, name, argv);
+
+    <span class="c-comment">/* POSIX: 未找到命令返回 127 */</span>
+    <span class="c-fn">full_write2_str</span>(applet_name); <span class="c-fn">full_write2_str</span>(<span class="c-str">": applet not found\n"</span>);
+    <span class="c-fn">exit</span>(<span class="c-num">127</span>);
+}
+
+<span class="c-type">void</span> <span class="c-fn">run_applet_no_and_exit</span>(<span class="c-type">int</span> applet_no, <span class="c-type">char</span> **argv)
+{
+    <span class="c-type">int</span> argc = <span class="c-fn">string_array_len</span>(argv);
+    xfunc_error_retval = EXIT_FAILURE;
+    applet_name = <span class="c-fn">APPLET_NAME</span>(applet_no);
+
+    <span class="c-comment">/* --help 特殊处理 */</span>
+    <span class="c-key">if</span> (argc == <span class="c-num">2</span> && !<span class="c-fn">strcmp</span>(argv[<span class="c-num">1</span>], <span class="c-str">"--help"</span>))
+        <span class="c-fn">bb_show_usage</span>();
+
+    <span class="c-comment">/* SUID 权限检查 */</span>
+    <span class="c-key">if</span> (<span class="c-macro">ENABLE_FEATURE_SUID</span>) <span class="c-fn">check_suid</span>(applet_no);
+
+    <span class="c-comment">/* 调用对应 applet 的 main 函数（函数指针数组查表）*/</span>
+    <span class="c-fn">exit</span>(applet_main[applet_no](argc, argv));
+}</code></pre>
+
+  <h3>find_applet_by_name 查找算法</h3>
+  <p>核心查找使用<strong>分段线性搜索</strong>（非完整二分），在代码大小与速度间平衡：<span class="source-tag">📄 github.com/mirror/busybox</span></p>
+  <pre><code><span class="c-comment">/* libbb/appletlib.c — find_applet_by_name */</span>
+<span class="c-type">int</span> <span class="c-macro">FAST_FUNC</span> <span class="c-fn">find_applet_by_name</span>(<span class="c-key">const</span> <span class="c-type">char</span> *name)
+{
+    <span class="c-type">unsigned</span> i;
+    <span class="c-type">const</span> <span class="c-type">char</span> *p;
+
+    p = applet_names;
+    i = <span class="c-num">0</span>;
+
+<span class="c-comment">/* KNOWN_APPNAME_OFFSETS > 0 时：利用预计算的分段偏移
+ * 先用少量比较定位到正确分段，再线性扫描该段
+ * 比较次数从 O(N) 降至 O(N/K)，K 为分段数 */</span>
+<span class="c-macro">#if KNOWN_APPNAME_OFFSETS > 0</span>
+    <span class="c-key">for</span> (j = <span class="c-fn">ARRAY_SIZE</span>(applet_nameofs)-<span class="c-num">1</span>; j >= <span class="c-num">0</span>; j--) {
+        <span class="c-key">const</span> <span class="c-type">char</span> *pp = applet_names + applet_nameofs[j];
+        <span class="c-key">if</span> (<span class="c-fn">strcmp</span>(name, pp) >= <span class="c-num">0</span>) {
+            p = pp;  <span class="c-comment">/* 找到起始锚点 */</span>
+            <span class="c-key">break</span>;
+        }
+    }
+<span class="c-macro">#endif</span>
+    <span class="c-comment">/* 从锚点开始线性扫描 */</span>
+    <span class="c-key">while</span> (*p) {
+        <span class="c-type">int</span> r = <span class="c-fn">strcmp</span>(name, p);
+        <span class="c-key">if</span> (r == <span class="c-num">0</span>) <span class="c-key">return</span> i;  <span class="c-comment">/* 找到！*/</span>
+        <span class="c-key">if</span> (r < <span class="c-num">0</span>)  <span class="c-key">return</span> -<span class="c-num">1</span>; <span class="c-comment">/* 已超过（列表有序）*/</span>
+        i++;
+        p += <span class="c-fn">strlen</span>(p) + <span class="c-num">1</span>;
+    }
+    <span class="c-key">return</span> -<span class="c-num">1</span>;
+}</code></pre>
+
+  <h3>完整运行时调用流程</h3>
+  <div class="fig-wrap">
+    <svg viewBox="0 0 600 380" xmlns="http://www.w3.org/2000/svg" style="width:100%;max-width:600px;display:block;margin:0 auto;">
+      <defs>
+        <marker id="flow-arr" markerWidth="8" markerHeight="8" refX="4" refY="4" orient="auto">
+          <path d="M0,0 L8,4 L0,8 Z" fill="#4fc3f7"/>
+        </marker>
+        <marker id="red-arr" markerWidth="8" markerHeight="8" refX="4" refY="4" orient="auto">
+          <path d="M0,0 L8,4 L0,8 Z" fill="#f87171"/>
+        </marker>
+        <marker id="grn-arr" markerWidth="8" markerHeight="8" refX="4" refY="4" orient="auto">
+          <path d="M0,0 L8,4 L0,8 Z" fill="#4ade80"/>
+        </marker>
+      </defs>
+
+      <!-- Node 1: invoke -->
+      <rect x="200" y="15" width="200" height="38" rx="6" fill="rgba(79,195,247,0.15)" stroke="#4fc3f7" stroke-width="1.5"/>
+      <text x="300" y="39" font-size="11" fill="#4fc3f7" text-anchor="middle" font-weight="600">调用 /bin/ls（symlink→busybox）</text>
+      <line x1="300" y1="53" x2="300" y2="85" stroke="#4fc3f7" stroke-width="1.5" marker-end="url(#flow-arr)"/>
+
+      <!-- Node 2: main -->
+      <rect x="190" y="85" width="220" height="38" rx="6" fill="rgba(167,139,250,0.12)" stroke="#a78bfa" stroke-width="1.5"/>
+      <text x="300" y="109" font-size="11" fill="#a78bfa" text-anchor="middle" font-weight="600">main(argc, argv)</text>
+      <line x1="300" y1="123" x2="300" y2="155" stroke="#4fc3f7" stroke-width="1.5" marker-end="url(#flow-arr)"/>
+
+      <!-- Node 3: basename -->
+      <rect x="180" y="155" width="240" height="38" rx="6" fill="rgba(167,139,250,0.12)" stroke="#a78bfa" stroke-width="1.5"/>
+      <text x="300" y="170" font-size="11" fill="#a78bfa" text-anchor="middle" font-weight="600">bb_basename(argv[0])</text>
+      <text x="300" y="185" font-size="9" fill="#8b92a8" text-anchor="middle">"/bin/ls" → "ls"</text>
+      <line x1="300" y1="193" x2="300" y2="225" stroke="#4fc3f7" stroke-width="1.5" marker-end="url(#flow-arr)"/>
+
+      <!-- Decision: busybox? -->
+      <polygon points="300,225 420,255 300,285 180,255" fill="rgba(251,191,36,0.1)" stroke="#fbbf24" stroke-width="1.5"/>
+      <text x="300" y="253" font-size="10" fill="#fbbf24" text-anchor="middle">名字以 "busybox" 开头？</text>
+      <!-- YES branch -->
+      <line x1="420" y1="255" x2="510" y2="255" stroke="#fbbf24" stroke-width="1.5" marker-end="url(#grn-arr)"/>
+      <rect x="510" y="235" width="80" height="40" rx="5" fill="rgba(74,222,128,0.1)" stroke="#4ade80" stroke-width="1.2"/>
+      <text x="550" y="256" font-size="9" fill="#4ade80" text-anchor="middle">busybox</text>
+      <text x="550" y="268" font-size="9" fill="#4ade80" text-anchor="middle">_main()</text>
+      <text x="465" y="248" font-size="9" fill="#fbbf24">YES</text>
+
+      <!-- NO branch -->
+      <line x1="300" y1="285" x2="300" y2="315" stroke="#4fc3f7" stroke-width="1.5" marker-end="url(#flow-arr)"/>
+      <text x="312" y="302" font-size="9" fill="#fbbf24">NO</text>
+
+      <!-- find_applet -->
+      <rect x="180" y="315" width="240" height="38" rx="6" fill="rgba(232,83,26,0.12)" stroke="#e8531a" stroke-width="1.5"/>
+      <text x="300" y="332" font-size="11" fill="#e8531a" text-anchor="middle" font-weight="600">find_applet_by_name("ls")</text>
+      <text x="300" y="346" font-size="9" fill="#8b92a8" text-anchor="middle">分段线性搜索 applet_names[]</text>
+
+      <!-- Found/Not found -->
+      <line x1="180" y1="334" x2="100" y2="334" stroke="#f87171" stroke-width="1.5" marker-end="url(#red-arr)"/>
+      <rect x="20" y="315" width="80" height="38" rx="5" fill="rgba(248,113,113,0.1)" stroke="#f87171" stroke-width="1.2"/>
+      <text x="60" y="332" font-size="9" fill="#f87171" text-anchor="middle">not found</text>
+      <text x="60" y="346" font-size="8.5" fill="#f87171" text-anchor="middle">exit(127)</text>
+      <text x="133" y="326" font-size="9" fill="#f87171">未找到</text>
+
+      <line x1="420" y1="334" x2="500" y2="334" stroke="#4ade80" stroke-width="1.5" marker-end="url(#grn-arr)"/>
+      <rect x="500" y="315" width="90" height="38" rx="5" fill="rgba(74,222,128,0.1)" stroke="#4ade80" stroke-width="1.2"/>
+      <text x="545" y="330" font-size="9" fill="#4ade80" text-anchor="middle">applet_main</text>
+      <text x="545" y="346" font-size="9" fill="#4ade80" text-anchor="middle">[idx](argc,argv)</text>
+      <text x="432" y="326" font-size="9" fill="#4ade80">找到</text>
+    </svg>
+    <div class="fig-caption">图 6-1：BusyBox 运行时分发完整流程图</div>
+  </div>
+
+  <div class="first-principle">
+    <div class="first-principle-title">⚡ 第一性原理概述</div>
+    <p>运行时分发的本质是<strong>名字→函数</strong>的映射。最朴素的实现是 if-else 链，O(N) 比较次数。BusyBox 的优化路径：① 构建期排序 applet 名字 → ② 预计算分段锚点 → ③ 运行时先定位锚点段、再线性扫描子区间，实现了 O(N/K) 的比较次数，且额外内存只有 K 个 uint16_t。这是在「代码尺寸」和「查找速度」之间用信息论最优方式取平衡。</p>
+  </div>
+</section>
+
+<!-- ═══════════════════ SECTION 7 ═══════════════════ -->
+<section class="section" id="s7">
+  <div class="section-header">
+    <span class="section-num">07</span>
+    <h2>libbb 公共库</h2>
+  </div>
+
+  <p><code>libbb</code> 是 BusyBox 内部的共享基础库，包含所有 applet 通用的工具函数，是代码复用的核心承载。它不对外暴露稳定 API（版本间可能变化），仅供 BusyBox 内部使用。</p>
+
+  <h3>libbb 主要功能模块</h3>
+  <div class="tbl-wrap">
+    <table>
+      <thead><tr><th>模块</th><th>关键函数</th><th>作用</th></tr></thead>
+      <tbody>
+        <tr>
+          <td><code>xfuncs.c</code></td>
+          <td><code>xmalloc</code>, <code>xrealloc</code>, <code>xzalloc</code></td>
+          <td>内存分配失败时自动 die，消除每次检查返回值的样板代码</td>
+        </tr>
+        <tr>
+          <td><code>xfuncs_printf.c</code></td>
+          <td><code>xopen</code>, <code>xfopen</code>, <code>xdup2</code></td>
+          <td>文件/IO 操作失败时自动 die，同上</td>
+        </tr>
+        <tr>
+          <td><code>messages.c</code></td>
+          <td><code>bb_error_msg</code>, <code>bb_perror_msg</code></td>
+          <td>统一错误消息格式，复用 applet_name 前缀</td>
+        </tr>
+        <tr>
+          <td><code>read.c</code></td>
+          <td><code>safe_read</code>, <code>full_read</code>, <code>xread</code></td>
+          <td>处理 EINTR 中断的安全 I/O 原语</td>
+        </tr>
+        <tr>
+          <td><code>write.c</code></td>
+          <td><code>full_write</code>, <code>full_write2_str</code></td>
+          <td>保证全量写入，处理部分写入情况</td>
+        </tr>
+        <tr>
+          <td><code>appletlib.c</code></td>
+          <td><code>find_applet_by_name</code>, <code>run_applet_and_exit</code></td>
+          <td>Applet 注册表与分发引擎</td>
+        </tr>
+        <tr>
+          <td><code>getopt32.c</code></td>
+          <td><code>getopt32</code></td>
+          <td>统一的命令行参数解析器，比 getopt 更紧凑</td>
+        </tr>
+      </tbody>
+    </table>
+  </div>
+
+  <h3>x 前缀函数模式（Die-on-fail）</h3>
+  <p>BusyBox 的一大设计模式：所有以 <code>x</code> 开头的函数在失败时直接 die，省去每次调用后检查错误的模板代码：<span class="source-tag">📄 elixir.bootlin.com/busybox</span></p>
+  <pre><code><span class="c-comment">/* libbb/xfuncs_printf.c */</span>
+
+<span class="c-comment">/* 普通 malloc —— 需要调用者检查 NULL */</span>
+<span class="c-type">void</span> *ptr = <span class="c-fn">malloc</span>(size);
+<span class="c-key">if</span> (!ptr) { <span class="c-fn">perror</span>(...); <span class="c-fn">exit</span>(<span class="c-num">1</span>); }  <span class="c-comment">/* 样板代码 */</span>
+
+<span class="c-comment">/* xmalloc —— 失败直接 die，调用者无需检查 */</span>
+<span class="c-type">void</span>* <span class="c-macro">FAST_FUNC</span> <span class="c-fn">xmalloc</span>(<span class="c-type">size_t</span> size)
+{
+    <span class="c-type">void</span> *ptr = <span class="c-fn">malloc</span>(size);
+    <span class="c-key">if</span> (ptr == <span class="c-num">NULL</span> && size != <span class="c-num">0</span>)
+        <span class="c-fn">bb_die_memory_exhausted</span>();
+    <span class="c-key">return</span> ptr;
+}
+
+<span class="c-comment">/* xzalloc：malloc + 清零 */</span>
+<span class="c-type">void</span>* <span class="c-macro">FAST_FUNC</span> <span class="c-fn">xzalloc</span>(<span class="c-type">size_t</span> size)
+{
+    <span class="c-type">void</span> *ptr = <span class="c-fn">xmalloc</span>(size);
+    <span class="c-fn">memset</span>(ptr, <span class="c-num">0</span>, size);
+    <span class="c-key">return</span> ptr;
+}
+
+<span class="c-comment">/* xopen：open() 失败直接 die */</span>
+<span class="c-type">int</span> <span class="c-macro">FAST_FUNC</span> <span class="c-fn">xopen</span>(<span class="c-key">const</span> <span class="c-type">char</span> *pathname, <span class="c-type">int</span> flags)
+{
+    <span class="c-key">return</span> <span class="c-fn">xopen3</span>(pathname, flags, <span class="c-num">0666</span>);
+}
+<span class="c-type">int</span> <span class="c-macro">FAST_FUNC</span> <span class="c-fn">xopen3</span>(<span class="c-key">const</span> <span class="c-type">char</span> *pathname, <span class="c-type">int</span> flags, <span class="c-type">int</span> mode)
+{
+    <span class="c-type">int</span> ret = <span class="c-fn">open</span>(pathname, flags, mode);
+    <span class="c-key">if</span> (ret < <span class="c-num">0</span>)
+        <span class="c-fn">bb_perror_msg_and_die</span>(<span class="c-str">"can't open '%s'"</span>, pathname);
+    <span class="c-key">return</span> ret;
+}</code></pre>
+
+  <h3>xfuncs.c 与 xfuncs_printf.c 分离的意义</h3>
+  <div class="callout warn">
+    <div class="callout-title">重要设计决策</div>
+    <p>libbb 特意将 xfuncs 拆分为两个文件：<code>xfuncs.c</code>（不涉及 printf）和 <code>xfuncs_printf.c</code>（使用 printf）。原因：当前链接器即使开启节级垃圾回收（--gc-sections），只要一个 .o 文件引用了 printf 类函数，就会将整个 printf 机器链入。这种分离确保不需要 printf 的极简 applet（如 true）不会被迫携带 printf 代码。</p>
+  </div>
+
+  <h3>FAST_FUNC 宏</h3>
+  <p><code>FAST_FUNC</code> 是 BusyBox 的调用约定宏，在 x86-32 平台上展开为 <code>__attribute__((regparm(3)))</code>，让前 3 个参数通过寄存器传递，减少栈操作开销。在其他平台上为空。</p>
+
+  <div class="first-principle">
+    <div class="first-principle-title">⚡ 第一性原理概述</div>
+    <p>libbb 的本质是识别「错误处理」这一重复模式，并将其提升为一等公民。传统 C 代码中，错误检查代码往往比业务逻辑代码还多，是熵增的主要来源。通过「失败即 die」的约定，BusyBox 用不可恢复错误的前提换取代码密度的极大提升——这在嵌入式系统中是合理的：系统工具失败时，通常也无法优雅恢复，die 后让上层重试才是正确策略。</p>
+  </div>
+</section>
+
+<!-- ═══════════════════ SECTION 8 ═══════════════════ -->
+<section class="section" id="s8">
+  <div class="section-header">
+    <span class="section-num">08</span>
+    <h2>尺寸优化技术</h2>
+  </div>
+
+  <p>BusyBox 积累了一系列从编译器、链接器到代码层面的尺寸优化技巧，这也是其一大技术特色。</p>
+
+  <h3>编译器级优化</h3>
+  <div class="tbl-wrap">
+    <table>
+      <thead><tr><th>技术</th><th>具体手段</th><th>效果</th></tr></thead>
+      <tbody>
+        <tr>
+          <td>优化等级</td>
+          <td><code>-Os</code>（尺寸优先而非速度）</td>
+          <td>比 -O2 产生更小二进制</td>
+        </tr>
+        <tr>
+          <td>函数/数据段分割</td>
+          <td><code>-ffunction-sections -fdata-sections</code></td>
+          <td>每个函数/变量在独立段中，便于垃圾回收</td>
+        </tr>
+        <tr>
+          <td>链接器垃圾回收</td>
+          <td><code>-Wl,--gc-sections</code></td>
+          <td>删除未被引用的代码段</td>
+        </tr>
+        <tr>
+          <td>符号剥离</td>
+          <td><code>strip --strip-all</code></td>
+          <td>移除调试符号，节省 20-40%</td>
+        </tr>
+        <tr>
+          <td>调用约定</td>
+          <td><code>FAST_FUNC</code> / <code>regparm(3)</code></td>
+          <td>x86-32 减少栈帧操作</td>
+        </tr>
+        <tr>
+          <td>对齐控制</td>
+          <td><code>ALIGN1</code> = <code>__attribute__((aligned(1)))</code></td>
+          <td>字符串数据紧密排列，避免对齐填充</td>
+        </tr>
+      </tbody>
+    </table>
+  </div>
+
+  <h3>代码层面的尺寸技巧</h3>
+  <h4 style="color:var(--yellow);margin:1rem 0 0.5rem;font-size:0.95rem;">① 压缩用法字符串</h4>
+  <pre><code><span class="c-comment">/* libbb/appletlib.c */</span>
+<span class="c-comment">/* 若开启 FEATURE_COMPRESS_USAGE，所有 --help 文本以 bzip2 压缩存储 */</span>
+<span class="c-key">static const</span> <span class="c-type">char</span> packed_usage[] <span class="c-macro">ALIGN1</span> = { <span class="c-macro">PACKED_USAGE</span> };
+
+<span class="c-comment">/* 使用时解压 */</span>
+<span class="c-key">static const</span> <span class="c-type">char</span> *<span class="c-fn">unpack_usage_messages</span>(<span class="c-type">void</span>)
+{
+    <span class="c-type">char</span> *outbuf = <span class="c-fn">malloc_or_warn</span>(<span class="c-key">sizeof</span>(<span class="c-macro">UNPACKED_USAGE</span>));
+    <span class="c-fn">read_bunzip</span>(bd, outbuf, <span class="c-key">sizeof</span>(<span class="c-macro">UNPACKED_USAGE</span>));
+    <span class="c-key">return</span> outbuf;
+}</code></pre>
+
+  <h4 style="color:var(--yellow);margin:1rem 0 0.5rem;font-size:0.95rem;">② NOMMU 支持（无内存管理单元设备）</h4>
+  <p>传统 Linux 通过 <code>fork()+exec()</code> 运行子命令，<code>fork()</code> 需要 MMU 支持（Copy-on-Write）。对于无 MMU 的微控制器，BusyBox 提供 re-exec 技巧：</p>
+  <pre><code><span class="c-comment">/* NOMMU re-exec 技巧：用高位字节标记，避免真正的 fork */</span>
+<span class="c-key">#if</span> !BB_MMU
+    <span class="c-key">if</span> (argv[<span class="c-num">0</span>][<span class="c-num">0</span>] & <span class="c-num">0x80</span>) {
+        re_execed = <span class="c-num">1</span>;
+        argv[<span class="c-num">0</span>][<span class="c-num">0</span>] &= <span class="c-num">0x7f</span>;
+    }
+<span class="c-key">#endif</span></code></pre>
+
+  <h4 style="color:var(--yellow);margin:1rem 0 0.5rem;font-size:0.95rem;">③ 全局数据 G 结构技巧</h4>
+  <p>部分 applet 将所有全局变量打包进一个结构体 <code>G</code>，通过 <code>struct globals *ptr_to_globals</code> 访问，利用架构特性减少代码访问全局变量的指令数：</p>
+  <pre><code><span class="c-comment">/* 将所有全局变量打包，节省 GOT 槽和重定位条目 */</span>
+<span class="c-key">struct</span> <span class="c-type">globals</span> {
+    <span class="c-type">int</span> some_flag;
+    <span class="c-type">char</span> *some_string;
+    <span class="c-comment">/* ... */</span>
+} <span class="c-macro">FIX_ALIASING</span>;
+<span class="c-macro">#define G (*ptr_to_globals)</span>
+<span class="c-macro">#define INIT_G() do { \
+    SET_PTR_TO_GLOBALS(xzalloc(sizeof(G))); \
+} while (0)</span></code></pre>
+
+  <h3>尺寸优化技术总览</h3>
+  <div class="fig-wrap">
+    <svg viewBox="0 0 620 200" xmlns="http://www.w3.org/2000/svg" style="width:100%;max-width:620px;display:block;margin:0 auto;">
+      <!-- Categories -->
+      <!-- Compiler -->
+      <rect x="15" y="20" width="140" height="160" rx="6" fill="rgba(79,195,247,0.07)" stroke="#4fc3f7" stroke-width="1.3"/>
+      <text x="85" y="42" font-size="10" fill="#4fc3f7" text-anchor="middle" font-weight="700">编译器层</text>
+      <text x="85" y="62" font-size="9" fill="#8b92a8" text-anchor="middle">-Os 优化等级</text>
+      <text x="85" y="78" font-size="9" fill="#8b92a8" text-anchor="middle">-ffunction-sections</text>
+      <text x="85" y="94" font-size="9" fill="#8b92a8" text-anchor="middle">FAST_FUNC regparm</text>
+      <text x="85" y="110" font-size="9" fill="#8b92a8" text-anchor="middle">ALIGN1 对齐控制</text>
+      <!-- Linker -->
+      <rect x="165" y="20" width="140" height="160" rx="6" fill="rgba(251,191,36,0.07)" stroke="#fbbf24" stroke-width="1.3"/>
+      <text x="235" y="42" font-size="10" fill="#fbbf24" text-anchor="middle" font-weight="700">链接器层</text>
+      <text x="235" y="62" font-size="9" fill="#8b92a8" text-anchor="middle">--gc-sections</text>
+      <text x="235" y="78" font-size="9" fill="#8b92a8" text-anchor="middle">strip --strip-all</text>
+      <text x="235" y="94" font-size="9" fill="#8b92a8" text-anchor="middle">静态链接 musl</text>
+      <text x="235" y="110" font-size="9" fill="#8b92a8" text-anchor="middle">单 ELF 头</text>
+      <!-- Code -->
+      <rect x="315" y="20" width="140" height="160" rx="6" fill="rgba(167,139,250,0.07)" stroke="#a78bfa" stroke-width="1.3"/>
+      <text x="385" y="42" font-size="10" fill="#a78bfa" text-anchor="middle" font-weight="700">代码层</text>
+      <text x="385" y="62" font-size="9" fill="#8b92a8" text-anchor="middle">压缩 help 文本</text>
+      <text x="385" y="78" font-size="9" fill="#8b92a8" text-anchor="middle">x 前缀 die-on-fail</text>
+      <text x="385" y="94" font-size="9" fill="#8b92a8" text-anchor="middle">G 全局结构打包</text>
+      <text x="385" y="110" font-size="9" fill="#8b92a8" text-anchor="middle">NOFORK/NOEXEC</text>
+      <!-- Design -->
+      <rect x="465" y="20" width="140" height="160" rx="6" fill="rgba(74,222,128,0.07)" stroke="#4ade80" stroke-width="1.3"/>
+      <text x="535" y="42" font-size="10" fill="#4ade80" text-anchor="middle" font-weight="700">架构层</text>
+      <text x="535" y="62" font-size="9" fill="#8b92a8" text-anchor="middle">libbb 公共代码</text>
+      <text x="535" y="78" font-size="9" fill="#8b92a8" text-anchor="middle">Kconfig 裁剪</text>
+      <text x="535" y="94" font-size="9" fill="#8b92a8" text-anchor="middle">单二进制设计</text>
+      <text x="535" y="110" font-size="9" fill="#8b92a8" text-anchor="middle">功能子集实现</text>
+      <!-- Labels -->
+      <text x="85" y="165" font-size="8" fill="#4fc3f7" text-anchor="middle">~5-10% 节省</text>
+      <text x="235" y="165" font-size="8" fill="#fbbf24" text-anchor="middle">~20-40% 节省</text>
+      <text x="385" y="165" font-size="8" fill="#a78bfa" text-anchor="middle">~10-15% 节省</text>
+      <text x="535" y="165" font-size="8" fill="#4ade80" text-anchor="middle">最大贡献</text>
+    </svg>
+    <div class="fig-caption">图 8-1：BusyBox 四层尺寸优化技术体系</div>
+  </div>
+
+  <div class="first-principle">
+    <div class="first-principle-title">⚡ 第一性原理概述</div>
+    <p>尺寸优化的根本是消除一切<strong>不为运行时行为做贡献的信息</strong>：未使用的代码路径（--gc-sections）、重复的字符串（ALIGN1 打包）、运行时才决定的逻辑（编译期 Kconfig 裁剪）、调试元数据（strip）。每一层优化都在问同一个问题：「这些字节在目标设备运行时有没有被用到？」没用到就删，这是信息熵最小化的工程实践。</p>
+  </div>
+</section>
+
+<!-- ═══════════════════ SECTION 9 ═══════════════════ -->
+<section class="section" id="s9">
+  <div class="section-header">
+    <span class="section-num">09</span>
+    <h2>Shell 实现</h2>
+  </div>
+
+  <p>BusyBox 内置两个 Shell 实现，是其最复杂的 applet 之一：</p>
+
+  <div class="tbl-wrap">
+    <table>
+      <thead><tr><th>Shell</th><th>源文件</th><th>定位</th><th>特点</th></tr></thead>
+      <tbody>
+        <tr>
+          <td><strong>ash</strong></td>
+          <td><code>shell/ash.c</code></td>
+          <td>功能较完整</td>
+          <td>POSIX 兼容度高，支持 job control，适合交互式使用</td>
+        </tr>
+        <tr>
+          <td><strong>hush</strong></td>
+          <td><code>shell/hush.c</code></td>
+          <td>更小更简单</td>
+          <td>适合 NOMMU 系统、initramfs 早期启动阶段</td>
+        </tr>
+      </tbody>
+    </table>
+  </div>
+
+  <h3>Shell 与 Applet 的集成（Standalone Shell）</h3>
+  <p>BusyBox Shell 的一个独特特性：当以 standalone shell 模式运行时，Shell 会在 PATH 查找之前先检查是否有同名的 BusyBox applet，直接调用而不经过 fork+exec：<span class="source-tag">📄 deepwiki.com/mirror/busybox</span></p>
+  <pre><code><span class="c-comment">/* shell/hush.c — standalone shell 模式下的命令执行 */</span>
+<span class="c-comment">/* 若 FEATURE_PREFER_APPLETS 开启：
+ * Shell 在查找外部命令前，先检查 busybox applet 表
+ * 找到则直接 fork+exit(applet_main()) 而非 fork+exec
+ * 这节省了 execve() 系统调用的开销 */</span>
+
+<span class="c-key">if</span> (<span class="c-macro">ENABLE_FEATURE_SH_STANDALONE</span>) {
+    <span class="c-type">int</span> applet_no = <span class="c-fn">find_applet_by_name</span>(argv[<span class="c-num">0</span>]);
+    <span class="c-key">if</span> (applet_no >= <span class="c-num">0</span>) {
+        <span class="c-comment">/* NOFORK applet: 直接在当前进程调用！*/</span>
+        <span class="c-key">if</span> (<span class="c-fn">APPLET_IS_NOFORK</span>(applet_no))
+            <span class="c-fn">run_nofork_applet</span>(applet_no, argv);
+        <span class="c-comment">/* NOEXEC applet: fork+exit 而非 fork+exec */</span>
+        ...
+    }
+}</code></pre>
+
+  <h3>Shell 功能架构</h3>
+  <div class="fig-wrap">
+    <svg viewBox="0 0 560 200" xmlns="http://www.w3.org/2000/svg" style="width:100%;max-width:560px;display:block;margin:0 auto;">
+      <!-- shared -->
+      <rect x="15" y="130" width="530" height="50" rx="6" fill="rgba(79,195,247,0.08)" stroke="#4fc3f7" stroke-width="1.3"/>
+      <text x="280" y="155" font-size="11" fill="#4fc3f7" text-anchor="middle" font-weight="700">shell/shell_common.c — 共享代码（readline、历史、补全）</text>
+      <text x="280" y="172" font-size="9" fill="#8b92a8" text-anchor="middle">管道 | 重定向 | 命令替换 | 变量展开（共同逻辑）</text>
+      <!-- ash -->
+      <rect x="15" y="20" width="250" height="100" rx="6" fill="rgba(232,83,26,0.1)" stroke="#e8531a" stroke-width="1.5"/>
+      <text x="140" y="45" font-size="12" fill="#e8531a" text-anchor="middle" font-weight="700">ash (shell/ash.c)</text>
+      <text x="140" y="63" font-size="9" fill="#8b92a8" text-anchor="middle">POSIX 兼容 ✓</text>
+      <text x="140" y="78" font-size="9" fill="#8b92a8" text-anchor="middle">Job Control ✓</text>
+      <text x="140" y="93" font-size="9" fill="#8b92a8" text-anchor="middle">交互式 readline ✓</text>
+      <text x="140" y="108" font-size="9" fill="#8b92a8" text-anchor="middle"><<<here_string ✓</text>
+      <!-- hush -->
+      <rect x="295" y="20" width="250" height="100" rx="6" fill="rgba(167,139,250,0.1)" stroke="#a78bfa" stroke-width="1.5"/>
+      <text x="420" y="45" font-size="12" fill="#a78bfa" text-anchor="middle" font-weight="700">hush (shell/hush.c)</text>
+      <text x="420" y="63" font-size="9" fill="#8b92a8" text-anchor="middle">更小二进制 ✓</text>
+      <text x="420" y="78" font-size="9" fill="#8b92a8" text-anchor="middle">NOMMU 友好 ✓</text>
+      <text x="420" y="93" font-size="9" fill="#8b92a8" text-anchor="middle">alias 支持 ✓</text>
+      <text x="420" y="108" font-size="9" fill="#8b92a8" text-anchor="middle">initramfs 适用 ✓</text>
+      <!-- arrows down -->
+      <line x1="140" y1="120" x2="140" y2="130" stroke="#8b92a8" stroke-width="1.2"/>
+      <line x1="420" y1="120" x2="420" y2="130" stroke="#8b92a8" stroke-width="1.2"/>
+    </svg>
+    <div class="fig-caption">图 9-1：BusyBox Shell 架构 —— ash 与 hush 共享基础代码</div>
+  </div>
+
+  <div class="first-principle">
+    <div class="first-principle-title">⚡ 第一性原理概述</div>
+    <p>Shell 的本质是一个<strong>文本命令到进程的解释器</strong>。BusyBox 将 shell 和工具 applet 集成在同一二进制中，使得 shell 可以在不 fork 的情况下直接调用 NOFORK applet——这打破了「每个命令必须是独立进程」的假设。在资源极端受限的系统中，节省每一次 fork/exec 的系统调用开销都有实际意义。</p>
+  </div>
+</section>
+
+<!-- ═══════════════════ SECTION 10 ═══════════════════ -->
+<section class="section" id="s10">
+  <div class="section-header">
+    <span class="section-num">10</span>
+    <h2>典型应用场景</h2>
+  </div>
+
+  <h3>部署场景全景</h3>
+  <div class="fig-wrap">
+    <svg viewBox="0 0 680 240" xmlns="http://www.w3.org/2000/svg" style="width:100%;max-width:680px;display:block;margin:0 auto;">
+      <!-- Scene 1: Embedded -->
+      <rect x="15" y="20" width="145" height="110" rx="8" fill="rgba(232,83,26,0.1)" stroke="#e8531a" stroke-width="1.5"/>
+      <text x="87" y="45" font-size="10" fill="#e8531a" text-anchor="middle" font-weight="700">📡 嵌入式设备</text>
+      <text x="87" y="65" font-size="9" fill="#8b92a8" text-anchor="middle">路由器 / IoT</text>
+      <text x="87" y="80" font-size="9" fill="#8b92a8" text-anchor="middle">OpenWrt / DD-WRT</text>
+      <text x="87" y="95" font-size="9" fill="#8b92a8" text-anchor="middle">Flash ≤ 8MB</text>
+      <text x="87" y="115" font-size="8" fill="#4ade80" text-anchor="middle">最典型场景</text>
+      <!-- Scene 2: initramfs -->
+      <rect x="170" y="20" width="145" height="110" rx="8" fill="rgba(79,195,247,0.1)" stroke="#4fc3f7" stroke-width="1.5"/>
+      <text x="242" y="45" font-size="10" fill="#4fc3f7" text-anchor="middle" font-weight="700">🔧 initramfs</text>
+      <text x="242" y="65" font-size="9" fill="#8b92a8" text-anchor="middle">Linux 早期启动</text>
+      <text x="242" y="80" font-size="9" fill="#8b92a8" text-anchor="middle">rescue shell</text>
+      <text x="242" y="95" font-size="9" fill="#8b92a8" text-anchor="middle">fsck / mount</text>
+      <text x="242" y="115" font-size="8" fill="#4ade80" text-anchor="middle">普遍用于发行版</text>
+      <!-- Scene 3: Alpine -->
+      <rect x="325" y="20" width="145" height="110" rx="8" fill="rgba(167,139,250,0.1)" stroke="#a78bfa" stroke-width="1.5"/>
+      <text x="397" y="45" font-size="10" fill="#a78bfa" text-anchor="middle" font-weight="700">🐳 容器基础镜像</text>
+      <text x="397" y="65" font-size="9" fill="#8b92a8" text-anchor="middle">Alpine Linux</text>
+      <text x="397" y="80" font-size="9" fill="#8b92a8" text-anchor="middle">Docker &lt; 5MB</text>
+      <text x="397" y="95" font-size="9" fill="#8b92a8" text-anchor="middle">CI/CD pipelines</text>
+      <text x="397" y="115" font-size="8" fill="#4ade80" text-anchor="middle">云原生广泛应用</text>
+      <!-- Scene 4: Recovery -->
+      <rect x="480" y="20" width="180" height="110" rx="8" fill="rgba(251,191,36,0.1)" stroke="#fbbf24" stroke-width="1.5"/>
+      <text x="570" y="45" font-size="10" fill="#fbbf24" text-anchor="middle" font-weight="700">🛡️ 救援 / Recovery</text>
+      <text x="570" y="65" font-size="9" fill="#8b92a8" text-anchor="middle">live CD / USB</text>
+      <text x="570" y="80" font-size="9" fill="#8b92a8" text-anchor="middle">系统修复</text>
+      <text x="570" y="95" font-size="9" fill="#8b92a8" text-anchor="middle">Android recovery</text>
+      <text x="570" y="115" font-size="8" fill="#4ade80" text-anchor="middle">离线环境</text>
+      <!-- Bottom stats -->
+      <rect x="15" y="160" width="645" height="60" rx="6" fill="rgba(74,222,128,0.06)" stroke="#4ade80" stroke-width="1.2"/>
+      <text x="337" y="183" font-size="11" fill="#4ade80" text-anchor="middle" font-weight="700">部署规模（截至 2025 年）</text>
+      <text x="150" y="207" font-size="10" fill="#8b92a8" text-anchor="middle">数亿 IoT 设备</text>
+      <text x="337" y="207" font-size="10" fill="#8b92a8" text-anchor="middle">40% 分析固件中含 BusyBox</text>
+      <text x="530" y="207" font-size="10" fill="#8b92a8" text-anchor="middle">90%+ IoT 设备用 Linux</text>
+    </svg>
+    <div class="fig-caption">图 10-1：BusyBox 典型部署场景（数据来源：grokipedia.com）</div>
+  </div>
+
+  <h3>Alpine Linux 集成方式</h3>
+  <p>Alpine Linux 以 BusyBox 为核心工具集，配合 musl libc，实现了 Docker 基础镜像不到 5MB 的惊人体积：</p>
+  <pre><code><span class="c-comment"># Alpine Linux 中 BusyBox 的实际安装情况</span>
+<span class="c-str">$ ls -la /bin/</span>
+lrwxrwxrwx 1 root root 12  /bin/ash -> /bin/busybox
+lrwxrwxrwx 1 root root 12  /bin/cat -> /bin/busybox
+lrwxrwxrwx 1 root root 12  /bin/ls  -> /bin/busybox
+lrwxrwxrwx 1 root root 12  /bin/sh  -> /bin/busybox
+<span class="c-comment"># ... 数百个链接，全部指向同一个 busybox 文件</span>
+
+<span class="c-str">$ ls -lh /bin/busybox</span>
+-rwxr-xr-x 1 root root <span class="c-num">823K</span> /bin/busybox</code></pre>
+
+  <div class="first-principle">
+    <div class="first-principle-title">⚡ 第一性原理概述</div>
+    <p>这些场景都有同一个核心约束：<strong>极小的可用存储 + 需要完整的工具链</strong>。BusyBox 之所以能同时满足这两个看似矛盾的需求，根本原因是它识别到「工具」和「二进制」不是必须一一对应的关系。这是工程中「打破错误假设」产生跨越式进步的典型案例。</p>
+  </div>
+</section>
+
+<!-- ═══════════════════ SECTION 11 ═══════════════════ -->
+<section class="section" id="s11">
+  <div class="section-header">
+    <span class="section-num">11</span>
+    <h2>安全性与局限性</h2>
+  </div>
+
+  <h3>已知安全风险</h3>
+  <div class="callout red">
+    <div class="callout-title">来源：grokipedia.com（2021 年 CVE 披露）</div>
+    <p>2021 年 11 月，Claroty Team82 和 JFrog 披露了 14 个 CVE（CVE-2021-42373 至 CVE-2021-42387），影响 BusyBox 1.33.1 及以下版本，主要包括 awk、hush、lzma、man applet 中的栈溢出、堆溢出和 use-after-free 漏洞。</p>
+  </div>
+
+  <div class="tbl-wrap">
+    <table>
+      <thead><tr><th>CVE 批次</th><th>年份</th><th>受影响 Applet</th><th>类型</th><th>修复版本</th></tr></thead>
+      <tbody>
+        <tr>
+          <td>CVE-2021-42373~87</td>
+          <td>2021</td>
+          <td>awk, hush, lzma, man</td>
+          <td>栈/堆溢出、UAF</td>
+          <td>1.34.0</td>
+        </tr>
+        <tr>
+          <td>stack overflow</td>
+          <td>2023</td>
+          <td>多个解析类 applet</td>
+          <td>栈溢出，RCE 可能</td>
+          <td>1.36.x</td>
+        </tr>
+        <tr>
+          <td>USN-6961-1</td>
+          <td>2024</td>
+          <td>awk</td>
+          <td>内存误管理、DoS</td>
+          <td>已修复</td>
+        </tr>
+        <tr>
+          <td>CVE-2025-46394</td>
+          <td>2025</td>
+          <td>tar</td>
+          <td>控制字符注入</td>
+          <td>1.37.x+</td>
+        </tr>
+      </tbody>
+    </table>
+  </div>
+
+  <h3>单一二进制的安全含义</h3>
+  <div class="callout warn">
+    <div class="callout-title">风险放大效应</div>
+    <p>BusyBox 被约 40% 的分析固件镜像使用，任何漏洞通过一次更新可以影响数亿台设备。嵌入式设备的固件不可变性（immutability）导致补丁推送极其缓慢，漏洞暴露窗口极长。</p>
+  </div>
+
+  <h3>设计局限性</h3>
+  <ul>
+    <li><strong>功能不完整：</strong> 各 applet 只实现 GNU 工具的部分选项，脚本兼容性需注意</li>
+    <li><strong>GPL 病毒性：</strong> GPLv2 许可证要求分发时提供源码，这在商业嵌入式场景曾引发大量诉讼</li>
+    <li><strong>单点故障：</strong> busybox 二进制损坏可能导致整个系统工具链失效</li>
+    <li><strong>维护负担：</strong> 小型志愿者团队维护 200+ applet，安全审计难度高</li>
+    <li><strong>静态更新问题：</strong> 静态链接版本无法通过更新 libc 修复漏洞</li>
+  </ul>
+
+  <h3>SUID 安全配置</h3>
+  <pre><code><span class="c-comment">/* /etc/busybox.conf — BusyBox SUID 权限配置 */</span>
+<span class="c-comment">/* ENABLE_FEATURE_SUID_CONFIG 开启时读取 */</span>
+[SUID]
+<span class="c-comment"># 格式: applet = [sS][uUgGgO]*</span>
+su = ssx root.root   <span class="c-comment"># su 需要 setuid root</span>
+ping = ssx root.root <span class="c-comment"># ping 需要 setuid</span>
+mount = ssx root.root</code></pre>
+
+  <div class="first-principle">
+    <div class="first-principle-title">⚡ 第一性原理概述</div>
+    <p>BusyBox 的安全困境揭示了一个工程权衡：<strong>共享代码减少了存储占用，但也集中了攻击面</strong>。单一二进制使得一个解析漏洞可以同时影响多个「看似无关」的工具（因为它们共享 libbb 的 I/O 和解析代码）。这是资源优化与安全隔离之间的根本张力——没有免费的午餐。</p>
+  </div>
+</section>
+
+<!-- ═══════════════════ SECTION 12 ═══════════════════ -->
+<section class="section" id="s12">
+  <div class="section-header">
+    <span class="section-num">12</span>
+    <h2>横向对比：BusyBox vs Toybox vs GNU</h2>
+  </div>
+
+  <p>BusyBox 并非唯一的轻量化工具集方案。2006 年，Rob Landley（前 BusyBox 维护者）在离开项目后创建了 Toybox 作为替代品。</p>
+
+  <h3>三者全面对比</h3>
+  <div class="tbl-wrap">
+    <table>
+      <thead><tr><th>维度</th><th>BusyBox</th><th>Toybox</th><th>GNU Coreutils</th></tr></thead>
+      <tbody>
+        <tr>
+          <td>许可证</td>
+          <td><span class="badge badge-orange">GPLv2</span></td>
+          <td><span class="badge badge-green">0BSD（近公有域）</span></td>
+          <td><span class="badge badge-blue">GPLv3</span></td>
+        </tr>
+        <tr>
+          <td>二进制大小</td>
+          <td>~1 MB（musl 静态）</td>
+          <td>~1.5 MB</td>
+          <td>~150 MB（完整集）</td>
+        </tr>
+        <tr>
+          <td>Applet 数量</td>
+          <td>233+</td>
+          <td>100+</td>
+          <td>100+（单独二进制）</td>
+        </tr>
+        <tr>
+          <td>Android 使用</td>
+          <td>历史上有，现已换出</td>
+          <td><strong>2015+ 官方集成</strong></td>
+          <td>不使用</td>
+        </tr>
+        <tr>
+          <td>POSIX 合规</td>
+          <td>基本合规</td>
+          <td>强调完整合规</td>
+          <td>最完整</td>
+        </tr>
+        <tr>
+          <td>IoT 部署</td>
+          <td>★★★★★ 主导</td>
+          <td>★★☆☆☆ 增长中</td>
+          <td>★☆☆☆☆ 不适合</td>
+        </tr>
+        <tr>
+          <td>商业使用</td>
+          <td>需提供源码（GPLv2）</td>
+          <td>无限制</td>
+          <td>需提供源码（GPLv3）</td>
+        </tr>
+        <tr>
+          <td>设计架构</td>
+          <td>Multi-call binary</td>
+          <td>Multi-call binary</td>
+          <td>独立二进制</td>
+        </tr>
+      </tbody>
+    </table>
+  </div>
+
+  <h3>历史背景：Toybox 诞生的原因</h3>
+  <div class="callout info">
+    <div class="callout-title">来源：grokipedia.com</div>
+    <p>Rob Landley 于 2007 年离开 BusyBox 项目后，以 GPLv2（后改为 0BSD）重新实现了类似工具集。主要动因：① GPL 诉讼策略引发争议；② BusyBox 代码多年积累的复杂性；③ Android 生态需要无 copyleft 义务的工具集。Toybox 于 2015 年被 Android 官方集成替换原有 toolbox。</p>
+  </div>
+
+  <div class="fig-wrap">
+    <svg viewBox="0 0 560 180" xmlns="http://www.w3.org/2000/svg" style="width:100%;max-width:560px;display:block;margin:0 auto;">
+      <!-- Radar chart approximation as bar chart -->
+      <text x="280" y="18" font-size="11" fill="#8b92a8" text-anchor="middle">功能维度对比（示意）</text>
+      <!-- Dimensions -->
+      <g font-size="9" fill="#8b92a8">
+        <text x="15" y="48">尺寸效率</text>
+        <text x="15" y="78">功能完整</text>
+        <text x="15" y="108">商业友好</text>
+        <text x="15" y="138">IoT 适用</text>
+        <text x="15" y="168">生态成熟</text>
+      </g>
+      <!-- BusyBox bars (orange) -->
+      <rect x="100" y="36" width="260" height="12" rx="3" fill="rgba(232,83,26,0.6)"/>
+      <rect x="100" y="66" width="160" height="12" rx="3" fill="rgba(232,83,26,0.6)"/>
+      <rect x="100" y="96" width="130" height="12" rx="3" fill="rgba(232,83,26,0.6)"/>
+      <rect x="100" y="126" width="300" height="12" rx="3" fill="rgba(232,83,26,0.6)"/>
+      <rect x="100" y="156" width="320" height="12" rx="3" fill="rgba(232,83,26,0.6)"/>
+      <!-- Toybox bars (green) -->
+      <rect x="100" y="36" width="220" height="12" rx="3" fill="none" stroke="#4ade80" stroke-width="1.5" stroke-dasharray="3,2"/>
+      <rect x="100" y="66" width="200" height="12" rx="3" fill="none" stroke="#4ade80" stroke-width="1.5" stroke-dasharray="3,2"/>
+      <rect x="100" y="96" width="280" height="12" rx="3" fill="none" stroke="#4ade80" stroke-width="1.5" stroke-dasharray="3,2"/>
+      <rect x="100" y="126" width="180" height="12" rx="3" fill="none" stroke="#4ade80" stroke-width="1.5" stroke-dasharray="3,2"/>
+      <rect x="100" y="156" width="140" height="12" rx="3" fill="none" stroke="#4ade80" stroke-width="1.5" stroke-dasharray="3,2"/>
+      <!-- Legend -->
+      <rect x="400" y="70" width="12" height="12" rx="2" fill="rgba(232,83,26,0.7)"/>
+      <text x="416" y="81" font-size="9" fill="#8b92a8">BusyBox</text>
+      <rect x="400" y="90" width="12" height="12" rx="2" fill="none" stroke="#4ade80" stroke-width="1.5" stroke-dasharray="3,2"/>
+      <text x="416" y="101" font-size="9" fill="#8b92a8">Toybox</text>
+      <text x="400" y="130" font-size="8" fill="#8b92a8">注：示意图，</text>
+      <text x="400" y="143" font-size="8" fill="#8b92a8">非精确数据</text>
+    </svg>
+    <div class="fig-caption">图 12-1：BusyBox vs Toybox 维度对比</div>
+  </div>
+
+  <div class="first-principle">
+    <div class="first-principle-title">⚡ 第一性原理概述</div>
+    <p>BusyBox vs Toybox 的竞争揭示了一个深刻道理：<strong>技术设计无法与许可证策略分离</strong>。两者架构几乎相同（Multi-call binary），但许可证差异导致了完全不同的生态路径。Toybox 的 0BSD 让 Android 可以无顾虑集成，这与 BusyBox 的 GPLv2 copyleft 义务形成鲜明对比。选择开源许可证，本质上是在选择谁是你的用户群体。</p>
+  </div>
+
+  <!-- Chapter Navigation -->
+  <div class="chapter-nav">
+    <button id="prev-btn" onclick="navigateChapter(-1)" disabled>← 上一章</button>
+    <span style="font-size:0.8rem;color:var(--text-muted);">使用 ← → 键导航</span>
+    <button id="next-btn" onclick="navigateChapter(1)">下一章 →</button>
+  </div>
+</section>
+
+</div><!-- /content-wrap -->
+</main>
+
+<script>
+// ─── Section IDs in order ───────────────────────────────────────
+const sectionIds = ['s0','s1','s2','s3','s4','s5','s6','s7','s8','s9','s10','s11','s12'];
+let currentSection = 0;
+
+// ─── Progress Bar ────────────────────────────────────────────────
+const progressBar = document.getElementById('progress-bar');
+function updateProgress() {
+  const scrollTop = window.scrollY;
+  const docHeight = document.documentElement.scrollHeight - window.innerHeight;
+  const progress = docHeight > 0 ? (scrollTop / docHeight) * 100 : 0;
+  progressBar.style.width = Math.min(progress, 100) + '%';
+}
+
+// ─── Active nav highlight ─────────────────────────────────────────
+const navItems = document.querySelectorAll('.nav-item');
+const sections = sectionIds.map(id => document.getElementById(id));
+
+function updateActiveNav() {
+  const scrollPos = window.scrollY + window.innerHeight * 0.3;
+  let activeIdx = 0;
+  sections.forEach((sec, i) => {
+    if (sec && sec.offsetTop <= scrollPos) activeIdx = i;
+  });
+  currentSection = activeIdx;
+  navItems.forEach((item, i) => {
+    item.classList.toggle('active', i === activeIdx);
+  });
+  document.getElementById('prev-btn').disabled = activeIdx === 0;
+  document.getElementById('next-btn').disabled = activeIdx === sectionIds.length - 1;
+}
+
+window.addEventListener('scroll', () => { updateProgress(); updateActiveNav(); }, { passive: true });
+updateProgress(); updateActiveNav();
+
+// ─── Chapter Navigation ──────────────────────────────────────────
+function navigateChapter(dir) {
+  const target = Math.max(0, Math.min(sectionIds.length - 1, currentSection + dir));
+  const el = document.getElementById(sectionIds[target]);
+  if (el) el.scrollIntoView({ behavior: 'smooth', block: 'start' });
+}
+
+document.addEventListener('keydown', (e) => {
+  if (e.key === 'ArrowRight') navigateChapter(1);
+  if (e.key === 'ArrowLeft')  navigateChapter(-1);
+});
+
+// ─── Sidebar (mobile) ────────────────────────────────────────────
+const sidebar = document.getElementById('sidebar');
+const overlay = document.getElementById('overlay');
+
+function toggleSidebar() {
+  sidebar.classList.toggle('open');
+  overlay.classList.toggle('open');
+}
+function closeSidebar() {
+  sidebar.classList.remove('open');
+  overlay.classList.remove('open');
+}
+
+// Close sidebar on nav item click (mobile)
+navItems.forEach(item => {
+  item.addEventListener('click', () => {
+    if (window.innerWidth <= 768) closeSidebar();
+  });
+});
+
+// Smooth scroll for nav items
+navItems.forEach((item, i) => {
+  item.addEventListener('click', (e) => {
+    e.preventDefault();
+    const href = item.getAttribute('href');
+    const target = document.querySelector(href);
+    if (target) {
+      const offset = window.innerWidth <= 768 ? 60 : 0;
+      const top = target.getBoundingClientRect().top + window.scrollY - offset - 16;
+      window.scrollTo({ top, behavior: 'smooth' });
+    }
+  });
+});
+</script>
+</body>
+</html>

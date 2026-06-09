@@ -1,0 +1,605 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>应用进程视角的 Linux 内存布局</title>
+<style>
+  :root {
+    --bg: #f6f3ee;
+    --paper: rgba(255, 252, 246, 0.92);
+    --ink: #1f2933;
+    --muted: #52606d;
+    --line: #ded6c8;
+    --accent: #0a5c6b;
+    --accent2: #b45309;
+    --accent3: #7c3aed;
+    --ok: #2f855a;
+    --warn: #b45309;
+    --code: #f3efe6;
+    --shadow: 0 14px 34px rgba(31, 41, 51, 0.06);
+  }
+
+  * { box-sizing: border-box; }
+
+  body {
+    margin: 0;
+    color: var(--ink);
+    font-family: "Noto Serif CJK SC", "Source Han Serif SC", "Songti SC", serif;
+    background:
+      radial-gradient(circle at 0% 0%, rgba(124, 58, 237, 0.08), transparent 26%),
+      radial-gradient(circle at 100% 10%, rgba(10, 92, 107, 0.08), transparent 28%),
+      linear-gradient(180deg, #f8f5ef 0%, #efe7da 100%);
+    line-height: 1.72;
+  }
+
+  .wrap {
+    width: min(1160px, calc(100% - 32px));
+    margin: 0 auto;
+  }
+
+  header {
+    padding: 56px 0 28px;
+    border-bottom: 1px solid rgba(10, 92, 107, 0.12);
+  }
+
+  h1, h2, h3 {
+    font-family: "Noto Sans CJK SC", "Source Han Sans SC", "PingFang SC", sans-serif;
+    line-height: 1.24;
+  }
+
+  h1 {
+    margin: 0;
+    font-size: clamp(2rem, 4vw, 3.3rem);
+    letter-spacing: 0.01em;
+  }
+
+  .lead {
+    margin-top: 14px;
+    max-width: 900px;
+    color: var(--muted);
+    font-size: 1.04rem;
+  }
+
+  main {
+    padding: 24px 0 56px;
+  }
+
+  section {
+    margin: 22px 0;
+    padding: 24px;
+    background: var(--paper);
+    border: 1px solid var(--line);
+    border-radius: 18px;
+    box-shadow: var(--shadow);
+    backdrop-filter: blur(4px);
+  }
+
+  h2 {
+    margin: 0 0 14px;
+    font-size: 1.58rem;
+    color: var(--accent);
+  }
+
+  h3 {
+    margin: 18px 0 8px;
+    font-size: 1.08rem;
+    color: var(--accent2);
+  }
+
+  p, li { font-size: 0.98rem; }
+
+  code, pre {
+    font-family: "JetBrains Mono", "Cascadia Code", monospace;
+  }
+
+  code {
+    background: var(--code);
+    padding: 0.12em 0.36em;
+    border-radius: 6px;
+  }
+
+  pre {
+    margin: 12px 0;
+    padding: 16px;
+    background: #faf6ee;
+    border: 1px solid #e7ddcd;
+    border-radius: 14px;
+    overflow-x: auto;
+  }
+
+  .grid {
+    display: grid;
+    gap: 18px;
+  }
+
+  .grid.two {
+    grid-template-columns: repeat(auto-fit, minmax(300px, 1fr));
+  }
+
+  .callout, .note {
+    padding: 14px 16px;
+    border-radius: 14px;
+    background: #fff8ea;
+    border-left: 4px solid var(--warn);
+  }
+
+  .callout.ok {
+    background: #edf7f0;
+    border-left-color: var(--ok);
+  }
+
+  .path {
+    display: block;
+    padding: 13px 15px;
+    background: #f9f4eb;
+    border: 1px dashed #cabda9;
+    border-radius: 14px;
+    overflow-x: auto;
+    font-family: "JetBrains Mono", "Cascadia Code", monospace;
+    font-size: 0.94rem;
+  }
+
+  table {
+    width: 100%;
+    border-collapse: collapse;
+    margin-top: 10px;
+  }
+
+  th, td {
+    text-align: left;
+    vertical-align: top;
+    padding: 10px 12px;
+    border-bottom: 1px solid #ebe1d2;
+  }
+
+  th {
+    color: var(--accent);
+    font-family: "Noto Sans CJK SC", "Source Han Sans SC", sans-serif;
+    font-size: 0.94rem;
+  }
+
+  svg {
+    width: 100%;
+    height: auto;
+    display: block;
+    border-radius: 16px;
+    background: #fffdf8;
+    border: 1px solid #f0e7d9;
+  }
+
+  .small {
+    color: var(--muted);
+    font-size: 0.92rem;
+  }
+
+  .refs ol {
+    padding-left: 1.2rem;
+    margin-bottom: 0;
+  }
+
+  footer {
+    padding: 8px 0 30px;
+    color: var(--muted);
+    font-size: 0.9rem;
+  }
+
+  @media (max-width: 720px) {
+    section {
+      padding: 18px;
+      border-radius: 14px;
+    }
+  }
+</style>
+</head>
+<body>
+<header>
+  <div class="wrap">
+    <h1>应用进程视角的 Linux 内存布局</h1>
+    <p class="lead">本文从“一个用户态应用启动后，它自己眼中的内存世界是什么样”这个角度出发，梳理代码段、数据段、堆、mmap 区、用户栈、内核栈、VDSO 等对象的角色与形成过程。讲解重点放在原理、时机和行为，不以源码细节为主；源码仅作为轻量锚点，帮助把概念落到当前仓库的实现上。</p>
+  </div>
+</header>
+
+<main class="wrap">
+  <section>
+    <h2>一、先建立整体直觉</h2>
+    <div class="grid two">
+      <div class="callout ok">
+        <strong>从应用视角看，看到的是“虚拟地址空间”，不是物理内存。</strong>
+        <p>进程读写的每一个地址，首先都是虚拟地址。CPU 和内核再把这些虚拟地址翻译成物理地址，或者在需要时触发缺页异常去补齐映射。进程通常并不知道某个地址背后是否真的已经分配了物理页。</p>
+      </div>
+      <div class="note">
+        <strong>从内核视角看，这些地址空间由 VMA 组织。</strong>
+        <p>Linux kernel 官方文档强调：用户地址空间由一个个 <code>vm_area_struct</code> 管理，每个 VMA 描述一段“虚拟上连续、属性一致”的范围。一个进程的所有 VMA 共同构成它的地址空间。</p>
+      </div>
+    </div>
+
+    <p>因此，“进程内存布局”不应理解为一块简单的连续 RAM，而应理解为：</p>
+    <ul>
+      <li>一张虚拟地址地图。</li>
+      <li>地图上的每一块区域都有用途和权限，例如可执行、只读、私有、共享。</li>
+      <li>地图上的块与块之间，可能还没真正装入物理页，只是先把“允许访问的范围”定义好了。</li>
+    </ul>
+  </section>
+
+  <section>
+    <h2>二、一个典型进程会“看见”哪些区域</h2>
+    <p>以一个动态链接的普通用户程序为例，启动后它的虚拟地址空间里，通常会看到以下几类区域：</p>
+
+    <svg viewBox="0 0 980 760" aria-label="典型进程虚拟地址空间布局图">
+      <rect x="340" y="30" width="300" height="680" rx="18" fill="#fffaf0" stroke="#d8cdbb"></rect>
+      <text x="490" y="58" text-anchor="middle" font-size="24" fill="#0a5c6b">高地址</text>
+
+      <rect x="385" y="90" width="210" height="90" rx="12" fill="#efe8ff" stroke="#7c3aed"></rect>
+      <text x="490" y="122" text-anchor="middle" font-size="20">用户栈</text>
+      <text x="490" y="148" text-anchor="middle" font-size="13" fill="#52606d">main 线程栈、argv/envp、局部变量</text>
+      <text x="490" y="166" text-anchor="middle" font-size="13" fill="#52606d">通常向低地址增长</text>
+
+      <rect x="385" y="198" width="210" height="48" rx="10" fill="#f3f7fb" stroke="#0a5c6b"></rect>
+      <text x="490" y="228" text-anchor="middle" font-size="18">guard page / 栈保护区</text>
+
+      <rect x="385" y="270" width="210" height="120" rx="12" fill="#e7f4f6" stroke="#0a5c6b"></rect>
+      <text x="490" y="303" text-anchor="middle" font-size="20">mmap 区</text>
+      <text x="490" y="327" text-anchor="middle" font-size="13" fill="#52606d">共享库、匿名映射、文件映射</text>
+      <text x="490" y="345" text-anchor="middle" font-size="13" fill="#52606d">线程栈、JIT、分配器大块内存</text>
+      <text x="490" y="363" text-anchor="middle" font-size="13" fill="#52606d">地址通常由内核选择</text>
+
+      <rect x="385" y="405" width="210" height="38" rx="10" fill="#fff3e8" stroke="#b45309"></rect>
+      <text x="490" y="429" text-anchor="middle" font-size="18">[vdso]</text>
+
+      <rect x="385" y="470" width="210" height="78" rx="12" fill="#edf7f0" stroke="#2f855a"></rect>
+      <text x="490" y="501" text-anchor="middle" font-size="20">堆 heap</text>
+      <text x="490" y="526" text-anchor="middle" font-size="13" fill="#52606d">malloc 的一部分来源</text>
+      <text x="490" y="544" text-anchor="middle" font-size="13" fill="#52606d">通常向高地址增长</text>
+
+      <rect x="385" y="570" width="210" height="42" rx="10" fill="#fff7e6" stroke="#b45309"></rect>
+      <text x="490" y="596" text-anchor="middle" font-size="18">.data / .bss</text>
+
+      <rect x="385" y="625" width="210" height="58" rx="12" fill="#fdeee8" stroke="#b45309"></rect>
+      <text x="490" y="650" text-anchor="middle" font-size="18">代码段 / 只读数据</text>
+      <text x="490" y="670" text-anchor="middle" font-size="13" fill="#52606d">ELF 映像：text / rodata</text>
+
+      <text x="490" y="703" text-anchor="middle" font-size="24" fill="#0a5c6b">低地址</text>
+
+      <path d="M620 135 H755" stroke="#7c3aed" stroke-width="3"></path>
+      <text x="770" y="132" font-size="15" fill="#1f2933">用户可见的调用栈</text>
+      <text x="770" y="153" font-size="13" fill="#52606d">每个线程各有一份</text>
+
+      <path d="M620 330 H780" stroke="#0a5c6b" stroke-width="3"></path>
+      <text x="795" y="327" font-size="15" fill="#1f2933">地址空间最活跃的扩展区之一</text>
+      <text x="795" y="348" font-size="13" fill="#52606d">动态库、mmap 文件、匿名大块内存</text>
+
+      <path d="M620 510 H750" stroke="#2f855a" stroke-width="3"></path>
+      <text x="765" y="507" font-size="15" fill="#1f2933">program break 管理的区域</text>
+      <text x="765" y="528" font-size="13" fill="#52606d">传统堆增长方式</text>
+
+      <path d="M360 650 H230" stroke="#b45309" stroke-width="3"></path>
+      <text x="40" y="640" font-size="15" fill="#1f2933">程序映像本体</text>
+      <text x="40" y="661" font-size="13" fill="#52606d">从 ELF 装载而来</text>
+      <text x="40" y="682" font-size="13" fill="#52606d">代码、只读常量、初始数据</text>
+    </svg>
+
+    <table>
+      <thead>
+        <tr>
+          <th>区域</th>
+          <th>主要用途</th>
+          <th>增长方向 / 特征</th>
+        </tr>
+      </thead>
+      <tbody>
+        <tr>
+          <td>代码段 / 只读数据</td>
+          <td>程序指令、常量、ELF 装载内容</td>
+          <td>启动时由内核与动态链接器建立，通常位置相对稳定但可能受 ASLR 影响</td>
+        </tr>
+        <tr>
+          <td>.data / .bss</td>
+          <td>全局变量、静态变量</td>
+          <td>属于程序映像的一部分，和堆相邻但概念上不同</td>
+        </tr>
+        <tr>
+          <td>堆 heap</td>
+          <td>动态分配，小块 <code>malloc()</code> 常见来源</td>
+          <td>传统上由 <code>brk/sbrk</code> 增长，通常向高地址扩展</td>
+        </tr>
+        <tr>
+          <td>mmap 区</td>
+          <td>共享库、匿名映射、文件映射、大块内存</td>
+          <td>通常由内核在空闲地址中挑选，现代分配器大量依赖它</td>
+        </tr>
+        <tr>
+          <td>用户栈</td>
+          <td>函数调用栈、返回地址、局部变量、启动参数</td>
+          <td>通常向低地址增长，并带 guard page</td>
+        </tr>
+        <tr>
+          <td>VDSO</td>
+          <td>内核暴露给用户态的少量辅助代码页</td>
+          <td>例如某些时间相关调用的快速路径</td>
+        </tr>
+      </tbody>
+    </table>
+  </section>
+
+  <section>
+    <h2>三、这些区域是怎么来的</h2>
+    <span class="path">execve() 装载 ELF → 建立代码/数据相关映射 → 建立初始用户栈 → 动态链接器继续映射共享库 → 程序运行中通过 brk/mmap 扩展地址空间</span>
+
+    <div class="grid two">
+      <div>
+        <h3>1. 程序映像</h3>
+        <p>当进程通过 <code>execve()</code> 启动时，内核读取 ELF 文件，把代码段、只读数据段、可写数据段等映射进新地址空间。对于动态链接程序，还会再装入动态链接器和所需共享库。</p>
+      </div>
+      <div>
+        <h3>2. 初始用户栈</h3>
+        <p>内核在 exec 阶段会建立临时栈并最终定位到合适的用户栈地址，随后把 <code>argv</code>、<code>envp</code>、辅助向量等压入栈中。当前仓库里的锚点是 [exec.c](/home/xiaoyuan/sourceCodes/x2600kernel/fs/exec.c#L747) 的 <code>setup_arg_pages()</code>。</p>
+      </div>
+      <div>
+        <h3>3. 堆</h3>
+        <p>堆与“program break”相关。传统上，进程通过 <code>brk()/sbrk()</code> 改变数据段末端，从而扩大或收缩堆。当前仓库里真正建立这类匿名区的内核路径是 [mmap.c](/home/xiaoyuan/sourceCodes/x2600kernel/mm/mmap.c#L3080) 的 <code>do_brk_flags()</code>。</p>
+      </div>
+      <div>
+        <h3>4. mmap 区</h3>
+        <p><code>mmap()</code> 用于建立文件映射和匿名映射。共享库、JIT 代码、分配器的大块内存、线程栈等，经常都来自这里。man7 对 <code>mmap(2)</code> 的描述是最直接的权威来源。</p>
+      </div>
+    </div>
+
+    <svg viewBox="0 0 1040 430" aria-label="进程内存布局形成流程图">
+      <defs>
+        <marker id="arr" markerWidth="10" markerHeight="10" refX="8" refY="3" orient="auto">
+          <path d="M0,0 L0,6 L9,3 z" fill="#0a5c6b"></path>
+        </marker>
+      </defs>
+      <rect x="35" y="56" width="180" height="72" rx="14" fill="#fdeee8" stroke="#b45309"></rect>
+      <text x="125" y="85" text-anchor="middle" font-size="22">execve()</text>
+      <text x="125" y="108" text-anchor="middle" font-size="13" fill="#52606d">进入全新进程映像</text>
+
+      <rect x="255" y="56" width="230" height="72" rx="14" fill="#fff7e6" stroke="#b45309"></rect>
+      <text x="370" y="85" text-anchor="middle" font-size="22">ELF 装载</text>
+      <text x="370" y="108" text-anchor="middle" font-size="13" fill="#52606d">text / rodata / data / bss</text>
+
+      <rect x="525" y="56" width="230" height="72" rx="14" fill="#efe8ff" stroke="#7c3aed"></rect>
+      <text x="640" y="85" text-anchor="middle" font-size="22">建立初始用户栈</text>
+      <text x="640" y="108" text-anchor="middle" font-size="13" fill="#52606d">argv / envp / auxv</text>
+
+      <rect x="795" y="56" width="210" height="72" rx="14" fill="#e7f4f6" stroke="#0a5c6b"></rect>
+      <text x="900" y="85" text-anchor="middle" font-size="22">进入用户态入口</text>
+      <text x="900" y="108" text-anchor="middle" font-size="13" fill="#52606d">_start / 动态链接器 / main</text>
+
+      <path d="M215 92 H248" stroke="#0a5c6b" stroke-width="3" marker-end="url(#arr)"></path>
+      <path d="M485 92 H518" stroke="#0a5c6b" stroke-width="3" marker-end="url(#arr)"></path>
+      <path d="M755 92 H788" stroke="#0a5c6b" stroke-width="3" marker-end="url(#arr)"></path>
+
+      <rect x="160" y="244" width="240" height="90" rx="16" fill="#edf7f0" stroke="#2f855a"></rect>
+      <text x="280" y="279" text-anchor="middle" font-size="22">brk / sbrk</text>
+      <text x="280" y="305" text-anchor="middle" font-size="14" fill="#52606d">传统堆增长方式</text>
+
+      <rect x="640" y="244" width="240" height="90" rx="16" fill="#e7f4f6" stroke="#0a5c6b"></rect>
+      <text x="760" y="279" text-anchor="middle" font-size="22">mmap</text>
+      <text x="760" y="305" text-anchor="middle" font-size="14" fill="#52606d">共享库、文件映射、匿名映射</text>
+
+      <path d="M900 129 V190 C900 220 840 235 780 240" stroke="#0a5c6b" stroke-width="3" fill="none" marker-end="url(#arr)"></path>
+      <path d="M880 129 V190 C880 220 430 235 300 240" stroke="#2f855a" stroke-width="3" fill="none" marker-end="url(#arr)"></path>
+    </svg>
+  </section>
+
+  <section>
+    <h2>四、堆和 mmap 区，为什么经常会让人混淆</h2>
+    <p>很多人把“动态分配内存”简单等同于“堆”，但在现代 Linux 进程里，<code>malloc()</code> 背后可能同时使用两套来源：</p>
+    <ul>
+      <li>小块、频繁分配：常常来自 <code>brk</code> 扩展的传统堆。</li>
+      <li>大块、特殊对齐、线程相关分配：常常直接来自 <code>mmap</code> 的匿名映射。</li>
+    </ul>
+
+    <div class="grid two">
+      <div class="callout ok">
+        <strong>堆是一个概念，brk 是一种实现路径。</strong>
+        <p>从应用员角度说“堆”没有问题；但从内核角度，heap 往往对应 program break 附近那段 VMA，而很多动态内存并不一定来自那里。</p>
+      </div>
+      <div class="note">
+        <strong>为什么现代分配器喜欢 mmap</strong>
+        <p><code>mmap</code> 更容易独立释放大块区域、减少碎片，也更适合线程化程序。于是你会看到某些程序的 <code>/proc/pid/maps</code> 中，真正的 <code>[heap]</code> 并不大，但匿名映射很多。</p>
+      </div>
+    </div>
+
+    <pre>示意例子：
+malloc(8 KB)    -> 可能来自已有 heap
+malloc(64 MB)   -> 很可能直接触发匿名 mmap
+dlopen()        -> 触发新的文件映射与匿名映射
+pthread_create() -> 新线程通常需要新用户栈，常见实现也会借助 mmap</pre>
+  </section>
+
+  <section>
+    <h2>五、用户栈是什么，和内核栈有什么区别</h2>
+    <div class="grid two">
+      <div>
+        <h3>用户栈</h3>
+        <p>用户栈位于用户地址空间中，保存函数调用链、返回地址、局部变量、参数等。它是应用代码直接使用的栈。主线程启动时，<code>argv</code>、<code>envp</code> 和辅助向量也是从这里开始交给用户程序的。</p>
+      </div>
+      <div>
+        <h3>内核栈</h3>
+        <p>内核栈不在用户地址空间里。每个线程都会有自己的内核栈，用于系统调用、中断、异常和内核态执行。用户程序既看不到，也不能直接访问它。</p>
+      </div>
+    </div>
+
+    <svg viewBox="0 0 1040 420" aria-label="用户栈与内核栈关系图">
+      <rect x="70" y="72" width="390" height="255" rx="18" fill="#fffaf0" stroke="#d8cdbb"></rect>
+      <text x="265" y="108" text-anchor="middle" font-size="24" fill="#0a5c6b">用户地址空间</text>
+
+      <rect x="155" y="145" width="220" height="125" rx="14" fill="#efe8ff" stroke="#7c3aed"></rect>
+      <text x="265" y="176" text-anchor="middle" font-size="22">用户栈</text>
+      <text x="265" y="202" text-anchor="middle" font-size="14" fill="#52606d">函数调用、局部变量</text>
+      <text x="265" y="224" text-anchor="middle" font-size="14" fill="#52606d">argv / envp / auxv 初始位于此</text>
+      <text x="265" y="246" text-anchor="middle" font-size="14" fill="#52606d">进程可读写，受页表保护</text>
+
+      <rect x="580" y="72" width="390" height="255" rx="18" fill="#f6f7fb" stroke="#c9d2dd"></rect>
+      <text x="775" y="108" text-anchor="middle" font-size="24" fill="#0a5c6b">内核空间 / 线程内核栈</text>
+
+      <rect x="665" y="145" width="220" height="125" rx="14" fill="#e7f4f6" stroke="#0a5c6b"></rect>
+      <text x="775" y="176" text-anchor="middle" font-size="22">内核栈</text>
+      <text x="775" y="202" text-anchor="middle" font-size="14" fill="#52606d">系统调用、异常、中断时使用</text>
+      <text x="775" y="224" text-anchor="middle" font-size="14" fill="#52606d">每个线程一份</text>
+      <text x="775" y="246" text-anchor="middle" font-size="14" fill="#52606d">用户态不可直接访问</text>
+
+      <path d="M375 205 H655" stroke="#0a5c6b" stroke-width="3"></path>
+      <text x="515" y="192" text-anchor="middle" font-size="15" fill="#1f2933">系统调用 / 异常切换</text>
+    </svg>
+
+    <p>当前 MIPS 仓库里可以看到：</p>
+    <ul>
+      <li>用户地址空间上限由 [processor.h](/home/xiaoyuan/sourceCodes/x2600kernel/arch/mips/include/asm/processor.h#L37) 一带的 <code>TASK_SIZE</code> / <code>STACK_TOP_MAX</code> 定义。</li>
+      <li>内核栈基础访问接口在 [task_stack.h](/home/xiaoyuan/sourceCodes/x2600kernel/include/linux/sched/task_stack.h#L1)；它直接说明 <code>task-&gt;stack</code> 表示 kernel stack。</li>
+      <li>MIPS 上线程寄存器现场通常放在内核栈顶部附近，可从 [processor.h](/home/xiaoyuan/sourceCodes/x2600kernel/arch/mips/include/asm/processor.h#L438) 的 <code>task_pt_regs(tsk)</code> 看出。</li>
+    </ul>
+
+    <div class="callout ok">
+      <strong>一句话记忆</strong>
+      <p>用户栈是“应用自己用的栈”，内核栈是“线程进内核以后临时落脚的栈”。二者都叫栈，但不在同一片地址空间，也不由同一段代码直接操作。</p>
+    </div>
+  </section>
+
+  <section>
+    <h2>六、为什么说进程“看到”的布局并不等于已经分配好的物理内存</h2>
+    <p>虚拟地址空间的一个核心价值，就是允许“先定义范围，再按需分配”。Linux kernel 官方文档对匿名内存的描述非常关键：匿名映射通常先只建立“允许访问”的地址范围；读访问可能映射到零页，写访问才真正分配普通物理页。</p>
+
+    <table>
+      <thead>
+        <tr>
+          <th>现象</th>
+          <th>进程看到什么</th>
+          <th>内核可能实际做了什么</th>
+        </tr>
+      </thead>
+      <tbody>
+        <tr>
+          <td>刚 <code>mmap</code> 了一大块匿名内存</td>
+          <td>地址空间里多出一块可访问区域</td>
+          <td>可能只建立了 VMA 和部分页表，没有为每页都分配物理页</td>
+        </tr>
+        <tr>
+          <td>第一次读取某页</td>
+          <td>读到零值或文件内容</td>
+          <td>可能通过缺页异常补齐页表，匿名页可能先映射零页</td>
+        </tr>
+        <tr>
+          <td>第一次写匿名页</td>
+          <td>写成功</td>
+          <td>分配真正物理页，建立可写映射</td>
+        </tr>
+        <tr>
+          <td>fork 后写共享私有页</td>
+          <td>写成功，父子互不影响</td>
+          <td>触发 COW，分配新页并复制旧内容</td>
+        </tr>
+      </tbody>
+    </table>
+
+    <svg viewBox="0 0 1040 360" aria-label="从虚拟范围到物理页按需分配图">
+      <rect x="70" y="118" width="250" height="110" rx="16" fill="#fff7e6" stroke="#b45309"></rect>
+      <text x="195" y="154" text-anchor="middle" font-size="22">VMA 已存在</text>
+      <text x="195" y="180" text-anchor="middle" font-size="14" fill="#52606d">进程已经“看见”这块地址范围</text>
+      <text x="195" y="202" text-anchor="middle" font-size="14" fill="#52606d">但未必每页都有物理页</text>
+
+      <rect x="405" y="118" width="250" height="110" rx="16" fill="#e7f4f6" stroke="#0a5c6b"></rect>
+      <text x="530" y="154" text-anchor="middle" font-size="22">访问触发缺页</text>
+      <text x="530" y="180" text-anchor="middle" font-size="14" fill="#52606d">页表里没有有效映射</text>
+      <text x="530" y="202" text-anchor="middle" font-size="14" fill="#52606d">或发生写保护异常</text>
+
+      <rect x="740" y="82" width="240" height="180" rx="16" fill="#edf7f0" stroke="#2f855a"></rect>
+      <text x="860" y="118" text-anchor="middle" font-size="22">内核处理后</text>
+      <text x="860" y="149" text-anchor="middle" font-size="14" fill="#52606d">分配物理页 / 装入文件页</text>
+      <text x="860" y="171" text-anchor="middle" font-size="14" fill="#52606d">更新页表项</text>
+      <text x="860" y="193" text-anchor="middle" font-size="14" fill="#52606d">回填 TLB</text>
+      <text x="860" y="215" text-anchor="middle" font-size="14" fill="#52606d">继续执行用户指令</text>
+
+      <path d="M320 173 H395" stroke="#0a5c6b" stroke-width="3"></path>
+      <path d="M655 173 H730" stroke="#2f855a" stroke-width="3"></path>
+    </svg>
+  </section>
+
+  <section>
+    <h2>七、一个具体例子：程序启动后，内存是如何逐步“长出来”的</h2>
+    <pre>int main(void)
+{
+    char local[4096];              // 局部变量：用户栈
+    void *p1 = malloc(1024);       // 小块分配：常见来自 heap
+    void *p2 = malloc(64 * 1024 * 1024); // 大块分配：常见直接走 mmap
+    int fd = open("data.bin", O_RDONLY);
+    void *p3 = mmap(NULL, 1 << 20, PROT_READ, MAP_PRIVATE, fd, 0); // 文件映射
+    ...
+}</pre>
+
+    <table>
+      <thead>
+        <tr>
+          <th>对象</th>
+          <th>程序员的感受</th>
+          <th>更接近内核真实情况的解释</th>
+        </tr>
+      </thead>
+      <tbody>
+        <tr>
+          <td><code>local[4096]</code></td>
+          <td>我在栈上放了一个数组</td>
+          <td>该地址位于用户栈 VMA 中，首次触碰时可能通过缺页建立真实页映射</td>
+        </tr>
+        <tr>
+          <td><code>malloc(1024)</code></td>
+          <td>堆上分配 1KB</td>
+          <td>分配器可能从已有 heap 切出 1KB，底层不一定新增系统调用</td>
+        </tr>
+        <tr>
+          <td><code>malloc(64MB)</code></td>
+          <td>堆上分配很大一块</td>
+          <td>分配器往往直接用匿名 <code>mmap</code>，在 <code>/proc/pid/maps</code> 中体现为新的匿名映射</td>
+        </tr>
+        <tr>
+          <td>文件 <code>mmap</code></td>
+          <td>拿到一段像数组一样可读的内存</td>
+          <td>这段地址背后是文件页缓存和文件映射，第一次触碰时可能产生文件缺页</td>
+        </tr>
+      </tbody>
+    </table>
+
+    <div class="note">
+      <strong>很好用的观察窗口</strong>
+      <p><code>/proc/&lt;pid&gt;/maps</code> 会把当前进程的映射区域列出来，包括地址范围、权限、偏移、设备、inode 和路径名。man7 的 <code>proc_pid_maps(5)</code> 对字段含义有权威说明。</p>
+    </div>
+  </section>
+
+  <section>
+    <h2>八、把这些概念和当前仓库轻量对应起来</h2>
+    <p>虽然本文不以源码讲解为主，但下面这些位置足以帮助你把概念落到实现上：</p>
+    <ul>
+      <li>用户地址空间上限与栈顶上限： [processor.h](/home/xiaoyuan/sourceCodes/x2600kernel/arch/mips/include/asm/processor.h#L37)</li>
+      <li>exec 阶段为用户栈最终落位并设置权限： [exec.c](/home/xiaoyuan/sourceCodes/x2600kernel/fs/exec.c#L747)</li>
+      <li>程序 break 对应匿名区扩展： [mmap.c](/home/xiaoyuan/sourceCodes/x2600kernel/mm/mmap.c#L3080)</li>
+      <li>线程内核栈接口： [task_stack.h](/home/xiaoyuan/sourceCodes/x2600kernel/include/linux/sched/task_stack.h#L1)</li>
+    </ul>
+
+    <div class="callout ok">
+      <strong>理解顺序建议</strong>
+      <p>先把“进程看见的是虚拟空间”吃透，再理解“VMA 是地图块”“页表是翻译表”“TLB 是翻译缓存”“缺页是按需兑现机制”。这样再回头看源码，就不会被细节先压住。</p>
+    </div>
+  </section>
+
+  <section class="refs">
+    <h2>参考资料</h2>
+    <ol>
+      <li>Linux kernel documentation: <code>docs.kernel.org/admin-guide/mm/concepts.html</code></li>
+      <li>Linux kernel documentation: <code>docs.kernel.org/mm/process_addrs.html</code></li>
+      <li>Linux man-pages: <code>proc_pid_maps(5)</code></li>
+      <li>Linux man-pages: <code>mmap(2)</code></li>
+      <li>Linux man-pages: <code>brk(2)</code></li>
+      <li>当前仓库源码：<code>fs/exec.c</code>、<code>mm/mmap.c</code>、<code>arch/mips/include/asm/processor.h</code>、<code>include/linux/sched/task_stack.h</code></li>
+    </ol>
+    <p class="small">说明：本文中关于地址布局的“形状”是典型 Linux 进程视图，而不是承诺所有架构、所有链接方式、所有 ASLR 配置下都完全相同的固定绝对地址排布。</p>
+  </section>
+</main>
+
+<footer class="wrap">
+  文档文件：<code>doc/process_memory_layout_view.html</code>
+</footer>
+</body>
+</html>

@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Convert program/gcc-compile-time-checks.html to markdown sections for ch23."""
+"""Convert program/gcc/gcc-compile-time-checks.html to markdown sections for ch23."""
 
 from __future__ import annotations
 
@@ -8,7 +8,7 @@ import re
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
-HTML_PATH = ROOT / "program" / "gcc-compile-time-checks.html"
+HTML_PATH = ROOT / "program" / "gcc" / "gcc-compile-time-checks.html"
 
 
 def strip_spans(text: str) -> str:

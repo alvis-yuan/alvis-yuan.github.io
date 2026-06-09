@@ -1,0 +1,1984 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>glibc Pthread TLS 实现原理深度分析</title>
+<style>
+  :root {
+    --bg: #0f1117;
+    --bg2: #161b22;
+    --bg3: #1c2128;
+    --border: #30363d;
+    --text: #e6edf3;
+    --text2: #8b949e;
+    --accent: #58a6ff;
+    --accent2: #79c0ff;
+    --green: #3fb950;
+    --orange: #d29922;
+    --purple: #bc8cff;
+    --red: #f85149;
+    --yellow: #e3b341;
+    --nav-w: 280px;
+    --header-h: 48px;
+  }
+  *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+  html { scroll-behavior: smooth; font-size: 15px; }
+  body {
+    background: var(--bg);
+    color: var(--text);
+    font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', 'PingFang SC', 'Microsoft YaHei', sans-serif;
+    line-height: 1.7;
+    overflow-x: hidden;
+  }
+
+  /* ── Progress bar ── */
+  #progress-bar {
+    position: fixed; top: 0; left: 0; height: 3px;
+    background: linear-gradient(90deg, var(--accent), var(--purple));
+    width: 0%; z-index: 9999;
+    transition: width 0.1s ease;
+  }
+
+  /* ── Top header ── */
+  #top-header {
+    position: fixed; top: 3px; left: 0; right: 0;
+    height: var(--header-h);
+    background: rgba(15,17,23,0.92);
+    backdrop-filter: blur(10px);
+    border-bottom: 1px solid var(--border);
+    display: flex; align-items: center; padding: 0 1rem;
+    z-index: 1000; gap: 1rem;
+  }
+  #hamburger {
+    display: none; cursor: pointer; background: none; border: none;
+    color: var(--text); font-size: 1.3rem; padding: 4px 8px;
+    border-radius: 6px;
+  }
+  #hamburger:hover { background: var(--bg3); }
+  #header-title {
+    font-size: 0.85rem; font-weight: 600; color: var(--accent);
+    white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+  }
+  #reading-info {
+    margin-left: auto; font-size: 0.75rem; color: var(--text2);
+    display: flex; gap: 1rem; align-items: center; white-space: nowrap;
+  }
+
+  /* ── Layout ── */
+  #layout { display: flex; padding-top: calc(var(--header-h) + 3px); min-height: 100vh; }
+
+  /* ── Sidebar ── */
+  #sidebar {
+    position: fixed;
+    top: calc(var(--header-h) + 3px);
+    left: 0; bottom: 0;
+    width: var(--nav-w);
+    background: var(--bg2);
+    border-right: 1px solid var(--border);
+    overflow-y: auto; overflow-x: hidden;
+    z-index: 900;
+    transition: transform 0.28s ease;
+    scrollbar-width: thin;
+    scrollbar-color: var(--border) transparent;
+  }
+  #sidebar::-webkit-scrollbar { width: 4px; }
+  #sidebar::-webkit-scrollbar-thumb { background: var(--border); border-radius: 2px; }
+
+  .nav-group { padding: 0.5rem 0; }
+  .nav-group-title {
+    font-size: 0.68rem; font-weight: 700; letter-spacing: 0.08em;
+    color: var(--text2); text-transform: uppercase;
+    padding: 0.6rem 1rem 0.3rem;
+  }
+  .nav-item {
+    display: block; padding: 0.35rem 1rem 0.35rem 1.25rem;
+    font-size: 0.8rem; color: var(--text2);
+    text-decoration: none; border-left: 3px solid transparent;
+    transition: all 0.18s; cursor: pointer; line-height: 1.4;
+  }
+  .nav-item:hover { color: var(--text); background: var(--bg3); }
+  .nav-item.active {
+    color: var(--accent); border-left-color: var(--accent);
+    background: rgba(88,166,255,0.08); font-weight: 600;
+  }
+  .nav-divider { height: 1px; background: var(--border); margin: 0.4rem 0; }
+
+  /* ── Main content ── */
+  #main {
+    margin-left: var(--nav-w);
+    flex: 1; min-width: 0;
+    padding: 2.5rem 2rem 5rem;
+    max-width: calc(100% - var(--nav-w));
+  }
+
+  /* ── Sections ── */
+  .section {
+    max-width: 860px; margin: 0 auto 4rem;
+    scroll-margin-top: calc(var(--header-h) + 16px);
+  }
+  .section-badge {
+    display: inline-block; font-size: 0.68rem; font-weight: 700;
+    letter-spacing: 0.1em; text-transform: uppercase;
+    color: var(--accent); background: rgba(88,166,255,0.12);
+    border: 1px solid rgba(88,166,255,0.3);
+    padding: 2px 8px; border-radius: 4px; margin-bottom: 0.6rem;
+  }
+  h1.page-title {
+    font-size: clamp(1.5rem, 3.5vw, 2rem);
+    font-weight: 800; color: var(--text);
+    line-height: 1.25; margin-bottom: 0.6rem;
+  }
+  .page-subtitle { font-size: 0.9rem; color: var(--text2); margin-bottom: 2rem; }
+
+  h2.sec-title {
+    font-size: clamp(1.1rem, 2.5vw, 1.4rem);
+    font-weight: 700; color: var(--text);
+    padding-bottom: 0.5rem;
+    border-bottom: 2px solid var(--border);
+    margin-bottom: 1.2rem; margin-top: 0.5rem;
+  }
+  h2.sec-title span.ico { margin-right: 0.4rem; }
+
+  h3 {
+    font-size: 1rem; font-weight: 700; color: var(--accent2);
+    margin: 1.5rem 0 0.6rem;
+  }
+
+  p { margin-bottom: 0.9rem; color: var(--text); font-size: 0.9rem; }
+  a { color: var(--accent); text-decoration: none; }
+  a:hover { text-decoration: underline; }
+
+  code {
+    font-family: 'JetBrains Mono', 'Fira Code', 'Cascadia Code', monospace;
+    font-size: 0.82em;
+    background: var(--bg3); color: var(--yellow);
+    border: 1px solid var(--border);
+    padding: 1px 5px; border-radius: 4px;
+  }
+  pre {
+    background: var(--bg3); border: 1px solid var(--border);
+    border-radius: 8px; padding: 1rem 1.2rem;
+    overflow-x: auto; margin: 1rem 0;
+    font-family: 'JetBrains Mono', 'Fira Code', monospace;
+    font-size: 0.8rem; line-height: 1.6;
+    scrollbar-width: thin; scrollbar-color: var(--border) transparent;
+  }
+  pre::-webkit-scrollbar { height: 4px; }
+  pre::-webkit-scrollbar-thumb { background: var(--border); border-radius: 2px; }
+  pre code { background: none; border: none; padding: 0; color: var(--text); }
+  .kw { color: #ff7b72; }
+  .ty { color: #79c0ff; }
+  .cm { color: #8b949e; font-style: italic; }
+  .str { color: #a5d6ff; }
+  .nu { color: #f2cc60; }
+  .fn { color: #d2a8ff; }
+  .pp { color: #ffa657; }
+
+  ul, ol { padding-left: 1.5rem; margin-bottom: 0.9rem; }
+  li { margin-bottom: 0.3rem; font-size: 0.9rem; }
+
+  /* ── Callouts ── */
+  .callout {
+    border-left: 4px solid;
+    border-radius: 0 8px 8px 0;
+    padding: 0.8rem 1rem; margin: 1rem 0;
+    font-size: 0.88rem;
+  }
+  .callout-info { border-color: var(--accent); background: rgba(88,166,255,0.07); }
+  .callout-warn { border-color: var(--orange); background: rgba(210,153,34,0.07); }
+  .callout-key  { border-color: var(--green); background: rgba(63,185,80,0.07); }
+  .callout-title { font-weight: 700; margin-bottom: 0.4rem; font-size: 0.82rem; letter-spacing: 0.04em; }
+  .callout-info .callout-title { color: var(--accent); }
+  .callout-warn .callout-title { color: var(--orange); }
+  .callout-key  .callout-title { color: var(--green); }
+
+  /* ── First-principles box ── */
+  .first-principle {
+    background: linear-gradient(135deg, rgba(88,166,255,0.06), rgba(188,140,255,0.06));
+    border: 1px solid rgba(188,140,255,0.3);
+    border-radius: 10px; padding: 1rem 1.2rem; margin-top: 2rem;
+  }
+  .fp-title {
+    font-size: 0.75rem; font-weight: 800; letter-spacing: 0.12em;
+    text-transform: uppercase; color: var(--purple); margin-bottom: 0.5rem;
+    display: flex; align-items: center; gap: 0.4rem;
+  }
+  .fp-content { font-size: 0.88rem; color: var(--text2); line-height: 1.7; }
+
+  /* ── SVG diagram containers ── */
+  .diagram-wrap {
+    background: var(--bg3); border: 1px solid var(--border);
+    border-radius: 10px; padding: 1rem;
+    margin: 1.2rem 0; overflow-x: auto;
+    scrollbar-width: thin; scrollbar-color: var(--border) transparent;
+  }
+  .diagram-wrap::-webkit-scrollbar { height: 4px; }
+  .diagram-wrap::-webkit-scrollbar-thumb { background: var(--border); }
+  .diagram-caption {
+    text-align: center; font-size: 0.75rem; color: var(--text2);
+    margin-top: 0.6rem; font-style: italic;
+  }
+  .diagram-wrap svg { display: block; margin: 0 auto; }
+
+  /* ── Reference links ── */
+  .ref-list { list-style: none; padding-left: 0; }
+  .ref-list li {
+    padding: 0.5rem 0; border-bottom: 1px solid var(--border);
+    font-size: 0.82rem;
+  }
+  .ref-list li:last-child { border-bottom: none; }
+  .ref-tag {
+    display: inline-block; font-size: 0.68rem; font-weight: 700;
+    color: var(--bg); background: var(--accent);
+    padding: 1px 6px; border-radius: 3px; margin-right: 0.5rem;
+  }
+
+  /* ── Table ── */
+  table { width: 100%; border-collapse: collapse; margin: 1rem 0; font-size: 0.84rem; }
+  th {
+    background: var(--bg3); color: var(--accent);
+    padding: 0.5rem 0.8rem; border: 1px solid var(--border);
+    font-weight: 700; text-align: left;
+  }
+  td { padding: 0.45rem 0.8rem; border: 1px solid var(--border); }
+  tr:nth-child(even) td { background: rgba(255,255,255,0.02); }
+
+  /* ── Tag badges ── */
+  .tag {
+    display: inline-block; font-size: 0.68rem; font-weight: 700;
+    padding: 1px 7px; border-radius: 12px; margin: 0 2px;
+  }
+  .tag-blue { background: rgba(88,166,255,0.18); color: var(--accent); }
+  .tag-green { background: rgba(63,185,80,0.18); color: var(--green); }
+  .tag-orange { background: rgba(210,153,34,0.18); color: var(--orange); }
+  .tag-purple { background: rgba(188,140,255,0.18); color: var(--purple); }
+
+  /* ── Overlay for mobile ── */
+  #overlay {
+    display: none; position: fixed; inset: 0;
+    background: rgba(0,0,0,0.6); z-index: 850;
+  }
+
+  /* ── Responsive ── */
+  @media (max-width: 768px) {
+    :root { --nav-w: 260px; }
+    #hamburger { display: block; }
+    #sidebar { transform: translateX(-100%); }
+    #sidebar.open { transform: translateX(0); }
+    #overlay.show { display: block; }
+    #main { margin-left: 0; max-width: 100%; padding: 1.5rem 1rem 4rem; }
+    .section { margin-bottom: 3rem; }
+  }
+</style>
+</head>
+<body>
+
+<div id="progress-bar"></div>
+
+<!-- Top header -->
+<header id="top-header">
+  <button id="hamburger" aria-label="菜单">☰</button>
+  <div id="header-title">glibc Pthread TLS 实现原理分析</div>
+  <div id="reading-info">
+    <span id="pct">0%</span>
+    <span id="section-indicator" style="color:var(--accent)"></span>
+  </div>
+</header>
+
+<!-- Mobile overlay -->
+<div id="overlay"></div>
+
+<div id="layout">
+
+<!-- Sidebar -->
+<nav id="sidebar" aria-label="章节导航">
+  <div class="nav-group">
+    <div class="nav-group-title">概述</div>
+    <a class="nav-item" data-target="intro">§1 引言与背景</a>
+    <a class="nav-item" data-target="overview">§2 TLS 整体架构</a>
+  </div>
+  <div class="nav-divider"></div>
+  <div class="nav-group">
+    <div class="nav-group-title">核心数据结构</div>
+    <a class="nav-item" data-target="tcb">§3 线程控制块 (TCB)</a>
+    <a class="nav-item" data-target="dtv">§4 动态线程向量 (DTV)</a>
+    <a class="nav-item" data-target="pthread-struct">§5 struct pthread 结构</a>
+  </div>
+  <div class="nav-divider"></div>
+  <div class="nav-group">
+    <div class="nav-group-title">内存布局</div>
+    <a class="nav-item" data-target="variant2">§6 Variant II 内存布局</a>
+    <a class="nav-item" data-target="fs-register">§7 FS 段寄存器机制</a>
+    <a class="nav-item" data-target="static-tls">§8 静态 TLS 块</a>
+  </div>
+  <div class="nav-divider"></div>
+  <div class="nav-group">
+    <div class="nav-group-title">访问模型</div>
+    <a class="nav-item" data-target="le-model">§9 Local Exec 模型</a>
+    <a class="nav-item" data-target="ie-model">§10 Initial Exec 模型</a>
+    <a class="nav-item" data-target="gd-model">§11 Global Dynamic 模型</a>
+    <a class="nav-item" data-target="ld-model">§12 Local Dynamic 模型</a>
+  </div>
+  <div class="nav-divider"></div>
+  <div class="nav-group">
+    <div class="nav-group-title">初始化流程</div>
+    <a class="nav-item" data-target="init-main">§13 主线程 TLS 初始化</a>
+    <a class="nav-item" data-target="init-thread">§14 子线程 TLS 初始化</a>
+    <a class="nav-item" data-target="tls-get-addr">§15 __tls_get_addr 实现</a>
+  </div>
+  <div class="nav-divider"></div>
+  <div class="nav-group">
+    <div class="nav-group-title">pthread_key API</div>
+    <a class="nav-item" data-target="key-api">§16 pthread_key 机制</a>
+    <a class="nav-item" data-target="key-impl">§17 两级数组实现</a>
+  </div>
+  <div class="nav-divider"></div>
+  <div class="nav-group">
+    <div class="nav-group-title">对比与参考</div>
+    <a class="nav-item" data-target="comparison">§18 两种 TLS 方式对比</a>
+    <a class="nav-item" data-target="refs">§19 参考资料</a>
+  </div>
+</nav>
+
+<!-- Main content -->
+<main id="main">
+
+<!-- §1 引言 -->
+<section class="section" id="intro">
+  <div class="section-badge">Chapter 01</div>
+  <h1 class="page-title">glibc Pthread TLS 实现原理深度分析</h1>
+  <p class="page-subtitle">基于 glibc NPTL 源码 · x86-64 Linux · 权威技术文档</p>
+  <h2 class="sec-title"><span class="ico">📖</span>引言与背景</h2>
+  <p>线程本地存储（Thread-Local Storage，TLS）提供了一种机制，使得每个线程都能拥有全局变量的独立副本。它是 GCC 扩展关键字 <code>__thread</code>、C11 <code>_Thread_local</code> 以及 C++11 <code>thread_local</code> 的底层实现基础。</p>
+  <p>POSIX 标准明确规定：<em>"每个线程拥有自己的线程 ID、调度优先级与策略、errno 值、浮点环境、线程特定键/值绑定……"</em> TLS 正是实现这一特性的核心机制。</p>
+  <p>一个典型用例是 <code>errno</code>：不同线程调用系统调用时，<code>errno</code> 的值互不干扰。在 glibc 中，<code>errno</code> 通过 <code>__errno_location()</code> 函数返回一个线程局部变量的地址来实现线程隔离。</p>
+
+  <div class="callout callout-info">
+    <div class="callout-title">📌 权威参考</div>
+    Ulrich Drepper 撰写的 <em>《ELF Handling For Thread-Local Storage》</em> 是 ELF TLS 的权威规范文档。各架构处理器的 psABI 文档通常会引用此文档。glibc 实现严格遵循该规范。
+  </div>
+
+  <h3>Linux ELF TLS 的协作层次</h3>
+  <p>完整的 TLS 实现需要编译器、链接器、动态链接器、操作系统内核和语言运行时的协同配合。</p>
+
+  <div class="diagram-wrap">
+    <svg viewBox="0 0 700 200" width="100%" style="max-width:700px">
+      <defs>
+        <linearGradient id="g1" x1="0%" y1="0%" x2="100%" y2="0%">
+          <stop offset="0%" style="stop-color:#1c2128"/>
+          <stop offset="100%" style="stop-color:#21262d"/>
+        </linearGradient>
+      </defs>
+      <!-- Boxes -->
+      <g>
+        <rect x="10" y="70" width="110" height="50" rx="8" fill="#21262d" stroke="#58a6ff" stroke-width="1.5"/>
+        <text x="65" y="90" text-anchor="middle" fill="#79c0ff" font-size="11" font-weight="bold">编译器</text>
+        <text x="65" y="107" text-anchor="middle" fill="#8b949e" font-size="9">GCC / Clang</text>
+      </g>
+      <g>
+        <rect x="150" y="70" width="110" height="50" rx="8" fill="#21262d" stroke="#3fb950" stroke-width="1.5"/>
+        <text x="205" y="90" text-anchor="middle" fill="#3fb950" font-size="11" font-weight="bold">链接器</text>
+        <text x="205" y="107" text-anchor="middle" fill="#8b949e" font-size="9">ld / lld</text>
+      </g>
+      <g>
+        <rect x="290" y="70" width="110" height="50" rx="8" fill="#21262d" stroke="#d29922" stroke-width="1.5"/>
+        <text x="345" y="90" text-anchor="middle" fill="#d29922" font-size="11" font-weight="bold">动态链接器</text>
+        <text x="345" y="107" text-anchor="middle" fill="#8b949e" font-size="9">ld.so / rtld</text>
+      </g>
+      <g>
+        <rect x="430" y="70" width="110" height="50" rx="8" fill="#21262d" stroke="#bc8cff" stroke-width="1.5"/>
+        <text x="485" y="90" text-anchor="middle" fill="#bc8cff" font-size="11" font-weight="bold">Linux 内核</text>
+        <text x="485" y="107" text-anchor="middle" fill="#8b949e" font-size="9">arch_prctl / clone</text>
+      </g>
+      <g>
+        <rect x="570" y="70" width="120" height="50" rx="8" fill="#21262d" stroke="#f85149" stroke-width="1.5"/>
+        <text x="630" y="90" text-anchor="middle" fill="#f85149" font-size="11" font-weight="bold">语言运行时</text>
+        <text x="630" y="107" text-anchor="middle" fill="#8b949e" font-size="9">glibc / libpthread</text>
+      </g>
+      <!-- Arrows -->
+      <defs>
+        <marker id="arr" markerWidth="8" markerHeight="8" refX="6" refY="3" orient="auto">
+          <path d="M0,0 L0,6 L8,3 z" fill="#58a6ff"/>
+        </marker>
+      </defs>
+      <line x1="122" y1="95" x2="148" y2="95" stroke="#58a6ff" stroke-width="1.5" marker-end="url(#arr)"/>
+      <line x1="262" y1="95" x2="288" y2="95" stroke="#58a6ff" stroke-width="1.5" marker-end="url(#arr)"/>
+      <line x1="402" y1="95" x2="428" y2="95" stroke="#58a6ff" stroke-width="1.5" marker-end="url(#arr)"/>
+      <line x1="542" y1="95" x2="568" y2="95" stroke="#58a6ff" stroke-width="1.5" marker-end="url(#arr)"/>
+      <!-- Labels -->
+      <text x="350" y="165" text-anchor="middle" fill="#8b949e" font-size="10">TLS 实现各层职责协作链</text>
+      <text x="65" y="155" text-anchor="middle" fill="#8b949e" font-size="8.5">生成 TLS 重定位</text>
+      <text x="205" y="155" text-anchor="middle" fill="#8b949e" font-size="8.5">分配 PT_TLS 段</text>
+      <text x="345" y="155" text-anchor="middle" fill="#8b949e" font-size="8.5">初始化 TCB/DTV</text>
+      <text x="485" y="155" text-anchor="middle" fill="#8b949e" font-size="8.5">设置 FS/GS 寄存器</text>
+      <text x="630" y="155" text-anchor="middle" fill="#8b949e" font-size="8.5">分配/销毁 TLS</text>
+    </svg>
+    <div class="diagram-caption">图 1-1：TLS 实现的五层协作架构</div>
+  </div>
+
+  <div class="first-principle">
+    <div class="fp-title">⚗ 第一性原理</div>
+    <div class="fp-content">
+      TLS 本质上解决的是<strong>共享代码 + 私有数据</strong>的矛盾：多个线程共享同一份可执行代码，但每个线程需要操作自己独立的变量副本。最简单的解法是给每个线程分配一块私有内存区域，并为每个线程维护一个"从变量名到私有地址"的映射。glibc 的 TLS 正是将此映射硬编码为<strong>寄存器偏移</strong>（静态TLS）或通过<strong>索引数组</strong>（DTV/动态TLS）来实现，在性能与灵活性之间取得平衡。
+    </div>
+  </div>
+</section>
+
+<!-- §2 整体架构 -->
+<section class="section" id="overview">
+  <div class="section-badge">Chapter 02</div>
+  <h2 class="sec-title"><span class="ico">🏗️</span>TLS 整体架构</h2>
+  <p>glibc 的 TLS 实现可分为两大部分：<strong>静态 TLS（Static TLS）</strong> 和 <strong>动态 TLS（Dynamic TLS）</strong>。</p>
+  <ul>
+    <li><strong>静态 TLS</strong>：在程序启动时即确定偏移量，通过线程寄存器（FS）的固定偏移直接访问，性能最优。适用于主程序及 <code>DT_NEEDED</code> 依赖库中的 TLS 变量。</li>
+    <li><strong>动态 TLS</strong>：通过 <code>dlopen</code> 动态加载的共享库所引入的 TLS 变量，偏移量在运行时才确定，需通过 DTV 索引和 <code>__tls_get_addr</code> 函数访问。</li>
+  </ul>
+
+  <div class="diagram-wrap">
+    <svg viewBox="0 0 720 360" width="100%" style="max-width:720px">
+      <!-- Static TLS region -->
+      <rect x="20" y="20" width="320" height="320" rx="10" fill="none" stroke="#30363d" stroke-width="1.5"/>
+      <text x="180" y="14" text-anchor="middle" fill="#58a6ff" font-size="11" font-weight="bold">静态 TLS 区域（程序启动时分配）</text>
+
+      <!-- Dynamic TLS -->
+      <rect x="380" y="20" width="320" height="150" rx="10" fill="none" stroke="#30363d" stroke-width="1.5"/>
+      <text x="540" y="14" text-anchor="middle" fill="#d29922" font-size="11" font-weight="bold">动态 TLS 区域（dlopen 时分配）</text>
+
+      <!-- TLS Block exe -->
+      <rect x="40" y="60" width="280" height="55" rx="6" fill="#1c2128" stroke="#3fb950" stroke-width="1.5"/>
+      <text x="180" y="82" text-anchor="middle" fill="#3fb950" font-size="11" font-weight="bold">主程序 TLS 块 (module id=1)</text>
+      <text x="180" y="100" text-anchor="middle" fill="#8b949e" font-size="10">.tdata + .tbss（偏移为编译期常量）</text>
+
+      <!-- TLS Block lib1 -->
+      <rect x="40" y="130" width="280" height="55" rx="6" fill="#1c2128" stroke="#58a6ff" stroke-width="1.5"/>
+      <text x="180" y="152" text-anchor="middle" fill="#58a6ff" font-size="11" font-weight="bold">libfoo.so TLS 块 (module id=2)</text>
+      <text x="180" y="170" text-anchor="middle" fill="#8b949e" font-size="10">DT_NEEDED 库（启动时加载）</text>
+
+      <!-- TCB -->
+      <rect x="40" y="205" width="280" height="85" rx="6" fill="#1c2128" stroke="#bc8cff" stroke-width="2"/>
+      <text x="180" y="225" text-anchor="middle" fill="#bc8cff" font-size="12" font-weight="bold">TCB / struct pthread</text>
+      <text x="180" y="244" text-anchor="middle" fill="#8b949e" font-size="10">tcbhead_t: tcb, dtv, self, stack_guard…</text>
+      <!-- TP arrow -->
+      <line x1="340" y1="248" x2="370" y2="248" stroke="#e3b341" stroke-width="2" marker-end="url(#arr)"/>
+      <text x="355" y="265" text-anchor="middle" fill="#e3b341" font-size="9">TP (%fs)</text>
+      <text x="350" y="243" text-anchor="middle" fill="#e3b341" font-size="9">→</text>
+
+      <!-- Dynamic module 1 -->
+      <rect x="400" y="50" width="280" height="50" rx="6" fill="#1c2128" stroke="#d29922" stroke-width="1.5"/>
+      <text x="540" y="72" text-anchor="middle" fill="#d29922" font-size="11" font-weight="bold">libdynamic1.so TLS 块</text>
+      <text x="540" y="90" text-anchor="middle" fill="#8b949e" font-size="10">dlopen 动态加载（堆分配）</text>
+      <!-- Dynamic module 2 -->
+      <rect x="400" y="115" width="280" height="50" rx="6" fill="#1c2128" stroke="#d29922" stroke-width="1.5"/>
+      <text x="540" y="137" text-anchor="middle" fill="#d29922" font-size="11" font-weight="bold">libdynamic2.so TLS 块</text>
+      <text x="540" y="155" text-anchor="middle" fill="#8b949e" font-size="10">dlopen 动态加载（堆分配）</text>
+
+      <!-- DTV -->
+      <rect x="380" y="200" width="320" height="130" rx="10" fill="none" stroke="#30363d" stroke-width="1.5"/>
+      <text x="540" y="220" text-anchor="middle" fill="#79c0ff" font-size="11" font-weight="bold">DTV — 动态线程向量</text>
+      <rect x="400" y="228" width="56" height="26" rx="4" fill="#21262d" stroke="#30363d"/>
+      <text x="428" y="246" text-anchor="middle" fill="#8b949e" font-size="9">dtv[-1]</text>
+      <rect x="460" y="228" width="56" height="26" rx="4" fill="#21262d" stroke="#30363d"/>
+      <text x="488" y="246" text-anchor="middle" fill="#8b949e" font-size="9">dtv[0]</text>
+      <rect x="520" y="228" width="56" height="26" rx="4" fill="#21262d" stroke="#3fb950" stroke-width="1.5"/>
+      <text x="548" y="246" text-anchor="middle" fill="#3fb950" font-size="9">dtv[1]</text>
+      <rect x="580" y="228" width="56" height="26" rx="4" fill="#21262d" stroke="#58a6ff" stroke-width="1.5"/>
+      <text x="608" y="246" text-anchor="middle" fill="#58a6ff" font-size="9">dtv[2]</text>
+      <rect x="640" y="228" width="46" height="26" rx="4" fill="#21262d" stroke="#d29922" stroke-width="1.5"/>
+      <text x="663" y="246" text-anchor="middle" fill="#d29922" font-size="9">dtv[n]</text>
+
+      <text x="428" y="270" text-anchor="middle" fill="#8b949e" font-size="8">size</text>
+      <text x="488" y="270" text-anchor="middle" fill="#8b949e" font-size="8">gen</text>
+      <text x="548" y="270" text-anchor="middle" fill="#3fb950" font-size="8">exe TLS</text>
+      <text x="608" y="270" text-anchor="middle" fill="#58a6ff" font-size="8">lib TLS</text>
+      <text x="663" y="270" text-anchor="middle" fill="#d29922" font-size="8">dyn TLS</text>
+
+      <!-- Arrows DTV -> blocks -->
+      <line x1="548" y1="228" x2="370" y2="90" stroke="#3fb950" stroke-width="1" stroke-dasharray="4,3" marker-end="url(#arr)"/>
+      <line x1="608" y1="228" x2="380" y2="160" stroke="#58a6ff" stroke-width="1" stroke-dasharray="4,3" marker-end="url(#arr)"/>
+      <line x1="663" y1="228" x2="680" y2="165" stroke="#d29922" stroke-width="1" stroke-dasharray="4,3" marker-end="url(#arr)"/>
+
+      <!-- Stack label -->
+      <text x="180" y="315" text-anchor="middle" fill="#8b949e" font-size="10" font-style="italic">↑ 非主线程: 静态TLS块位于线程栈顶部</text>
+    </svg>
+    <div class="diagram-caption">图 2-1：glibc TLS 整体内存架构图（x86-64 Variant II）</div>
+  </div>
+
+  <div class="first-principle">
+    <div class="fp-title">⚗ 第一性原理</div>
+    <div class="fp-content">
+      TLS 架构的本质是<strong>空间换时间的分层设计</strong>：对于确定性强（启动时可知偏移）的变量，使用最快的寄存器相对寻址；对于不确定性高（运行时才知道）的变量，使用多一层间接的动态数组查找。这完全遵循计算机体系结构的基本原则——已知信息越多，访问越快。
+    </div>
+  </div>
+</section>
+
+<!-- §3 TCB -->
+<section class="section" id="tcb">
+  <div class="section-badge">Chapter 03</div>
+  <h2 class="sec-title"><span class="ico">🔩</span>线程控制块 (TCB)</h2>
+  <p>在 x86-64 Linux + glibc 中，<strong>线程控制块（Thread Control Block，TCB）</strong> 对应的核心数据结构是 <code>tcbhead_t</code>（定义在 <code>sysdeps/x86_64/nptl/tls.h</code>），它是 <code>struct pthread</code> 的第一个成员（通过 <code>union</code> 重叠）。</p>
+
+  <pre><code><span class="cm">/* sysdeps/x86_64/nptl/tls.h — glibc 源码 */</span>
+<span class="kw">typedef</span> <span class="kw">struct</span>
+{
+  <span class="ty">void</span> *tcb;          <span class="cm">/* 指向 TCB 自身（即 struct pthread *）*/</span>
+  <span class="ty">dtv_t</span> *dtv;         <span class="cm">/* 动态线程向量指针 */</span>
+  <span class="ty">void</span> *self;         <span class="cm">/* 指向线程描述符（同 tcb） */</span>
+  <span class="ty">int</span> multiple_threads;<span class="cm">/* 是否多线程标志 */</span>
+  <span class="ty">int</span> gscope_flag;    <span class="cm">/* 全局作用域标志 */</span>
+  <span class="ty">uintptr_t</span> sysinfo;  <span class="cm">/* vDSO 系统调用入口 */</span>
+  <span class="ty">uintptr_t</span> stack_guard;   <span class="cm">/* 栈保护金丝雀值（%fs:0x28）*/</span>
+  <span class="ty">uintptr_t</span> pointer_guard; <span class="cm">/* 指针保护值 */</span>
+  <span class="ty">unsigned long int</span> unused_vgetcpu_cache[2];
+  <span class="ty">unsigned int</span> feature_1; <span class="cm">/* X86 特性标志（IBT/SHSTK） */</span>
+  <span class="ty">int</span> __glibc_unused1;
+  <span class="ty">void</span> *__private_tm[4];  <span class="cm">/* TM ABI 保留字段 */</span>
+  <span class="ty">void</span> *__private_ss;     <span class="cm">/* GCC split stack 支持 */</span>
+  <span class="ty">unsigned long long int</span> ssp_base; <span class="cm">/* 影子栈标记 */</span>
+  <span class="ty">__128bits</span> __glibc_unused2[8][4] __attribute__((aligned(32)));
+  <span class="ty">void</span> *__padding[8];
+} <span class="ty">tcbhead_t</span>;</code></pre>
+
+  <div class="callout callout-warn">
+    <div class="callout-title">⚠️ 重要说明</div>
+    x86-64 使用 <strong>TLS_TCB_AT_TP=1, TLS_DTV_AT_TP=0</strong>（Variant II），即线程指针（FS）直接指向 TCB 的起始地址，静态 TLS 块位于 TCB 的低地址方向（负偏移处）。<code>stack_guard</code> 字段位于 <code>%fs:0x28</code>，是 GCC 栈保护金丝雀值的来源。
+  </div>
+
+  <div class="diagram-wrap">
+    <svg viewBox="0 0 680 280" width="100%" style="max-width:680px">
+      <!-- TCB memory layout -->
+      <text x="340" y="18" text-anchor="middle" fill="#79c0ff" font-size="12" font-weight="bold">tcbhead_t 内存布局（x86-64）</text>
+
+      <!-- Fields table -->
+      <g>
+        <rect x="40" y="30" width="600" height="30" rx="4" fill="#21262d" stroke="#58a6ff" stroke-width="1.5"/>
+        <text x="150" y="50" text-anchor="middle" fill="#58a6ff" font-size="11" font-weight="bold">tcb (void*)</text>
+        <text x="400" y="50" text-anchor="middle" fill="#8b949e" font-size="10">%fs:0x00 — 指向 struct pthread 自身</text>
+      </g>
+      <g>
+        <rect x="40" y="62" width="600" height="30" rx="4" fill="#1c2128" stroke="#3fb950" stroke-width="1.5"/>
+        <text x="150" y="82" text-anchor="middle" fill="#3fb950" font-size="11" font-weight="bold">dtv (dtv_t*)</text>
+        <text x="400" y="82" text-anchor="middle" fill="#8b949e" font-size="10">%fs:0x08 — 动态线程向量指针</text>
+      </g>
+      <g>
+        <rect x="40" y="94" width="600" height="30" rx="4" fill="#21262d" stroke="#58a6ff" stroke-width="1.5"/>
+        <text x="150" y="114" text-anchor="middle" fill="#58a6ff" font-size="11">self (void*)</text>
+        <text x="400" y="114" text-anchor="middle" fill="#8b949e" font-size="10">%fs:0x10 — 同 tcb，指向线程描述符</text>
+      </g>
+      <g>
+        <rect x="40" y="126" width="600" height="30" rx="4" fill="#1c2128" stroke="#30363d"/>
+        <text x="150" y="146" text-anchor="middle" fill="#8b949e" font-size="11">multiple_threads / gscope_flag</text>
+        <text x="400" y="146" text-anchor="middle" fill="#8b949e" font-size="10">%fs:0x18~0x1c</text>
+      </g>
+      <g>
+        <rect x="40" y="158" width="600" height="30" rx="4" fill="#21262d" stroke="#30363d"/>
+        <text x="150" y="178" text-anchor="middle" fill="#8b949e" font-size="11">sysinfo (uintptr_t)</text>
+        <text x="400" y="178" text-anchor="middle" fill="#8b949e" font-size="10">%fs:0x20 — vDSO 入口</text>
+      </g>
+      <g>
+        <rect x="40" y="190" width="600" height="30" rx="4" fill="#1c2128" stroke="#e3b341" stroke-width="2"/>
+        <text x="150" y="210" text-anchor="middle" fill="#e3b341" font-size="11" font-weight="bold">stack_guard (uintptr_t)</text>
+        <text x="400" y="210" text-anchor="middle" fill="#e3b341" font-size="10">%fs:0x28 — 栈金丝雀（Stack Canary）⭐</text>
+      </g>
+      <g>
+        <rect x="40" y="222" width="600" height="30" rx="4" fill="#21262d" stroke="#bc8cff" stroke-width="1.5"/>
+        <text x="150" y="242" text-anchor="middle" fill="#bc8cff" font-size="11">pointer_guard (uintptr_t)</text>
+        <text x="400" y="242" text-anchor="middle" fill="#8b949e" font-size="10">%fs:0x30 — 指针加密保护值</text>
+      </g>
+
+      <!-- FS register indicator -->
+      <line x1="10" y1="45" x2="38" y2="45" stroke="#e3b341" stroke-width="2" marker-end="url(#arr)"/>
+      <text x="5" y="42" fill="#e3b341" font-size="9" text-anchor="middle">%fs</text>
+      <text x="5" y="55" fill="#e3b341" font-size="9" text-anchor="middle">→</text>
+    </svg>
+    <div class="diagram-caption">图 3-1：tcbhead_t 字段内存偏移布局（x86-64，来源：sysdeps/x86_64/nptl/tls.h）</div>
+  </div>
+
+  <div class="first-principle">
+    <div class="fp-title">⚗ 第一性原理</div>
+    <div class="fp-content">
+      TCB 的本质是<strong>线程的私有控制平面</strong>：它将"这是哪个线程"（self/tcb 自引用）、"如何找到该线程的所有私有数据"（dtv 指针）和"如何保护该线程"（stack_guard/pointer_guard）三者集中在一块固定的内存中，由 FS 寄存器直接寻址。这是最小化寻址层级的设计——从任意 TLS 访问到找到目标，最多只需 FS→TCB→DTV→TLS块 三跳。
+    </div>
+  </div>
+</section>
+
+<!-- §4 DTV -->
+<section class="section" id="dtv">
+  <div class="section-badge">Chapter 04</div>
+  <h2 class="sec-title"><span class="ico">📐</span>动态线程向量 (DTV)</h2>
+  <p>DTV（Dynamic Thread Vector）是 glibc TLS 的核心索引结构，定义在 <code>sysdeps/generic/dl-dtv.h</code>。</p>
+
+  <pre><code><span class="cm">/* sysdeps/generic/dl-dtv.h */</span>
+<span class="kw">typedef</span> <span class="kw">union</span> dtv
+{
+  <span class="ty">size_t</span> counter;      <span class="cm">/* dtv[-1]: DTV 数组元素总数
+                           dtv[0]:  当前 DTV 版本（generation counter） */</span>
+  <span class="kw">struct</span>
+  {
+    <span class="ty">void</span> *val;           <span class="cm">/* 指向该模块的 TLS 块地址 */</span>
+    <span class="ty">bool</span> is_static;      <span class="cm">/* 是否为静态 TLS 块 */</span>
+  } pointer;
+} <span class="ty">dtv_t</span>;</code></pre>
+
+  <div class="callout callout-key">
+    <div class="callout-title">🔑 关键技巧：负索引</div>
+    DTV 使用了 C 语言的负指针技巧：<code>dtv</code> 指针指向实际数组的第 <strong>1</strong> 号元素，而元素 <code>dtv[-1]</code> 存储的是数组长度（counter），<code>dtv[0]</code> 存储版本号（generation counter），<code>dtv[1]</code> 开始才是各模块的 TLS 块指针。
+  </div>
+
+  <div class="diagram-wrap">
+    <svg viewBox="0 0 700 220" width="100%" style="max-width:700px">
+      <text x="350" y="18" text-anchor="middle" fill="#79c0ff" font-size="12" font-weight="bold">DTV 内存结构与索引关系</text>
+
+      <!-- DTV array visualization -->
+      <!-- Slot -1 -->
+      <rect x="30" y="50" width="90" height="60" rx="6" fill="#21262d" stroke="#f85149" stroke-width="1.5"/>
+      <text x="75" y="73" text-anchor="middle" fill="#f85149" font-size="10" font-weight="bold">dtv[-1]</text>
+      <text x="75" y="90" text-anchor="middle" fill="#8b949e" font-size="9">counter</text>
+      <text x="75" y="104" text-anchor="middle" fill="#e3b341" font-size="10" font-weight="bold">= N (数组长度)</text>
+
+      <!-- Slot 0 -->
+      <rect x="130" y="50" width="90" height="60" rx="6" fill="#21262d" stroke="#d29922" stroke-width="1.5"/>
+      <text x="175" y="73" text-anchor="middle" fill="#d29922" font-size="10" font-weight="bold">dtv[0]</text>
+      <text x="175" y="90" text-anchor="middle" fill="#8b949e" font-size="9">counter</text>
+      <text x="175" y="104" text-anchor="middle" fill="#e3b341" font-size="10" font-weight="bold">= gen（版本号）</text>
+
+      <!-- Pointer indicator -->
+      <line x1="175" y1="135" x2="175" y2="165" stroke="#e3b341" stroke-width="2" marker-end="url(#arr)"/>
+      <text x="175" y="180" text-anchor="middle" fill="#e3b341" font-size="9">tcbhead.dtv 指向此处</text>
+
+      <!-- Slot 1 -->
+      <rect x="230" y="50" width="90" height="60" rx="6" fill="#21262d" stroke="#3fb950" stroke-width="2"/>
+      <text x="275" y="73" text-anchor="middle" fill="#3fb950" font-size="10" font-weight="bold">dtv[1]</text>
+      <text x="275" y="90" text-anchor="middle" fill="#8b949e" font-size="9">pointer.val</text>
+      <text x="275" y="104" text-anchor="middle" fill="#3fb950" font-size="10" font-weight="bold">→ 主程序 TLS</text>
+
+      <!-- Slot 2 -->
+      <rect x="330" y="50" width="90" height="60" rx="6" fill="#21262d" stroke="#58a6ff" stroke-width="1.5"/>
+      <text x="375" y="73" text-anchor="middle" fill="#58a6ff" font-size="10" font-weight="bold">dtv[2]</text>
+      <text x="375" y="90" text-anchor="middle" fill="#8b949e" font-size="9">pointer.val</text>
+      <text x="375" y="104" text-anchor="middle" fill="#58a6ff" font-size="10">→ libfoo TLS</text>
+
+      <!-- Slot 3 -->
+      <rect x="430" y="50" width="90" height="60" rx="6" fill="#21262d" stroke="#d29922" stroke-width="1.5"/>
+      <text x="475" y="73" text-anchor="middle" fill="#d29922" font-size="10" font-weight="bold">dtv[3]</text>
+      <text x="475" y="90" text-anchor="middle" fill="#8b949e" font-size="9">pointer.val</text>
+      <text x="475" y="104" text-anchor="middle" fill="#d29922" font-size="10">→ dlopen lib</text>
+
+      <!-- More slots -->
+      <text x="545" y="83" text-anchor="middle" fill="#8b949e" font-size="14">…</text>
+
+      <!-- Slot N -->
+      <rect x="570" y="50" width="90" height="60" rx="6" fill="#21262d" stroke="#30363d" stroke-width="1"/>
+      <text x="615" y="73" text-anchor="middle" fill="#8b949e" font-size="10">dtv[N]</text>
+      <text x="615" y="90" text-anchor="middle" fill="#8b949e" font-size="9">UNALLOCATED</text>
+      <text x="615" y="104" text-anchor="middle" fill="#8b949e" font-size="10">/ NULL</text>
+
+      <!-- TLS_DTV_UNALLOCATED label -->
+      <text x="350" y="200" text-anchor="middle" fill="#8b949e" font-size="9.5">未分配的动态模块 TLS 槽值为 TLS_DTV_UNALLOCATED，访问时懒加载分配</text>
+    </svg>
+    <div class="diagram-caption">图 4-1：DTV 数组结构（dtv[-1]=长度, dtv[0]=版本号, dtv[1..N]=各模块TLS指针）</div>
+  </div>
+
+  <h3>DTV Generation Counter（版本机制）</h3>
+  <p>每次 <code>dlopen</code> 或 <code>dlclose</code> 调用都会递增全局计数器 <code>dl_tls_generation</code>。<code>__tls_get_addr</code> 在访问前会比较 <code>dtv[0].counter</code> 与全局计数器：若不一致则触发 DTV 更新（<code>_dl_update_slotinfo</code>），实现<strong>懒惰式 DTV 扩展</strong>。</p>
+
+  <div class="first-principle">
+    <div class="fp-title">⚗ 第一性原理</div>
+    <div class="fp-content">
+      DTV 本质是<strong>以模块ID为下标的稀疏指针数组</strong>，解决了"N 个模块、每个线程需要 N 份私有数据"的索引问题。版本号机制（generation counter）让 DTV 的扩容变得懒惰——只有真正需要访问某动态模块的 TLS 时，该线程的 DTV 才会被扩展，避免了 dlopen 时同步更新所有线程 DTV 的高昂代价。
+    </div>
+  </div>
+</section>
+
+<!-- §5 struct pthread -->
+<section class="section" id="pthread-struct">
+  <div class="section-badge">Chapter 05</div>
+  <h2 class="sec-title"><span class="ico">🧵</span>struct pthread 结构</h2>
+  <p><code>struct pthread</code>（定义在 <code>nptl/descr.h</code>）是 glibc 线程描述符，它与 <code>tcbhead_t</code> 通过 union 共享起始地址。在 x86-64 上（<code>TLS_TCB_AT_TP=1</code>），线程指针（FS）直接指向该结构的起始位置。</p>
+
+  <pre><code><span class="cm">/* nptl/descr.h （精简版）*/</span>
+<span class="kw">struct</span> <span class="ty">pthread</span>
+{
+  <span class="kw">union</span>
+  {
+<span class="pp">#if !TLS_DTV_AT_TP</span>
+    <span class="ty">tcbhead_t</span> header;  <span class="cm">/* x86-64: TCB 与 struct pthread 共享起始地址 */</span>
+<span class="pp">#else</span>
+    <span class="kw">struct</span> {            <span class="cm">/* AArch64 等 Variant I 架构 */</span>
+      <span class="ty">int</span> multiple_threads;
+      <span class="ty">int</span> gscope_flag;
+    } header;
+<span class="pp">#endif</span>
+    <span class="ty">void</span> *__padding[24];
+  };
+
+  <span class="ty">list_t</span> list;             <span class="cm">/* 线程链表节点 */</span>
+  <span class="ty">pid_t</span> tid;              <span class="cm">/* 内核线程 ID */</span>
+  <span class="cm">/* ... 调度、信号、取消等字段 ... */</span>
+
+  <span class="cm">/* pthread_key 两级数组 */</span>
+  <span class="kw">struct</span> <span class="ty">pthread_key_data</span>
+  {
+    <span class="ty">uintptr_t</span> seq;         <span class="cm">/* 序列号（用于 stale 检测）*/</span>
+    <span class="ty">void</span> *data;            <span class="cm">/* 用户数据指针 */</span>
+  } specific_1stblock[PTHREAD_KEY_2NDLEVEL_SIZE]; <span class="cm">/* 32个快速槽 */</span>
+
+  <span class="kw">struct</span> <span class="ty">pthread_key_data</span> *specific[PTHREAD_KEY_1STLEVEL_SIZE];
+  <span class="ty">bool</span> specific_used;
+
+  <span class="cm">/* ... 更多字段 ... */</span>
+};</code></pre>
+
+  <div class="first-principle">
+    <div class="fp-title">⚗ 第一性原理</div>
+    <div class="fp-content">
+      <code>struct pthread</code> 与 <code>tcbhead_t</code> 共享同一起始地址的设计，使得"通过 FS 找线程描述符"和"通过 FS 找 DTV"成为零额外代价的操作——FS 就是 <code>struct pthread*</code>，也是 <code>tcbhead_t*</code>。这是将两个逻辑上相关的数据结构物理合并以消除间接寻址的经典手法。
+    </div>
+  </div>
+</section>
+
+<!-- §6 Variant II 内存布局 -->
+<section class="section" id="variant2">
+  <div class="section-badge">Chapter 06</div>
+  <h2 class="sec-title"><span class="ico">🗺️</span>Variant II 内存布局</h2>
+  <p>Ulrich Drepper 的《ELF TLS 处理》文档定义了两种 TLS 布局变体。x86-64 使用 <strong>Variant II</strong>：静态 TLS 块位于线程指针（TP）的<strong>负偏移</strong>方向（低地址侧），TCB 位于 TP 指向处。</p>
+
+  <div class="diagram-wrap">
+    <svg viewBox="0 0 720 400" width="100%" style="max-width:720px">
+      <text x="360" y="20" text-anchor="middle" fill="#79c0ff" font-size="13" font-weight="bold">Variant II TLS 内存布局（x86-64）</text>
+
+      <!-- Address direction indicator -->
+      <text x="20" y="55" fill="#8b949e" font-size="9">高地址</text>
+      <text x="20" y="385" fill="#8b949e" font-size="9">低地址</text>
+      <line x1="30" y1="60" x2="30" y2="380" stroke="#30363d" stroke-width="1" stroke-dasharray="4,3"/>
+      <polygon points="30,60 25,75 35,75" fill="#8b949e"/>
+
+      <!-- Stack region -->
+      <rect x="60" y="60" width="260" height="55" rx="6" fill="#21262d" stroke="#30363d"/>
+      <text x="190" y="83" text-anchor="middle" fill="#8b949e" font-size="11" font-weight="bold">线程栈（Stack）</text>
+      <text x="190" y="101" text-anchor="middle" fill="#8b949e" font-size="9">← 向低地址增长</text>
+
+      <!-- Guard page -->
+      <rect x="60" y="118" width="260" height="22" rx="4" fill="#1c1416" stroke="#f85149" stroke-dasharray="4,2"/>
+      <text x="190" y="133" text-anchor="middle" fill="#f85149" font-size="9">Guard Page（栈溢出检测）</text>
+
+      <!-- TCB - main block -->
+      <rect x="60" y="143" width="260" height="80" rx="6" fill="#1c2128" stroke="#bc8cff" stroke-width="2"/>
+      <text x="190" y="165" text-anchor="middle" fill="#bc8cff" font-size="12" font-weight="bold">TCB / struct pthread</text>
+      <text x="190" y="183" text-anchor="middle" fill="#8b949e" font-size="10">tcbhead_t: tcb, dtv, self…</text>
+      <text x="190" y="200" text-anchor="middle" fill="#e3b341" font-size="9">← TP (%fs) 指向此处起始</text>
+      <text x="190" y="216" text-anchor="middle" fill="#8b949e" font-size="9">stack_guard @ %fs:0x28</text>
+
+      <!-- TP arrow -->
+      <line x1="430" y1="183" x2="325" y2="183" stroke="#e3b341" stroke-width="2.5" marker-end="url(#arr)"/>
+      <text x="470" y="178" fill="#e3b341" font-size="11" font-weight="bold">TP = %fs</text>
+      <text x="470" y="192" fill="#e3b341" font-size="9">（arch_prctl ARCH_SET_FS）</text>
+
+      <!-- Static TLS 1 -->
+      <rect x="60" y="226" width="260" height="55" rx="6" fill="#1c2128" stroke="#3fb950" stroke-width="1.5"/>
+      <text x="190" y="248" text-anchor="middle" fill="#3fb950" font-size="11" font-weight="bold">主程序 TLS 块</text>
+      <text x="190" y="266" text-anchor="middle" fill="#8b949e" font-size="9">tlsoffset1 负偏移，编译期常量</text>
+
+      <!-- Static TLS 2 -->
+      <rect x="60" y="284" width="260" height="55" rx="6" fill="#1c2128" stroke="#58a6ff" stroke-width="1.5"/>
+      <text x="190" y="306" text-anchor="middle" fill="#58a6ff" font-size="11" font-weight="bold">libfoo.so TLS 块</text>
+      <text x="190" y="324" text-anchor="middle" fill="#8b949e" font-size="9">tlsoffset2 负偏移，启动时确定</text>
+
+      <!-- More static TLS -->
+      <text x="190" y="358" text-anchor="middle" fill="#8b949e" font-size="12">⋮</text>
+
+      <!-- Brace + label for static TLS -->
+      <line x1="340" y1="226" x2="355" y2="226" stroke="#8b949e" stroke-width="1"/>
+      <line x1="355" y1="226" x2="355" y2="340" stroke="#8b949e" stroke-width="1"/>
+      <line x1="340" y1="340" x2="355" y2="340" stroke="#8b949e" stroke-width="1"/>
+      <text x="360" y="275" fill="#8b949e" font-size="9">静态</text>
+      <text x="360" y="287" fill="#8b949e" font-size="9">TLS区</text>
+      <text x="360" y="299" fill="#8b949e" font-size="9">（负偏移）</text>
+
+      <!-- Negative offset annotation -->
+      <line x1="320" y1="183" x2="320" y2="257" stroke="#e3b341" stroke-width="1" stroke-dasharray="3,2"/>
+      <text x="325" y="222" fill="#e3b341" font-size="9">−tlsoffset1</text>
+
+      <!-- DTV box (right side) -->
+      <rect x="450" y="240" width="240" height="130" rx="8" fill="#21262d" stroke="#3fb950" stroke-width="1.5"/>
+      <text x="570" y="260" text-anchor="middle" fill="#79c0ff" font-size="10" font-weight="bold">DTV 数组（tcbhead.dtv）</text>
+      <rect x="460" y="270" width="50" height="22" rx="3" fill="#161b22" stroke="#30363d"/>
+      <text x="485" y="285" text-anchor="middle" fill="#8b949e" font-size="8">[-1] len</text>
+      <rect x="515" y="270" width="50" height="22" rx="3" fill="#161b22" stroke="#30363d"/>
+      <text x="540" y="285" text-anchor="middle" fill="#8b949e" font-size="8">[0] gen</text>
+      <rect x="570" y="270" width="50" height="22" rx="3" fill="#161b22" stroke="#3fb950" stroke-width="1.5"/>
+      <text x="595" y="285" text-anchor="middle" fill="#3fb950" font-size="8">[1]→exe</text>
+      <rect x="625" y="270" width="50" height="22" rx="3" fill="#161b22" stroke="#58a6ff" stroke-width="1.5"/>
+      <text x="650" y="285" text-anchor="middle" fill="#58a6ff" font-size="8">[2]→lib</text>
+      <!-- DTV arrow from TCB -->
+      <line x1="325" y1="163" x2="450" y2="283" stroke="#3fb950" stroke-width="1.5" stroke-dasharray="4,3" marker-end="url(#arr)"/>
+      <text x="385" y="225" fill="#3fb950" font-size="9">dtv 指针</text>
+
+      <!-- DTV[1] → TLS block arrow -->
+      <line x1="570" y1="292" x2="325" y2="255" stroke="#3fb950" stroke-width="1" stroke-dasharray="3,3" marker-end="url(#arr)"/>
+    </svg>
+    <div class="diagram-caption">图 6-1：Variant II TLS 内存布局（x86-64，TP=TCB起始，静态TLS在负偏移方向）</div>
+  </div>
+
+  <div class="callout callout-info">
+    <div class="callout-title">📌 非主线程的特殊之处</div>
+    对于 <code>pthread_create</code> 创建的线程，<code>allocate_stack()</code> 在分配线程栈时，会将静态 TLS 块和 TCB（struct pthread）放置在栈空间的高地址末端（栈顶附近），整个区域统一分配，节省独立堆分配的开销。主线程的 TCB 则由动态链接器在堆上分配。
+  </div>
+
+  <div class="first-principle">
+    <div class="fp-title">⚗ 第一性原理</div>
+    <div class="fp-content">
+      Variant II 布局的根本逻辑是<strong>保持 TP 的语义稳定性</strong>：TP（FS）始终指向 TCB（线程描述符）的起始处，这让内核上下文切换代码可以简单地保存/恢复一个寄存器值（FS base）来切换线程上下文。TLS 数据"向下延伸"（负偏移），让各模块 TLS 偏移相互独立，且可以在程序启动时由链接器静态确定，无需运行时协调。
+    </div>
+  </div>
+</section>
+
+<!-- §7 FS 寄存器机制 -->
+<section class="section" id="fs-register">
+  <div class="section-badge">Chapter 07</div>
+  <h2 class="sec-title"><span class="ico">⚙️</span>FS 段寄存器机制</h2>
+  <p>x86-64 上 Intel 80386 引入 FS 和 GS 作为用户自定义段寄存器。Linux 将 <strong>FS</strong> 用作线程指针寄存器（Windows/macOS 使用 GS），通过它访问每个线程的私有上下文。</p>
+
+  <h3>设置 FS：TLS_INIT_TP 宏</h3>
+  <p>在 x86-64 上，通过 <code>arch_prctl(ARCH_SET_FS, tcb_addr)</code> 系统调用来设置 FS 寄存器的基地址：</p>
+
+  <pre><code><span class="cm">/* sysdeps/x86_64/nptl/tls.h */</span>
+<span class="pp">#define</span> <span class="fn">TLS_INIT_TP</span>(thrdescr) \
+  ({ <span class="ty">void</span> *_thrdescr = (thrdescr);           \
+     <span class="ty">tcbhead_t</span> *_head = _thrdescr;            \
+     <span class="ty">int</span> _result;                             \
+                                               \
+     _head->tcb = _thrdescr;                   \
+     _head->self = _thrdescr;                  \
+                                               \
+     asm volatile (<span class="str">"syscall"</span>                  \
+       : <span class="str">"=a"</span> (_result)                        \
+       : <span class="str">"0"</span> ((<span class="ty">unsigned long</span>) __NR_arch_prctl),\
+         <span class="str">"D"</span> ((<span class="ty">unsigned long</span>) ARCH_SET_FS),   \
+         <span class="str">"S"</span> (_thrdescr)                       \
+       : <span class="str">"memory"</span>, <span class="str">"cc"</span>, <span class="str">"r11"</span>, <span class="str">"cx"</span>);      \
+     _result == <span class="nu">0</span>;                            \
+  })</code></pre>
+
+  <h3>读取 FS：THREAD_SELF 宏</h3>
+  <pre><code><span class="cm">/* GCC >= 6.0 版本的高效实现 */</span>
+<span class="pp">#define</span> THREAD_SELF \
+  (*(<span class="kw">struct</span> <span class="ty">pthread</span> *__seg_fs *) offsetof(<span class="kw">struct</span> <span class="ty">pthread</span>, header.self))
+
+<span class="cm">/* 等效于（展开后）：*/</span>
+<span class="kw">struct</span> <span class="ty">pthread</span> *self;
+asm (<span class="str">"mov %%fs:%c1,%0"</span> : <span class="str">"=r"</span> (self)
+     : <span class="str">"i"</span> (offsetof(<span class="kw">struct</span> <span class="ty">pthread</span>, header.self)));
+<span class="cm">/* 编译为单条指令：mov %fs:0x10, %rax */</span></code></pre>
+
+  <h3>内核上下文切换</h3>
+  <p>FS 的基地址存储在 MSR（Model Specific Register）<code>MSR_FS_BASE</code> 中。当内核进行线程上下文切换时，会保存当前线程的 FS 基地址并恢复下一个线程的 FS 基地址，从而实现"每个线程看到不同的 FS 内容"。</p>
+
+  <div class="diagram-wrap">
+    <svg viewBox="0 0 680 200" width="100%" style="max-width:680px">
+      <text x="340" y="18" text-anchor="middle" fill="#79c0ff" font-size="12" font-weight="bold">FS 寄存器与上下文切换</text>
+
+      <!-- Thread A -->
+      <rect x="30" y="40" width="180" height="130" rx="8" fill="#21262d" stroke="#3fb950" stroke-width="1.5"/>
+      <text x="120" y="60" text-anchor="middle" fill="#3fb950" font-size="11" font-weight="bold">线程 A</text>
+      <rect x="50" y="70" width="140" height="30" rx="4" fill="#161b22" stroke="#30363d"/>
+      <text x="120" y="90" text-anchor="middle" fill="#8b949e" font-size="10">MSR_FS_BASE = 0xAAAA</text>
+      <rect x="50" y="108" width="140" height="30" rx="4" fill="#161b22" stroke="#3fb950" stroke-width="1"/>
+      <text x="120" y="128" text-anchor="middle" fill="#3fb950" font-size="10">struct pthread @ 0xAAAA</text>
+
+      <!-- Arrow context switch -->
+      <text x="340" y="100" text-anchor="middle" fill="#e3b341" font-size="10" font-weight="bold">上下文切换</text>
+      <line x1="215" y1="105" x2="275" y2="105" stroke="#e3b341" stroke-width="1.5" stroke-dasharray="4,3"/>
+      <line x1="405" y1="105" x2="465" y2="105" stroke="#e3b341" stroke-width="1.5" stroke-dasharray="4,3"/>
+      <text x="300" y="95" text-anchor="middle" fill="#e3b341" font-size="9">保存 FS_A</text>
+      <text x="430" y="95" text-anchor="middle" fill="#e3b341" font-size="9">恢复 FS_B</text>
+      <polygon points="275,102 275,108 283,105" fill="#e3b341"/>
+      <polygon points="465,102 465,108 457,105" fill="#e3b341"/>
+
+      <!-- Kernel -->
+      <rect x="270" y="70" width="140" height="70" rx="6" fill="#21262d" stroke="#bc8cff" stroke-width="1.5"/>
+      <text x="340" y="88" text-anchor="middle" fill="#bc8cff" font-size="10" font-weight="bold">Linux 内核</text>
+      <text x="340" y="103" text-anchor="middle" fill="#8b949e" font-size="9">copy_thread_tls()</text>
+      <text x="340" y="118" text-anchor="middle" fill="#8b949e" font-size="9">wrmsrl(MSR_FS_BASE)</text>
+      <text x="340" y="133" text-anchor="middle" fill="#8b949e" font-size="9">arch_prctl syscall</text>
+
+      <!-- Thread B -->
+      <rect x="470" y="40" width="180" height="130" rx="8" fill="#21262d" stroke="#58a6ff" stroke-width="1.5"/>
+      <text x="560" y="60" text-anchor="middle" fill="#58a6ff" font-size="11" font-weight="bold">线程 B</text>
+      <rect x="490" y="70" width="140" height="30" rx="4" fill="#161b22" stroke="#30363d"/>
+      <text x="560" y="90" text-anchor="middle" fill="#8b949e" font-size="10">MSR_FS_BASE = 0xBBBB</text>
+      <rect x="490" y="108" width="140" height="30" rx="4" fill="#161b22" stroke="#58a6ff" stroke-width="1"/>
+      <text x="560" y="128" text-anchor="middle" fill="#58a6ff" font-size="10">struct pthread @ 0xBBBB</text>
+
+      <text x="340" y="185" text-anchor="middle" fill="#8b949e" font-size="9">同一 %fs 指令，在不同线程读取到不同地址 → 线程隔离的根本机制</text>
+    </svg>
+    <div class="diagram-caption">图 7-1：FS 寄存器与线程上下文切换机制</div>
+  </div>
+
+  <div class="first-principle">
+    <div class="fp-title">⚗ 第一性原理</div>
+    <div class="fp-content">
+      FS 寄存器的本质是<strong>一个硬件支持的"线程 ID → 私有数据基址"的映射</strong>。内核在上下文切换时切换 MSR_FS_BASE，等效于切换"当前线程私有数据的宇宙坐标系原点"。用户态的所有 TLS 访问都是在这个相对坐标系下进行的，绝对地址在不同线程间自动不同——这是最零开销的线程隔离手段。
+    </div>
+  </div>
+</section>
+
+<!-- §8 静态 TLS 块 -->
+<section class="section" id="static-tls">
+  <div class="section-badge">Chapter 08</div>
+  <h2 class="sec-title"><span class="ico">🧱</span>静态 TLS 块</h2>
+  <p>ELF 文件使用 <code>PT_TLS</code> 程序头段来描述 TLS 数据的初始镜像：</p>
+  <ul>
+    <li><code>p_offset</code>：TLS 初始镜像的文件偏移（<code>.tdata</code> 节数据）</li>
+    <li><code>p_filesz</code>：有初始值的 TLS 数据大小（<code>.tdata</code>）</li>
+    <li><code>p_memsz</code>：TLS 块总大小（<code>.tdata + .tbss</code>），后 <code>p_memsz-p_filesz</code> 字节初始化为零</li>
+    <li><code>p_align</code>：对齐要求</li>
+  </ul>
+  <p>动态链接器收集所有模块（主程序 + <code>DT_NEEDED</code> 库）的 <code>PT_TLS</code> 段，分配连续的静态 TLS 区域，并将初始化镜像复制进去。</p>
+  <p>TLS 符号的 <code>st_value</code> 表示相对于其所在模块 <code>PT_TLS</code> 段起始地址的偏移，而<strong>不是</strong>普通的虚拟地址。</p>
+
+  <div class="diagram-wrap">
+    <svg viewBox="0 0 700 230" width="100%" style="max-width:700px">
+      <text x="350" y="18" text-anchor="middle" fill="#79c0ff" font-size="12" font-weight="bold">PT_TLS 段与静态 TLS 块的关系</text>
+
+      <!-- ELF file -->
+      <rect x="30" y="35" width="160" height="175" rx="8" fill="#21262d" stroke="#30363d" stroke-width="1.5"/>
+      <text x="110" y="55" text-anchor="middle" fill="#8b949e" font-size="10" font-weight="bold">ELF 文件</text>
+      <rect x="45" y="65" width="130" height="30" rx="4" fill="#1c2128" stroke="#3fb950"/>
+      <text x="110" y="83" text-anchor="middle" fill="#3fb950" font-size="9">.tdata（初始化数据）</text>
+      <rect x="45" y="100" width="130" height="25" rx="4" fill="#1c2128" stroke="#58a6ff"/>
+      <text x="110" y="116" text-anchor="middle" fill="#58a6ff" font-size="9">.tbss（零初始化）</text>
+      <rect x="45" y="135" width="130" height="30" rx="4" fill="#1c2128" stroke="#d29922" stroke-width="1"/>
+      <text x="110" y="151" text-anchor="middle" fill="#d29922" font-size="9">PT_TLS 程序头</text>
+      <text x="110" y="164" text-anchor="middle" fill="#8b949e" font-size="8">p_filesz, p_memsz, p_align</text>
+      <text x="110" y="195" text-anchor="middle" fill="#8b949e" font-size="8" font-style="italic">STT_TLS 符号 st_value</text>
+      <text x="110" y="207" text-anchor="middle" fill="#8b949e" font-size="8">= PT_TLS 内部偏移</text>
+
+      <!-- Arrow: load/copy -->
+      <line x1="198" y1="113" x2="240" y2="113" stroke="#e3b341" stroke-width="2" marker-end="url(#arr)"/>
+      <text x="220" y="105" text-anchor="middle" fill="#e3b341" font-size="8">加载+复制</text>
+      <text x="220" y="130" text-anchor="middle" fill="#8b949e" font-size="8">动态链接器</text>
+
+      <!-- Runtime TLS block -->
+      <rect x="248" y="35" width="180" height="175" rx="8" fill="#1c2128" stroke="#bc8cff" stroke-width="1.5"/>
+      <text x="338" y="55" text-anchor="middle" fill="#bc8cff" font-size="10" font-weight="bold">运行时 TLS 块</text>
+      <rect x="265" y="65" width="145" height="30" rx="4" fill="#161b22" stroke="#3fb950"/>
+      <text x="338" y="83" text-anchor="middle" fill="#3fb950" font-size="9">.tdata 镜像（memcpy）</text>
+      <rect x="265" y="100" width="145" height="25" rx="4" fill="#161b22" stroke="#58a6ff"/>
+      <text x="338" y="116" text-anchor="middle" fill="#58a6ff" font-size="9">.tbss 区域（memset 0）</text>
+
+      <text x="338" y="155" text-anchor="middle" fill="#8b949e" font-size="8">tlsoffset = TP - TLS块首地址</text>
+      <text x="338" y="168" text-anchor="middle" fill="#8b949e" font-size="8">（负偏移，编译器已知）</text>
+      <text x="338" y="195" text-anchor="middle" fill="#e3b341" font-size="8">每线程独立一份副本</text>
+
+      <!-- TP reference -->
+      <rect x="468" y="35" width="200" height="175" rx="8" fill="#21262d" stroke="#30363d"/>
+      <text x="568" y="55" text-anchor="middle" fill="#8b949e" font-size="10" font-weight="bold">访问示例（x86-64 LE）</text>
+      <rect x="480" y="70" width="176" height="55" rx="4" fill="#1c2128" stroke="#d29922"/>
+      <text x="568" y="90" text-anchor="middle" fill="#d29922" font-size="9">Local Exec 模式</text>
+      <text x="568" y="106" text-anchor="middle" fill="#e3b341" font-size="9" font-family="monospace">mov %fs:-4, %eax</text>
+      <text x="568" y="120" text-anchor="middle" fill="#8b949e" font-size="8">直接 TP 负偏移，0条函数调用</text>
+      <rect x="480" y="140" width="176" height="55" rx="4" fill="#1c2128" stroke="#58a6ff"/>
+      <text x="568" y="160" text-anchor="middle" fill="#58a6ff" font-size="9">Initial Exec 模式</text>
+      <text x="568" y="175" text-anchor="middle" fill="#e3b341" font-size="9" font-family="monospace">mov GOT@GOTTPOFF, %rax</text>
+      <text x="568" y="190" text-anchor="middle" fill="#8b949e" font-size="8">GOT中存偏移量，1次内存访问</text>
+    </svg>
+    <div class="diagram-caption">图 8-1：PT_TLS 段的加载与静态 TLS 块初始化流程</div>
+  </div>
+
+  <div class="first-principle">
+    <div class="fp-title">⚗ 第一性原理</div>
+    <div class="fp-content">
+      静态 TLS 的核心思想是<strong>将"运行时的每线程副本"映射为"编译期的固定偏移"</strong>。只要各线程的 TP 不同，相同的偏移指令就能访问不同的内存地址——即用<strong>位置相对性</strong>替代<strong>绝对地址寻址</strong>，这是实现线程隔离零运行时开销的关键。
+    </div>
+  </div>
+</section>
+
+<!-- §9 Local Exec 模型 -->
+<section class="section" id="le-model">
+  <div class="section-badge">Chapter 09</div>
+  <h2 class="sec-title"><span class="ico">⚡</span>Local Exec TLS 模型</h2>
+  <p><span class="tag tag-green">最高性能</span> <span class="tag tag-blue">仅限可执行文件</span></p>
+  <p>Local Exec 模型适用于 TLS 变量<strong>定义在主可执行文件中</strong>（或具有非默认可见性的声明）的情形。变量相对于 TP 的偏移量在<strong>链接时</strong>即为编译期常量，无需任何运行时计算。</p>
+
+  <pre><code><span class="cm">// C 源码</span>
+__thread <span class="ty">int</span> local_var = <span class="nu">42</span>;
+
+<span class="cm">// x86-64 编译结果（本地执行模型）</span>
+<span class="cm">// 重定位类型：R_X86_64_TPOFF32</span>
+movl  %fs:local_var@TPOFF, %eax
+<span class="cm">// 运行时展开为（假设 tlsoffset = -4）：</span>
+movl  %fs:-<span class="nu">4</span>, %eax         <span class="cm">// 单条指令，最高效</span></code></pre>
+
+  <div class="diagram-wrap">
+    <svg viewBox="0 0 680 180" width="100%" style="max-width:680px">
+      <text x="340" y="18" text-anchor="middle" fill="#3fb950" font-size="12" font-weight="bold">Local Exec 访问路径（仅 1 条指令）</text>
+
+      <!-- TP box -->
+      <rect x="30" y="50" width="100" height="50" rx="6" fill="#21262d" stroke="#e3b341" stroke-width="2"/>
+      <text x="80" y="72" text-anchor="middle" fill="#e3b341" font-size="11" font-weight="bold">%fs (TP)</text>
+      <text x="80" y="90" text-anchor="middle" fill="#8b949e" font-size="9">→ TCB 地址</text>
+
+      <!-- Arrow with offset -->
+      <line x1="135" y1="75" x2="240" y2="75" stroke="#3fb950" stroke-width="2" marker-end="url(#arr)"/>
+      <text x="187" y="67" text-anchor="middle" fill="#3fb950" font-size="10" font-weight="bold">偏移 -4</text>
+      <text x="187" y="90" text-anchor="middle" fill="#8b949e" font-size="8">编译期常量（TPOFF）</text>
+
+      <!-- TLS var -->
+      <rect x="244" y="50" width="150" height="50" rx="6" fill="#1c2128" stroke="#3fb950" stroke-width="2"/>
+      <text x="319" y="72" text-anchor="middle" fill="#3fb950" font-size="11" font-weight="bold">local_var 地址</text>
+      <text x="319" y="90" text-anchor="middle" fill="#8b949e" font-size="9">TP + TPOFF = 变量地址</text>
+
+      <!-- Cost label -->
+      <rect x="430" y="45" width="230" height="60" rx="6" fill="#21262d" stroke="#3fb950" stroke-width="1"/>
+      <text x="545" y="65" text-anchor="middle" fill="#3fb950" font-size="10" font-weight="bold">访问开销</text>
+      <text x="545" y="83" text-anchor="middle" fill="#8b949e" font-size="9">✅ 1 条 mov 指令</text>
+      <text x="545" y="98" text-anchor="middle" fill="#8b949e" font-size="9">✅ 0 次函数调用 / 0 次 GOT 查找</text>
+
+      <!-- Source info -->
+      <text x="340" y="155" text-anchor="middle" fill="#8b949e" font-size="8">链接器重定位：R_X86_64_TPOFF32 / R_X86_64_TPOFF64</text>
+      <text x="340" y="168" text-anchor="middle" fill="#8b949e" font-size="8">offset = sym→st_value + addend - sym_map→l_tls_offset</text>
+    </svg>
+    <div class="diagram-caption">图 9-1：Local Exec 模型访问流程（性能最优）</div>
+  </div>
+
+  <table>
+    <tr><th>条件</th><th>编译器选择 Local Exec 的时机</th></tr>
+    <tr><td>定义在可执行文件中</td><td><code>-fno-pic/-fpie</code> 模式下的 TLS 定义</td></tr>
+    <tr><td>非默认可见性声明</td><td><code>__attribute__((visibility("hidden")))</code> 的外部声明</td></tr>
+  </table>
+
+  <div class="first-principle">
+    <div class="fp-title">⚗ 第一性原理</div>
+    <div class="fp-content">
+      Local Exec 是 TLS 访问的理想极限：当所有信息（模块偏移）在链接时已知时，访问退化为普通的寄存器相对寻址，与访问全局变量的代价完全相同。这是"信息越多，抽象层越薄，性能越高"原则的体现。
+    </div>
+  </div>
+</section>
+
+<!-- §10 Initial Exec 模型 -->
+<section class="section" id="ie-model">
+  <div class="section-badge">Chapter 10</div>
+  <h2 class="sec-title"><span class="ico">🔍</span>Initial Exec TLS 模型</h2>
+  <p><span class="tag tag-blue">次高性能</span> <span class="tag tag-orange">程序启动时加载的 DSO</span></p>
+  <p>当 TLS 变量定义在<strong>随程序启动加载</strong>的共享库（<code>DT_NEEDED</code>）中，其相对 TP 的偏移在<strong>程序启动时</strong>确定（不是链接时），但之后不再改变。此偏移通过 GOT 表存储（<code>GOTTPOFF</code>）。</p>
+
+  <pre><code><span class="cm">// x86-64 Initial Exec 代码序列</span>
+<span class="cm">// 重定位：R_X86_64_GOTTPOFF（GOT 中存 TP 偏移）</span>
+movq  ref@GOTTPOFF(%rip), %rax   <span class="cm">// 从 GOT 加载 TP 偏移量</span>
+movl  %fs:(%rax), %eax           <span class="cm">// 用 TP + offset 访问变量</span>
+
+<span class="cm">// GOT 中动态重定位类型：R_X86_64_TPOFF64</span>
+<span class="cm">// 动态链接器在启动时将 l_tls_offset 写入 GOT 对应槽位</span></code></pre>
+
+  <div class="diagram-wrap">
+    <svg viewBox="0 0 680 180" width="100%" style="max-width:680px">
+      <text x="340" y="18" text-anchor="middle" fill="#58a6ff" font-size="12" font-weight="bold">Initial Exec 访问路径（2 步）</text>
+
+      <!-- TP -->
+      <rect x="20" y="55" width="90" height="50" rx="6" fill="#21262d" stroke="#e3b341" stroke-width="2"/>
+      <text x="65" y="77" text-anchor="middle" fill="#e3b341" font-size="10" font-weight="bold">%fs (TP)</text>
+      <text x="65" y="95" text-anchor="middle" fill="#8b949e" font-size="8">→ TCB</text>
+
+      <!-- Step 1: GOT -->
+      <line x1="115" y1="80" x2="185" y2="80" stroke="#8b949e" stroke-width="1.5" stroke-dasharray="3,2" marker-end="url(#arr)"/>
+      <text x="150" y="72" text-anchor="middle" fill="#8b949e" font-size="8">①</text>
+      <rect x="190" y="45" width="140" height="60" rx="6" fill="#1c2128" stroke="#58a6ff" stroke-width="1.5"/>
+      <text x="260" y="67" text-anchor="middle" fill="#58a6ff" font-size="10" font-weight="bold">GOT 表项</text>
+      <text x="260" y="84" text-anchor="middle" fill="#8b949e" font-size="9">GOTTPOFF 动态重定位</text>
+      <text x="260" y="99" text-anchor="middle" fill="#e3b341" font-size="9">存储 TP 偏移量</text>
+
+      <!-- Step 2: Access -->
+      <line x1="335" y1="75" x2="415" y2="75" stroke="#58a6ff" stroke-width="1.5" marker-end="url(#arr)"/>
+      <text x="374" y="67" text-anchor="middle" fill="#8b949e" font-size="8">②</text>
+      <text x="374" y="90" text-anchor="middle" fill="#8b949e" font-size="8">%fs:(offset)</text>
+      <rect x="420" y="50" width="150" height="50" rx="6" fill="#1c2128" stroke="#3fb950" stroke-width="1.5"/>
+      <text x="495" y="72" text-anchor="middle" fill="#3fb950" font-size="10" font-weight="bold">TLS 变量地址</text>
+      <text x="495" y="90" text-anchor="middle" fill="#8b949e" font-size="9">TP + GOT[offset]</text>
+
+      <!-- Cost -->
+      <rect x="440" y="120" width="220" height="45" rx="6" fill="#21262d" stroke="#58a6ff" stroke-width="1"/>
+      <text x="550" y="138" text-anchor="middle" fill="#58a6ff" font-size="9" font-weight="bold">访问开销</text>
+      <text x="550" y="155" text-anchor="middle" fill="#8b949e" font-size="9">✅ 2 条指令 / 1 次 GOT 内存访问</text>
+    </svg>
+    <div class="diagram-caption">图 10-1：Initial Exec 模型（GOT 存储 TP 偏移，启动时由动态链接器填写）</div>
+  </div>
+
+  <div class="callout callout-warn">
+    <div class="callout-title">⚠️ DF_STATIC_TLS 限制</div>
+    使用 Initial Exec 模型的共享库（包括使用 <code>__attribute__((tls_model("initial-exec")))</code> 的代码）会被链接器设置 <code>DF_STATIC_TLS</code> 标志。这类库<strong>通常不能</strong>被 <code>dlopen</code> 安全加载（因为静态 TLS 区域大小在程序启动时就已固定）。glibc 保留了少量"TLS 剩余空间"以允许小型 IE 库的 dlopen，但 musl 等其他 libc 不支持此机制。
+  </div>
+
+  <div class="first-principle">
+    <div class="fp-title">⚗ 第一性原理</div>
+    <div class="fp-content">
+      Initial Exec 是"链接时不知道、启动时可以知道"的折中方案：用 GOT 表作为中间层，让动态链接器在启动时填写偏移量，之后访问退化为一次 GOT 读取加一次 TP 相对寻址。GOT 是实现"延迟绑定"的经典模式——将运行时才能确定的值用间接寻址来存储。
+    </div>
+  </div>
+</section>
+
+<!-- §11 Global Dynamic -->
+<section class="section" id="gd-model">
+  <div class="section-badge">Chapter 11</div>
+  <h2 class="sec-title"><span class="ico">🌐</span>Global Dynamic TLS 模型</h2>
+  <p><span class="tag tag-orange">最通用</span> <span class="tag tag-purple">支持 dlopen</span></p>
+  <p>Global Dynamic（GD）是最灵活的模型，适用于 <code>-fpic/-fPIC</code> 编译、TLS 变量可能定义在任意共享库（包括 <code>dlopen</code> 加载）的情形。编译器生成对 <code>__tls_get_addr</code> 的调用。</p>
+
+  <pre><code><span class="cm">// x86-64 Global Dynamic 代码序列</span>
+<span class="cm">// 重定位：R_X86_64_TLSGD</span>
+data16 leaq  var@tlsgd(%rip), %rdi  <span class="cm">// 加载 tls_index 指针到 %rdi</span>
+<span class="cm">// data16 前缀为 NOP，占位使总长为 16 字节（便于链接器内联优化）</span>
+.value <span class="nu">0x6666</span>
+rex64 call   __tls_get_addr@PLT      <span class="cm">// 调用获取 TLS 变量地址</span>
+movl  (%rax), %eax                   <span class="cm">// 读取变量值</span>
+
+<span class="cm">// GOT 中存储 tls_index 结构体（两个 GOT 条目）：</span>
+<span class="cm">// GOT[n+0]: R_X86_64_DTPMOD64 → 运行时填入模块 ID</span>
+<span class="cm">// GOT[n+1]: R_X86_64_DTPOFF64 → 运行时填入模块内偏移</span></code></pre>
+
+  <div class="diagram-wrap">
+    <svg viewBox="0 0 700 280" width="100%" style="max-width:700px">
+      <text x="350" y="18" text-anchor="middle" fill="#d29922" font-size="12" font-weight="bold">Global Dynamic 访问路径（__tls_get_addr）</text>
+
+      <!-- tls_index in GOT -->
+      <rect x="30" y="40" width="170" height="90" rx="6" fill="#21262d" stroke="#d29922" stroke-width="1.5"/>
+      <text x="115" y="60" text-anchor="middle" fill="#d29922" font-size="10" font-weight="bold">GOT 中的 tls_index</text>
+      <rect x="45" y="70" width="140" height="25" rx="4" fill="#1c2128" stroke="#30363d"/>
+      <text x="115" y="87" text-anchor="middle" fill="#8b949e" font-size="9">ti_module (DTPMOD64)</text>
+      <rect x="45" y="100" width="140" height="25" rx="4" fill="#1c2128" stroke="#30363d"/>
+      <text x="115" y="117" text-anchor="middle" fill="#8b949e" font-size="9">ti_offset (DTPOFF64)</text>
+
+      <!-- __tls_get_addr -->
+      <rect x="250" y="40" width="200" height="180" rx="8" fill="#21262d" stroke="#bc8cff" stroke-width="1.5"/>
+      <text x="350" y="62" text-anchor="middle" fill="#bc8cff" font-size="11" font-weight="bold">__tls_get_addr(ti)</text>
+      <text x="350" y="80" text-anchor="middle" fill="#8b949e" font-size="9">elf/dl-tls.c</text>
+
+      <rect x="265" y="90" width="170" height="30" rx="4" fill="#1c2128" stroke="#3fb950"/>
+      <text x="350" y="107" text-anchor="middle" fill="#3fb950" font-size="9">dtv = THREAD_DTV()</text>
+
+      <rect x="265" y="125" width="170" height="30" rx="4" fill="#1c2128" stroke="#d29922"/>
+      <text x="350" y="140" text-anchor="middle" fill="#d29922" font-size="9">检查 dtv[0].counter == gen?</text>
+
+      <rect x="265" y="160" width="170" height="30" rx="4" fill="#1c2128" stroke="#58a6ff"/>
+      <text x="350" y="177" text-anchor="middle" fill="#58a6ff" font-size="9">p = dtv[ti_module].pointer.val</text>
+
+      <rect x="265" y="195" width="170" height="18" rx="4" fill="#1c2128" stroke="#30363d"/>
+      <text x="350" y="208" text-anchor="middle" fill="#8b949e" font-size="9">return p + ti_offset</text>
+
+      <!-- DTV -->
+      <rect x="510" y="40" width="165" height="130" rx="8" fill="#21262d" stroke="#3fb950" stroke-width="1.5"/>
+      <text x="593" y="60" text-anchor="middle" fill="#79c0ff" font-size="10" font-weight="bold">DTV (当前线程)</text>
+      <rect x="525" y="72" width="135" height="24" rx="4" fill="#1c2128" stroke="#d29922"/>
+      <text x="593" y="88" text-anchor="middle" fill="#d29922" font-size="9">dtv[0] = gen counter</text>
+      <rect x="525" y="102" width="135" height="24" rx="4" fill="#1c2128" stroke="#3fb950"/>
+      <text x="593" y="118" text-anchor="middle" fill="#3fb950" font-size="9">dtv[1] = exe TLS ptr</text>
+      <rect x="525" y="132" width="135" height="24" rx="4" fill="#1c2128" stroke="#58a6ff"/>
+      <text x="593" y="148" text-anchor="middle" fill="#d29922" font-size="9">dtv[m] = lib TLS ptr</text>
+
+      <!-- Cost box -->
+      <rect x="30" y="200" width="200" height="60" rx="6" fill="#21262d" stroke="#f85149" stroke-width="1"/>
+      <text x="130" y="220" text-anchor="middle" fill="#f85149" font-size="9" font-weight="bold">访问开销</text>
+      <text x="130" y="238" text-anchor="middle" fill="#8b949e" font-size="9">❌ 1 次函数调用</text>
+      <text x="130" y="253" text-anchor="middle" fill="#8b949e" font-size="9">❌ 可能触发懒加载 + DTV 扩展</text>
+
+      <!-- Arrows -->
+      <line x1="205" y1="85" x2="248" y2="140" stroke="#d29922" stroke-width="1.5" stroke-dasharray="3,2" marker-end="url(#arr)"/>
+      <line x1="454" y1="160" x2="508" y2="125" stroke="#58a6ff" stroke-width="1.5" stroke-dasharray="3,2" marker-end="url(#arr)"/>
+    </svg>
+    <div class="diagram-caption">图 11-1：Global Dynamic 模型通过 __tls_get_addr 间接访问 TLS 变量</div>
+  </div>
+
+  <h3>__tls_get_addr 核心实现</h3>
+  <pre><code><span class="cm">/* elf/dl-tls.c */</span>
+<span class="ty">void</span> *
+<span class="fn">__tls_get_addr</span> (<span class="ty">tls_index</span> *ti)
+{
+  <span class="ty">dtv_t</span> *dtv = <span class="fn">THREAD_DTV</span>();
+
+  <span class="cm">/* 快速路径：版本号匹配，DTV 是最新的 */</span>
+  <span class="kw">if</span> (__glibc_unlikely (dtv[<span class="nu">0</span>].counter != GL(dl_tls_generation)))
+    <span class="kw">return</span> <span class="fn">update_get_addr</span>(ti);  <span class="cm">/* 慢路径：更新 DTV */</span>
+
+  <span class="ty">void</span> *p = dtv[ti->ti_module].pointer.val;
+
+  <span class="cm">/* 懒加载：该模块 TLS 块尚未分配 */</span>
+  <span class="kw">if</span> (__glibc_unlikely (p == TLS_DTV_UNALLOCATED))
+    <span class="kw">return</span> <span class="fn">tls_get_addr_tail</span>(ti->ti_offset, dtv, NULL);
+
+  <span class="kw">return</span> (<span class="ty">char</span> *) p + ti->ti_offset;
+}</code></pre>
+
+  <div class="first-principle">
+    <div class="fp-title">⚗ 第一性原理</div>
+    <div class="fp-content">
+      Global Dynamic 是 TLS 访问的"最大公约数"方案：用函数调用换取对所有模块的均匀支持能力。<code>__tls_get_addr</code> 包含版本检查和懒加载两种"慢路径"，但在热点代码中，DTV 通常是最新的（版本号匹配），函数只需做一次数组查找和加法。这是"乐观假设 + 慢路径兜底"的设计范式。
+    </div>
+  </div>
+</section>
+
+<!-- §12 Local Dynamic -->
+<section class="section" id="ld-model">
+  <div class="section-badge">Chapter 12</div>
+  <h2 class="sec-title"><span class="ico">🔧</span>Local Dynamic TLS 模型</h2>
+  <p><span class="tag tag-orange">DSO 非可抢占符号</span> <span class="tag tag-blue">批量优化</span></p>
+  <p>Local Dynamic（LD）是 Global Dynamic 的优化变体：当一个函数需要访问多个属于<strong>同一模块的非可抢占 TLS 变量</strong>时，可以只调用一次 <code>__tls_get_addr</code> 获取模块 TLS 块的基址，然后用编译期常量偏移 <code>dtpoff</code> 来访问各变量：</p>
+
+  <pre><code><span class="cm">// 示例：同一模块两个静态 TLS 变量</span>
+<span class="kw">static</span> __thread <span class="ty">int</span> def0, def1;
+<span class="kw">int</span> <span class="fn">f</span>() { <span class="kw">return</span> ++def0 + ++def1; }
+
+<span class="cm">// 编译为 Local Dynamic：</span>
+leaq  def0@tlsld(%rip), %rdi   <span class="cm">// R_X86_64_TLSLD: 模块 TLS 块基址请求</span>
+call  __tls_get_addr@PLT       <span class="cm">// 只调用一次！返回模块 TLS 块首地址</span>
+movl  def0@dtpoff(%rax), %edx  <span class="cm">// 编译期常量偏移访问 def0</span>
+movl  def1@dtpoff(%rax), %eax  <span class="cm">// 编译期常量偏移访问 def1</span></code></pre>
+
+  <div class="diagram-wrap">
+    <svg viewBox="0 0 680 160" width="100%" style="max-width:680px">
+      <text x="340" y="18" text-anchor="middle" fill="#79c0ff" font-size="12" font-weight="bold">Local Dynamic vs Global Dynamic 对比</text>
+
+      <!-- GD: 2 calls -->
+      <rect x="20" y="40" width="300" height="110" rx="8" fill="#21262d" stroke="#f85149" stroke-width="1.5"/>
+      <text x="170" y="60" text-anchor="middle" fill="#f85149" font-size="10" font-weight="bold">Global Dynamic（访问2个变量）</text>
+      <text x="170" y="80" text-anchor="middle" fill="#8b949e" font-size="9">call __tls_get_addr(def0_tls_index)</text>
+      <text x="170" y="96" text-anchor="middle" fill="#8b949e" font-size="9">→ 返回 &amp;def0</text>
+      <text x="170" y="116" text-anchor="middle" fill="#8b949e" font-size="9">call __tls_get_addr(def1_tls_index)</text>
+      <text x="170" y="132" text-anchor="middle" fill="#8b949e" font-size="9">→ 返回 &amp;def1</text>
+      <text x="170" y="146" text-anchor="middle" fill="#f85149" font-size="8">❌ 2 次函数调用</text>
+
+      <!-- LD: 1 call -->
+      <rect x="360" y="40" width="300" height="110" rx="8" fill="#21262d" stroke="#3fb950" stroke-width="1.5"/>
+      <text x="510" y="60" text-anchor="middle" fill="#3fb950" font-size="10" font-weight="bold">Local Dynamic（访问2个变量）</text>
+      <text x="510" y="80" text-anchor="middle" fill="#8b949e" font-size="9">call __tls_get_addr(module_tls_index)</text>
+      <text x="510" y="96" text-anchor="middle" fill="#8b949e" font-size="9">→ 返回模块 TLS 块基址 base</text>
+      <text x="510" y="116" text-anchor="middle" fill="#8b949e" font-size="9">base + dtpoff(def0) → &amp;def0</text>
+      <text x="510" y="132" text-anchor="middle" fill="#8b949e" font-size="9">base + dtpoff(def1) → &amp;def1</text>
+      <text x="510" y="146" text-anchor="middle" fill="#3fb950" font-size="8">✅ 1 次函数调用（N 个变量共用）</text>
+    </svg>
+    <div class="diagram-caption">图 12-1：Local Dynamic 通过共享一次 __tls_get_addr 调用优化多变量访问</div>
+  </div>
+
+  <div class="first-principle">
+    <div class="fp-title">⚗ 第一性原理</div>
+    <div class="fp-content">
+      Local Dynamic 的优化逻辑是<strong>提取公共子表达式</strong>：同一模块的所有 TLS 变量共享同一个模块基址，只需获取一次，后续访问退化为加法运算。这是编译器常规的"循环不变量外提"（LICM）思想在 TLS 访问上的应用。
+    </div>
+  </div>
+</section>
+
+<!-- §13 主线程初始化 -->
+<section class="section" id="init-main">
+  <div class="section-badge">Chapter 13</div>
+  <h2 class="sec-title"><span class="ico">🚀</span>主线程 TLS 初始化</h2>
+  <p>对于动态链接的 ELF 可执行文件，主线程的 TLS 初始化由<strong>动态链接器</strong>（<code>ld.so</code>，即 <code>elf/rtld.c</code>）完成，发生在 <code>main()</code> 函数执行之前。</p>
+
+  <div class="diagram-wrap">
+    <svg viewBox="0 0 700 380" width="100%" style="max-width:700px">
+      <text x="350" y="20" text-anchor="middle" fill="#79c0ff" font-size="13" font-weight="bold">主线程 TLS 初始化流程</text>
+
+      <!-- Step boxes -->
+      <g>
+        <rect x="30" y="40" width="640" height="50" rx="6" fill="#21262d" stroke="#d29922" stroke-width="1.5"/>
+        <text x="350" y="62" text-anchor="middle" fill="#d29922" font-size="11" font-weight="bold">① 内核加载 ELF + 移交控制权给 ld.so</text>
+        <text x="350" y="80" text-anchor="middle" fill="#8b949e" font-size="9">kernel exec syscall → _start (rtld.c)</text>
+      </g>
+      <line x1="350" y1="92" x2="350" y2="106" stroke="#58a6ff" stroke-width="1.5" marker-end="url(#arr)"/>
+      <g>
+        <rect x="30" y="108" width="640" height="50" rx="6" fill="#21262d" stroke="#3fb950" stroke-width="1.5"/>
+        <text x="350" y="130" text-anchor="middle" fill="#3fb950" font-size="11" font-weight="bold">② init_tls() — 遍历 link_map，填充 dl_tls_dtv_slotinfo_list</text>
+        <text x="350" y="148" text-anchor="middle" fill="#8b949e" font-size="9">为每个有 PT_TLS 的模块分配 slot，调用 _dl_determine_tlsoffset() 计算各模块 l_tls_offset</text>
+      </g>
+      <line x1="350" y1="160" x2="350" y2="174" stroke="#58a6ff" stroke-width="1.5" marker-end="url(#arr)"/>
+      <g>
+        <rect x="30" y="176" width="640" height="50" rx="6" fill="#21262d" stroke="#58a6ff" stroke-width="1.5"/>
+        <text x="350" y="198" text-anchor="middle" fill="#58a6ff" font-size="11" font-weight="bold">③ _dl_allocate_tls_storage() — 分配 TCB + 静态 TLS 区域</text>
+        <text x="350" y="216" text-anchor="middle" fill="#8b949e" font-size="9">堆分配（memalign），包含 DTV + TCB + 所有静态 TLS 块</text>
+      </g>
+      <line x1="350" y1="228" x2="350" y2="242" stroke="#58a6ff" stroke-width="1.5" marker-end="url(#arr)"/>
+      <g>
+        <rect x="30" y="244" width="640" height="50" rx="6" fill="#21262d" stroke="#bc8cff" stroke-width="1.5"/>
+        <text x="350" y="266" text-anchor="middle" fill="#bc8cff" font-size="11" font-weight="bold">④ _dl_allocate_tls_init() — 初始化 DTV + 复制 TLS 初始镜像</text>
+        <text x="350" y="284" text-anchor="middle" fill="#8b949e" font-size="9">memcpy(.tdata) + memset 0(.tbss) 至各模块 TLS 块；dtv[m].pointer.val = dest</text>
+      </g>
+      <line x1="350" y1="296" x2="350" y2="310" stroke="#58a6ff" stroke-width="1.5" marker-end="url(#arr)"/>
+      <g>
+        <rect x="30" y="312" width="640" height="50" rx="6" fill="#21262d" stroke="#e3b341" stroke-width="2"/>
+        <text x="350" y="334" text-anchor="middle" fill="#e3b341" font-size="11" font-weight="bold">⑤ TLS_INIT_TP(tcb) — arch_prctl(ARCH_SET_FS, tcb) 绑定 FS 寄存器</text>
+        <text x="350" y="352" text-anchor="middle" fill="#8b949e" font-size="9">内核将 tcb 地址写入当前线程的 MSR_FS_BASE，之后 %fs 访问生效</text>
+      </g>
+    </svg>
+    <div class="diagram-caption">图 13-1：主线程 TLS 初始化五步流程（elf/rtld.c → elf/dl-tls.c）</div>
+  </div>
+
+  <h3>_dl_allocate_tls_init 核心逻辑</h3>
+  <pre><code><span class="cm">/* elf/dl-tls.c — _dl_allocate_tls_init() 精简版 */</span>
+<span class="ty">void</span> *
+<span class="fn">_dl_allocate_tls_init</span> (<span class="ty">void</span> *result)
+{
+  <span class="ty">dtv_t</span> *dtv = <span class="fn">GET_DTV</span>(result);
+
+  <span class="cm">/* 检查并可能扩容 DTV 数组 */</span>
+  <span class="kw">if</span> (dtv[-<span class="nu">1</span>].counter < GL(dl_tls_max_dtv_idx))
+    dtv = <span class="fn">_dl_resize_dtv</span>(dtv);
+
+  <span class="cm">/* 遍历所有已加载模块，初始化各模块的 TLS 块 */</span>
+  <span class="kw">for each</span> map <span class="kw">in</span> dl_tls_dtv_slotinfo_list:
+    <span class="ty">void</span> *dest = (<span class="ty">char</span> *) result + map->l_tls_offset;
+    dtv[map->l_tls_modid].pointer.val = dest;
+
+    <span class="cm">/* 复制 .tdata 初始化镜像 + 零初始化 .tbss */</span>
+    <span class="fn">memset</span>(<span class="fn">mempcpy</span>(dest, map->l_tls_initimage,
+                         map->l_tls_initimage_size),
+           <span class="nu">'\0'</span>, map->l_tls_blocksize - map->l_tls_initimage_size);
+
+  dtv[<span class="nu">0</span>].counter = maxgen; <span class="cm">/* 设置 generation counter */</span>
+  <span class="kw">return</span> result;
+}</code></pre>
+
+  <div class="first-principle">
+    <div class="fp-title">⚗ 第一性原理</div>
+    <div class="fp-content">
+      主线程 TLS 初始化的本质是<strong>将编译期的"模板数据"（PT_TLS 初始镜像）实例化为运行期的"线程私有副本"</strong>，并建立 DTV 这个索引结构。整个过程类似于"克隆一份带坐标系的数据空间"：每个线程克隆一份数据，但坐标系（偏移关系）是编译器和链接器协商好的，运行时只需填入绝对基址即可。
+    </div>
+  </div>
+</section>
+
+<!-- §14 子线程初始化 -->
+<section class="section" id="init-thread">
+  <div class="section-badge">Chapter 14</div>
+  <h2 class="sec-title"><span class="ico">🧬</span>子线程 TLS 初始化</h2>
+  <p>调用 <code>pthread_create</code> 创建新线程时，TLS 初始化流程与主线程有所不同：静态 TLS 块和 TCB 会被<strong>直接分配在线程栈上</strong>（栈顶高地址区域），省去一次独立的堆分配。</p>
+
+  <div class="diagram-wrap">
+    <svg viewBox="0 0 700 340" width="100%" style="max-width:700px">
+      <text x="350" y="20" text-anchor="middle" fill="#79c0ff" font-size="13" font-weight="bold">pthread_create 线程 TLS 初始化流程</text>
+
+      <g>
+        <rect x="30" y="40" width="640" height="45" rx="6" fill="#21262d" stroke="#58a6ff" stroke-width="1.5"/>
+        <text x="350" y="60" text-anchor="middle" fill="#58a6ff" font-size="11" font-weight="bold">① pthread_create() → allocate_stack()</text>
+        <text x="350" y="76" text-anchor="middle" fill="#8b949e" font-size="9">nptl/allocatestack.c — 先检查栈缓存，无则 mmap 新栈</text>
+      </g>
+      <line x1="350" y1="87" x2="350" y2="100" stroke="#58a6ff" stroke-width="1.5" marker-end="url(#arr)"/>
+      <g>
+        <rect x="30" y="102" width="640" height="55" rx="6" fill="#21262d" stroke="#3fb950" stroke-width="1.5"/>
+        <text x="350" y="124" text-anchor="middle" fill="#3fb950" font-size="11" font-weight="bold">② 在栈顶为 TCB + 静态 TLS 分配空间</text>
+        <text x="350" y="141" text-anchor="middle" fill="#8b949e" font-size="9">位于 mmap 区域的高地址端：[stack bottom ... | Static TLS | TCB(struct pthread) ]</text>
+        <text x="350" y="154" text-anchor="middle" fill="#8b949e" font-size="9">struct pthread * pd = (top_of_stack - sizeof(struct pthread)) aligned</text>
+      </g>
+      <line x1="350" y1="159" x2="350" y2="172" stroke="#58a6ff" stroke-width="1.5" marker-end="url(#arr)"/>
+      <g>
+        <rect x="30" y="174" width="640" height="45" rx="6" fill="#21262d" stroke="#bc8cff" stroke-width="1.5"/>
+        <text x="350" y="194" text-anchor="middle" fill="#bc8cff" font-size="11" font-weight="bold">③ _dl_allocate_tls(pd) — 分配 DTV + 初始化 TLS 块</text>
+        <text x="350" y="210" text-anchor="middle" fill="#8b949e" font-size="9">与主线程相同：复制 .tdata 镜像，memset .tbss，设置 dtv 指针</text>
+      </g>
+      <line x1="350" y1="221" x2="350" y2="234" stroke="#58a6ff" stroke-width="1.5" marker-end="url(#arr)"/>
+      <g>
+        <rect x="30" y="236" width="640" height="45" rx="6" fill="#21262d" stroke="#d29922" stroke-width="1.5"/>
+        <text x="350" y="256" text-anchor="middle" fill="#d29922" font-size="11" font-weight="bold">④ clone(CLONE_VM | CLONE_THREAD | CLONE_SETTLS, tp=pd)</text>
+        <text x="350" y="272" text-anchor="middle" fill="#8b949e" font-size="9">CLONE_SETTLS 标志 → 内核 copy_thread_tls() 设置新线程 FS = pd</text>
+      </g>
+      <line x1="350" y1="283" x2="350" y2="296" stroke="#58a6ff" stroke-width="1.5" marker-end="url(#arr)"/>
+      <g>
+        <rect x="30" y="298" width="640" height="32" rx="6" fill="#21262d" stroke="#e3b341" stroke-width="1.5"/>
+        <text x="350" y="318" text-anchor="middle" fill="#e3b341" font-size="11" font-weight="bold">⑤ 新线程 start_thread() 执行用户函数，%fs 已就绪</text>
+      </g>
+    </svg>
+    <div class="diagram-caption">图 14-1：pthread_create 子线程 TLS 初始化（TCB 与静态 TLS 位于线程栈上）</div>
+  </div>
+
+  <div class="diagram-wrap">
+    <svg viewBox="0 0 680 230" width="100%" style="max-width:680px">
+      <text x="340" y="18" text-anchor="middle" fill="#79c0ff" font-size="11" font-weight="bold">子线程栈内存布局（mmap 分配区域）</text>
+
+      <!-- mmap area -->
+      <text x="25" y="50" fill="#8b949e" font-size="9">高地址</text>
+      <text x="25" y="215" fill="#8b949e" font-size="9">低地址</text>
+      <line x1="35" y1="55" x2="35" y2="210" stroke="#30363d" stroke-width="1" stroke-dasharray="3,3"/>
+      <polygon points="35,55 30,70 40,70" fill="#8b949e"/>
+
+      <!-- struct pthread (TCB) -->
+      <rect x="60" y="55" width="500" height="55" rx="6" fill="#1c2128" stroke="#bc8cff" stroke-width="2"/>
+      <text x="310" y="78" text-anchor="middle" fill="#bc8cff" font-size="12" font-weight="bold">struct pthread（TCB）</text>
+      <text x="310" y="98" text-anchor="middle" fill="#e3b341" font-size="9">← %fs 指向此处  |  包含 tcbhead_t: tcb,dtv,self,stack_guard…</text>
+
+      <!-- Static TLS blocks -->
+      <rect x="60" y="113" width="240" height="42" rx="5" fill="#1c2128" stroke="#3fb950" stroke-width="1.5"/>
+      <text x="180" y="130" text-anchor="middle" fill="#3fb950" font-size="10" font-weight="bold">主程序 TLS 块</text>
+      <text x="180" y="147" text-anchor="middle" fill="#8b949e" font-size="8">tlsoffset1 负偏移</text>
+
+      <rect x="310" y="113" width="250" height="42" rx="5" fill="#1c2128" stroke="#58a6ff" stroke-width="1.5"/>
+      <text x="435" y="130" text-anchor="middle" fill="#58a6ff" font-size="10" font-weight="bold">libfoo.so TLS 块</text>
+      <text x="435" y="147" text-anchor="middle" fill="#8b949e" font-size="8">tlsoffset2 负偏移</text>
+
+      <!-- Stack -->
+      <rect x="60" y="163" width="500" height="42" rx="5" fill="#21262d" stroke="#30363d"/>
+      <text x="310" y="183" text-anchor="middle" fill="#8b949e" font-size="10">线程栈区域（向低地址增长）</text>
+      <text x="310" y="198" text-anchor="middle" fill="#8b949e" font-size="8">SP 寄存器从此区域顶部向下移动</text>
+
+      <!-- Guard page label -->
+      <rect x="60" y="207" width="500" height="16" rx="3" fill="#1c1416" stroke="#f85149" stroke-dasharray="3,2"/>
+      <text x="310" y="219" text-anchor="middle" fill="#f85149" font-size="8">Guard Page（PROT_NONE — 检测栈溢出）</text>
+    </svg>
+    <div class="diagram-caption">图 14-2：子线程 mmap 区域内存布局（TCB 与静态 TLS 在高地址，栈向低地址延伸）</div>
+  </div>
+
+  <div class="first-principle">
+    <div class="fp-title">⚗ 第一性原理</div>
+    <div class="fp-content">
+      子线程将 TCB 和静态 TLS 放在栈顶，是<strong>空间局部性的极致利用</strong>：线程的控制元数据（struct pthread）与线程的执行栈物理相邻，减少了内存碎片和 TLB 压力。CLONE_SETTLS 标志让内核直接为新线程设置 FS，避免了新线程启动后再调用 arch_prctl 的额外开销——内核在线程诞生之初即"出厂配置完毕"。
+    </div>
+  </div>
+</section>
+
+<!-- §15 __tls_get_addr -->
+<section class="section" id="tls-get-addr">
+  <div class="section-badge">Chapter 15</div>
+  <h2 class="sec-title"><span class="ico">🔗</span>__tls_get_addr 完整实现</h2>
+  <p><code>__tls_get_addr</code> 是 glibc 动态 TLS 访问的统一入口，定义在 <code>elf/dl-tls.c</code>。它接收一个 <code>tls_index</code> 指针（存于 GOT 中），返回 TLS 变量的运行时地址。</p>
+
+  <pre><code><span class="cm">/* sysdeps/x86_64/dl-tls.h — tls_index 结构体 */</span>
+<span class="kw">typedef</span> <span class="kw">struct</span> <span class="ty">dl_tls_index</span>
+{
+  <span class="ty">uint64_t</span> ti_module;  <span class="cm">/* 模块 ID（由 R_X86_64_DTPMOD64 动态重定位填入）*/</span>
+  <span class="ty">uint64_t</span> ti_offset;  <span class="cm">/* 模块内 TLS 偏移（R_X86_64_DTPOFF64 或编译期常量）*/</span>
+} <span class="ty">tls_index</span>;
+
+<span class="cm">/* elf/dl-tls.c — 完整实现（含 dtv 更新与懒加载） */</span>
+<span class="ty">void</span> *
+<span class="fn">__tls_get_addr</span> (<span class="ty">tls_index</span> *ti)
+{
+  <span class="ty">dtv_t</span> *dtv = <span class="fn">THREAD_DTV</span>();
+
+  <span class="cm">/* ① 快速路径：generation 匹配，DTV 是最新版本 */</span>
+  <span class="kw">if</span> (__glibc_unlikely (dtv[<span class="nu">0</span>].counter != GL(dl_tls_generation)))
+    <span class="kw">return</span> <span class="fn">update_get_addr</span>(ti);  <span class="cm">/* 慢路径：更新 DTV */</span>
+
+  <span class="cm">/* ② 用模块 ID 索引 DTV */</span>
+  <span class="ty">void</span> *p = dtv[ti->ti_module].pointer.val;
+
+  <span class="cm">/* ③ 懒加载路径：该 slot 尚未分配 */</span>
+  <span class="kw">if</span> (__glibc_unlikely (p == TLS_DTV_UNALLOCATED))
+    <span class="kw">return</span> <span class="fn">tls_get_addr_tail</span>(ti->ti_offset, dtv, NULL);
+    <span class="cm">/* tls_get_addr_tail 调用 allocate_and_init() 堆分配该模块 TLS 块 */</span>
+
+  <span class="cm">/* ④ 正常返回：TLS 块首地址 + 变量偏移 */</span>
+  <span class="kw">return</span> (<span class="ty">char</span> *) p + ti->ti_offset;
+}
+
+<span class="cm">/* allocate_and_init() — 动态 TLS 块分配 */</span>
+<span class="kw">static struct</span> <span class="ty">dtv_pointer</span>
+<span class="fn">allocate_and_init</span> (<span class="kw">struct</span> <span class="ty">link_map</span> *map)
+{
+  <span class="cm">/* 按模块 TLS 对齐要求 memalign 分配 */</span>
+  <span class="kw">struct</span> <span class="ty">dtv_pointer</span> result = <span class="fn">allocate_dtv_entry</span>(
+      map->l_tls_align, map->l_tls_blocksize);
+
+  <span class="cm">/* 复制初始化镜像 + 零化 .tbss */</span>
+  <span class="fn">memset</span>(<span class="fn">mempcpy</span>(result.val, map->l_tls_initimage,
+                       map->l_tls_initimage_size),
+         <span class="nu">'\0'</span>, map->l_tls_blocksize - map->l_tls_initimage_size);
+  <span class="kw">return</span> result;
+}</code></pre>
+
+  <div class="diagram-wrap">
+    <svg viewBox="0 0 700 230" width="100%" style="max-width:700px">
+      <text x="350" y="18" text-anchor="middle" fill="#79c0ff" font-size="12" font-weight="bold">__tls_get_addr 执行决策树</text>
+
+      <!-- Start -->
+      <rect x="270" y="35" width="160" height="30" rx="6" fill="#21262d" stroke="#bc8cff" stroke-width="1.5"/>
+      <text x="350" y="55" text-anchor="middle" fill="#bc8cff" font-size="10">调用 __tls_get_addr(ti)</text>
+
+      <line x1="350" y1="67" x2="350" y2="82" stroke="#58a6ff" stroke-width="1.5" marker-end="url(#arr)"/>
+
+      <!-- Check 1: generation -->
+      <polygon points="350,85 200,115 350,145 500,115" fill="#21262d" stroke="#d29922" stroke-width="1.5"/>
+      <text x="350" y="110" text-anchor="middle" fill="#d29922" font-size="9">dtv[0] == gl_generation?</text>
+      <text x="350" y="125" text-anchor="middle" fill="#8b949e" font-size="8">检查 DTV 版本</text>
+
+      <!-- No: slow path -->
+      <line x1="200" y1="115" x2="80" y2="115" stroke="#f85149" stroke-width="1.5" marker-end="url(#arr)"/>
+      <text x="140" y="108" text-anchor="middle" fill="#f85149" font-size="8">No (慢路径)</text>
+      <rect x="20" y="100" width="58" height="30" rx="4" fill="#1c2128" stroke="#f85149"/>
+      <text x="49" y="119" text-anchor="middle" fill="#f85149" font-size="8">update DTV</text>
+
+      <!-- Yes: check unallocated -->
+      <line x1="350" y1="147" x2="350" y2="162" stroke="#58a6ff" stroke-width="1.5" marker-end="url(#arr)"/>
+      <polygon points="350,165 200,195 350,225 500,195" fill="#21262d" stroke="#3fb950" stroke-width="1.5"/>
+      <text x="350" y="190" text-anchor="middle" fill="#3fb950" font-size="9">dtv[m].val == UNALLOCATED?</text>
+      <text x="350" y="206" text-anchor="middle" fill="#8b949e" font-size="8">检查该模块 TLS 是否已分配</text>
+
+      <!-- Unallocated: lazy alloc -->
+      <line x1="500" y1="195" x2="600" y2="195" stroke="#d29922" stroke-width="1.5" marker-end="url(#arr)"/>
+      <text x="550" y="188" text-anchor="middle" fill="#d29922" font-size="8">Yes (懒加载)</text>
+      <rect x="604" y="180" width="75" height="30" rx="4" fill="#1c2128" stroke="#d29922"/>
+      <text x="641" y="199" text-anchor="middle" fill="#d29922" font-size="8">alloc+init</text>
+
+      <!-- Normal: return -->
+      <text x="200" y="208" text-anchor="middle" fill="#3fb950" font-size="8">No (快速路径)</text>
+      <line x1="200" y1="195" x2="80" y2="195" stroke="#3fb950" stroke-width="1.5" marker-end="url(#arr)"/>
+      <rect x="20" y="180" width="58" height="30" rx="4" fill="#1c2128" stroke="#3fb950"/>
+      <text x="49" y="199" text-anchor="middle" fill="#3fb950" font-size="8">p + offset</text>
+    </svg>
+    <div class="diagram-caption">图 15-1：__tls_get_addr 执行决策树（快速路径 vs 慢路径）</div>
+  </div>
+
+  <div class="first-principle">
+    <div class="fp-title">⚗ 第一性原理</div>
+    <div class="fp-content">
+      <code>__tls_get_addr</code> 采用<strong>乐观快速路径 + 悲观慢路径</strong>的双层设计：在绝大多数情况下（DTV 最新、TLS 已分配），函数只做一次计数器比较和两次内存读取后返回。只有在真正需要时（dlopen 后首次访问、DTV 过旧）才进入代价高昂的更新/分配路径。这是"以常见情况为基准优化，以罕见情况为正确性兜底"的工程智慧。
+    </div>
+  </div>
+</section>
+
+<!-- §16 pthread_key API -->
+<section class="section" id="key-api">
+  <div class="section-badge">Chapter 16</div>
+  <h2 class="sec-title"><span class="ico">🗝️</span>pthread_key 机制</h2>
+  <p>除了 <code>__thread</code> 关键字实现的隐式 TLS，POSIX 还提供了显式的线程特定数据 API：</p>
+
+  <pre><code><span class="cm">/* nptl/bits/pthreadtypes.h */</span>
+<span class="kw">typedef</span> <span class="ty">unsigned int</span> <span class="ty">pthread_key_t</span>;
+
+<span class="cm">/* 创建一个键（全局有效，最多 PTHREAD_KEYS_MAX=1024 个）*/</span>
+<span class="ty">int</span> <span class="fn">pthread_key_create</span>(<span class="ty">pthread_key_t</span> *, <span class="ty">void</span> (*destructor)(<span class="ty">void</span> *));
+
+<span class="cm">/* 删除键（仅将 seq++ 使其为偶数）*/</span>
+<span class="ty">int</span> <span class="fn">pthread_key_delete</span>(<span class="ty">pthread_key_t</span>);
+
+<span class="cm">/* 设置当前线程与此键关联的值 */</span>
+<span class="ty">int</span> <span class="fn">pthread_setspecific</span>(<span class="ty">pthread_key_t</span>, <span class="kw">const</span> <span class="ty">void</span> *value);
+
+<span class="cm">/* 读取当前线程与此键关联的值 */</span>
+<span class="ty">void</span> *<span class="fn">pthread_getspecific</span>(<span class="ty">pthread_key_t</span>);</code></pre>
+
+  <h3>全局键管理：__pthread_keys 数组</h3>
+  <pre><code><span class="cm">/* nptl/internaltypes.h */</span>
+<span class="kw">struct</span> <span class="ty">pthread_key_struct</span>
+{
+  <span class="ty">uintptr_t</span> seq;         <span class="cm">/* 偶数=未使用，奇数=使用中 */</span>
+  <span class="ty">void</span> (*destr)(<span class="ty">void</span> *); <span class="cm">/* 线程退出时的析构器 */</span>
+};
+
+<span class="cm">/* nptl/pthread_keys.c — 全局数组 */</span>
+<span class="kw">struct</span> <span class="ty">pthread_key_struct</span> __pthread_keys[PTHREAD_KEYS_MAX]; <span class="cm">/* 1024 个槽 */</span></code></pre>
+
+  <div class="diagram-wrap">
+    <svg viewBox="0 0 700 180" width="100%" style="max-width:700px">
+      <text x="350" y="18" text-anchor="middle" fill="#79c0ff" font-size="12" font-weight="bold">pthread_key_create 流程</text>
+
+      <!-- Global array -->
+      <text x="350" y="42" text-anchor="middle" fill="#8b949e" font-size="10">全局 __pthread_keys[1024] 数组</text>
+
+      <!-- Slots -->
+      <g>
+        <rect x="30" y="55" width="75" height="50" rx="4" fill="#21262d" stroke="#30363d"/>
+        <text x="67" y="77" text-anchor="middle" fill="#8b949e" font-size="9">key[0]</text>
+        <text x="67" y="94" text-anchor="middle" fill="#8b949e" font-size="8">seq=2(偶)</text>
+      </g>
+      <g>
+        <rect x="115" y="55" width="75" height="50" rx="4" fill="#21262d" stroke="#3fb950" stroke-width="2"/>
+        <text x="152" y="77" text-anchor="middle" fill="#3fb950" font-size="9" font-weight="bold">key[1]</text>
+        <text x="152" y="90" text-anchor="middle" fill="#3fb950" font-size="8">seq=1(奇)</text>
+        <text x="152" y="103" text-anchor="middle" fill="#3fb950" font-size="8">✅ 使用中</text>
+      </g>
+      <g>
+        <rect x="200" y="55" width="75" height="50" rx="4" fill="#21262d" stroke="#58a6ff" stroke-width="2"/>
+        <text x="237" y="77" text-anchor="middle" fill="#58a6ff" font-size="9" font-weight="bold">key[2]</text>
+        <text x="237" y="90" text-anchor="middle" fill="#58a6ff" font-size="8">seq=3(奇)</text>
+        <text x="237" y="103" text-anchor="middle" fill="#58a6ff" font-size="8">✅ 使用中</text>
+      </g>
+      <g>
+        <rect x="285" y="55" width="75" height="50" rx="4" fill="#21262d" stroke="#30363d"/>
+        <text x="322" y="77" text-anchor="middle" fill="#8b949e" font-size="9">key[3]</text>
+        <text x="322" y="94" text-anchor="middle" fill="#8b949e" font-size="8">seq=0(偶)</text>
+      </g>
+      <text x="420" y="83" text-anchor="middle" fill="#8b949e" font-size="14">…</text>
+
+      <!-- create arrow -->
+      <line x1="322" y1="55" x2="322" y2="30" stroke="#d29922" stroke-width="1.5" stroke-dasharray="3,2" marker-end="url(#arr)"/>
+      <text x="380" y="25" text-anchor="middle" fill="#d29922" font-size="9">pthread_key_create 找空闲槽，CAS seq+=1</text>
+
+      <!-- Properties -->
+      <rect x="470" y="45" width="210" height="70" rx="6" fill="#21262d" stroke="#30363d"/>
+      <text x="575" y="63" text-anchor="middle" fill="#8b949e" font-size="9" font-weight="bold">键的属性</text>
+      <text x="575" y="80" text-anchor="middle" fill="#8b949e" font-size="8">• 键值 = 槽在数组中的下标</text>
+      <text x="575" y="95" text-anchor="middle" fill="#8b949e" font-size="8">• seq 奇=使用中，偶=空闲</text>
+      <text x="575" y="110" text-anchor="middle" fill="#8b949e" font-size="8">• CAS 保证创建/删除原子性</text>
+
+      <text x="350" y="155" text-anchor="middle" fill="#8b949e" font-size="9">键是全局的（所有线程共享键定义），但键关联的值是线程私有的（存于 struct pthread）</text>
+    </svg>
+    <div class="diagram-caption">图 16-1：pthread_key_create 在全局数组中找空闲槽，使用 CAS 原子操作</div>
+  </div>
+
+  <div class="first-principle">
+    <div class="fp-title">⚗ 第一性原理</div>
+    <div class="fp-content">
+      pthread_key 机制是一个<strong>全局索引 + 线程私有数据</strong>的二维哈希表：键（key）是全局共享的行索引，线程 ID 是隐含的列索引，值（data）在二维坐标（key, thread）处唯一确定。这与数据库的"列存储"思想类似——键是列标识，每个线程的 struct pthread 是一行。
+    </div>
+  </div>
+</section>
+
+<!-- §17 两级数组 -->
+<section class="section" id="key-impl">
+  <div class="section-badge">Chapter 17</div>
+  <h2 class="sec-title"><span class="ico">🗄️</span>两级数组实现（pthread_setspecific）</h2>
+  <p>每个线程的 <code>struct pthread</code> 中存储线程私有的键值对数据，采用<strong>两级数组</strong>结构以节省内存：</p>
+  <ul>
+    <li><code>specific_1stblock[32]</code>：前 32 个键（<code>PTHREAD_KEY_2NDLEVEL_SIZE</code>）直接存储，无需额外分配</li>
+    <li><code>specific[32]</code>：超出 32 个键时，使用二级指针数组（最多支持 1024 个键）</li>
+  </ul>
+
+  <pre><code><span class="cm">/* nptl/pthread_setspecific.c — 精简版 */</span>
+<span class="ty">int</span> <span class="fn">___pthread_setspecific</span>(<span class="ty">pthread_key_t</span> key, <span class="kw">const</span> <span class="ty">void</span> *value)
+{
+  <span class="kw">struct</span> <span class="ty">pthread</span> *self = <span class="fn">THREAD_SELF</span>;
+
+  <span class="kw">if</span> (__glibc_likely (key < PTHREAD_KEY_2NDLEVEL_SIZE)) {
+    <span class="cm">/* 快速路径：前 32 个键，直接用 specific_1stblock */</span>
+    <span class="ty">struct pthread_key_data</span> *level2 = &self->specific_1stblock[key];
+    level2->seq = __pthread_keys[key].seq;
+    level2->data = (<span class="ty">void</span> *) value;
+  } <span class="kw">else</span> {
+    <span class="cm">/* 慢路径：key >= 32，使用二级数组 */</span>
+    <span class="ty">unsigned int</span> idx1st = key / PTHREAD_KEY_2NDLEVEL_SIZE; <span class="cm">/* 一级索引 */</span>
+    <span class="ty">unsigned int</span> idx2nd = key % PTHREAD_KEY_2NDLEVEL_SIZE; <span class="cm">/* 二级索引 */</span>
+
+    <span class="ty">struct pthread_key_data</span> *level2 =
+        <span class="fn">THREAD_GETMEM_NC</span>(self, specific, idx1st);
+
+    <span class="kw">if</span> (level2 == NULL) {  <span class="cm">/* 按需分配二级数组 */</span>
+      level2 = (<span class="ty">struct pthread_key_data</span> *)
+          <span class="fn">calloc</span>(PTHREAD_KEY_2NDLEVEL_SIZE, <span class="kw">sizeof</span>(*level2));
+      <span class="fn">THREAD_SETMEM_NC</span>(self, specific, idx1st, level2);
+    }
+    level2[idx2nd].seq  = __pthread_keys[key].seq;
+    level2[idx2nd].data = (<span class="ty">void</span> *) value;
+  }
+  <span class="kw">return</span> <span class="nu">0</span>;
+}</code></pre>
+
+  <div class="diagram-wrap">
+    <svg viewBox="0 0 700 280" width="100%" style="max-width:700px">
+      <text x="350" y="18" text-anchor="middle" fill="#79c0ff" font-size="12" font-weight="bold">两级数组结构（每线程 struct pthread 内部）</text>
+
+      <!-- struct pthread box -->
+      <rect x="20" y="35" width="200" height="230" rx="8" fill="#21262d" stroke="#bc8cff" stroke-width="1.5"/>
+      <text x="120" y="55" text-anchor="middle" fill="#bc8cff" font-size="10" font-weight="bold">struct pthread</text>
+
+      <!-- specific_1stblock -->
+      <rect x="35" y="65" width="170" height="80" rx="5" fill="#1c2128" stroke="#3fb950" stroke-width="1.5"/>
+      <text x="120" y="83" text-anchor="middle" fill="#3fb950" font-size="9" font-weight="bold">specific_1stblock[32]</text>
+      <text x="120" y="98" text-anchor="middle" fill="#8b949e" font-size="8">key 0~31 的快速槽</text>
+      <text x="120" y="112" text-anchor="middle" fill="#8b949e" font-size="8">struct { uintptr_t seq; void *data; }</text>
+      <text x="120" y="128" text-anchor="middle" fill="#3fb950" font-size="8">无需额外 malloc</text>
+
+      <!-- specific -->
+      <rect x="35" y="158" width="170" height="90" rx="5" fill="#1c2128" stroke="#58a6ff" stroke-width="1.5"/>
+      <text x="120" y="176" text-anchor="middle" fill="#58a6ff" font-size="9" font-weight="bold">specific[32] (指针数组)</text>
+      <text x="120" y="192" text-anchor="middle" fill="#8b949e" font-size="8">key 32~1023 的二级指针</text>
+      <text x="120" y="207" text-anchor="middle" fill="#8b949e" font-size="8">每项指向32个slot的数组</text>
+      <text x="120" y="222" text-anchor="middle" fill="#58a6ff" font-size="8">按需 calloc 分配</text>
+
+      <!-- Second level arrays -->
+      <rect x="260" y="150" width="165" height="80" rx="5" fill="#1c2128" stroke="#58a6ff" stroke-width="1.5"/>
+      <text x="342" y="170" text-anchor="middle" fill="#58a6ff" font-size="9">specific[1] → 二级数组</text>
+      <text x="342" y="186" text-anchor="middle" fill="#8b949e" font-size="8">key 32~63 的数据</text>
+      <text x="342" y="200" text-anchor="middle" fill="#8b949e" font-size="8">struct pthread_key_data[32]</text>
+
+      <rect x="260" y="240" width="165" height="50" rx="5" fill="#1c2128" stroke="#30363d"/>
+      <text x="342" y="260" text-anchor="middle" fill="#8b949e" font-size="9">specific[2] → 二级数组</text>
+      <text x="342" y="278" text-anchor="middle" fill="#8b949e" font-size="8">key 64~95 的数据</text>
+
+      <!-- Access formula -->
+      <rect x="460" y="40" width="220" height="130" rx="6" fill="#21262d" stroke="#30363d"/>
+      <text x="570" y="60" text-anchor="middle" fill="#79c0ff" font-size="9" font-weight="bold">访问计算逻辑</text>
+      <text x="570" y="80" text-anchor="middle" fill="#3fb950" font-size="8">key &lt; 32:</text>
+      <text x="570" y="94" text-anchor="middle" fill="#8b949e" font-size="8">specific_1stblock[key]</text>
+      <text x="570" y="114" text-anchor="middle" fill="#58a6ff" font-size="8">key ≥ 32:</text>
+      <text x="570" y="128" text-anchor="middle" fill="#8b949e" font-size="8">idx1st = key / 32</text>
+      <text x="570" y="142" text-anchor="middle" fill="#8b949e" font-size="8">idx2nd = key % 32</text>
+      <text x="570" y="156" text-anchor="middle" fill="#8b949e" font-size="8">specific[idx1st][idx2nd]</text>
+
+      <!-- Seq check box -->
+      <rect x="460" y="190" width="220" height="70" rx="6" fill="#21262d" stroke="#d29922" stroke-width="1"/>
+      <text x="570" y="210" text-anchor="middle" fill="#d29922" font-size="9" font-weight="bold">Stale 数据检测</text>
+      <text x="570" y="228" text-anchor="middle" fill="#8b949e" font-size="8">seq 字段与全局</text>
+      <text x="570" y="242" text-anchor="middle" fill="#8b949e" font-size="8">__pthread_keys[key].seq 比较</text>
+      <text x="570" y="256" text-anchor="middle" fill="#8b949e" font-size="8">不匹配则返回 NULL（键已删除）</text>
+
+      <!-- Arrow -->
+      <line x1="210" y1="200" x2="258" y2="185" stroke="#58a6ff" stroke-width="1.5" stroke-dasharray="3,2" marker-end="url(#arr)"/>
+    </svg>
+    <div class="diagram-caption">图 17-1：pthread_key 两级数组存储结构（前32个键快速访问，超出后按需分配二级数组）</div>
+  </div>
+
+  <div class="first-principle">
+    <div class="fp-title">⚗ 第一性原理</div>
+    <div class="fp-content">
+      两级数组是<strong>稀疏存储</strong>的经典实现：多数程序使用的 pthread_key 数量远小于 1024（上限），直接分配 1024 槽会浪费内存。两级结构让前 32 个槽"零成本内联"（嵌在 struct pthread 中），更多键才触发按需分配。seq 字段的奇偶校验实现了"零额外开销的 key 有效性验证"——不需要单独的布尔标志位。
+    </div>
+  </div>
+</section>
+
+<!-- §18 对比 -->
+<section class="section" id="comparison">
+  <div class="section-badge">Chapter 18</div>
+  <h2 class="sec-title"><span class="ico">⚖️</span>两种 TLS 方式综合对比</h2>
+
+  <table>
+    <tr>
+      <th>特性</th>
+      <th>__thread / thread_local（隐式TLS）</th>
+      <th>pthread_key API（显式TLS）</th>
+    </tr>
+    <tr>
+      <td>存储区域</td>
+      <td>TLS 块（.tdata/.tbss），FS寄存器偏移</td>
+      <td>struct pthread 中的 specific 数组</td>
+    </tr>
+    <tr>
+      <td>寻址方式</td>
+      <td>编译器生成的段寄存器偏移指令</td>
+      <td>运行时数组索引（key → specific[i][j]）</td>
+    </tr>
+    <tr>
+      <td>访问性能</td>
+      <td>⭐⭐⭐⭐⭐ 1~2条指令（LE/IE模型）</td>
+      <td>⭐⭐⭐ 函数调用 + 数组查找</td>
+    </tr>
+    <tr>
+      <td>数量限制</td>
+      <td>无（受栈大小限制）</td>
+      <td>最多 PTHREAD_KEYS_MAX=1024 个</td>
+    </tr>
+    <tr>
+      <td>数据类型</td>
+      <td>仅 POD 类型（C中），C++ 支持类类型</td>
+      <td>任意 void* 可转换类型</td>
+    </tr>
+    <tr>
+      <td>析构支持</td>
+      <td>C++11 thread_local 支持析构器</td>
+      <td>✅ pthread_key_create 可设析构器</td>
+    </tr>
+    <tr>
+      <td>dlopen兼容</td>
+      <td>IE模型不可；GD/LD模型可以</td>
+      <td>✅ 始终可以</td>
+    </tr>
+    <tr>
+      <td>内存释放</td>
+      <td>线程退出自动回收（__thread不含析构）</td>
+      <td>析构器自动调用（需手动 free 堆内存）</td>
+    </tr>
+  </table>
+
+  <div class="diagram-wrap">
+    <svg viewBox="0 0 680 180" width="100%" style="max-width:680px">
+      <text x="340" y="18" text-anchor="middle" fill="#79c0ff" font-size="12" font-weight="bold">四种 TLS 访问模型性能与适用性矩阵</text>
+
+      <!-- Headers -->
+      <text x="120" y="45" text-anchor="middle" fill="#8b949e" font-size="10" font-weight="bold">访问模型</text>
+      <text x="280" y="45" text-anchor="middle" fill="#8b949e" font-size="10" font-weight="bold">指令数</text>
+      <text x="400" y="45" text-anchor="middle" fill="#8b949e" font-size="10" font-weight="bold">函数调用</text>
+      <text x="530" y="45" text-anchor="middle" fill="#8b949e" font-size="10" font-weight="bold">适用场景</text>
+
+      <!-- LE -->
+      <rect x="30" y="55" width="200" height="24" rx="3" fill="#1c2128" stroke="#3fb950"/>
+      <text x="130" y="71" text-anchor="middle" fill="#3fb950" font-size="9" font-weight="bold">Local Exec (LE)</text>
+      <text x="280" y="71" text-anchor="middle" fill="#3fb950" font-size="9">1 条</text>
+      <text x="400" y="71" text-anchor="middle" fill="#3fb950" font-size="9">❌ 无</text>
+      <text x="530" y="71" text-anchor="middle" fill="#8b949e" font-size="9">主程序 TLS 变量</text>
+
+      <!-- IE -->
+      <rect x="30" y="82" width="200" height="24" rx="3" fill="#1c2128" stroke="#58a6ff"/>
+      <text x="130" y="98" text-anchor="middle" fill="#58a6ff" font-size="9" font-weight="bold">Initial Exec (IE)</text>
+      <text x="280" y="98" text-anchor="middle" fill="#58a6ff" font-size="9">2 条</text>
+      <text x="400" y="98" text-anchor="middle" fill="#58a6ff" font-size="9">❌ 无</text>
+      <text x="530" y="98" text-anchor="middle" fill="#8b949e" font-size="9">DT_NEEDED 库变量</text>
+
+      <!-- LD -->
+      <rect x="30" y="109" width="200" height="24" rx="3" fill="#1c2128" stroke="#d29922"/>
+      <text x="130" y="125" text-anchor="middle" fill="#d29922" font-size="9" font-weight="bold">Local Dynamic (LD)</text>
+      <text x="280" y="125" text-anchor="middle" fill="#d29922" font-size="9">N+1 条</text>
+      <text x="400" y="125" text-anchor="middle" fill="#d29922" font-size="9">✅ 1次(共享)</text>
+      <text x="530" y="125" text-anchor="middle" fill="#8b949e" font-size="9">DSO 多个本地变量</text>
+
+      <!-- GD -->
+      <rect x="30" y="136" width="200" height="24" rx="3" fill="#1c2128" stroke="#bc8cff"/>
+      <text x="130" y="152" text-anchor="middle" fill="#bc8cff" font-size="9" font-weight="bold">Global Dynamic (GD)</text>
+      <text x="280" y="152" text-anchor="middle" fill="#bc8cff" font-size="9">N+2 条</text>
+      <text x="400" y="152" text-anchor="middle" fill="#bc8cff" font-size="9">✅ 每变量1次</text>
+      <text x="530" y="152" text-anchor="middle" fill="#8b949e" font-size="9">dlopen 可加载 DSO</text>
+
+      <!-- pthread_key -->
+      <rect x="30" y="163" width="200" height="14" rx="3" fill="#1c2128" stroke="#f85149"/>
+      <text x="130" y="174" text-anchor="middle" fill="#f85149" font-size="9">pthread_key API</text>
+      <text x="280" y="174" text-anchor="middle" fill="#f85149" font-size="9">数组查找</text>
+      <text x="400" y="174" text-anchor="middle" fill="#f85149" font-size="9">无（内联逻辑）</text>
+      <text x="530" y="174" text-anchor="middle" fill="#8b949e" font-size="9">需要析构器/动态类型</text>
+    </svg>
+    <div class="diagram-caption">图 18-1：五种 TLS 访问方式性能与适用场景对比</div>
+  </div>
+
+  <div class="first-principle">
+    <div class="fp-title">⚗ 第一性原理</div>
+    <div class="fp-content">
+      所有 TLS 方案本质上都在解决同一个问题：<strong>在共享地址空间中如何为不同实体（线程）保持数据隔离</strong>。性能差异来自于"在多大程度上可以将地址计算提前到编译期/链接期/程序启动期"——越早确定的信息，访问代价越低。这是计算机科学中"早期绑定优于晚期绑定"原则的具体体现。
+    </div>
+  </div>
+</section>
+
+<!-- §19 参考资料 -->
+<section class="section" id="refs">
+  <div class="section-badge">Chapter 19</div>
+  <h2 class="sec-title"><span class="ico">📚</span>参考资料</h2>
+  <ul class="ref-list">
+    <li>
+      <span class="ref-tag">官方</span>
+      <strong>ELF Handling For Thread-Local Storage</strong> — Ulrich Drepper<br>
+      <a href="https://uclibc.org/docs/tls.pdf" target="_blank">https://uclibc.org/docs/tls.pdf</a><br>
+      <span style="color:var(--text2);font-size:0.8rem">TLS 的权威规范文档，定义了 Variant I/II 布局、DTV 结构和四种访问模型</span>
+    </li>
+    <li>
+      <span class="ref-tag">源码</span>
+      <strong>glibc sysdeps/x86_64/nptl/tls.h</strong> — tcbhead_t 定义、TLS_INIT_TP 宏<br>
+      <a href="https://codebrowser.dev/glibc/glibc/sysdeps/x86_64/nptl/tls.h.html" target="_blank">https://codebrowser.dev/glibc/glibc/sysdeps/x86_64/nptl/tls.h.html</a>
+    </li>
+    <li>
+      <span class="ref-tag">源码</span>
+      <strong>glibc nptl/descr.h</strong> — struct pthread 完整定义<br>
+      <a href="https://github.com/bminor/glibc/blob/master/nptl/descr.h" target="_blank">https://github.com/bminor/glibc/blob/master/nptl/descr.h</a>
+    </li>
+    <li>
+      <span class="ref-tag">源码</span>
+      <strong>glibc elf/dl-tls.c</strong> — __tls_get_addr、_dl_allocate_tls_init 实现<br>
+      <a href="https://github.com/bminor/glibc/blob/master/elf/dl-tls.c" target="_blank">https://github.com/bminor/glibc/blob/master/elf/dl-tls.c</a>
+    </li>
+    <li>
+      <span class="ref-tag">源码</span>
+      <strong>glibc nptl/pthread_setspecific.c / pthread_key_create.c</strong><br>
+      <a href="https://github.com/bminor/glibc/tree/master/nptl" target="_blank">https://github.com/bminor/glibc/tree/master/nptl</a>
+    </li>
+    <li>
+      <span class="ref-tag">深度</span>
+      <strong>All about thread-local storage</strong> — Fangrui Song (maskray)<br>
+      <a href="https://maskray.me/blog/2021-02-14-all-about-thread-local-storage" target="_blank">https://maskray.me/blog/2021-02-14-all-about-thread-local-storage</a><br>
+      <span style="color:var(--text2);font-size:0.8rem">覆盖所有主流架构的 TLS 实现细节，含 TLS 描述符、优化等进阶内容</span>
+    </li>
+    <li>
+      <span class="ref-tag">深度</span>
+      <strong>A Deep dive into (implicit) Thread Local Storage</strong> — chao-tic<br>
+      <a href="https://chao-tic.github.io/blog/2018/12/25/tls" target="_blank">https://chao-tic.github.io/blog/2018/12/25/tls</a><br>
+      <span style="color:var(--text2);font-size:0.8rem">x86-64 视角的 TLS 底层深度分析，含汇编、重定位、DTV 详细案例</span>
+    </li>
+    <li>
+      <span class="ref-tag">文章</span>
+      <strong>Linux Thread Local Storage</strong> — SoByte<br>
+      <a href="https://www.sobyte.net/post/2022-02/linux-thread-local-storage/" target="_blank">https://www.sobyte.net/post/2022-02/linux-thread-local-storage/</a><br>
+      <span style="color:var(--text2);font-size:0.8rem">pthread_key 实现机制详细分析，含 glibc 源码逐行解读</span>
+    </li>
+    <li>
+      <span class="ref-tag">ABI</span>
+      <strong>Android ELF TLS</strong> — AOSP Bionic<br>
+      <a href="https://github.com/aosp-mirror/platform_bionic/blob/main/docs/elf-tls.md" target="_blank">https://github.com/aosp-mirror/platform_bionic/blob/main/docs/elf-tls.md</a><br>
+      <span style="color:var(--text2);font-size:0.8rem">Variant I/II 布局的清晰对比，TLS 访问模型的实现说明</span>
+    </li>
+    <li>
+      <span class="ref-tag">内核</span>
+      <strong>Linux kernel arch/x86/kernel/process_64.c</strong> — copy_thread_tls, wrmsrl(MSR_FS_BASE)<br>
+      <a href="https://elixir.bootlin.com/linux/latest/source/arch/x86/kernel/process_64.c" target="_blank">https://elixir.bootlin.com/linux/latest/source/arch/x86/kernel/process_64.c</a>
+    </li>
+  </ul>
+</section>
+
+</main>
+</div>
+
+<script>
+// ── Navigation highlighting ──
+const navItems = document.querySelectorAll('.nav-item[data-target]');
+const sections = [...navItems].map(n => document.getElementById(n.dataset.target)).filter(Boolean);
+let currentActive = null;
+
+function setActive(id) {
+  if (currentActive === id) return;
+  currentActive = id;
+  navItems.forEach(n => n.classList.toggle('active', n.dataset.target === id));
+  // Show section name in header
+  const active = document.querySelector('.nav-item.active');
+  document.getElementById('section-indicator').textContent = active ? active.textContent : '';
+}
+
+// Click nav
+navItems.forEach(item => {
+  item.addEventListener('click', () => {
+    const el = document.getElementById(item.dataset.target);
+    if (el) {
+      el.scrollIntoView({ behavior: 'smooth' });
+      // auto-close sidebar on mobile
+      if (window.innerWidth <= 768) closeSidebar();
+    }
+  });
+});
+
+// ── Progress bar & reading position ──
+function onScroll() {
+  const doc = document.documentElement;
+  const scrollTop = doc.scrollTop || document.body.scrollTop;
+  const scrollHeight = doc.scrollHeight - doc.clientHeight;
+  const pct = scrollHeight > 0 ? Math.round(scrollTop / scrollHeight * 100) : 0;
+  document.getElementById('progress-bar').style.width = pct + '%';
+  document.getElementById('pct').textContent = pct + '%';
+
+  // IntersectionObserver fallback: find which section is in viewport
+  const headerH = 55;
+  let found = null;
+  for (let i = sections.length - 1; i >= 0; i--) {
+    const rect = sections[i].getBoundingClientRect();
+    if (rect.top <= headerH + 40) { found = sections[i].id; break; }
+  }
+  if (found) setActive(found);
+}
+
+window.addEventListener('scroll', onScroll, { passive: true });
+onScroll();
+
+// ── Keyboard navigation ──
+document.addEventListener('keydown', e => {
+  if (e.key === 'ArrowRight' || e.key === 'ArrowLeft') {
+    const ids = [...navItems].map(n => n.dataset.target);
+    const cur = ids.indexOf(currentActive);
+    if (cur === -1) return;
+    const next = e.key === 'ArrowRight' ? Math.min(cur + 1, ids.length - 1) : Math.max(cur - 1, 0);
+    const el = document.getElementById(ids[next]);
+    if (el) el.scrollIntoView({ behavior: 'smooth' });
+  }
+});
+
+// ── Mobile hamburger ──
+const hamburger = document.getElementById('hamburger');
+const sidebar = document.getElementById('sidebar');
+const overlay = document.getElementById('overlay');
+
+function openSidebar() {
+  sidebar.classList.add('open');
+  overlay.classList.add('show');
+  document.body.style.overflow = 'hidden';
+}
+function closeSidebar() {
+  sidebar.classList.remove('open');
+  overlay.classList.remove('show');
+  document.body.style.overflow = '';
+}
+
+hamburger.addEventListener('click', () => sidebar.classList.contains('open') ? closeSidebar() : openSidebar());
+overlay.addEventListener('click', closeSidebar);
+
+// Close sidebar on resize if desktop
+window.addEventListener('resize', () => {
+  if (window.innerWidth > 768) closeSidebar();
+});
+</script>
+</body>
+</html>

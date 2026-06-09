@@ -59,7 +59,7 @@ wq_worker_thread(void *arg)
         wq->nr_running++;
         pthread_mutex_unlock(&wq->lock);
 
-        work->func(work);
+        work->func(work); // 处理工作期间，不需要加锁
 
         pthread_mutex_lock(&wq->lock);
         atomic_set(&work->pending, 0);
@@ -193,6 +193,7 @@ void
 wq_flush(struct wq *wq)
 {
     if (wq == NULL) {
+        LogError("invalid argument: wq=%p", (void *)wq);
         return;
     }
 

@@ -1,0 +1,336 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>libmosquitto WITH_THREADING 线程模型与锁分析</title>
+  <style>
+    :root {
+      --bg:#0f1117; --bg2:#161b22; --bg3:#1e2530; --border:#30363d;
+      --accent:#0a84ff; --green:#30d158; --warn:#ffa657; --red:#ff453a;
+      --violet:#bf5af2; --text:#e6edf3; --muted:#8b949e; --cyan:#64d2ff; --code:#d2a8ff;
+    }
+    * { box-sizing:border-box; }
+    html { scroll-behavior:smooth; }
+    body { margin:0; background:var(--bg); color:var(--text); font-family:"Segoe UI","Noto Sans SC",sans-serif; line-height:1.72; }
+    a { color:var(--cyan); text-decoration:none; }
+    a:hover { text-decoration:underline; }
+    code { padding:1px 5px; border:1px solid var(--border); border-radius:4px; background:rgba(110,118,129,.16); color:var(--code); font-family:"SFMono-Regular",Consolas,monospace; font-size:.92em; }
+    pre { overflow:auto; padding:14px 16px; border:1px solid var(--border); border-radius:8px; background:#0b0f14; color:#c9d1d9; font-family:"SFMono-Regular",Consolas,monospace; font-size:12px; line-height:1.55; }
+    .topbar { position:fixed; top:0; left:0; right:0; z-index:20; min-height:54px; display:flex; align-items:center; gap:14px; padding:0 22px; background:rgba(15,17,23,.94); border-bottom:1px solid var(--border); backdrop-filter:blur(10px); }
+    .brand { font-weight:800; white-space:nowrap; }
+    .toplinks { margin-left:auto; display:flex; gap:12px; font-size:13px; }
+    #menuButton { display:none; border:1px solid var(--border); border-radius:6px; background:var(--bg2); color:var(--text); padding:6px 9px; cursor:pointer; }
+    #progressBar { position:fixed; top:54px; left:0; z-index:30; height:3px; width:0; background:linear-gradient(90deg,var(--accent),var(--green)); }
+    .layout { display:flex; padding-top:57px; }
+    nav { position:fixed; top:57px; bottom:0; width:318px; overflow:auto; padding:18px 16px 28px; background:var(--bg2); border-right:1px solid var(--border); }
+    nav details { margin-bottom:10px; }
+    nav summary { cursor:pointer; color:var(--text); font-weight:700; margin-bottom:8px; }
+    nav a { display:block; padding:7px 10px; margin:2px 0; border-radius:6px; color:var(--muted); font-size:13px; }
+    nav a.active, nav a:hover { background:var(--bg3); color:var(--text); text-decoration:none; }
+    main { width:calc(100% - 318px); max-width:1190px; margin-left:318px; padding:34px 42px 72px; }
+    section { margin:0 0 46px; scroll-margin-top:76px; }
+    h1 { margin:0 0 12px; font-size:32px; line-height:1.25; }
+    h2 { margin:0 0 14px; font-size:24px; border-bottom:1px solid var(--border); padding-bottom:8px; }
+    h3 { margin:22px 0 10px; font-size:18px; }
+    .lead { color:var(--muted); font-size:16px; max-width:940px; }
+    .grid { display:grid; grid-template-columns:repeat(2,minmax(0,1fr)); gap:16px; }
+    .triple { display:grid; grid-template-columns:repeat(3,minmax(0,1fr)); gap:16px; }
+    .card { border:1px solid var(--border); border-radius:8px; background:var(--bg2); padding:16px; }
+    .card h3 { margin-top:0; }
+    .note { border-left:4px solid var(--accent); background:rgba(10,132,255,.09); padding:12px 14px; border-radius:6px; }
+    .warn { border-left:4px solid var(--warn); background:rgba(255,166,87,.1); padding:12px 14px; border-radius:6px; }
+    .danger { border-left:4px solid var(--red); background:rgba(255,69,58,.1); padding:12px 14px; border-radius:6px; }
+    .principle { border-left:4px solid var(--green); background:rgba(48,209,88,.09); padding:12px 14px; border-radius:6px; margin-top:18px; }
+    table { width:100%; border-collapse:collapse; margin:14px 0; table-layout:fixed; }
+    th,td { border:1px solid var(--border); padding:10px 12px; vertical-align:top; overflow-wrap:anywhere; }
+    th { background:var(--bg3); text-align:left; }
+    td { background:rgba(22,27,34,.72); }
+    .tag { display:inline-block; margin:2px 4px 2px 0; padding:2px 8px; border:1px solid var(--border); border-radius:999px; color:var(--muted); background:rgba(110,118,129,.12); font-size:12px; }
+    .ok { color:var(--green); }
+    .no { color:var(--red); }
+    .maybe { color:var(--warn); }
+    .svg-wrap { margin:18px 0; overflow:auto; border:1px solid var(--border); border-radius:8px; background:#0b0f14; }
+    svg { display:block; width:100%; max-width:100%; height:auto; }
+    .api { fill:rgba(10,132,255,.18); stroke:var(--accent); stroke-width:1.5; rx:8; }
+    .server { fill:rgba(48,209,88,.15); stroke:var(--green); stroke-width:1.5; rx:8; }
+    .hot { fill:rgba(255,166,87,.16); stroke:var(--warn); stroke-width:1.5; rx:8; }
+    .violet { fill:rgba(191,90,242,.16); stroke:var(--violet); stroke-width:1.5; rx:8; }
+    .bad { fill:rgba(255,69,58,.16); stroke:var(--red); stroke-width:1.5; rx:8; }
+    .wire { stroke:var(--muted); stroke-width:2; fill:none; marker-end:url(#arrow); }
+    .wire-blue { stroke:var(--accent); stroke-width:2; fill:none; marker-end:url(#arrowBlue); }
+    .wire-green { stroke:var(--green); stroke-width:2; fill:none; marker-end:url(#arrowGreen); }
+    .svg-title { fill:var(--text); font-size:16px; font-weight:800; }
+    .svg-text { fill:var(--text); font-size:13px; }
+    .svg-small { fill:var(--muted); font-size:11px; }
+    .chapter-nav { display:flex; justify-content:space-between; gap:12px; margin-top:36px; }
+    .chapter-nav a { border:1px solid var(--border); border-radius:6px; padding:10px 14px; background:var(--bg2); }
+    @media (max-width:900px) {
+      #menuButton { display:block; } .toplinks { display:none; }
+      nav { transform:translateX(-100%); transition:transform .18s ease; z-index:18; max-width:86vw; }
+      body.nav-open nav { transform:translateX(0); }
+      main { width:100%; margin-left:0; padding:26px 18px 58px; }
+      .grid,.triple { grid-template-columns:1fr; }
+      h1 { font-size:26px; }
+      table { table-layout:auto; }
+      th,td { padding:9px 10px; }
+    }
+  </style>
+</head>
+<body>
+  <header class="topbar">
+    <button id="menuButton" aria-label="打开目录">目录</button>
+    <div class="brand">libmosquitto WITH_THREADING analysis</div>
+    <div class="toplinks">
+      <a href="https://mosquitto.org/api/files/mosquitto-h.html">Mosquitto API</a>
+      <a href="https://mosquitto.org/man/libmosquitto-3.html">libmosquitto man</a>
+      <a href="mosquitto-lib-files-protocol-analysis.html">上一份 lib 分析</a>
+    </div>
+  </header>
+  <div id="progressBar"></div>
+  <div class="layout">
+    <nav>
+      <details open><summary>结论与依据</summary><a href="#intro">阅读边界</a><a href="#official">官方线程契约</a><a href="#build">当前构建事实</a></details>
+      <details open><summary>线程模型</summary><a href="#models">三种运行模式</a><a href="#interfaces">对外接口与线程</a><a href="#callbacks">回调运行线程</a><a href="#current-project">当前工程落点</a></details>
+      <details open><summary>共享数据</summary><a href="#shared-map">共享数据总图</a><a href="#locks">锁与保护范围</a><a href="#race-scenarios">并发访问场景</a><a href="#limits">边界与风险</a><a href="#summary">总结</a></details>
+    </nav>
+
+    <main>
+      <section id="intro">
+        <h1>WITH_THREADING 开启后的线程模型与锁保护边界</h1>
+        <p class="lead">本文聚焦当前 <code>libmosquitto.a</code> 中 <code>WITH_THREADING</code> 相关实现：对外线程接口、各接口在哪类线程执行、哪些 <code>struct mosquitto</code> 数据会跨线程共享、使用什么同步手段，以及这些共享数据在什么场景下会被并发访问。</p>
+        <div class="note">结论先行：开启 <code>WITH_THREADING</code> 后，libmosquitto 不是把所有逻辑改成多线程，而是允许一个网络 loop 执行线程与一个或多个应用调用线程共享同一个 <code>struct mosquitto</code>。它用 9 类 mutex 保护回调指针、日志回调、状态、消息时间、mid、出站 packet 队列、当前发送 packet、入站 QoS 队列、出站 QoS 队列。</div>
+        <div class="principle"><strong>第一性原理：</strong>线程模型要从“谁拥有事件循环”开始。只要网络循环和业务 API 可能在不同线程同时访问同一个客户端对象，状态对象就必须把共享字段和同步边界显式化。</div>
+      </section>
+
+      <section id="official">
+        <h2>官方线程契约</h2>
+        <table>
+          <tr><th>官方原文</th><th>关键事实</th><th>本文如何使用</th></tr>
+          <tr><td><a href="https://mosquitto.org/api/files/mosquitto-h.html">mosquitto.h Threads</a></td><td>libmosquitto 提供 thread safe operation，但 <code>mosquitto_lib_init()</code> 不是线程安全的。</td><td>初始化必须在并发使用前完成；本文不把 <code>mosquitto_lib_init()</code> 归入可并发 API。</td></tr>
+          <tr><td><a href="https://mosquitto.org/api/files/mosquitto-h.html">mosquitto_loop_start()</a></td><td>这是 threaded client interface 的一部分；调用一次后创建新线程处理网络流量，是反复手动调用 <code>mosquitto_loop()</code> 的替代方案。</td><td>将它定义为“库内部 loop 线程模型”。</td></tr>
+          <tr><td><a href="https://mosquitto.org/api/files/mosquitto-h.html">mosquitto_loop_stop()</a></td><td>停止由 <code>mosquitto_loop_start()</code> 创建的网络线程；调用会阻塞直到网络线程结束；若 <code>force=false</code>，需要先调用 <code>mosquitto_disconnect()</code>。</td><td>将它归为应用线程发起、等待 loop 线程退出的同步接口。</td></tr>
+          <tr><td><a href="https://mosquitto.org/api/files/mosquitto-h.html">mosquitto_threaded_set()</a></td><td>用于告诉库应用正在使用线程，但没有使用 <code>mosquitto_loop_start()</code>；如果自管线程却不调用它，会因 race condition 导致崩溃；使用 <code>loop_start</code> 时会自动设置。</td><td>将它定义为“外部线程模型”的必要标记接口。</td></tr>
+          <tr><td><a href="https://mosquitto.org/api/files/mosquitto-h.html">mosquitto_loop()</a></td><td>主网络循环必须频繁调用，不能在 callback 内调用；它会处理输入、输出以及 QoS&gt;0 流程中剩余命令。</td><td>将它视为 loop 线程执行函数，手动模型下由应用指定线程调用。</td></tr>
+        </table>
+        <div class="principle"><strong>第一性原理：</strong>官方契约给出两个线程安全前提：全局初始化不并发；每个客户端对象的网络循环必须有清晰 owner，其他线程只能通过受保护 API 向这个 owner 投递工作。</div>
+      </section>
+
+      <section id="build">
+        <h2>当前构建事实</h2>
+        <div class="grid">
+          <div class="card"><h3>构建开关</h3><p>当前包规则传入 <code>WITH_THREADING=yes</code>，lib 编译命令包含 <code>-DWITH_THREADING</code>，并链接 <code>-lpthread</code>。因此 <code>thread_mosq.c</code>、mutex 字段、加锁路径都进入当前静态库语义。</p></div>
+          <div class="card"><h3>初始化位置</h3><p><code>mosquitto_reinitialise()</code> 在 <code>#ifdef WITH_THREADING</code> 下初始化 <code>callback_mutex</code>、<code>log_callback_mutex</code>、<code>state_mutex</code>、<code>out_packet_mutex</code>、<code>current_out_packet_mutex</code>、<code>msgtime_mutex</code>、<code>msgs_in.mutex</code>、<code>msgs_out.mutex</code>、<code>mid_mutex</code>。</p></div>
+          <div class="card"><h3>销毁位置</h3><p><code>mosquitto__destroy()</code> 会在已初始化对象上销毁这些 mutex；如果 <code>threaded == mosq_ts_self</code> 且当前线程不是 loop 线程，在支持 pthread cancel 时会先取消并 join loop 线程。</p></div>
+          <div class="card"><h3>socketpair 唤醒</h3><p>mutex 之外，库还用 <code>sockpairR/sockpairW</code> 做跨线程唤醒：应用线程 enqueue 出站 packet 后写一个字节，打断 loop 线程的 <code>select()</code>。</p></div>
+        </div>
+        <div class="principle"><strong>第一性原理：</strong>线程安全不是一个宏名，而是一组对象生命周期动作：创建锁、按共享字段加锁、跨线程唤醒、停止线程、销毁锁。</div>
+      </section>
+
+      <section id="models">
+        <h2>三种运行模式</h2>
+        <div class="svg-wrap">
+          <svg viewBox="0 0 1180 470" role="img" aria-label="libmosquitto threading models">
+            <defs>
+              <marker id="arrow" markerWidth="10" markerHeight="10" refX="8" refY="3" orient="auto"><path d="M0,0 L0,6 L9,3 z" fill="#8b949e"/></marker>
+              <marker id="arrowBlue" markerWidth="10" markerHeight="10" refX="8" refY="3" orient="auto"><path d="M0,0 L0,6 L9,3 z" fill="#0a84ff"/></marker>
+              <marker id="arrowGreen" markerWidth="10" markerHeight="10" refX="8" refY="3" orient="auto"><path d="M0,0 L0,6 L9,3 z" fill="#30d158"/></marker>
+            </defs>
+            <text x="32" y="36" class="svg-title">WITH_THREADING 下的运行模式</text>
+            <rect x="54" y="78" width="300" height="88" class="api"/><text x="100" y="116" class="svg-text">模式 A：单线程</text><text x="78" y="142" class="svg-small">应用线程调用 connect/publish/loop</text>
+            <rect x="440" y="78" width="300" height="88" class="server"/><text x="486" y="116" class="svg-text">模式 B：库内部线程</text><text x="462" y="142" class="svg-small">loop_start 创建 mosquitto loop 线程</text>
+            <rect x="826" y="78" width="300" height="88" class="hot"/><text x="868" y="116" class="svg-text">模式 C：应用自建线程</text><text x="850" y="142" class="svg-small">应用线程调用 threaded_set(true)</text>
+            <rect x="440" y="254" width="300" height="76" class="violet"/><text x="500" y="296" class="svg-text">struct mosquitto</text><text x="476" y="318" class="svg-small">共享状态、packet 队列、QoS 队列、回调</text>
+            <path d="M204 166 C236 242 348 285 440 292" class="wire-blue"/><path d="M590 166 V254" class="wire-green"/><path d="M976 166 C944 242 832 285 740 292" class="wire"/>
+            <text x="70" y="388" class="svg-small">A：threaded=mosq_ts_none，packet__queue 可直接 packet__write</text>
+            <text x="420" y="388" class="svg-small">B：threaded=mosq_ts_self，loop thread 执行 loop_forever，应用线程投递 API</text>
+            <text x="790" y="388" class="svg-small">C：threaded=mosq_ts_external，应用自己决定哪个线程跑 loop</text>
+          </svg>
+        </div>
+        <table>
+          <tr><th>模式</th><th><code>mosq->threaded</code></th><th>网络 loop 在哪里运行</th><th>应用 API 在哪里运行</th><th>典型用途</th></tr>
+          <tr><td>单线程手动 loop</td><td><code>mosq_ts_none</code></td><td>同一个应用线程反复调用 <code>mosquitto_loop()</code> 或拆分调用 <code>loop_read/write/misc</code>。</td><td>同一线程调用 connect/publish/subscribe/disconnect。</td><td>简单进程或已有单线程事件循环。</td></tr>
+          <tr><td>库内部 loop 线程</td><td><code>mosq_ts_self</code></td><td><code>mosquitto_loop_start()</code> 创建的新 pthread，入口是 <code>mosquitto__thread_main()</code>，内部调用 <code>mosquitto_loop_forever()</code>。</td><td>调用者线程继续运行其他业务，可调用 publish/subscribe/disconnect/stop。</td><td>官方推荐的非阻塞客户端接口。</td></tr>
+          <tr><td>应用自建线程</td><td><code>mosq_ts_external</code></td><td>应用自己创建某个线程调用 <code>mosquitto_loop()</code> 或 <code>loop_forever()</code>。</td><td>其他应用线程调用 publish/subscribe 等；必须先 <code>mosquitto_threaded_set(mosq,true)</code>。</td><td>工程已有线程模型，不希望 lib 自己创建线程。</td></tr>
+        </table>
+        <div class="principle"><strong>第一性原理：</strong>三种模式的差别不是锁是否存在，而是“谁拥有网络循环”。一旦 loop 与业务 API 分属不同线程，packet 队列就是生产者-消费者结构。</div>
+      </section>
+
+      <section id="interfaces">
+        <h2>对外接口与运行线程</h2>
+        <table>
+          <tr><th>接口类别</th><th>代表 API</th><th>在哪个线程调用</th><th>内部线程效果</th><th>共享数据影响</th></tr>
+          <tr><td>全局初始化</td><td><code>mosquitto_lib_init()</code>、<code>mosquitto_lib_cleanup()</code></td><td>应用初始化/退出线程。</td><td>不创建客户端线程；官方说明 <code>lib_init</code> 非线程安全。</td><td>全局 refcount 与网络库初始化，不应并发调用。</td></tr>
+          <tr><td>实例生命周期</td><td><code>mosquitto_new()</code>、<code>mosquitto_reinitialise()</code>、<code>mosquitto_destroy()</code></td><td>应用线程，通常在并发前/并发后调用。</td><td><code>new/reinitialise</code> 初始化 mutex；<code>destroy</code> 可能取消并 join 内部 loop 线程。</td><td>生命周期必须与其他 API 串行，否则销毁对象与其他线程访问对象会冲突。</td></tr>
+          <tr><td>内部线程控制</td><td><code>mosquitto_loop_start()</code>、<code>mosquitto_loop_stop()</code></td><td>应用线程调用。</td><td><code>loop_start</code> 创建 loop 线程并设置 <code>mosq_ts_self</code>；<code>loop_stop</code> 写 sockpair 唤醒并 join。</td><td>改变 <code>threaded/thread_id</code>，要求 start/stop 调用序列清晰。</td></tr>
+          <tr><td>外部线程标记</td><td><code>mosquitto_threaded_set()</code></td><td>应用线程，在自建 loop 线程模式下尽早调用。</td><td>不创建线程，只设置 <code>mosq_ts_external</code>。</td><td>使 <code>packet__queue()</code> 不走单线程立即写优化，避免应用线程和 loop 线程同时写 socket/packet。</td></tr>
+          <tr><td>网络 loop</td><td><code>mosquitto_loop()</code>、<code>mosquitto_loop_forever()</code>、<code>mosquitto_loop_read/write/misc()</code></td><td>loop owner 线程：可能是应用主线程、库内部线程，或应用自建网络线程。</td><td>处理 socket read/write、Keep Alive、QoS ACK、回调触发。</td><td>读写 <code>in_packet/current_out_packet/out_packet/msgtime/state/msgs_*</code>。</td></tr>
+          <tr><td>业务动作</td><td><code>mosquitto_publish()</code>、<code>mosquitto_subscribe()</code>、<code>mosquitto_unsubscribe()</code>、<code>mosquitto_disconnect()</code></td><td>应用线程，也可能从回调线程内调用部分 API。</td><td>构造 packet 或 QoS message，入队后用 sockpair 唤醒 loop。</td><td>访问 <code>last_mid/out_packet/msgs_out/state/msgtime</code>。</td></tr>
+          <tr><td>回调配置</td><td><code>mosquitto_*_callback_set()</code></td><td>应用线程，通常连接前设置，也可运行期改。</td><td>不创建线程，只写回调函数指针。</td><td><code>callback_mutex</code> 或 <code>log_callback_mutex</code> 保护函数指针。</td></tr>
+        </table>
+        <div class="principle"><strong>第一性原理：</strong>对外 API 可以按“生命周期、线程控制、loop owner、业务投递、回调配置”分层；只有业务投递和 loop owner 同时运行时，锁才真正承载并发同步。</div>
+      </section>
+
+      <section id="callbacks">
+        <h2>回调运行线程</h2>
+        <table>
+          <tr><th>回调</th><th>触发文件</th><th>运行线程</th><th>加锁方式</th><th>并发含义</th></tr>
+          <tr><td><code>on_connect</code> / <code>on_connect_v5</code></td><td><code>handle_connack.c</code></td><td>处理 CONNACK 的 loop 线程。</td><td>调用前锁 <code>callback_mutex</code>，设置 <code>in_callback=true</code>，回调后恢复。</td><td>如果应用线程正在修改 connect 回调指针，会被互斥。</td></tr>
+          <tr><td><code>on_message</code> / <code>on_message_v5</code></td><td><code>handle_publish.c</code>、<code>handle_pubrel.c</code></td><td>收到 PUBLISH/PUBREL 的 loop 线程。</td><td><code>callback_mutex</code> 覆盖回调指针读取和回调调用。</td><td>回调内不能调用 <code>mosquitto_loop()</code>；消息内存回调后由库释放，应用要复制。</td></tr>
+          <tr><td><code>on_publish</code> / <code>on_publish_v5</code></td><td><code>packet_mosq.c</code>、<code>handle_pubackcomp.c</code>、<code>handle_pubrec.c</code></td><td>QoS0 可能在写 packet 的线程；QoS1/2 通常在处理 ACK 的 loop 线程。</td><td><code>callback_mutex</code>。</td><td>publish 回调与应用线程更新回调指针互斥，但回调内再发布会进入 packet 队列。</td></tr>
+          <tr><td><code>on_subscribe</code> / <code>on_unsubscribe</code></td><td><code>handle_suback.c</code>、<code>handle_unsuback.c</code></td><td>处理 SUBACK/UNSUBACK 的 loop 线程。</td><td><code>callback_mutex</code>。</td><td>回调反映 broker 响应，不是在应用调用 subscribe/unsubscribe 的线程同步返回。</td></tr>
+          <tr><td><code>on_disconnect</code> / <code>on_disconnect_v5</code></td><td><code>loop.c</code>、<code>util_mosq.c</code>、<code>connect.c</code></td><td>检测断线或 Keep Alive 超时的 loop 线程；某些连接失败路径也会触发。</td><td><code>callback_mutex</code>。</td><td>应用线程调用 <code>mosquitto_disconnect()</code> 后，最终回调仍由处理网络/状态变化的路径触发。</td></tr>
+          <tr><td><code>on_log</code></td><td><code>logging_mosq.c</code></td><td>任何调用 <code>log__printf()</code> 的线程。</td><td><code>log_callback_mutex</code>。</td><td>日志回调单独用锁，避免与业务回调共用大锁。</td></tr>
+        </table>
+        <div class="warn">源码里回调调用期间仍持有 <code>callback_mutex</code>。这保护了回调指针一致性，但也意味着回调内如果调用会反向等待同一把锁的 API，存在设计层面的死锁风险；当前 Mosquitto 通过 <code>in_callback</code> 和 packet 入队路径降低部分重入问题，但应用回调仍应保持短小。</div>
+        <div class="principle"><strong>第一性原理：</strong>回调不是“应用线程异步通知”，而是 loop 线程在协议状态推进点执行的用户代码。它天然继承 loop 线程的时序和约束。</div>
+      </section>
+
+      <section id="current-project">
+        <h2>当前工程落点</h2>
+        <p>当前业务客户端没有使用 <code>mosquitto_loop_start()</code>，而是在自己的 MQTT 工作线程中循环调用 <code>mosquitto_loop()</code> 并做重连。UBUS 线程/主事件循环可能通过业务封装调用 publish、subscribe、reconnect。</p>
+        <table>
+          <tr><th>线程</th><th>当前工程中的职责</th><th>对应 lib 线程模型</th><th>注意点</th></tr>
+          <tr><td>MQTT 工作线程</td><td>创建 mosquitto 实例，设置 TLS/Will/callback，connect 后循环 <code>mosquitto_loop()</code>。</td><td>外部 loop owner 线程。</td><td>如果其他线程会同时调用同一 <code>mosq</code> 的 publish/subscribe，应属于 <code>mosq_ts_external</code> 模式。</td></tr>
+          <tr><td>UBUS/业务线程</td><td>接收 publish/subscribe/reconnect 请求，通过业务封装触达 Mosquitto API。</td><td>应用 API 调用线程。</td><td>与 MQTT 工作线程共享 <code>struct mosquitto</code>，依赖 out_packet、msgs_out、mid、state 等锁。</td></tr>
+          <tr><td>消息缓存线程</td><td>业务层 QoS2 缓存与重发。</td><td>lib 外部的应用线程。</td><td>它不直接改变 lib 的内部队列，但最终仍通过 <code>mqtt_publish()</code> 进入 lib。</td></tr>
+        </table>
+        <div class="danger">官方 API 明确说：应用自己使用线程且不使用 <code>mosquitto_loop_start()</code> 时，需要调用 <code>mosquitto_threaded_set()</code>。当前业务自管 loop 线程，如果存在其他线程并发调用同一实例，应检查是否补上该调用。</div>
+        <div class="principle"><strong>第一性原理：</strong>工程线程模型和库线程模型必须对齐。库不知道你的线程拓扑，只有 <code>threaded</code> 状态能告诉它“不要再按单线程优化处理出站队列”。</div>
+      </section>
+
+      <section id="shared-map">
+        <h2>共享数据总图</h2>
+        <div class="svg-wrap">
+          <svg viewBox="0 0 1180 540" role="img" aria-label="shared data and locks map">
+            <defs>
+              <marker id="arrow2" markerWidth="10" markerHeight="10" refX="8" refY="3" orient="auto"><path d="M0,0 L0,6 L9,3 z" fill="#8b949e"/></marker>
+              <marker id="arrow2Blue" markerWidth="10" markerHeight="10" refX="8" refY="3" orient="auto"><path d="M0,0 L0,6 L9,3 z" fill="#0a84ff"/></marker>
+              <marker id="arrow2Green" markerWidth="10" markerHeight="10" refX="8" refY="3" orient="auto"><path d="M0,0 L0,6 L9,3 z" fill="#30d158"/></marker>
+            </defs>
+            <text x="32" y="36" class="svg-title">应用线程与 loop 线程共享 struct mosquitto</text>
+            <rect x="54" y="88" width="230" height="82" class="api"/><text x="102" y="128" class="svg-text">应用线程</text><text x="76" y="152" class="svg-small">publish / subscribe / callback_set</text>
+            <rect x="896" y="88" width="230" height="82" class="server"/><text x="944" y="128" class="svg-text">loop 线程</text><text x="928" y="152" class="svg-small">read / write / handler / callback</text>
+            <rect x="386" y="72" width="408" height="330" class="violet"/><text x="502" y="110" class="svg-text">struct mosquitto</text>
+            <rect x="424" y="136" width="150" height="48" class="hot"/><text x="452" y="166" class="svg-small">out_packet</text>
+            <rect x="606" y="136" width="150" height="48" class="hot"/><text x="628" y="166" class="svg-small">current_out_packet</text>
+            <rect x="424" y="206" width="150" height="48" class="server"/><text x="452" y="236" class="svg-small">msgs_out / msgs_in</text>
+            <rect x="606" y="206" width="150" height="48" class="server"/><text x="640" y="236" class="svg-small">state</text>
+            <rect x="424" y="276" width="150" height="48" class="api"/><text x="454" y="306" class="svg-small">callbacks</text>
+            <rect x="606" y="276" width="150" height="48" class="api"/><text x="638" y="306" class="svg-small">last_mid</text>
+            <rect x="514" y="344" width="150" height="42" class="bad"/><text x="544" y="371" class="svg-small">last/next msg time</text>
+            <path d="M284 129 H386" stroke="#0a84ff" stroke-width="2" marker-end="url(#arrow2Blue)"/>
+            <path d="M896 129 H794" stroke="#30d158" stroke-width="2" marker-end="url(#arrow2Green)"/>
+            <path d="M284 158 C350 210 380 240 424 300" stroke="#8b949e" stroke-width="2" fill="none" marker-end="url(#arrow2)"/>
+            <path d="M896 158 C830 210 800 240 756 300" stroke="#8b949e" stroke-width="2" fill="none" marker-end="url(#arrow2)"/>
+            <text x="70" y="444" class="svg-small">应用线程生产：设置回调、生成 mid、排队 PUBLISH/SUBSCRIBE/DISCONNECT</text>
+            <text x="716" y="444" class="svg-small">loop 线程消费：从 out_packet 取包、写 socket、读 ACK、更新 QoS、触发回调</text>
+          </svg>
+        </div>
+        <div class="principle"><strong>第一性原理：</strong>共享数据不是“整个 struct 都一样危险”。真正需要锁的是跨线程读写且会破坏链表、计数、状态或函数指针一致性的字段。</div>
+      </section>
+
+      <section id="locks">
+        <h2>锁与保护范围</h2>
+        <table>
+          <tr><th>锁</th><th>保护的数据</th><th>主要加锁位置</th><th>并发访问场景</th></tr>
+          <tr><td><code>callback_mutex</code></td><td><code>on_connect</code>、<code>on_disconnect</code>、<code>on_publish</code>、<code>on_message</code>、<code>on_subscribe</code>、<code>on_unsubscribe</code> 及 v5 变体；也包住 <code>in_callback</code> 的回调执行区。</td><td><code>callbacks.c</code> setter；<code>handle_*.c</code>、<code>packet_mosq.c</code>、<code>loop.c</code>、<code>util_mosq.c</code> 触发回调。</td><td>应用线程运行期修改回调指针，同时 loop 线程收到 CONNACK/PUBLISH/ACK/SUBACK/断线并准备调用回调。</td></tr>
+          <tr><td><code>log_callback_mutex</code></td><td><code>on_log</code> 回调指针和日志回调调用区。</td><td><code>callbacks.c</code> 的 <code>mosquitto_log_callback_set()</code>；<code>logging_mosq.c</code> 的 <code>log__printf()</code>。</td><td>任意线程产生日志，同时应用线程替换 log callback。</td></tr>
+          <tr><td><code>state_mutex</code></td><td><code>mosq->state</code>。</td><td><code>util_mosq.c</code> 的 <code>mosquitto__set_state()</code>、<code>mosquitto__get_state()</code>；<code>handle_connack.c</code> 特殊状态迁移。</td><td>应用线程调用 disconnect/reconnect，loop 线程处理 CONNACK、Keep Alive、写包或读包时判断连接状态。</td></tr>
+          <tr><td><code>out_packet_mutex</code></td><td><code>out_packet</code> 链表头、<code>out_packet_last</code>、<code>out_packet_count</code>。</td><td><code>packet__queue()</code> 入队；<code>packet__write()</code> 出队；<code>packet__cleanup_all()</code> 清理；<code>loop.c</code> 判断是否需要写。</td><td>应用线程调用 publish/subscribe 追加 packet，同时 loop 线程正在从队列取包写 socket。</td></tr>
+          <tr><td><code>current_out_packet_mutex</code></td><td><code>current_out_packet</code> 以及当前 packet 的写入进度 <code>pos/to_process</code> 的所有权。</td><td><code>packet__write()</code>；<code>packet__cleanup_all()</code>；<code>loop.c</code> 检查写需求时与 <code>out_packet_mutex</code> 一起使用。</td><td>loop 线程分段写 socket 时，应用线程或重连路径不能同时清理/替换当前正在发送的 packet。</td></tr>
+          <tr><td><code>msgtime_mutex</code></td><td><code>last_msg_in</code>、<code>next_msg_out</code>。</td><td><code>packet_mosq.c</code> 读写完成后更新时间；<code>util_mosq.c</code> 的 Keep Alive 检查；<code>connect.c</code> 重连初始化。</td><td>loop 线程收包/发包更新时间，同时 misc/keepalive 检查是否需要 PINGREQ 或断线。</td></tr>
+          <tr><td><code>msgs_in.mutex</code></td><td><code>msgs_in.inflight</code>、<code>msgs_in.queue_len</code>、<code>msgs_in.inflight_quota</code>。</td><td><code>messages_mosq.c</code> 的 reconnect/reset/remove；<code>handle_publish.c</code> 收 QoS2 PUBLISH 入站排队；<code>loop.c</code> 读取 queue_len。</td><td>loop 线程处理入站 QoS2，重连路径重置入站消息，loop 读策略读取队列长度。</td></tr>
+          <tr><td><code>msgs_out.mutex</code></td><td><code>msgs_out.inflight</code>、<code>msgs_out.queue_len</code>、<code>msgs_out.inflight_quota</code> 和出站消息状态。</td><td><code>actions.c</code> 的 QoS&gt;0 publish；<code>messages_mosq.c</code> queue/remove/update/retry/reset；<code>handle_pubackcomp.c</code>、<code>handle_pubrec.c</code>；<code>loop.c</code> 读取 queue_len。</td><td>应用线程发布 QoS1/2 消息，同时 loop 线程收到 PUBACK/PUBREC/PUBCOMP 并更新或删除消息。</td></tr>
+          <tr><td><code>mid_mutex</code></td><td><code>last_mid</code>。</td><td><code>util_mosq.c</code> 的 <code>mosquitto__mid_generate()</code>。</td><td>多个应用线程同时 publish/subscribe/unsubscribe，需要生成不为 0 且不乱序覆盖的 packet id。</td></tr>
+        </table>
+        <div class="principle"><strong>第一性原理：</strong>锁的保护范围要按数据不变量定义：链表锁保护 next/prev/head/count，状态锁保护枚举状态，时间锁保护 Keep Alive 判断输入，mid 锁保护单调生成。</div>
+      </section>
+
+      <section id="race-scenarios">
+        <h2>并发访问场景</h2>
+        <table>
+          <tr><th>场景</th><th>线程 A</th><th>线程 B</th><th>共享数据</th><th>同步手段</th></tr>
+          <tr><td>发布消息与网络发送并发</td><td>应用线程调用 <code>mosquitto_publish()</code>，<code>actions.c</code> 生成 mid，QoS0 直接 <code>send__publish()</code>，QoS&gt;0 进入 <code>message__queue()</code>。</td><td>loop 线程在 <code>packet__write()</code> 从 <code>out_packet</code> 取 packet 并写 socket。</td><td><code>last_mid</code>、<code>msgs_out</code>、<code>out_packet</code>、<code>current_out_packet</code>。</td><td><code>mid_mutex</code>、<code>msgs_out.mutex</code>、<code>out_packet_mutex</code>、<code>current_out_packet_mutex</code>、sockpair 唤醒。</td></tr>
+          <tr><td>QoS ACK 与新发布并发</td><td>应用线程继续发布 QoS1/2，新消息追加到 <code>msgs_out.inflight</code>。</td><td>loop 线程收到 PUBACK/PUBREC/PUBCOMP，更新或删除旧消息并释放 quota。</td><td><code>msgs_out.inflight</code>、<code>queue_len</code>、<code>inflight_quota</code>、message state。</td><td><code>msgs_out.mutex</code>。</td></tr>
+          <tr><td>回调替换与回调触发并发</td><td>应用线程调用 <code>mosquitto_message_callback_set()</code> 等 setter。</td><td>loop 线程收到 PUBLISH 或 ACK，准备调用当前回调。</td><td>回调函数指针、<code>in_callback</code>。</td><td><code>callback_mutex</code>。</td></tr>
+          <tr><td>Keep Alive 检查与收发包并发</td><td>loop 写包路径或读包路径更新 <code>last_msg_in/next_msg_out</code>。</td><td><code>mosquitto_loop_misc()</code> 调用 <code>mosquitto__check_keepalive()</code> 读取时间并决定是否发 PINGREQ。</td><td><code>last_msg_in</code>、<code>next_msg_out</code>。</td><td><code>msgtime_mutex</code>。</td></tr>
+          <tr><td>连接状态判断与状态迁移并发</td><td>应用线程调用 disconnect/reconnect 或连接初始化。</td><td>loop 线程处理 CONNACK、断线、TLS pending、packet write 前状态判断。</td><td><code>state</code>。</td><td><code>state_mutex</code>；通过 <code>mosquitto__set_state/get_state</code> 访问。</td></tr>
+          <tr><td>停止 loop 线程</td><td>应用线程调用 <code>mosquitto_loop_stop()</code>。</td><td>库内部 loop 线程可能阻塞在 <code>select()</code>。</td><td><code>thread_id</code>、<code>threaded</code>、sockpair。</td><td>写 <code>sockpairW</code> 唤醒，然后 <code>pthread_join()</code>；该状态字段依赖 start/stop 序列，不靠单独 mutex。</td></tr>
+          <tr><td>销毁对象与内部线程退出</td><td>应用线程调用 <code>mosquitto_destroy()</code>。</td><td>内部 loop 线程仍可能运行。</td><td>整个 <code>struct mosquitto</code> 生命周期。</td><td><code>mosquitto__destroy()</code> 在 <code>mosq_ts_self</code> 且不同线程时 cancel/join，再清理资源。</td></tr>
+        </table>
+        <div class="principle"><strong>第一性原理：</strong>并发访问不是“两个线程都存在”就发生，而是两个线程在同一时间读写同一个可变不变量。表中的锁对应的就是这些不变量。</div>
+      </section>
+
+      <section id="limits">
+        <h2>边界与风险</h2>
+        <div class="grid">
+          <div class="card"><h3><code>mosquitto_lib_init()</code></h3><p>官方说明它不是线程安全的。它维护静态 <code>init_refcount</code> 并调用 <code>net__init()</code>，应在创建并发线程前调用。</p></div>
+          <div class="card"><h3>生命周期 API</h3><p><code>mosquitto_destroy()</code> 会释放整个对象和 mutex。它不是给其他线程仍在调用 API 时并发使用的“安全关闭开关”；应先停止 loop、断开连接、确保不再有外部线程访问。</p></div>
+          <div class="card"><h3><code>threaded</code> 状态</h3><p><code>mosq->threaded</code> 和 <code>thread_id</code> 没有独立 mutex。源码依赖 <code>loop_start/stop/threaded_set</code> 的调用序列约束，而不是把线程模式当作高频共享数据。</p></div>
+          <div class="card"><h3>配置类字段</h3><p>TLS、Will、username/password、协议版本、SOCKS 等配置通常要求 connect 前设置。很多字段没有专门锁保护，不能假定连接运行中任意并发修改都安全。</p></div>
+          <div class="card"><h3>回调内重入</h3><p><code>callback_mutex</code> 在调用用户回调时仍持有。回调内应避免长时间阻塞或调用可能反向等待同一锁的接口，尤其不要调用 <code>mosquitto_loop()</code>。</p></div>
+          <div class="card"><h3>锁顺序</h3><p>出站 packet 清理和写路径按 <code>current_out_packet_mutex</code> 再 <code>out_packet_mutex</code> 的顺序加锁。新增代码不能反向拿锁，否则会制造死锁。</p></div>
+        </div>
+        <div class="principle"><strong>第一性原理：</strong>线程安全总有边界：锁保护的是运行期共享数据，不负责纠正错误的对象生命周期、错误的线程模式声明，或连接后随意修改配置。</div>
+      </section>
+
+      <section id="summary">
+        <h2>总结</h2>
+        <div class="triple">
+          <div class="card"><h3>线程模型</h3><p><code>WITH_THREADING</code> 提供三种模式：单线程、库内部 loop 线程、应用自建 loop 线程。关键状态是 <code>mosq_ts_none/self/external</code>。</p></div>
+          <div class="card"><h3>接口分层</h3><p>对外接口分为初始化、生命周期、线程控制、loop、业务动作、回调配置。真正多线程交汇点是业务动作线程和 loop 线程。</p></div>
+          <div class="card"><h3>锁保护</h3><p>9 类 mutex 保护回调、日志、状态、时间、mid、出站 packet、当前 packet、入站 QoS、出站 QoS。socketpair 负责跨线程唤醒。</p></div>
+        </div>
+        <p>因此，开启 <code>WITH_THREADING</code> 后的 libmosquitto 可以理解为一个 Reactor 客户端：loop 线程独占 socket 事件推进，应用线程通过 API 生产控制报文和 QoS 消息，内部用队列锁与状态锁维持一致性。如果应用不使用 <code>mosquitto_loop_start()</code> 而自己创建 loop 线程，就必须通过 <code>mosquitto_threaded_set()</code> 告诉库关闭单线程即时写优化。</p>
+        <div class="principle"><strong>第一性原理：</strong>并发安全的核心不是“有很多锁”，而是每个共享不变量只有一个清晰的保护者，并且线程之间只通过这些受保护的不变量交接工作。</div>
+        <div class="chapter-nav"><a href="#limits">上一章</a><a href="#intro">回到开头</a></div>
+      </section>
+    </main>
+  </div>
+
+  <script>
+    const links = Array.from(document.querySelectorAll('nav a'));
+    const sections = links.map(a => document.querySelector(a.getAttribute('href'))).filter(Boolean);
+    const progressBar = document.getElementById('progressBar');
+    const menuButton = document.getElementById('menuButton');
+
+    function updateProgress(){
+      const scrollTop = document.documentElement.scrollTop || document.body.scrollTop;
+      const height = document.documentElement.scrollHeight - document.documentElement.clientHeight;
+      progressBar.style.width = height > 0 ? (scrollTop / height * 100) + '%' : '0%';
+    }
+
+    const observer = new IntersectionObserver(entries => {
+      entries.forEach(entry => {
+        if(entry.isIntersecting){
+          const id = '#' + entry.target.id;
+          links.forEach(a => a.classList.toggle('active', a.getAttribute('href') === id));
+        }
+      });
+    }, { rootMargin:'-35% 0px -55% 0px', threshold:0.01 });
+
+    sections.forEach(section => observer.observe(section));
+    window.addEventListener('scroll', updateProgress, { passive:true });
+    updateProgress();
+
+    menuButton.addEventListener('click', () => document.body.classList.toggle('nav-open'));
+    links.forEach(link => link.addEventListener('click', () => document.body.classList.remove('nav-open')));
+
+    function currentIndex(){
+      const scrollTop = window.scrollY + 90;
+      let index = 0;
+      sections.forEach((section, i) => { if(section.offsetTop <= scrollTop) index = i; });
+      return index;
+    }
+
+    document.addEventListener('keydown', event => {
+      if(event.target && ['INPUT','TEXTAREA','SELECT'].includes(event.target.tagName)) return;
+      if(event.key !== 'ArrowRight' && event.key !== 'ArrowLeft') return;
+      const delta = event.key === 'ArrowRight' ? 1 : -1;
+      const next = Math.max(0, Math.min(sections.length - 1, currentIndex() + delta));
+      sections[next].scrollIntoView({ behavior:'smooth', block:'start' });
+    });
+  </script>
+</body>
+</html>

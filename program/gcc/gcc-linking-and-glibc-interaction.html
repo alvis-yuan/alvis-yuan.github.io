@@ -1,0 +1,1886 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>GCC 编译链接深度解析：从 main.c 到可执行文件</title>
+<style>
+  :root {
+    --bg: #0f1117;
+    --surface: #1a1d27;
+    --surface2: #22263a;
+    --border: #2e3347;
+    --accent: #4f9cf9;
+    --accent2: #7c6af5;
+    --accent3: #3ecf8e;
+    --accent4: #f9a74f;
+    --text: #e2e8f0;
+    --text-muted: #8892a4;
+    --text-dim: #5a6478;
+    --nav-w: 280px;
+    --red: #f87171;
+    --yellow: #fbbf24;
+    --green: #34d399;
+    --purple: #a78bfa;
+    --cyan: #67e8f9;
+  }
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  html { scroll-behavior: smooth; }
+  body {
+    font-family: 'Segoe UI', system-ui, -apple-system, sans-serif;
+    background: var(--bg);
+    color: var(--text);
+    display: flex;
+    min-height: 100vh;
+    font-size: 15px;
+    line-height: 1.7;
+  }
+
+  /* ─── Progress Bar ─────────────────────────────── */
+  #progress-bar {
+    position: fixed;
+    top: 0; left: 0;
+    height: 3px;
+    width: 0%;
+    background: linear-gradient(90deg, var(--accent), var(--accent2), var(--accent3));
+    z-index: 1000;
+    transition: width 0.1s;
+    border-radius: 0 2px 2px 0;
+  }
+
+  /* ─── Sidebar ──────────────────────────────────── */
+  #sidebar {
+    width: var(--nav-w);
+    min-width: var(--nav-w);
+    background: var(--surface);
+    border-right: 1px solid var(--border);
+    position: fixed;
+    top: 0; left: 0;
+    height: 100vh;
+    overflow-y: auto;
+    z-index: 100;
+    transition: transform 0.3s ease;
+    display: flex;
+    flex-direction: column;
+  }
+  #sidebar::-webkit-scrollbar { width: 4px; }
+  #sidebar::-webkit-scrollbar-track { background: transparent; }
+  #sidebar::-webkit-scrollbar-thumb { background: var(--border); border-radius: 2px; }
+
+  .sidebar-header {
+    padding: 20px 16px 14px;
+    border-bottom: 1px solid var(--border);
+    flex-shrink: 0;
+  }
+  .sidebar-logo {
+    font-size: 13px;
+    font-weight: 700;
+    color: var(--accent);
+    letter-spacing: 0.05em;
+    text-transform: uppercase;
+    margin-bottom: 4px;
+  }
+  .sidebar-title {
+    font-size: 11px;
+    color: var(--text-muted);
+    line-height: 1.4;
+  }
+
+  .nav-group { padding: 10px 0; }
+  .nav-group-label {
+    padding: 6px 16px 4px;
+    font-size: 10px;
+    font-weight: 700;
+    color: var(--text-dim);
+    letter-spacing: 0.12em;
+    text-transform: uppercase;
+  }
+  .nav-item {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    padding: 7px 16px;
+    cursor: pointer;
+    font-size: 13px;
+    color: var(--text-muted);
+    border-left: 2px solid transparent;
+    transition: all 0.15s;
+    text-decoration: none;
+  }
+  .nav-item:hover { color: var(--text); background: var(--surface2); }
+  .nav-item.active {
+    color: var(--accent);
+    border-left-color: var(--accent);
+    background: rgba(79,156,249,0.08);
+  }
+  .nav-item .nav-num {
+    font-size: 10px;
+    background: var(--surface2);
+    color: var(--text-dim);
+    border-radius: 3px;
+    padding: 1px 5px;
+    font-family: monospace;
+    flex-shrink: 0;
+  }
+  .nav-item.active .nav-num {
+    background: rgba(79,156,249,0.2);
+    color: var(--accent);
+  }
+
+  /* ─── Main Content ─────────────────────────────── */
+  #main {
+    margin-left: var(--nav-w);
+    flex: 1;
+    min-width: 0;
+    padding: 48px 40px 80px;
+    max-width: calc(100% - var(--nav-w));
+  }
+
+  /* ─── Top Bar (mobile) ─────────────────────────── */
+  #topbar {
+    display: none;
+    position: fixed;
+    top: 0; left: 0; right: 0;
+    height: 52px;
+    background: var(--surface);
+    border-bottom: 1px solid var(--border);
+    z-index: 200;
+    align-items: center;
+    padding: 0 16px;
+    gap: 12px;
+  }
+  #burger {
+    background: none;
+    border: 1px solid var(--border);
+    color: var(--text);
+    border-radius: 6px;
+    padding: 6px 8px;
+    cursor: pointer;
+    font-size: 16px;
+    line-height: 1;
+    flex-shrink: 0;
+  }
+  .topbar-title { font-size: 13px; font-weight: 600; color: var(--text); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+
+  /* ─── Overlay ──────────────────────────────────── */
+  #overlay {
+    display: none;
+    position: fixed;
+    inset: 0;
+    background: rgba(0,0,0,0.6);
+    z-index: 99;
+  }
+
+  /* ─── Section Styles ───────────────────────────── */
+  .section {
+    max-width: 860px;
+    margin: 0 auto 60px;
+    scroll-margin-top: 24px;
+  }
+
+  .section-badge {
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+    font-size: 11px;
+    font-weight: 700;
+    letter-spacing: 0.08em;
+    text-transform: uppercase;
+    color: var(--accent);
+    margin-bottom: 10px;
+    background: rgba(79,156,249,0.1);
+    padding: 3px 10px;
+    border-radius: 20px;
+    border: 1px solid rgba(79,156,249,0.2);
+  }
+  .section-badge.green { color: var(--accent3); background: rgba(62,207,142,0.1); border-color: rgba(62,207,142,0.2); }
+  .section-badge.purple { color: var(--purple); background: rgba(167,139,250,0.1); border-color: rgba(167,139,250,0.2); }
+  .section-badge.yellow { color: var(--accent4); background: rgba(249,167,79,0.1); border-color: rgba(249,167,79,0.2); }
+  .section-badge.red { color: var(--red); background: rgba(248,113,113,0.1); border-color: rgba(248,113,113,0.2); }
+  .section-badge.cyan { color: var(--cyan); background: rgba(103,232,249,0.1); border-color: rgba(103,232,249,0.2); }
+
+  h1 {
+    font-size: 2rem;
+    font-weight: 800;
+    line-height: 1.2;
+    margin-bottom: 12px;
+    background: linear-gradient(135deg, #fff 0%, var(--accent) 100%);
+    -webkit-background-clip: text;
+    -webkit-text-fill-color: transparent;
+    background-clip: text;
+  }
+  h2 {
+    font-size: 1.5rem;
+    font-weight: 700;
+    color: #fff;
+    margin-bottom: 16px;
+    line-height: 1.3;
+  }
+  h3 {
+    font-size: 1.1rem;
+    font-weight: 600;
+    color: var(--text);
+    margin: 20px 0 10px;
+  }
+  p { color: var(--text-muted); margin-bottom: 14px; }
+  strong { color: var(--text); }
+
+  .intro-meta {
+    display: flex;
+    gap: 16px;
+    flex-wrap: wrap;
+    margin-bottom: 24px;
+  }
+  .intro-meta span {
+    font-size: 12px;
+    color: var(--text-dim);
+    display: flex;
+    align-items: center;
+    gap: 4px;
+  }
+
+  /* ─── Code Blocks ──────────────────────────────── */
+  pre {
+    background: #0a0c12;
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    padding: 16px 18px;
+    overflow-x: auto;
+    font-size: 13px;
+    line-height: 1.6;
+    margin: 16px 0;
+    font-family: 'Consolas', 'SF Mono', monospace;
+  }
+  pre::-webkit-scrollbar { height: 4px; }
+  pre::-webkit-scrollbar-thumb { background: var(--border); border-radius: 2px; }
+  code {
+    font-family: 'Consolas', 'SF Mono', monospace;
+    font-size: 0.875em;
+    background: rgba(79,156,249,0.12);
+    color: var(--accent);
+    border-radius: 3px;
+    padding: 1px 5px;
+  }
+  pre code { background: none; color: inherit; padding: 0; font-size: inherit; }
+
+  .kw { color: #c792ea; }
+  .fn { color: #82aaff; }
+  .str { color: #c3e88d; }
+  .cm { color: #546e7a; font-style: italic; }
+  .num { color: #f78c6c; }
+  .lbl { color: var(--accent4); }
+  .sym { color: var(--cyan); }
+  .op { color: #89ddff; }
+
+  /* ─── Info Cards ───────────────────────────────── */
+  .card {
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: 10px;
+    padding: 18px 20px;
+    margin: 16px 0;
+  }
+  .card-title {
+    font-size: 13px;
+    font-weight: 700;
+    margin-bottom: 10px;
+    display: flex;
+    align-items: center;
+    gap: 8px;
+  }
+
+  .info-box {
+    background: rgba(79,156,249,0.06);
+    border: 1px solid rgba(79,156,249,0.2);
+    border-radius: 8px;
+    padding: 14px 16px;
+    margin: 16px 0;
+    font-size: 13.5px;
+    color: var(--text-muted);
+  }
+  .info-box.green { background: rgba(62,207,142,0.06); border-color: rgba(62,207,142,0.25); }
+  .info-box.yellow { background: rgba(249,167,79,0.06); border-color: rgba(249,167,79,0.25); }
+  .info-box.purple { background: rgba(167,139,250,0.06); border-color: rgba(167,139,250,0.25); }
+  .info-box.red { background: rgba(248,113,113,0.06); border-color: rgba(248,113,113,0.25); }
+
+  /* ─── Tables ───────────────────────────────────── */
+  .table-wrap { overflow-x: auto; margin: 16px 0; border-radius: 8px; border: 1px solid var(--border); }
+  table { width: 100%; border-collapse: collapse; font-size: 13px; }
+  thead { background: var(--surface2); }
+  th { padding: 10px 14px; text-align: left; font-size: 11px; font-weight: 700; text-transform: uppercase; letter-spacing: 0.08em; color: var(--text-dim); border-bottom: 1px solid var(--border); }
+  td { padding: 9px 14px; border-bottom: 1px solid var(--border); color: var(--text-muted); vertical-align: top; }
+  tr:last-child td { border-bottom: none; }
+  tr:hover td { background: rgba(255,255,255,0.02); }
+  td strong { color: var(--text); }
+  td code { font-size: 12px; }
+
+  /* ─── Divider ──────────────────────────────────── */
+  .divider {
+    height: 1px;
+    background: linear-gradient(90deg, transparent, var(--border), transparent);
+    margin: 40px 0;
+  }
+
+  /* ─── First Principle Box ──────────────────────── */
+  .first-principle {
+    background: linear-gradient(135deg, rgba(124,106,245,0.08), rgba(79,156,249,0.08));
+    border: 1px solid rgba(124,106,245,0.3);
+    border-radius: 10px;
+    padding: 20px 22px;
+    margin: 28px 0 0;
+    position: relative;
+    overflow: hidden;
+  }
+  .first-principle::before {
+    content: '';
+    position: absolute;
+    left: 0; top: 0; bottom: 0;
+    width: 3px;
+    background: linear-gradient(180deg, var(--accent2), var(--accent));
+  }
+  .first-principle-label {
+    font-size: 10px;
+    font-weight: 800;
+    letter-spacing: 0.15em;
+    text-transform: uppercase;
+    color: var(--accent2);
+    margin-bottom: 8px;
+    display: flex;
+    align-items: center;
+    gap: 6px;
+  }
+  .first-principle p {
+    font-size: 14px;
+    color: var(--text);
+    margin: 0;
+    line-height: 1.75;
+  }
+
+  /* ─── SVG / Diagram Containers ─────────────────── */
+  .svg-wrap {
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: 10px;
+    padding: 20px;
+    margin: 20px 0;
+    overflow-x: auto;
+    text-align: center;
+  }
+  .svg-wrap svg { max-width: 100%; height: auto; }
+
+  .caption {
+    text-align: center;
+    font-size: 12px;
+    color: var(--text-dim);
+    margin-top: 8px;
+    font-style: italic;
+  }
+
+  /* ─── Steps List ───────────────────────────────── */
+  .steps { list-style: none; padding: 0; }
+  .steps li {
+    display: flex;
+    gap: 14px;
+    padding: 12px 0;
+    border-bottom: 1px solid var(--border);
+  }
+  .steps li:last-child { border-bottom: none; }
+  .step-num {
+    width: 26px;
+    height: 26px;
+    background: linear-gradient(135deg, var(--accent2), var(--accent));
+    border-radius: 50%;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    font-size: 11px;
+    font-weight: 700;
+    color: #fff;
+    flex-shrink: 0;
+    margin-top: 2px;
+  }
+  .step-body { flex: 1; min-width: 0; }
+  .step-title { font-size: 14px; font-weight: 600; color: var(--text); margin-bottom: 4px; }
+  .step-desc { font-size: 13px; color: var(--text-muted); }
+
+  /* ─── Source Links ─────────────────────────────── */
+  .sources {
+    margin-top: 10px;
+    padding: 14px 16px;
+    background: var(--surface2);
+    border-radius: 8px;
+    font-size: 12px;
+    color: var(--text-dim);
+  }
+  .sources strong { color: var(--text-muted); }
+  .sources a { color: var(--accent); text-decoration: none; word-break: break-all; }
+  .sources a:hover { text-decoration: underline; }
+
+  /* ─── Nav keyboard hint ────────────────────────── */
+  .kbd-hint {
+    position: fixed;
+    bottom: 20px;
+    right: 20px;
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    padding: 8px 12px;
+    font-size: 11px;
+    color: var(--text-dim);
+    display: flex;
+    gap: 8px;
+    align-items: center;
+    z-index: 50;
+  }
+  .kbd {
+    background: var(--surface2);
+    border: 1px solid var(--border);
+    border-radius: 3px;
+    padding: 1px 6px;
+    font-family: monospace;
+    font-size: 12px;
+    color: var(--text-muted);
+  }
+
+  /* ─── Responsive ────────────────────────────────── */
+  @media (max-width: 768px) {
+    #sidebar {
+      transform: translateX(-100%);
+    }
+    #sidebar.open {
+      transform: translateX(0);
+      box-shadow: 4px 0 30px rgba(0,0,0,0.5);
+    }
+    #topbar { display: flex; }
+    #main {
+      margin-left: 0;
+      max-width: 100%;
+      padding: 72px 18px 80px;
+    }
+    #overlay.show { display: block; }
+    .kbd-hint { display: none; }
+    h1 { font-size: 1.6rem; }
+    h2 { font-size: 1.25rem; }
+  }
+</style>
+</head>
+<body>
+
+<div id="progress-bar"></div>
+
+<!-- Mobile TopBar -->
+<div id="topbar">
+  <button id="burger" onclick="toggleSidebar()">☰</button>
+  <span class="topbar-title">GCC 编译链接深度解析</span>
+</div>
+
+<!-- Overlay -->
+<div id="overlay" onclick="closeSidebar()"></div>
+
+<!-- Sidebar -->
+<nav id="sidebar">
+  <div class="sidebar-header">
+    <div class="sidebar-logo">⚙ GCC 深度解析</div>
+    <div class="sidebar-title">从 main.c 到可执行文件的完整旅程</div>
+  </div>
+
+  <div class="nav-group">
+    <div class="nav-group-label">概览</div>
+    <a class="nav-item active" data-section="s0" onclick="navTo('s0')">
+      <span class="nav-num">00</span> 引言与全景图
+    </a>
+  </div>
+
+  <div class="nav-group">
+    <div class="nav-group-label">四大编译阶段</div>
+    <a class="nav-item" data-section="s1" onclick="navTo('s1')">
+      <span class="nav-num">01</span> 预处理
+    </a>
+    <a class="nav-item" data-section="s2" onclick="navTo('s2')">
+      <span class="nav-num">02</span> 编译（C → 汇编）
+    </a>
+    <a class="nav-item" data-section="s3" onclick="navTo('s3')">
+      <span class="nav-num">03</span> 汇编（汇编 → 目标文件）
+    </a>
+    <a class="nav-item" data-section="s4" onclick="navTo('s4')">
+      <span class="nav-num">04</span> 链接（拼合可执行文件）
+    </a>
+  </div>
+
+  <div class="nav-group">
+    <div class="nav-group-label">CRT 启动文件</div>
+    <a class="nav-item" data-section="s5" onclick="navTo('s5')">
+      <span class="nav-num">05</span> CRT 文件全解析
+    </a>
+    <a class="nav-item" data-section="s6" onclick="navTo('s6')">
+      <span class="nav-num">06</span> crt1.o 与 _start 符号
+    </a>
+    <a class="nav-item" data-section="s7" onclick="navTo('s7')">
+      <span class="nav-num">07</span> crti.o / crtn.o
+    </a>
+    <a class="nav-item" data-section="s8" onclick="navTo('s8')">
+      <span class="nav-num">08</span> crtbegin.o / crtend.o
+    </a>
+  </div>
+
+  <div class="nav-group">
+    <div class="nav-group-label">glibc 启动序列</div>
+    <a class="nav-item" data-section="s9" onclick="navTo('s9')">
+      <span class="nav-num">09</span> __libc_start_main
+    </a>
+    <a class="nav-item" data-section="s10" onclick="navTo('s10')">
+      <span class="nav-num">10</span> 动态链接启动序列
+    </a>
+    <a class="nav-item" data-section="s11" onclick="navTo('s11')">
+      <span class="nav-num">11</span> 静态链接启动序列
+    </a>
+  </div>
+
+  <div class="nav-group">
+    <div class="nav-group-label">链接器机制</div>
+    <a class="nav-item" data-section="s12" onclick="navTo('s12')">
+      <span class="nav-num">12</span> 链接器脚本与 ELF
+    </a>
+    <a class="nav-item" data-section="s13" onclick="navTo('s13')">
+      <span class="nav-num">13</span> 符号解析与重定位
+    </a>
+    <a class="nav-item" data-section="s14" onclick="navTo('s14')">
+      <span class="nav-num">14</span> 完整命令行还原
+    </a>
+  </div>
+</nav>
+
+<!-- Main -->
+<main id="main">
+
+  <!-- ══════════ 00 引言 ══════════ -->
+  <section class="section" id="s0">
+    <div class="section-badge">📖 引言</div>
+    <h1>GCC 编译链接深度解析</h1>
+    <p>从你写下 <code>int main()</code> 的那一刻，到 Linux 内核最终跳转到你的第一行代码之前，中间究竟发生了什么？</p>
+    <p>本文系统拆解 GCC 四大编译阶段，并深入 glibc 源码层面，讲清楚一个孤立的 <code>main.c</code> 是如何与 glibc 的 <strong>CRT 启动对象文件</strong>（<code>crt1.o</code>、<code>crti.o</code>、<code>crtn.o</code> 等）进行拼接，最终产生可运行的 ELF 可执行文件的。</p>
+
+    <div class="intro-meta">
+      <span>📚 官方来源：gcc.gnu.org · glibc · codebrowser.dev</span>
+      <span>🖥 目标平台：Linux x86-64</span>
+      <span>📦 工具链：GCC + GNU ld + glibc</span>
+    </div>
+
+    <!-- 全景流程图 -->
+    <div class="svg-wrap">
+      <svg viewBox="0 0 780 130" xmlns="http://www.w3.org/2000/svg" style="min-width:580px">
+        <defs>
+          <linearGradient id="g1" x1="0%" y1="0%" x2="100%" y2="0%">
+            <stop offset="0%" style="stop-color:#4f9cf9"/>
+            <stop offset="100%" style="stop-color:#7c6af5"/>
+          </linearGradient>
+          <marker id="arr" markerWidth="8" markerHeight="6" refX="8" refY="3" orient="auto">
+            <path d="M0,0 L8,3 L0,6 Z" fill="#4a5568"/>
+          </marker>
+        </defs>
+        <!-- boxes -->
+        <rect x="10" y="35" width="120" height="60" rx="8" fill="#1a1d27" stroke="#2e3347"/>
+        <text x="70" y="60" text-anchor="middle" fill="#e2e8f0" font-size="13" font-weight="600">main.c</text>
+        <text x="70" y="78" text-anchor="middle" fill="#8892a4" font-size="10">C 源代码</text>
+
+        <path d="M135,65 L165,65" stroke="#4a5568" stroke-width="1.5" marker-end="url(#arr)"/>
+        <text x="150" y="58" text-anchor="middle" fill="#546e7a" font-size="9">gcc -E</text>
+
+        <rect x="168" y="35" width="120" height="60" rx="8" fill="#1a1d27" stroke="#2e3347"/>
+        <text x="228" y="60" text-anchor="middle" fill="#e2e8f0" font-size="13" font-weight="600">main.i</text>
+        <text x="228" y="78" text-anchor="middle" fill="#8892a4" font-size="10">预处理输出</text>
+
+        <path d="M293,65 L323,65" stroke="#4a5568" stroke-width="1.5" marker-end="url(#arr)"/>
+        <text x="308" y="58" text-anchor="middle" fill="#546e7a" font-size="9">gcc -S</text>
+
+        <rect x="326" y="35" width="120" height="60" rx="8" fill="#1a1d27" stroke="#2e3347"/>
+        <text x="386" y="60" text-anchor="middle" fill="#e2e8f0" font-size="13" font-weight="600">main.s</text>
+        <text x="386" y="78" text-anchor="middle" fill="#8892a4" font-size="10">汇编代码</text>
+
+        <path d="M451,65 L481,65" stroke="#4a5568" stroke-width="1.5" marker-end="url(#arr)"/>
+        <text x="466" y="58" text-anchor="middle" fill="#546e7a" font-size="9">as</text>
+
+        <rect x="484" y="35" width="120" height="60" rx="8" fill="#1a1d27" stroke="#2e3347"/>
+        <text x="544" y="60" text-anchor="middle" fill="#e2e8f0" font-size="13" font-weight="600">main.o</text>
+        <text x="544" y="78" text-anchor="middle" fill="#8892a4" font-size="10">可重定向目标</text>
+
+        <path d="M609,65 L639,65" stroke="#4a5568" stroke-width="1.5" marker-end="url(#arr)"/>
+        <text x="624" y="58" text-anchor="middle" fill="#546e7a" font-size="9">ld</text>
+
+        <rect x="642" y="25" width="128" height="80" rx="8" fill="url(#g1)" opacity="0.15" stroke="#4f9cf9" stroke-opacity="0.6"/>
+        <text x="706" y="60" text-anchor="middle" fill="#fff" font-size="13" font-weight="700">a.out</text>
+        <text x="706" y="78" text-anchor="middle" fill="#a0aec0" font-size="10">ELF 可执行文件</text>
+
+        <!-- stage labels -->
+        <text x="70" y="110" text-anchor="middle" fill="#4f9cf9" font-size="9" font-weight="600">原始输入</text>
+        <text x="228" y="110" text-anchor="middle" fill="#3ecf8e" font-size="9" font-weight="600">① 预处理</text>
+        <text x="386" y="110" text-anchor="middle" fill="#a78bfa" font-size="9" font-weight="600">② 编译</text>
+        <text x="544" y="110" text-anchor="middle" fill="#f9a74f" font-size="9" font-weight="600">③ 汇编</text>
+        <text x="706" y="110" text-anchor="middle" fill="#f87171" font-size="9" font-weight="600">④ 链接</text>
+      </svg>
+    </div>
+    <p class="caption">图 0-1：GCC 四大编译阶段总览（来源：GCC 官方文档）</p>
+
+    <div class="info-box">
+      <strong>官方依据：</strong>GCC 官方文档（<a href="https://gcc.gnu.org/onlinedocs/gcc/Overall-Options.html" style="color:var(--accent)">Overall Options</a>）指出："Compilation can involve up to four stages: preprocessing, compilation proper, assembly and linking, always in that order."
+    </div>
+
+    <div class="first-principle">
+      <div class="first-principle-label">⚛ 第一性原理</div>
+      <p>程序本质上是<strong>机器指令序列 + 数据 + 元信息</strong>。GCC 的四个阶段，是逐步将「人类可读的高层描述」转换为「处理器可直接执行的二进制」的过程。每一阶段都仅做一件事，层层解耦，使得每个步骤可独立替换、优化和缓存。链接阶段本质上是解决「多个独立编译单元之间的符号引用」——这是分离编译能够工作的根本前提。</p>
+    </div>
+  </section>
+
+  <div class="divider"></div>
+
+  <!-- ══════════ 01 预处理 ══════════ -->
+  <section class="section" id="s1">
+    <div class="section-badge green">阶段 01</div>
+    <h2>① 预处理（Preprocessing）</h2>
+    <p>预处理由 <code>cpp</code>（C Preprocessor）完成，GCC 在内部调用它。该阶段对源代码进行纯文本变换，<strong>不涉及任何语法分析</strong>。</p>
+
+    <h3>主要工作</h3>
+    <ul class="steps">
+      <li>
+        <div class="step-num">1</div>
+        <div class="step-body">
+          <div class="step-title">展开 <code>#include</code></div>
+          <div class="step-desc">将头文件内容完整替换到对应的 <code>#include</code> 指令位置，递归处理嵌套包含。</div>
+        </div>
+      </li>
+      <li>
+        <div class="step-num">2</div>
+        <div class="step-body">
+          <div class="step-title">宏展开（<code>#define</code> / <code>#undef</code>）</div>
+          <div class="step-desc">将所有宏替换为其定义的文本，包括带参数的函数式宏。</div>
+        </div>
+      </li>
+      <li>
+        <div class="step-num">3</div>
+        <div class="step-body">
+          <div class="step-title">条件编译（<code>#if</code> / <code>#ifdef</code>）</div>
+          <div class="step-desc">根据条件选择性地保留或删除代码块。</div>
+        </div>
+      </li>
+      <li>
+        <div class="step-num">4</div>
+        <div class="step-body">
+          <div class="step-title">行号标注与注释删除</div>
+          <div class="step-desc">插入 <code>#line</code> 指令，帮助编译器报错时还原源文件位置；删除所有注释。</div>
+        </div>
+      </li>
+    </ul>
+
+    <h3>命令示例</h3>
+    <pre><code><span class="cm"># 仅预处理，输出到 stdout（-P 去掉行号标注）</span>
+gcc -E main.c -o main.i
+gcc -E -P main.c</code></pre>
+
+    <h3>输出产物</h3>
+    <p>生成 <code>main.i</code>（仍是纯文本 C 代码），通常比原始文件大几十到几百倍（因为 stdio.h 等头文件内容被完整展开）。</p>
+
+    <div class="first-principle">
+      <div class="first-principle-label">⚛ 第一性原理</div>
+      <p>预处理器的本质是<strong>纯文本替换引擎</strong>。它不理解 C 语法，只做字符串操作。这样设计的原因是：将「代码复用（头文件/宏）」与「语法语义分析」两件事解耦——预处理器可以极快地完成文本展开，而真正的编译器只需要接收一个干净的、展开完毕的 C 文本。</p>
+    </div>
+  </section>
+
+  <div class="divider"></div>
+
+  <!-- ══════════ 02 编译 ══════════ -->
+  <section class="section" id="s2">
+    <div class="section-badge purple">阶段 02</div>
+    <h2>② 编译（Compilation Proper）</h2>
+    <p>编译阶段由 <code>cc1</code>（GCC 的内部编译器前端）完成。它将预处理后的 C 代码转换为目标架构的<strong>汇编代码</strong>。</p>
+
+    <h3>内部流程</h3>
+    <div class="svg-wrap">
+      <svg viewBox="0 0 680 90" xmlns="http://www.w3.org/2000/svg" style="min-width:500px">
+        <defs>
+          <marker id="arr2" markerWidth="7" markerHeight="5" refX="7" refY="2.5" orient="auto">
+            <path d="M0,0 L7,2.5 L0,5 Z" fill="#4a5568"/>
+          </marker>
+        </defs>
+        <rect x="5" y="20" width="96" height="50" rx="6" fill="#1a1d27" stroke="#a78bfa" stroke-opacity="0.5"/>
+        <text x="53" y="43" text-anchor="middle" fill="#a78bfa" font-size="11" font-weight="600">词法分析</text>
+        <text x="53" y="58" text-anchor="middle" fill="#546e7a" font-size="9">Token 流</text>
+
+        <path d="M104,45 L120,45" stroke="#4a5568" marker-end="url(#arr2)"/>
+
+        <rect x="123" y="20" width="96" height="50" rx="6" fill="#1a1d27" stroke="#4f9cf9" stroke-opacity="0.5"/>
+        <text x="171" y="43" text-anchor="middle" fill="#4f9cf9" font-size="11" font-weight="600">语法分析</text>
+        <text x="171" y="58" text-anchor="middle" fill="#546e7a" font-size="9">AST 语法树</text>
+
+        <path d="M222,45 L238,45" stroke="#4a5568" marker-end="url(#arr2)"/>
+
+        <rect x="241" y="20" width="96" height="50" rx="6" fill="#1a1d27" stroke="#3ecf8e" stroke-opacity="0.5"/>
+        <text x="289" y="43" text-anchor="middle" fill="#3ecf8e" font-size="11" font-weight="600">语义分析</text>
+        <text x="289" y="58" text-anchor="middle" fill="#546e7a" font-size="9">类型检查</text>
+
+        <path d="M340,45 L356,45" stroke="#4a5568" marker-end="url(#arr2)"/>
+
+        <rect x="359" y="20" width="96" height="50" rx="6" fill="#1a1d27" stroke="#f9a74f" stroke-opacity="0.5"/>
+        <text x="407" y="43" text-anchor="middle" fill="#f9a74f" font-size="11" font-weight="600">中间代码</text>
+        <text x="407" y="58" text-anchor="middle" fill="#546e7a" font-size="9">GIMPLE / RTL</text>
+
+        <path d="M458,45 L474,45" stroke="#4a5568" marker-end="url(#arr2)"/>
+
+        <rect x="477" y="20" width="96" height="50" rx="6" fill="#1a1d27" stroke="#f87171" stroke-opacity="0.5"/>
+        <text x="525" y="43" text-anchor="middle" fill="#f87171" font-size="11" font-weight="600">优化</text>
+        <text x="525" y="58" text-anchor="middle" fill="#546e7a" font-size="9">-O0 ~ -O3</text>
+
+        <path d="M576,45 L592,45" stroke="#4a5568" marker-end="url(#arr2)"/>
+
+        <rect x="595" y="20" width="80" height="50" rx="6" fill="#1a1d27" stroke="#67e8f9" stroke-opacity="0.5"/>
+        <text x="635" y="43" text-anchor="middle" fill="#67e8f9" font-size="11" font-weight="600">汇编生成</text>
+        <text x="635" y="58" text-anchor="middle" fill="#546e7a" font-size="9">.s 文件</text>
+      </svg>
+    </div>
+    <p class="caption">图 2-1：GCC 编译阶段内部流程</p>
+
+    <h3>命令示例</h3>
+    <pre><code><span class="cm"># 编译并输出汇编（-S 停在汇编阶段）</span>
+gcc -S main.c -o main.s
+gcc -S -masm=intel main.c    <span class="cm"># Intel 语法</span></code></pre>
+
+    <h3>典型汇编输出（x86-64 AT&amp;T 语法）</h3>
+    <pre><code><span class="cm"># main.s 片段（gcc -S -O0 main.c）</span>
+<span class="lbl">main:</span>
+    <span class="kw">pushq</span>   %rbp
+    <span class="kw">movq</span>    %rsp, %rbp
+    <span class="kw">subq</span>    $16, %rsp
+    <span class="kw">movl</span>    $0, %eax
+    <span class="kw">call</span>    <span class="fn">printf</span>@PLT      <span class="cm"># 对 printf 的符号引用（尚未解析）</span>
+    <span class="kw">movl</span>    $0, %eax
+    <span class="kw">popq</span>    %rbp
+    <span class="kw">ret</span></code></pre>
+
+    <div class="info-box yellow">
+      <strong>⚠ 关键点：</strong>此时 <code>call printf@PLT</code> 只是一个<strong>符号占位符</strong>，printf 的实际地址尚不存在于这个文件中。这正是为什么需要「链接」阶段的根本原因。
+    </div>
+
+    <div class="first-principle">
+      <div class="first-principle-label">⚛ 第一性原理</div>
+      <p>编译器的本质是<strong>语义保持的等价变换</strong>——将一种形式化语言（C）中的语义，映射到另一种语言（汇编/机器码）中，同时保证行为等价。优化是在「保持语义」约束下，寻找「计算代价更小」的等价表达。此阶段产生的汇编中充满「未解析符号」，这些符号是跨编译单元协作的接口——分离编译的根本代价是符号解析必须推迟到链接阶段。</p>
+    </div>
+  </section>
+
+  <div class="divider"></div>
+
+  <!-- ══════════ 03 汇编 ══════════ -->
+  <section class="section" id="s3">
+    <div class="section-badge yellow">阶段 03</div>
+    <h2>③ 汇编（Assembly）</h2>
+    <p>GNU 汇编器 <code>as</code>（GNU Assembler）将汇编文本 <code>.s</code> 转换为<strong>可重定向目标文件</strong>（Relocatable Object File）<code>.o</code>，这是 ELF 格式的二进制文件。</p>
+
+    <h3>命令示例</h3>
+    <pre><code><span class="cm"># 仅汇编，-c 停在目标文件阶段</span>
+gcc -c main.c -o main.o
+<span class="cm"># 或者直接调用汇编器</span>
+as main.s -o main.o</code></pre>
+
+    <h3>目标文件的 ELF Section 结构</h3>
+    <div class="table-wrap">
+      <table>
+        <thead>
+          <tr><th>Section</th><th>内容</th><th>说明</th></tr>
+        </thead>
+        <tbody>
+          <tr><td><code>.text</code></td><td>机器指令</td><td>代码段，只读可执行</td></tr>
+          <tr><td><code>.data</code></td><td>已初始化全局/静态变量</td><td>读写数据</td></tr>
+          <tr><td><code>.bss</code></td><td>未初始化全局/静态变量</td><td>仅占位，不占文件空间</td></tr>
+          <tr><td><code>.rodata</code></td><td>只读数据（字符串字面量等）</td><td>只读数据段</td></tr>
+          <tr><td><code>.rela.text</code></td><td>重定位条目</td><td>记录需要链接器填充的符号引用位置</td></tr>
+          <tr><td><code>.symtab</code></td><td>符号表</td><td>定义/引用的所有符号</td></tr>
+          <tr><td><code>.strtab</code></td><td>字符串表</td><td>符号名称字符串</td></tr>
+          <tr><td><code>.init_array</code></td><td>初始化函数指针数组</td><td>main 前执行的构造函数</td></tr>
+          <tr><td><code>.fini_array</code></td><td>终止函数指针数组</td><td>main 后执行的析构函数</td></tr>
+        </tbody>
+      </table>
+    </div>
+
+    <h3>查看目标文件</h3>
+    <pre><code><span class="cm"># 查看符号表</span>
+nm main.o
+
+<span class="cm"># 查看 ELF section 信息</span>
+readelf -S main.o
+
+<span class="cm"># 查看重定位条目（可看到对 printf、__libc_start_main 等的未解析引用）</span>
+readelf -r main.o</code></pre>
+
+    <div class="info-box">
+      <strong>可重定向（Relocatable）的含义：</strong>目标文件中的所有内存地址都是相对地址（从 0 开始），等待链接器分配最终的虚拟地址并填入正确的偏移量。<code>.rela.text</code> section 中的重定位条目就是告诉链接器「在哪个位置、填入什么符号的地址」。
+    </div>
+
+    <div class="first-principle">
+      <div class="first-principle-label">⚛ 第一性原理</div>
+      <p>目标文件是一个「<strong>意图声明</strong>」：它声明了「我定义了哪些符号，我依赖哪些外部符号」。可重定向格式的本质是将地址绑定推迟——推迟到所有模块都已知的时候（链接时）。这是分离编译能够工作的技术基础：每个编译单元独立编译，互相之间只通过符号名称进行约定，链接器在最后负责兑现这些约定。</p>
+    </div>
+  </section>
+
+  <div class="divider"></div>
+
+  <!-- ══════════ 04 链接 ══════════ -->
+  <section class="section" id="s4">
+    <div class="section-badge red">阶段 04</div>
+    <h2>④ 链接（Linking）—— 核心拼合阶段</h2>
+    <p>这是 <code>main.c</code> 与 glibc 入口函数真正「拼接」的阶段。GCC 驱动程序（driver）会调用 <code>collect2</code>（最终调用 GNU 链接器 <code>ld</code>），将多个目标文件和库文件合并成一个可执行 ELF 文件。</p>
+
+    <h3>GCC 驱动自动注入的链接命令</h3>
+    <p>当你执行 <code>gcc main.c -o main</code> 时，GCC 驱动在后台执行的链接命令（通过 <code>gcc -v main.c</code> 可看到）大致如下：</p>
+
+    <pre><code>ld \
+  -dynamic-linker /lib64/ld-linux-x86-64.so.2 \
+  /usr/lib/x86_64-linux-gnu/<span class="sym">crt1.o</span> \
+  /usr/lib/x86_64-linux-gnu/<span class="sym">crti.o</span> \
+  /usr/lib/gcc/x86_64-linux-gnu/12/<span class="sym">crtbegin.o</span> \
+  -L/usr/lib/gcc/x86_64-linux-gnu/12 \
+  -L/usr/lib/x86_64-linux-gnu \
+  <span class="fn">main.o</span>            <span class="cm"># 用户目标文件</span>
+  -lgcc             <span class="cm"># GCC 运行时库</span>
+  -lgcc_s           <span class="cm"># GCC 共享运行时库</span>
+  -lc               <span class="cm"># glibc（libc.so）</span>
+  -lgcc \
+  -lgcc_s \
+  /usr/lib/gcc/x86_64-linux-gnu/12/<span class="sym">crtend.o</span> \
+  /usr/lib/x86_64-linux-gnu/<span class="sym">crtn.o</span></code></pre>
+
+    <div class="info-box green">
+      <strong>重要：</strong>链接顺序至关重要！GNU ld 是<strong>单遍链接器</strong>，从左到右处理，CRT 启动对象必须在用户代码之前，CRT 结束对象必须在最后。
+    </div>
+
+    <h3>链接顺序总结表</h3>
+    <div class="table-wrap">
+      <table>
+        <thead>
+          <tr><th>顺序</th><th>文件</th><th>来源</th><th>作用</th></tr>
+        </thead>
+        <tbody>
+          <tr><td>1</td><td><strong>crt1.o</strong></td><td>glibc (CSU)</td><td>含 <code>_start</code> 入口点符号</td></tr>
+          <tr><td>2</td><td><strong>crti.o</strong></td><td>glibc</td><td>.init/.fini 节的函数序言</td></tr>
+          <tr><td>3</td><td><strong>crtbegin.o</strong></td><td>GCC</td><td>C++ 全局构造函数起始标记</td></tr>
+          <tr><td>4</td><td><strong>用户 .o</strong></td><td>用户编译</td><td>main() 及业务代码</td></tr>
+          <tr><td>5</td><td><strong>-lgcc, -lc</strong></td><td>GCC/glibc</td><td>运行时库、C 标准库</td></tr>
+          <tr><td>6</td><td><strong>crtend.o</strong></td><td>GCC</td><td>C++ 全局析构函数结束标记</td></tr>
+          <tr><td>7</td><td><strong>crtn.o</strong></td><td>glibc</td><td>.init/.fini 节的函数尾声</td></tr>
+        </tbody>
+      </table>
+    </div>
+    <p class="caption">来源：<a href="https://stackoverflow.com/questions/22160888/what-is-the-difference-between-crtbegin-o-crtbegint-o-and-crtbegins-o" style="color:var(--accent)">Gentoo CRT 文档 / dev.gentoo.org</a>；<a href="https://gcc.gnu.org/onlinedocs/gccint/Initialization.html" style="color:var(--accent)">GCC Internals: Initialization</a></p>
+
+    <div class="first-principle">
+      <div class="first-principle-label">⚛ 第一性原理</div>
+      <p>链接器的本质任务就两件事：<strong>①符号解析</strong>（把所有引用的符号名称绑定到它们的定义位置）和<strong>②重定位</strong>（将所有相对地址替换为最终的虚拟地址）。CRT 文件的「夹三明治」顺序（crt1+crti+crtbegin 在前，crtend+crtn 在后）是利用链接器的 Section 合并机制，将分散在多个目标文件中的 .init/.fini/.init_array 等片段按正确顺序拼合成完整函数。</p>
+    </div>
+  </section>
+
+  <div class="divider"></div>
+
+  <!-- ══════════ 05 CRT 全解 ══════════ -->
+  <section class="section" id="s5">
+    <div class="section-badge cyan">CRT 文件</div>
+    <h2>⑤ CRT 启动文件全解析</h2>
+    <p>CRT（C RunTime）是一组在用户代码运行前后自动执行的汇编/C 目标文件。glibc 在 <code>/usr/lib/x86_64-linux-gnu/</code> 目录下提供这些文件，GCC 也提供自己专属的 <code>crtbegin.o</code>/<code>crtend.o</code>。</p>
+
+    <!-- CRT 文件全景图 -->
+    <div class="svg-wrap">
+      <svg viewBox="0 0 740 360" xmlns="http://www.w3.org/2000/svg" style="min-width:560px">
+        <defs>
+          <marker id="arr3" markerWidth="7" markerHeight="5" refX="7" refY="2.5" orient="auto">
+            <path d="M0,0 L7,2.5 L0,5 Z" fill="#5a6478"/>
+          </marker>
+        </defs>
+
+        <!-- Title -->
+        <text x="370" y="22" text-anchor="middle" fill="#8892a4" font-size="11" font-weight="600">CRT 文件与来源关系图</text>
+
+        <!-- glibc 区域 -->
+        <rect x="10" y="32" width="220" height="300" rx="10" fill="none" stroke="#4f9cf9" stroke-opacity="0.3" stroke-dasharray="5,3"/>
+        <text x="120" y="52" text-anchor="middle" fill="#4f9cf9" font-size="10" font-weight="700">glibc / libc CSU</text>
+
+        <rect x="25" y="65" width="190" height="44" rx="6" fill="#1a2535" stroke="#4f9cf9" stroke-opacity="0.5"/>
+        <text x="120" y="83" text-anchor="middle" fill="#4f9cf9" font-size="12" font-weight="700">crt1.o</text>
+        <text x="120" y="99" text-anchor="middle" fill="#8892a4" font-size="10">含 _start 符号 | csu/start.S</text>
+
+        <rect x="25" y="120" width="190" height="44" rx="6" fill="#1a2535" stroke="#3ecf8e" stroke-opacity="0.5"/>
+        <text x="120" y="138" text-anchor="middle" fill="#3ecf8e" font-size="12" font-weight="700">crti.o</text>
+        <text x="120" y="154" text-anchor="middle" fill="#8892a4" font-size="10">.init/.fini 序言 | csu/crti.S</text>
+
+        <rect x="25" y="175" width="190" height="44" rx="6" fill="#1a2535" stroke="#3ecf8e" stroke-opacity="0.4"/>
+        <text x="120" y="193" text-anchor="middle" fill="#3ecf8e" font-size="12" font-weight="700">crtn.o</text>
+        <text x="120" y="209" text-anchor="middle" fill="#8892a4" font-size="10">.init/.fini 尾声 | csu/crtn.S</text>
+
+        <rect x="25" y="230" width="90" height="44" rx="6" fill="#1a2535" stroke="#a78bfa" stroke-opacity="0.5"/>
+        <text x="70" y="248" text-anchor="middle" fill="#a78bfa" font-size="11" font-weight="700">Scrt1.o</text>
+        <text x="70" y="262" text-anchor="middle" fill="#8892a4" font-size="9">PIE (-pie)</text>
+
+        <rect x="125" y="230" width="90" height="44" rx="6" fill="#1a2535" stroke="#a78bfa" stroke-opacity="0.4"/>
+        <text x="170" y="248" text-anchor="middle" fill="#a78bfa" font-size="11" font-weight="700">gcrt1.o</text>
+        <text x="170" y="262" text-anchor="middle" fill="#8892a4" font-size="9">gprof (-pg)</text>
+
+        <!-- GCC 区域 -->
+        <rect x="250" y="32" width="220" height="160" rx="10" fill="none" stroke="#f9a74f" stroke-opacity="0.3" stroke-dasharray="5,3"/>
+        <text x="360" y="52" text-anchor="middle" fill="#f9a74f" font-size="10" font-weight="700">GCC / libgcc</text>
+
+        <rect x="265" y="65" width="190" height="44" rx="6" fill="#261e0e" stroke="#f9a74f" stroke-opacity="0.5"/>
+        <text x="360" y="83" text-anchor="middle" fill="#f9a74f" font-size="12" font-weight="700">crtbegin.o</text>
+        <text x="360" y="99" text-anchor="middle" fill="#8892a4" font-size="10">ctors 起始 | libgcc/crtstuff.c</text>
+
+        <rect x="265" y="120" width="190" height="44" rx="6" fill="#261e0e" stroke="#f9a74f" stroke-opacity="0.4"/>
+        <text x="360" y="138" text-anchor="middle" fill="#f9a74f" font-size="12" font-weight="700">crtend.o</text>
+        <text x="360" y="154" text-anchor="middle" fill="#8892a4" font-size="10">ctors 结束 | libgcc/crtstuff.c</text>
+
+        <!-- 用户代码 -->
+        <rect x="510" y="32" width="220" height="80" rx="10" fill="none" stroke="#f87171" stroke-opacity="0.3" stroke-dasharray="5,3"/>
+        <text x="620" y="52" text-anchor="middle" fill="#f87171" font-size="10" font-weight="700">用户编写</text>
+        <rect x="525" y="65" width="190" height="44" rx="6" fill="#260e0e" stroke="#f87171" stroke-opacity="0.5"/>
+        <text x="620" y="83" text-anchor="middle" fill="#f87171" font-size="12" font-weight="700">main.o</text>
+        <text x="620" y="99" text-anchor="middle" fill="#8892a4" font-size="10">含 main() 函数</text>
+
+        <!-- 输出 -->
+        <rect x="510" y="140" width="220" height="80" rx="10" fill="none" stroke="#67e8f9" stroke-opacity="0.3"/>
+        <text x="620" y="163" text-anchor="middle" fill="#67e8f9" font-size="10" font-weight="700">链接输出</text>
+        <rect x="525" y="175" width="190" height="44" rx="6" fill="#0e2026" stroke="#67e8f9" stroke-opacity="0.6"/>
+        <text x="620" y="193" text-anchor="middle" fill="#67e8f9" font-size="12" font-weight="700">a.out（ELF）</text>
+        <text x="620" y="209" text-anchor="middle" fill="#8892a4" font-size="10">可执行文件</text>
+
+        <!-- Arrows to output -->
+        <path d="M215,87 C360,87 360,193 510,193" stroke="#4f9cf9" stroke-width="1" fill="none" stroke-dasharray="3,2" marker-end="url(#arr3)"/>
+        <path d="M215,142 C350,142 350,193 510,193" stroke="#3ecf8e" stroke-width="1" fill="none" stroke-dasharray="3,2" marker-end="url(#arr3)"/>
+        <path d="M455,87 C480,87 490,193 510,193" stroke="#f9a74f" stroke-width="1" fill="none" stroke-dasharray="3,2" marker-end="url(#arr3)"/>
+        <path d="M455,142 C482,142 490,193 510,193" stroke="#f9a74f" stroke-width="1" fill="none" stroke-dasharray="3,2" marker-end="url(#arr3)"/>
+        <path d="M620,115 L620,175" stroke="#f87171" stroke-width="1" fill="none" marker-end="url(#arr3)"/>
+
+        <!-- ld label -->
+        <text x="370" y="270" text-anchor="middle" fill="#546e7a" font-size="11">GNU ld 将所有目标文件按顺序合并 →</text>
+        <text x="370" y="290" text-anchor="middle" fill="#546e7a" font-size="11">解析符号引用，填写重定位地址</text>
+        <text x="370" y="315" text-anchor="middle" fill="#4f9cf9" font-size="10">参考：dev.gentoo.org/~vapier/crt.txt | GCC Internals §19.22.5</text>
+      </svg>
+    </div>
+    <p class="caption">图 5-1：CRT 各目标文件来源与链接关系</p>
+
+    <h3>PIE 模式下的文件变体</h3>
+    <div class="table-wrap">
+      <table>
+        <thead><tr><th>编译选项</th><th>crt1 变体</th><th>crtbegin 变体</th><th>说明</th></tr></thead>
+        <tbody>
+          <tr><td><code>默认（-no-pie）</code></td><td><strong>crt1.o</strong></td><td><strong>crtbegin.o</strong></td><td>普通静态起始地址可执行文件</td></tr>
+          <tr><td><code>-pie</code></td><td><strong>Scrt1.o</strong></td><td><strong>crtbeginS.o</strong></td><td>位置无关可执行文件（现代发行版默认）</td></tr>
+          <tr><td><code>-static-pie</code></td><td><strong>rcrt1.o</strong></td><td><strong>crtbeginT.o</strong></td><td>静态 PIE</td></tr>
+          <tr><td><code>-pg</code>（gprof）</td><td><strong>gcrt1.o</strong></td><td><strong>crtbegin.o</strong></td><td>带 profiling 的起始文件</td></tr>
+        </tbody>
+      </table>
+    </div>
+    <p class="caption">来源：<a href="https://gist.github.com/MaskRay/6c3910c7ab1df208c36cfedf965f6b51" style="color:var(--accent)">startup-files-and-sequences.md (MaskRay)</a></p>
+
+    <div class="first-principle">
+      <div class="first-principle-label">⚛ 第一性原理</div>
+      <p>CRT 文件的存在是为了解决一个根本矛盾：<strong>程序运行需要运行时环境，但运行时环境本身也需要被初始化</strong>。操作系统只能保证将 ELF 加载到内存并跳转到入口点，它不负责初始化 C 标准库、准备 argc/argv、调用全局构造函数。CRT 正是填补「内核准备完毕」到「用户 main() 开始」之间的这段空白。多个 CRT 文件的设计是「关注点分离」原则的体现：每个文件只负责启动序列中的一个明确职责。</p>
+    </div>
+  </section>
+
+  <div class="divider"></div>
+
+  <!-- ══════════ 06 crt1.o ══════════ -->
+  <section class="section" id="s6">
+    <div class="section-badge">CRT 06</div>
+    <h2>⑥ crt1.o 与 _start 符号</h2>
+    <p><code>crt1.o</code> 是整个链接链的「起点」。它由 glibc 的 <code>csu/start.S</code>（x86-64 为 <code>sysdeps/x86_64/start.S</code>）编译而来，是可执行文件中<strong>真正的程序入口点</strong>。</p>
+
+    <h3>ELF 入口点的设定</h3>
+    <p>链接器脚本中有 <code>ENTRY(_start)</code> 指令，链接器将 ELF 文件头的 <code>e_entry</code> 字段设置为 <code>_start</code> 符号的地址。内核执行 <code>execve()</code> 后，最终跳转到这个地址。</p>
+
+    <h3>_start 的真实汇编代码（glibc x86-64）</h3>
+    <p>以下来自 glibc 源码 <code>sysdeps/x86_64/start.S</code>：</p>
+    <pre><code><span class="cm">/* sysdeps/x86_64/start.S  —— glibc 官方源码 */</span>
+<span class="kw">.text</span>
+<span class="kw">.globl</span> <span class="fn">_start</span>
+<span class="lbl">_start:</span>
+    <span class="cm">/* 清除帧指针，标记调用栈底 */</span>
+    xorl    %ebp, %ebp
+
+    <span class="cm">/* rdx = rtld_fini（动态链接器的终止函数） */</span>
+    mov     %RDX_LP, %R9_LP
+
+    <span class="cm">/* 弹出 argc（内核放在栈顶）*/</span>
+    popq    %rsi
+
+    <span class="cm">/* rdx = argv（当前栈顶即 argv[0]）*/</span>
+    mov     %RSP_LP, %RDX_LP
+
+    <span class="cm">/* 将栈对齐到 16 字节（遵循 x86-64 SysV ABI）*/</span>
+    and     $~15, %RSP_LP
+
+    <span class="cm">/* 在寄存器中准备 __libc_start_main 的参数：
+       rdi = main 函数指针
+       rsi = argc
+       rdx = argv
+       rcx = 0（init，旧版为 __libc_csu_init）
+       r8  = 0（fini，旧版为 __libc_csu_fini）
+       r9  = rtld_fini
+       stack = &stack_end */</span>
+
+    xorl    %r8d, %r8d     <span class="cm">/* fini = 0 */</span>
+    xorl    %ecx, %ecx     <span class="cm">/* init = 0 */</span>
+
+    <span class="cm">/* 加载 main 函数地址（PIE 模式通过 GOT 间接加载）*/</span>
+    mov     $<span class="fn">main</span>, %RDI_LP
+
+    <span class="cm">/* 调用 glibc 的启动入口，永不返回 */</span>
+    call    *<span class="fn">__libc_start_main</span>@GOTPCREL(%rip)
+
+    <span class="cm">/* 如果意外返回，停机（防御性编程）*/</span>
+    hlt</code></pre>
+
+    <div class="sources">
+      <strong>原文来源：</strong> <a href="https://codebrowser.dev/glibc/glibc/sysdeps/x86_64/start.S.html">codebrowser.dev/glibc/glibc/sysdeps/x86_64/start.S.html</a>
+    </div>
+
+    <h3>_start 向 __libc_start_main 传递的参数</h3>
+    <div class="table-wrap">
+      <table>
+        <thead><tr><th>寄存器/位置</th><th>参数</th><th>说明</th></tr></thead>
+        <tbody>
+          <tr><td><code>%rdi</code></td><td><code>main</code></td><td>用户 main 函数指针</td></tr>
+          <tr><td><code>%rsi</code></td><td><code>argc</code></td><td>从栈弹出的参数个数</td></tr>
+          <tr><td><code>%rdx</code></td><td><code>argv</code></td><td>参数字符串数组指针</td></tr>
+          <tr><td><code>%rcx</code></td><td><code>init</code></td><td>初始化函数（新版为 0）</td></tr>
+          <tr><td><code>%r8</code></td><td><code>fini</code></td><td>终止函数（新版为 0）</td></tr>
+          <tr><td><code>%r9</code></td><td><code>rtld_fini</code></td><td>动态链接器终止函数（rdx 中获取）</td></tr>
+          <tr><td><code>栈顶</code></td><td><code>stack_end</code></td><td>栈顶地址（用于栈保护）</td></tr>
+        </tbody>
+      </table>
+    </div>
+
+    <div class="info-box purple">
+      <strong>版本演化（BZ #23323）：</strong>在较旧的 glibc 版本中，<code>_start</code> 会传入 <code>__libc_csu_init</code> 和 <code>__libc_csu_fini</code>（由 <code>libc_nonshared.a</code> 提供）。从 glibc 2.34+ 起，这两个参数被改为零，<code>__libc_csu_init</code>/<code>__libc_csu_fini</code> 的逻辑被移入 <code>csu/libc-start.c</code>，简化了接口。
+    </div>
+
+    <div class="first-principle">
+      <div class="first-principle-label">⚛ 第一性原理</div>
+      <p><code>_start</code> 存在的根本原因是：<strong>内核只提供原始的进程上下文（寄存器状态 + 栈布局），不提供 C 运行环境</strong>。内核在栈上按 Linux ABI 规定放好 argc/argv/envp，但 C 函数调用约定要求参数在寄存器中传递。<code>_start</code> 就是这个「从 ABI 格式转换为 C 调用约定」的最小胶水代码。它做的事情越少越好，因为此时 C 库尚未初始化，连最基本的内存分配都不可用。</p>
+    </div>
+  </section>
+
+  <div class="divider"></div>
+
+  <!-- ══════════ 07 crti crtn ══════════ -->
+  <section class="section" id="s7">
+    <div class="section-badge green">CRT 07</div>
+    <h2>⑦ crti.o 与 crtn.o —— .init/.fini 节的拼合</h2>
+    <p><code>crti.o</code> 和 <code>crtn.o</code> 由 glibc 的 <code>csu/crti.S</code> 和 <code>csu/crtn.S</code> 编译而来，它们共同构成 ELF 文件中的 <code>.init</code> 和 <code>.fini</code> 节。</p>
+
+    <h3>Section 片段拼合机制</h3>
+    <p>GNU 链接器将所有输入目标文件中的同名 section 按顺序合并。<code>crti.o</code> 提供 <code>_init</code> 函数的<strong>序言（prologue）</strong>，<code>crtn.o</code> 提供<strong>尾声（epilogue）</strong>，中间的 <code>crtbegin.o</code>/<code>crtend.o</code> 及用户代码填入函数体：</p>
+
+    <div class="svg-wrap">
+      <svg viewBox="0 0 680 200" xmlns="http://www.w3.org/2000/svg" style="min-width:520px">
+        <defs>
+          <marker id="arr4" markerWidth="7" markerHeight="5" refX="7" refY="2.5" orient="auto">
+            <path d="M0,0 L7,2.5 L0,5 Z" fill="#5a6478"/>
+          </marker>
+        </defs>
+
+        <!-- .init 拼合 -->
+        <text x="10" y="22" fill="#3ecf8e" font-size="11" font-weight="700">.init 节拼合过程</text>
+
+        <rect x="10" y="35" width="120" height="50" rx="5" fill="#0e1a12" stroke="#3ecf8e" stroke-opacity="0.6"/>
+        <text x="70" y="55" text-anchor="middle" fill="#3ecf8e" font-size="11" font-weight="600">crti.o</text>
+        <text x="70" y="70" text-anchor="middle" fill="#546e7a" font-size="9">_init: 函数序言</text>
+        <text x="70" y="82" text-anchor="middle" fill="#546e7a" font-size="9">subq $8, %rsp</text>
+
+        <text x="136" y="63" text-anchor="middle" fill="#4a5568" font-size="18">+</text>
+
+        <rect x="150" y="35" width="140" height="50" rx="5" fill="#1a1505" stroke="#f9a74f" stroke-opacity="0.5"/>
+        <text x="220" y="55" text-anchor="middle" fill="#f9a74f" font-size="11" font-weight="600">crtbegin.o</text>
+        <text x="220" y="70" text-anchor="middle" fill="#546e7a" font-size="9">构造函数调用代码</text>
+        <text x="220" y="82" text-anchor="middle" fill="#546e7a" font-size="9">(.init_array 迭代)</text>
+
+        <text x="296" y="63" text-anchor="middle" fill="#4a5568" font-size="18">+</text>
+
+        <rect x="310" y="35" width="120" height="50" rx="5" fill="#1a1505" stroke="#f9a74f" stroke-opacity="0.4"/>
+        <text x="370" y="55" text-anchor="middle" fill="#f9a74f" font-size="11" font-weight="600">crtend.o</text>
+        <text x="370" y="70" text-anchor="middle" fill="#546e7a" font-size="9">构造函数列表终止</text>
+        <text x="370" y="82" text-anchor="middle" fill="#546e7a" font-size="9">(sentinel 0)</text>
+
+        <text x="436" y="63" text-anchor="middle" fill="#4a5568" font-size="18">+</text>
+
+        <rect x="450" y="35" width="120" height="50" rx="5" fill="#0e1a12" stroke="#3ecf8e" stroke-opacity="0.5"/>
+        <text x="510" y="55" text-anchor="middle" fill="#3ecf8e" font-size="11" font-weight="600">crtn.o</text>
+        <text x="510" y="70" text-anchor="middle" fill="#546e7a" font-size="9">_init 函数尾声</text>
+        <text x="510" y="82" text-anchor="middle" fill="#546e7a" font-size="9">addq $8, %rsp; ret</text>
+
+        <!-- Arrow to result -->
+        <path d="M340,90 L340,110" stroke="#4a5568" marker-end="url(#arr4)"/>
+        <text x="340" y="106" text-anchor="middle" fill="#546e7a" font-size="9">ld 按顺序合并</text>
+
+        <rect x="130" y="118" width="420" height="50" rx="5" fill="#0a1520" stroke="#4f9cf9" stroke-opacity="0.5"/>
+        <text x="340" y="138" text-anchor="middle" fill="#4f9cf9" font-size="11" font-weight="700">完整的 _init() 函数</text>
+        <text x="340" y="155" text-anchor="middle" fill="#546e7a" font-size="9">序言 → 构造函数调用 → 尾声 → ret （由 ld 合并 .init section 产生）</text>
+
+        <text x="340" y="185" text-anchor="middle" fill="#546e7a" font-size="10">参考：gcc.gnu.org/onlinedocs/gccint/Initialization.html</text>
+      </svg>
+    </div>
+    <p class="caption">图 7-1：.init 节的分片拼合过程</p>
+
+    <h3>crti.o 反汇编（glibc x86-64）</h3>
+    <pre><code><span class="cm"># crti.o — .init section（序言片段，无 ret）</span>
+<span class="lbl">_init:</span>
+    subq    $8, %rsp
+    movq    (%rip), %rax    <span class="cm"># R_X86_64_REX_GOTPCRELX __gmon_start__</span>
+    testq   %rax, %rax
+    je      .Lskip
+    callq   *%rax           <span class="cm"># 若定义了 gmon 分析，调用之</span>
+<span class="lbl">.Lskip:</span>
+    <span class="cm"># 注意：没有 addq / ret！由 crtn.o 补全</span>
+
+<span class="cm"># crti.o — .fini section（序言片段）</span>
+<span class="lbl">_fini:</span>
+    subq    $8, %rsp
+    <span class="cm"># 没有 ret！由 crtn.o 补全</span></code></pre>
+
+    <pre><code><span class="cm"># crtn.o — .init section（尾声片段）</span>
+<span class="lbl">.init:</span>
+    addq    $8, %rsp
+    retq
+
+<span class="cm"># crtn.o — .fini section（尾声片段）</span>
+<span class="lbl">.fini:</span>
+    addq    $8, %rsp
+    retq</code></pre>
+
+    <div class="sources">
+      <strong>原文来源：</strong> <a href="https://gist.github.com/MaskRay/6c3910c7ab1df208c36cfedf965f6b51">startup-files-and-sequences.md (MaskRay / glibc)</a>
+    </div>
+
+    <div class="first-principle">
+      <div class="first-principle-label">⚛ 第一性原理</div>
+      <p>crti/crtn 的「分段拼合」设计是对链接器 Section 合并语义的一种创造性利用：<strong>在没有语言层面的「函数拼接」机制时，通过让每个目标文件提供函数的一部分（无 ret 的序言、函数体、有 ret 的尾声），依靠链接器的 Section 顺序合并，在二进制层面构造出完整函数</strong>。这是一种底层的「面向链接器编程」范式，代价是脆弱——顺序必须严格正确，否则 ret 指令对应不上栈帧，程序必然崩溃。</p>
+    </div>
+  </section>
+
+  <div class="divider"></div>
+
+  <!-- ══════════ 08 crtbegin crtend ══════════ -->
+  <section class="section" id="s8">
+    <div class="section-badge yellow">CRT 08</div>
+    <h2>⑧ crtbegin.o / crtend.o —— C++ 全局构造/析构</h2>
+    <p><code>crtbegin.o</code> 和 <code>crtend.o</code> 由 GCC 自己提供（<code>libgcc/crtstuff.c</code>），不是 glibc 的一部分。它们专门处理 C++ 的全局对象构造和析构，以及 <code>__attribute__((constructor))</code> 标注的函数。</p>
+
+    <h3>现代 .init_array 方式（主流发行版）</h3>
+    <div class="table-wrap">
+      <table>
+        <thead><tr><th>文件</th><th>.init_array 中的角色</th><th>.fini_array 中的角色</th></tr></thead>
+        <tbody>
+          <tr><td><strong>crtbegin.o</strong></td><td>插入 <code>__init_array_start</code> 起始标记</td><td>插入 <code>__fini_array_start</code> 起始标记</td></tr>
+          <tr><td><strong>用户 .o 文件</strong></td><td>全局构造函数指针填入</td><td>全局析构函数指针填入</td></tr>
+          <tr><td><strong>crtend.o</strong></td><td>插入 <code>__init_array_end</code> 哨兵 (0)</td><td>插入 <code>__fini_array_end</code> 哨兵 (0)</td></tr>
+        </tbody>
+      </table>
+    </div>
+
+    <h3>链接器脚本中的处理（摘自 GCC 默认脚本）</h3>
+    <pre><code><span class="cm">/* 链接器脚本片段（gcc -static -Wl,--verbose 可查看完整版本）*/</span>
+<span class="kw">.init_array</span> :
+{
+    PROVIDE_HIDDEN (__init_array_start = .);
+    KEEP (*(SORT_BY_INIT_PRIORITY(.init_array.*)))
+    KEEP (*(.init_array
+            EXCLUDE_FILE (*crtbegin.o *crtbegin?.o
+                          *crtend.o   *crtend?.o  ) .ctors))
+    PROVIDE_HIDDEN (__init_array_end = .);
+}
+<span class="kw">.ctors</span> :
+{
+    KEEP (*crtbegin.o(.ctors))    <span class="cm">/* ctors 列表头 */</span>
+    KEEP (*crtbegin?.o(.ctors))
+    KEEP (*(EXCLUDE_FILE (*crtend.o *crtend?.o) .ctors))
+    KEEP (*(SORT(.ctors.*)))
+    KEEP (*(.ctors))              <span class="cm">/* ctors 列表尾 */</span>
+}</code></pre>
+
+    <div class="sources">
+      <strong>原文来源：</strong> <a href="https://gcc.gnu.org/onlinedocs/gccint/Initialization.html">gcc.gnu.org/onlinedocs/gccint/Initialization.html</a>
+    </div>
+
+    <div class="first-principle">
+      <div class="first-principle-label">⚛ 第一性原理</div>
+      <p><code>.init_array</code> 机制的本质是：<strong>把「在 main 前执行哪些函数」这个问题，转化为「在特定内存区域存放函数指针列表」这个数据问题</strong>。启动代码只需要遍历这个列表逐一调用，无需知道每个构造函数的名称。这是一种「注册表（Registry）」模式的底层实现——每个需要初始化的模块向列表注册自己，启动代码统一驱动执行。</p>
+    </div>
+  </section>
+
+  <div class="divider"></div>
+
+  <!-- ══════════ 09 __libc_start_main ══════════ -->
+  <section class="section" id="s9">
+    <div class="section-badge cyan">glibc 09</div>
+    <h2>⑨ __libc_start_main —— 真正的启动编排者</h2>
+    <p><code>__libc_start_main</code> 定义在 glibc 的 <code>csu/libc-start.c</code> 中，是连接 <code>_start</code> 和用户 <code>main()</code> 之间真正做初始化工作的函数。</p>
+
+    <h3>函数签名（历史版本）</h3>
+    <pre><code><span class="cm">/* glibc csu/libc-start.c 中的 __libc_start_main 签名 */</span>
+<span class="kw">int</span> <span class="fn">__libc_start_main</span> (
+    <span class="kw">int</span> (*main)(<span class="kw">int</span>, <span class="kw">char</span>**, <span class="kw">char</span>**),  <span class="cm">/* 用户 main 函数指针 */</span>
+    <span class="kw">int</span> argc,                            <span class="cm">/* 参数个数 */</span>
+    <span class="kw">char</span> **argv,                         <span class="cm">/* 参数列表 */</span>
+    <span class="kw">void</span> (*init)(<span class="kw">void</span>),                  <span class="cm">/* 初始化函数（旧：__libc_csu_init）*/</span>
+    <span class="kw">void</span> (*fini)(<span class="kw">void</span>),                  <span class="cm">/* 终止函数（旧：__libc_csu_fini）*/</span>
+    <span class="kw">void</span> (*rtld_fini)(<span class="kw">void</span>),             <span class="cm">/* 动态链接器终止函数 */</span>
+    <span class="kw">void</span> *stack_end                      <span class="cm">/* 栈底指针 */</span>
+);</code></pre>
+
+    <h3>__libc_start_main 的工作步骤（伪代码）</h3>
+    <pre><code><span class="kw">int</span> <span class="fn">__libc_start_main</span>(...) {
+
+    <span class="cm">/* 1. 注册动态链接器的终止函数 */</span>
+    <span class="kw">if</span> (rtld_fini != NULL)
+        <span class="fn">__cxa_atexit</span>(rtld_fini, NULL, NULL);
+
+    <span class="cm">/* 2. 初始化 TLS（线程本地存储）*/</span>
+    <span class="fn">__libc_init_first</span>(argc, argv, envp);
+
+    <span class="cm">/* 3. 注册 libc 的终止函数 */</span>
+    <span class="fn">__cxa_atexit</span>(fini, NULL, NULL);
+
+    <span class="cm">/* 4. 调用 preinit_array 中的函数 */</span>
+    <span class="fn">call_init</span>(&__preinit_array_start, &__preinit_array_end, argc, argv, envp);
+
+    <span class="cm">/* 5. 运行 .init_array（全局构造函数、__attribute__((constructor))）*/</span>
+    <span class="fn">call_init</span>(&__init_array_start, &__init_array_end, argc, argv, envp);
+
+    <span class="cm">/* 6. 终于——调用用户的 main() */</span>
+    result = main(argc, argv, envp);
+
+    <span class="cm">/* 7. 调用 exit()（运行 atexit 注册函数、.fini_array、析构函数）*/</span>
+    <span class="fn">exit</span>(result);
+    <span class="cm">/* 永不到达这里 */</span>
+}</code></pre>
+
+    <div class="sources">
+      <strong>原文来源：</strong> <a href="https://codebrowser.dev/glibc/glibc/csu/libc-start.c.html">codebrowser.dev/glibc/glibc/csu/libc-start.c.html</a>；<a href="https://hammertux.github.io/libc-start">hammertux.github.io/libc-start</a>
+    </div>
+
+    <h3>完整的调用栈（main 前）</h3>
+    <div class="svg-wrap">
+      <svg viewBox="0 0 500 400" xmlns="http://www.w3.org/2000/svg" style="min-width:380px">
+        <defs>
+          <marker id="arr5" markerWidth="7" markerHeight="5" refX="7" refY="2.5" orient="auto">
+            <path d="M0,0 L7,2.5 L0,5 Z" fill="#4f9cf9"/>
+          </marker>
+        </defs>
+
+        <!-- Boxes (vertical flow) -->
+        <rect x="130" y="10" width="240" height="40" rx="7" fill="#0e1520" stroke="#67e8f9" stroke-width="1.5"/>
+        <text x="250" y="26" text-anchor="middle" fill="#67e8f9" font-size="11" font-weight="700">内核 execve()</text>
+        <text x="250" y="42" text-anchor="middle" fill="#546e7a" font-size="9">加载 ELF，跳转到 e_entry</text>
+
+        <path d="M250,52 L250,68" stroke="#4f9cf9" marker-end="url(#arr5)"/>
+
+        <rect x="100" y="70" width="300" height="40" rx="7" fill="#0e1520" stroke="#4f9cf9" stroke-width="1.5"/>
+        <text x="250" y="86" text-anchor="middle" fill="#4f9cf9" font-size="11" font-weight="700">_start</text>
+        <text x="250" y="100" text-anchor="middle" fill="#546e7a" font-size="9">crt1.o / sysdeps/x86_64/start.S</text>
+
+        <path d="M250,112 L250,128" stroke="#4f9cf9" marker-end="url(#arr5)"/>
+
+        <rect x="70" y="130" width="360" height="40" rx="7" fill="#0e1520" stroke="#a78bfa" stroke-width="1.5"/>
+        <text x="250" y="146" text-anchor="middle" fill="#a78bfa" font-size="11" font-weight="700">__libc_start_main()</text>
+        <text x="250" y="162" text-anchor="middle" fill="#546e7a" font-size="9">csu/libc-start.c | glibc</text>
+
+        <path d="M250,172 L250,188" stroke="#a78bfa" marker-end="url(#arr5)"/>
+
+        <rect x="80" y="190" width="160" height="36" rx="6" fill="#140e26" stroke="#a78bfa" stroke-opacity="0.6"/>
+        <text x="160" y="205" text-anchor="middle" fill="#a78bfa" font-size="10">__libc_init_first()</text>
+        <text x="160" y="220" text-anchor="middle" fill="#546e7a" font-size="9">初始化 TLS/envp/auxv</text>
+
+        <rect x="260" y="190" width="160" height="36" rx="6" fill="#140e26" stroke="#a78bfa" stroke-opacity="0.6"/>
+        <text x="340" y="205" text-anchor="middle" fill="#a78bfa" font-size="10">call_init()</text>
+        <text x="340" y="220" text-anchor="middle" fill="#546e7a" font-size="9">运行 .init_array</text>
+
+        <path d="M250,228 L250,248" stroke="#3ecf8e" marker-end="url(#arr5)"/>
+
+        <rect x="80" y="250" width="160" height="36" rx="6" fill="#0e1a12" stroke="#3ecf8e" stroke-opacity="0.6"/>
+        <text x="160" y="265" text-anchor="middle" fill="#3ecf8e" font-size="10">__attribute__((constructor))</text>
+        <text x="160" y="280" text-anchor="middle" fill="#546e7a" font-size="9">用户全局构造函数</text>
+
+        <rect x="260" y="250" width="160" height="36" rx="6" fill="#0e1a12" stroke="#3ecf8e" stroke-opacity="0.6"/>
+        <text x="340" y="265" text-anchor="middle" fill="#3ecf8e" font-size="10">C++ 全局对象构造</text>
+        <text x="340" y="280" text-anchor="middle" fill="#546e7a" font-size="9">.init_array 中的指针</text>
+
+        <path d="M250,288 L250,308" stroke="#f9a74f" marker-end="url(#arr5)"/>
+
+        <rect x="90" y="310" width="320" height="45" rx="7" fill="#1a1105" stroke="#f9a74f" stroke-width="2"/>
+        <text x="250" y="330" text-anchor="middle" fill="#f9a74f" font-size="13" font-weight="700">main(argc, argv, envp)</text>
+        <text x="250" y="347" text-anchor="middle" fill="#8892a4" font-size="9">用户代码正式开始执行</text>
+
+        <text x="250" y="390" text-anchor="middle" fill="#546e7a" font-size="9">来源：linuxvox.com/blog · hammertux.github.io/libc-start</text>
+      </svg>
+    </div>
+    <p class="caption">图 9-1：从内核 execve() 到 main() 的完整调用路径</p>
+
+    <div class="first-principle">
+      <div class="first-principle-label">⚛ 第一性原理</div>
+      <p><code>__libc_start_main</code> 是整个启动序列的「<strong>编排者（Orchestrator）</strong>」。它存在的根本原因是：<strong>将「平台相关的原始初始化」（_start 负责）与「标准库的初始化逻辑」彻底解耦</strong>。_start 是汇编实现的、平台强相关的；而 __libc_start_main 是 C 实现的、可跨架构复用的。这种两层设计使得 glibc 可以支持数十种 CPU 架构，只需要为每种架构编写极少量的 _start 汇编，其余初始化逻辑统一用 C 完成。</p>
+    </div>
+  </section>
+
+  <div class="divider"></div>
+
+  <!-- ══════════ 10 动态链接启动 ══════════ -->
+  <section class="section" id="s10">
+    <div class="section-badge purple">glibc 10</div>
+    <h2>⑩ 动态链接可执行文件的启动序列</h2>
+    <p>现代 Linux 系统上，<code>gcc main.c -o main</code>（不加 <code>-static</code>）默认生成<strong>动态链接</strong>的 ELF 文件。启动过程更复杂，涉及动态链接器 <code>ld-linux.so</code>。</p>
+
+    <div class="svg-wrap">
+      <svg viewBox="0 0 700 520" xmlns="http://www.w3.org/2000/svg" style="min-width:520px">
+        <defs>
+          <marker id="arr6" markerWidth="7" markerHeight="5" refX="7" refY="2.5" orient="auto">
+            <path d="M0,0 L7,2.5 L0,5 Z" fill="#5a6478"/>
+          </marker>
+          <marker id="arr6b" markerWidth="7" markerHeight="5" refX="7" refY="2.5" orient="auto">
+            <path d="M0,0 L7,2.5 L0,5 Z" fill="#4f9cf9"/>
+          </marker>
+        </defs>
+
+        <!-- Phase 1: Kernel -->
+        <rect x="10" y="10" width="680" height="70" rx="8" fill="#0e1520" stroke="#67e8f9" stroke-opacity="0.4"/>
+        <text x="30" y="28" fill="#67e8f9" font-size="10" font-weight="700">① 内核阶段</text>
+        <rect x="20" y="35" width="200" height="36" rx="5" fill="#0a1018" stroke="#67e8f9" stroke-opacity="0.6"/>
+        <text x="120" y="51" text-anchor="middle" fill="#67e8f9" font-size="10">sys_execve()</text>
+        <text x="120" y="65" text-anchor="middle" fill="#546e7a" font-size="8">加载 ELF，读取 PT_INTERP 段</text>
+
+        <path d="M223,53 L253,53" stroke="#5a6478" marker-end="url(#arr6)"/>
+
+        <rect x="256" y="35" width="200" height="36" rx="5" fill="#0a1018" stroke="#67e8f9" stroke-opacity="0.6"/>
+        <text x="356" y="51" text-anchor="middle" fill="#67e8f9" font-size="10">/lib64/ld-linux-x86-64.so.2</text>
+        <text x="356" y="65" text-anchor="middle" fill="#546e7a" font-size="8">内核将控制权交给动态链接器</text>
+
+        <path d="M459,53 L489,53" stroke="#5a6478" marker-end="url(#arr6)"/>
+
+        <rect x="492" y="35" width="188" height="36" rx="5" fill="#0a1018" stroke="#67e8f9" stroke-opacity="0.6"/>
+        <text x="586" y="51" text-anchor="middle" fill="#67e8f9" font-size="10">映射所有共享库</text>
+        <text x="586" y="65" text-anchor="middle" fill="#546e7a" font-size="8">libc.so, libgcc_s.so, ...</text>
+
+        <!-- Phase 2: rtld -->
+        <path d="M350,82 L350,100" stroke="#5a6478" marker-end="url(#arr6)"/>
+
+        <rect x="10" y="102" width="680" height="100" rx="8" fill="#100e1a" stroke="#a78bfa" stroke-opacity="0.4"/>
+        <text x="30" y="120" fill="#a78bfa" font-size="10" font-weight="700">② 动态链接器（rtld）阶段 — ld.so 内部</text>
+
+        <rect x="20" y="130" width="150" height="36" rx="5" fill="#0e0a18" stroke="#a78bfa" stroke-opacity="0.5"/>
+        <text x="95" y="152" text-anchor="middle" fill="#a78bfa" font-size="9">_dl_start</text>
+        <text x="95" y="163" text-anchor="middle" fill="#546e7a" font-size="8">rtld 自身重定位</text>
+
+        <path d="M173,148 L193,148" stroke="#5a6478" marker-end="url(#arr6)"/>
+
+        <rect x="196" y="130" width="150" height="36" rx="5" fill="#0e0a18" stroke="#a78bfa" stroke-opacity="0.5"/>
+        <text x="271" y="152" text-anchor="middle" fill="#a78bfa" font-size="9">_dl_start_user</text>
+        <text x="271" y="163" text-anchor="middle" fill="#546e7a" font-size="8">完成符号重定位</text>
+
+        <path d="M349,148 L369,148" stroke="#5a6478" marker-end="url(#arr6)"/>
+
+        <rect x="372" y="130" width="150" height="36" rx="5" fill="#0e0a18" stroke="#a78bfa" stroke-opacity="0.5"/>
+        <text x="447" y="152" text-anchor="middle" fill="#a78bfa" font-size="9">_dl_init</text>
+        <text x="447" y="163" text-anchor="middle" fill="#546e7a" font-size="8">各共享库的 DT_INIT</text>
+
+        <path d="M525,148 L545,148" stroke="#5a6478" marker-end="url(#arr6)"/>
+
+        <rect x="548" y="130" width="135" height="36" rx="5" fill="#0e0a18" stroke="#a78bfa" stroke-opacity="0.6"/>
+        <text x="615" y="152" text-anchor="middle" fill="#a78bfa" font-size="9">跳转 e_entry → _start</text>
+        <text x="615" y="163" text-anchor="middle" fill="#546e7a" font-size="8">进入可执行文件</text>
+
+        <!-- Phase 3: main exe -->
+        <path d="M350,205 L350,223" stroke="#5a6478" marker-end="url(#arr6)"/>
+
+        <rect x="10" y="225" width="680" height="260" rx="8" fill="#0e1a12" stroke="#3ecf8e" stroke-opacity="0.4"/>
+        <text x="30" y="243" fill="#3ecf8e" font-size="10" font-weight="700">③ 主可执行文件阶段 — crt1.o + glibc</text>
+
+        <rect x="20" y="252" width="200" height="36" rx="5" fill="#0a1410" stroke="#3ecf8e" stroke-opacity="0.6"/>
+        <text x="120" y="269" text-anchor="middle" fill="#3ecf8e" font-size="10" font-weight="600">_start（crt1.o）</text>
+        <text x="120" y="281" text-anchor="middle" fill="#546e7a" font-size="8">sysdeps/x86_64/start.S</text>
+
+        <path d="M223,270 L253,270" stroke="#3ecf8e" stroke-width="1.2" marker-end="url(#arr6b)"/>
+
+        <rect x="256" y="252" width="220" height="36" rx="5" fill="#0a1410" stroke="#3ecf8e" stroke-opacity="0.6"/>
+        <text x="366" y="269" text-anchor="middle" fill="#3ecf8e" font-size="10" font-weight="600">__libc_start_main()</text>
+        <text x="366" y="281" text-anchor="middle" fill="#546e7a" font-size="8">csu/libc-start.c（SHARED 分支）</text>
+
+        <!-- Sub steps -->
+        <rect x="20" y="305" width="180" height="32" rx="5" fill="#080e0a" stroke="#546e7a"/>
+        <text x="110" y="322" text-anchor="middle" fill="#8892a4" font-size="9">libc 初始化（TLS/堆/stdio）</text>
+
+        <rect x="210" y="305" width="160" height="32" rx="5" fill="#080e0a" stroke="#546e7a"/>
+        <text x="290" y="322" text-anchor="middle" fill="#8892a4" font-size="9">运行 DT_INIT_ARRAY</text>
+
+        <rect x="380" y="305" width="160" height="32" rx="5" fill="#080e0a" stroke="#546e7a"/>
+        <text x="460" y="322" text-anchor="middle" fill="#8892a4" font-size="9">__attribute__((constructor))</text>
+
+        <path d="M350,340 L350,360" stroke="#f9a74f" marker-end="url(#arr6b)"/>
+
+        <rect x="170" y="362" width="360" height="50" rx="8" fill="#1a1105" stroke="#f9a74f" stroke-width="2"/>
+        <text x="350" y="385" text-anchor="middle" fill="#f9a74f" font-size="14" font-weight="700">main(argc, argv, envp)</text>
+        <text x="350" y="403" text-anchor="middle" fill="#8892a4" font-size="9">用户代码入口</text>
+
+        <path d="M350,415 L350,435" stroke="#f87171" marker-end="url(#arr6b)"/>
+
+        <rect x="220" y="437" width="260" height="36" rx="6" fill="#1a0e0e" stroke="#f87171" stroke-opacity="0.6"/>
+        <text x="350" y="456" text-anchor="middle" fill="#f87171" font-size="10">exit() → .fini_array → _exit()</text>
+
+        <text x="350" y="500" text-anchor="middle" fill="#546e7a" font-size="9">来源：startup-files-and-sequences.md (MaskRay) · glibc 源码</text>
+      </svg>
+    </div>
+    <p class="caption">图 10-1：动态链接可执行文件完整启动序列（来源：<a href="https://gist.github.com/MaskRay/6c3910c7ab1df208c36cfedf965f6b51" style="color:var(--accent)">MaskRay startup-files</a> / glibc 源码）</p>
+
+    <h3>PLT/GOT 延迟绑定</h3>
+    <p>动态链接下，<code>_start</code> 中的 <code>call *__libc_start_main@GOTPCREL(%rip)</code> 会触发 PLT（Procedure Linkage Table）跳转，第一次调用时通过 GOT（Global Offset Table）转发给动态链接器解析符号地址，之后直接调用。</p>
+
+    <div class="first-principle">
+      <div class="first-principle-label">⚛ 第一性原理</div>
+      <p>动态链接的本质是将「符号地址绑定」从编译时推迟到<strong>运行时</strong>，代价是一个额外的间接层（PLT/GOT），收益是多个进程可以共享同一份库的代码页（内存节省）并支持库的热更新。动态链接器（ld.so）是一个「在用户态自举的小型链接器」——它本身是一个可重定向程序，启动时先对自己进行重定位，然后才能执行加载其他库的工作。</p>
+    </div>
+  </section>
+
+  <div class="divider"></div>
+
+  <!-- ══════════ 11 静态链接 ══════════ -->
+  <section class="section" id="s11">
+    <div class="section-badge red">glibc 11</div>
+    <h2>⑪ 静态链接可执行文件的启动序列</h2>
+    <p>使用 <code>gcc -static main.c -o main</code> 生成静态链接文件时，所有库代码直接合并进可执行文件，无需动态链接器。</p>
+
+    <h3>静态链接下的完整启动流（glibc）</h3>
+    <pre><code><span class="cm">/* 来源：startup-files-and-sequences.md (MaskRay)
+   glibc 静态链接启动序列 */</span>
+
+sysdeps/x86_64/start.S:<span class="fn">_start</span>
+    ↓
+csu/libc-start.c:<span class="fn">__libc_start_main</span>（!SHARED 分支）
+    ├── <span class="fn">_dl_relocate_static_pie</span>   <span class="cm">// PIE 静态时的重定位</span>
+    ├── <span class="fn">ARCH_SETUP_IREL</span>           <span class="cm">// 架构特定的间接函数解析</span>
+    ├── <span class="fn">ARCH_SETUP_TLS</span>            <span class="cm">// 线程本地存储初始化</span>
+    ├── csu/libc-start.c:<span class="fn">call_init</span>
+    │   ├── 运行 [__preinit_array_start, __preinit_array_end)
+    │   ├── 运行 <span class="fn">_init</span>()           <span class="cm">// 若 ELF_INITFINI 已定义</span>
+    │   └── 运行 [__init_array_start, __init_array_end)
+    ├── <span class="fn">main</span>(argc, argv, envp)    <span class="cm">// 调用用户 main()</span>
+    └── <span class="fn">exit</span>(result)              <span class="cm">// 清理并终止</span></code></pre>
+
+    <h3>静态 vs 动态链接对比</h3>
+    <div class="table-wrap">
+      <table>
+        <thead><tr><th>特性</th><th>动态链接</th><th>静态链接（-static）</th></tr></thead>
+        <tbody>
+          <tr><td>是否需要 ld.so</td><td>✅ 需要（PT_INTERP 段）</td><td>❌ 不需要</td></tr>
+          <tr><td>crt1.o 变体</td><td>crt1.o / Scrt1.o</td><td>crt1.o / rcrt1.o</td></tr>
+          <tr><td>libc.so</td><td>运行时动态加载</td><td>全量合并到二进制</td></tr>
+          <tr><td>文件大小</td><td>小（依赖共享库）</td><td>大（全静态）</td></tr>
+          <tr><td>启动速度</td><td>较慢（符号解析开销）</td><td>较快（无动态加载）</td></tr>
+          <tr><td>__libc_start_main 分支</td><td>SHARED 分支</td><td>!SHARED 分支</td></tr>
+          <tr><td>DT_INIT_ARRAY 处理</td><td>rtld 的 _dl_init 完成部分</td><td>call_init() 完成全部</td></tr>
+        </tbody>
+      </table>
+    </div>
+
+    <div class="first-principle">
+      <div class="first-principle-label">⚛ 第一性原理</div>
+      <p>静态链接是「<strong>将所有依赖在链接时完全固化</strong>」的策略。它的本质是以空间（更大的二进制）换取简单性（无运行时依赖）和确定性（行为不受系统库版本影响）。静态链接下的启动序列更简单直接：没有 ld.so 的介入，<code>_start → __libc_start_main → main</code> 的链条完全在同一个进程内完成。</p>
+    </div>
+  </section>
+
+  <div class="divider"></div>
+
+  <!-- ══════════ 12 链接器脚本 ══════════ -->
+  <section class="section" id="s12">
+    <div class="section-badge green">链接器 12</div>
+    <h2>⑫ 链接器脚本与 ELF 段布局</h2>
+    <p>GNU ld 通过<strong>链接器脚本</strong>（Linker Script）控制如何将输入的各 section 映射到输出的 ELF segment（段）。GCC 在链接时自动使用默认脚本。</p>
+
+    <h3>查看默认链接器脚本</h3>
+    <pre><code><span class="cm"># 查看 GCC 实际使用的链接命令（含 CRT 文件路径）</span>
+gcc -v main.c -o main
+
+<span class="cm"># 查看默认链接器脚本（静态链接）</span>
+gcc -static -o main main.c -Wl,--verbose
+
+<span class="cm"># 直接让 ld 输出默认脚本</span>
+ld --verbose</code></pre>
+
+    <h3>链接器脚本关键指令</h3>
+    <div class="table-wrap">
+      <table>
+        <thead><tr><th>指令</th><th>作用</th><th>示例</th></tr></thead>
+        <tbody>
+          <tr><td><code>ENTRY()</code></td><td>设置 ELF 入口点符号</td><td><code>ENTRY(_start)</code></td></tr>
+          <tr><td><code>SECTIONS{}</code></td><td>定义 section 映射规则</td><td>将所有 .text 合并到代码段</td></tr>
+          <tr><td><code>PROVIDE()</code></td><td>弱定义符号（若未定义则提供）</td><td><code>PROVIDE(etext = .)</code></td></tr>
+          <tr><td><code>KEEP()</code></td><td>阻止 GC 删除 section</td><td><code>KEEP(*(.init_array))</code></td></tr>
+          <tr><td><code>SORT_BY_INIT_PRIORITY()</code></td><td>按 __attribute__((init_priority)) 排序</td><td>C++ 初始化顺序控制</td></tr>
+        </tbody>
+      </table>
+    </div>
+
+    <h3>ELF 输出段布局（典型 x86-64）</h3>
+    <div class="svg-wrap">
+      <svg viewBox="0 0 580 340" xmlns="http://www.w3.org/2000/svg" style="min-width:420px">
+        <!-- Memory layout vertical diagram -->
+        <text x="290" y="18" text-anchor="middle" fill="#8892a4" font-size="11" font-weight="600">典型 ELF 可执行文件内存布局（虚拟地址从低到高）</text>
+
+        <rect x="60" y="25" width="280" height="36" rx="4" fill="#0a1520" stroke="#4f9cf9" stroke-opacity="0.5"/>
+        <text x="200" y="39" text-anchor="middle" fill="#4f9cf9" font-size="10" font-weight="600">ELF Header + Program Headers</text>
+        <text x="200" y="53" text-anchor="middle" fill="#546e7a" font-size="8">e_entry = _start 地址</text>
+        <text x="355" y="45" fill="#546e7a" font-size="9">0x400000</text>
+
+        <rect x="60" y="65" width="280" height="38" rx="4" fill="#0e1520" stroke="#67e8f9" stroke-opacity="0.5"/>
+        <text x="200" y="81" text-anchor="middle" fill="#67e8f9" font-size="10">.interp（动态链接器路径）</text>
+        <text x="200" y="93" text-anchor="middle" fill="#546e7a" font-size="8">/lib64/ld-linux-x86-64.so.2</text>
+
+        <rect x="60" y="107" width="280" height="38" rx="4" fill="#0e1520" stroke="#4f9cf9" stroke-opacity="0.6"/>
+        <text x="200" y="123" text-anchor="middle" fill="#4f9cf9" font-size="10">.text（代码段）</text>
+        <text x="200" y="136" text-anchor="middle" fill="#546e7a" font-size="8">_start, __libc_start_main, main, printf, ...</text>
+
+        <rect x="60" y="149" width="280" height="36" rx="4" fill="#0e1520" stroke="#4f9cf9" stroke-opacity="0.4"/>
+        <text x="200" y="165" text-anchor="middle" fill="#4f9cf9" font-size="10">.init / .fini</text>
+        <text x="200" y="178" text-anchor="middle" fill="#546e7a" font-size="8">crti.o + crtbegin/end + crtn.o 拼合</text>
+
+        <rect x="60" y="189" width="280" height="36" rx="4" fill="#100e1a" stroke="#a78bfa" stroke-opacity="0.5"/>
+        <text x="200" y="205" text-anchor="middle" fill="#a78bfa" font-size="10">.init_array / .fini_array</text>
+        <text x="200" y="218" text-anchor="middle" fill="#546e7a" font-size="8">全局构造/析构函数指针列表</text>
+
+        <rect x="60" y="229" width="280" height="36" rx="4" fill="#0a1018" stroke="#3ecf8e" stroke-opacity="0.5"/>
+        <text x="200" y="245" text-anchor="middle" fill="#3ecf8e" font-size="10">.rodata（只读数据）</text>
+        <text x="200" y="258" text-anchor="middle" fill="#546e7a" font-size="8">字符串字面量等</text>
+
+        <rect x="60" y="269" width="280" height="36" rx="4" fill="#0a180e" stroke="#f9a74f" stroke-opacity="0.5"/>
+        <text x="200" y="285" text-anchor="middle" fill="#f9a74f" font-size="10">.data / .bss</text>
+        <text x="200" y="298" text-anchor="middle" fill="#546e7a" font-size="8">已初始化/未初始化全局变量</text>
+
+        <rect x="60" y="309" width="280" height="24" rx="4" fill="#140e0a" stroke="#f87171" stroke-opacity="0.5"/>
+        <text x="200" y="324" text-anchor="middle" fill="#f87171" font-size="10">.got.plt（GOT/PLT 动态符号表）</text>
+
+        <!-- Labels -->
+        <text x="20" y="105" fill="#546e7a" font-size="9" text-anchor="middle">↑ 低</text>
+        <text x="20" y="320" fill="#546e7a" font-size="9" text-anchor="middle">↓ 高</text>
+      </svg>
+    </div>
+    <p class="caption">图 12-1：ELF 可执行文件典型内存布局</p>
+
+    <div class="first-principle">
+      <div class="first-principle-label">⚛ 第一性原理</div>
+      <p>链接器脚本是对「<strong>内存布局即程序架构</strong>」这一思想的直接体现。ELF 的 section/segment 二级结构将「逻辑分类」（section：.text/.data/.bss…）与「内存权限」（segment：R/W/X）解耦——链接器脚本定义如何从前者映射到后者。<code>ENTRY(_start)</code> 这一指令的本质是声明「可执行序列从哪个符号对应的地址开始」，是整个启动链条的起点。</p>
+    </div>
+  </section>
+
+  <div class="divider"></div>
+
+  <!-- ══════════ 13 符号解析重定位 ══════════ -->
+  <section class="section" id="s13">
+    <div class="section-badge yellow">链接器 13</div>
+    <h2>⑬ 符号解析与重定位</h2>
+    <p>链接器的核心工作：<strong>符号解析</strong>将每个引用绑定到唯一的定义；<strong>重定位</strong>则将目标文件中的「相对地址占位符」替换为最终的虚拟地址。</p>
+
+    <h3>符号类型</h3>
+    <div class="table-wrap">
+      <table>
+        <thead><tr><th>符号状态</th><th>说明</th><th>nm 输出标记</th></tr></thead>
+        <tbody>
+          <tr><td><strong>已定义全局符号</strong></td><td>本文件中定义，可被其他文件引用</td><td><code>T</code>（代码）/ <code>D</code>（数据）</td></tr>
+          <tr><td><strong>未定义符号</strong></td><td>本文件引用，但定义在其他地方</td><td><code>U</code></td></tr>
+          <tr><td><strong>弱符号</strong></td><td>可被强符号覆盖</td><td><code>W</code></td></tr>
+          <tr><td><strong>局部符号</strong></td><td>仅在本文件可见（static）</td><td><code>t/d</code>（小写）</td></tr>
+        </tbody>
+      </table>
+    </div>
+
+    <h3>main.o 中的未定义符号</h3>
+    <pre><code><span class="cm"># 查看 main.o 的符号表</span>
+$ nm main.o
+
+              U <span class="fn">__libc_start_main</span>    <span class="cm"># 未定义：由 glibc 提供</span>
+              U <span class="fn">printf</span>               <span class="cm"># 未定义：由 libc.so 提供</span>
+0000000000000000 T <span class="fn">main</span>              <span class="cm"># 已定义：用户 main 函数</span></code></pre>
+
+    <h3>重定位类型（x86-64 常见）</h3>
+    <div class="table-wrap">
+      <table>
+        <thead><tr><th>重定位类型</th><th>含义</th><th>使用场景</th></tr></thead>
+        <tbody>
+          <tr><td><code>R_X86_64_PLT32</code></td><td>相对 PLT 条目的 32 位偏移</td><td>函数调用（动态链接）</td></tr>
+          <tr><td><code>R_X86_64_PC32</code></td><td>PC 相对 32 位重定位</td><td>相对偏移调用（静态）</td></tr>
+          <tr><td><code>R_X86_64_GOTPCRELX</code></td><td>通过 GOT 的 PC 相对寻址</td><td>全局变量/函数 PIE 访问</td></tr>
+          <tr><td><code>R_X86_64_64</code></td><td>64 位绝对地址</td><td>数据段中的函数指针</td></tr>
+        </tbody>
+      </table>
+    </div>
+
+    <h3>查看重定位条目</h3>
+    <pre><code><span class="cm"># 查看 main.o 中的重定位条目</span>
+$ readelf -r main.o
+
+Relocation section '.rela.text' at offset 0x...:
+  Offset          Info     Type              Sym. Name + Addend
+000000000015  <span class="num">000c00000004</span> <span class="sym">R_X86_64_PLT32</span>    <span class="fn">printf</span>-4
+000000000025  <span class="num">000d00000004</span> <span class="sym">R_X86_64_PLT32</span>    <span class="fn">__libc_start_main</span>-4</code></pre>
+
+    <div class="info-box">
+      <strong>单遍链接器（Single-pass Linker）的含义：</strong>GNU ld 从左到右扫描所有输入，当遇到一个 <code>.o</code> 文件中的未定义符号时，会向后查找（在后续出现的库 <code>.a</code> 文件中）找到定义。这就是为什么 <code>-lc</code>（libc）必须出现在用户 <code>.o</code> 文件之后——用户代码依赖 libc，如果 libc 在前面扫描完后才出现用户代码的未定义符号，链接器不会回头查找。
+    </div>
+
+    <div class="first-principle">
+      <div class="first-principle-label">⚛ 第一性原理</div>
+      <p>符号解析的本质是解决一个<strong>命名空间中名称到定义的映射问题</strong>。重定位的本质是将「逻辑空间中的相对引用」转化为「物理（虚拟）地址空间中的绝对/相对偏移」。二者合称「链接」，其数学本质是：给定一个依赖图（符号引用关系），在满足约束的条件下（地址对齐、段权限），找到一个所有节点在地址空间中的合法布局，并将图中每条边（符号引用）替换为对应的数值（地址偏移）。</p>
+    </div>
+  </section>
+
+  <div class="divider"></div>
+
+  <!-- ══════════ 14 完整命令还原 ══════════ -->
+  <section class="section" id="s14">
+    <div class="section-badge cyan">链接器 14</div>
+    <h2>⑭ 完整链接命令行还原与实验</h2>
+    <p>通过 <code>gcc -v</code> 可以看到 GCC 实际执行的所有命令，包括完整的链接命令行。这是验证本文所有内容的最直接方式。</p>
+
+    <h3>实验步骤</h3>
+    <pre><code><span class="cm"># 步骤 1：编写最简 main.c</span>
+cat &gt; main.c &lt;&lt; 'EOF'
+#include &lt;stdio.h&gt;
+int main(int argc, char *argv[]) {
+    printf("Hello, World!\n");
+    return 0;
+}
+EOF
+
+<span class="cm"># 步骤 2：查看完整编译过程（含内部命令）</span>
+gcc -v main.c -o main
+
+<span class="cm"># 步骤 3：查看 ELF 入口点</span>
+readelf -h main | grep "Entry point"
+<span class="cm"># 输出：Entry point address: 0x...（即 _start 的地址）</span>
+
+<span class="cm"># 步骤 4：查看链接进来的 CRT 对象符号</span>
+nm main | grep -E '_start|__libc_start_main|_init|_fini'
+
+<span class="cm"># 步骤 5：手动调用 ld（模拟 GCC 的链接）</span>
+gcc -c main.c -o main.o
+ld \
+  -dynamic-linker /lib64/ld-linux-x86-64.so.2 \
+  /usr/lib/x86_64-linux-gnu/crt1.o \
+  /usr/lib/x86_64-linux-gnu/crti.o \
+  /usr/lib/gcc/x86_64-linux-gnu/12/crtbegin.o \
+  main.o \
+  -lc -lgcc -lgcc_s \
+  /usr/lib/gcc/x86_64-linux-gnu/12/crtend.o \
+  /usr/lib/x86_64-linux-gnu/crtn.o \
+  -o main_manual
+
+<span class="cm"># 步骤 6：验证入口点符号</span>
+objdump -d main | grep -A 20 '&lt;_start&gt;'</code></pre>
+
+    <h3>禁用 CRT 文件的效果</h3>
+    <pre><code><span class="cm"># 使用 -nostartfiles 禁用 CRT 启动文件</span>
+gcc -nostartfiles main.c -o main_no_crt
+<span class="cm"># 错误：undefined reference to `_start'
+#        → 因为没有 crt1.o 提供 _start 符号</span>
+
+<span class="cm"># 使用 -nostdlib 同时禁用标准库和 CRT</span>
+gcc -nostdlib main.c -o main_no_stdlib
+<span class="cm"># 错误：undefined reference to `printf'
+#        → 因为没有 libc.so</span>
+
+<span class="cm"># 查看 CRT 文件具体路径</span>
+gcc --print-file-name=crt1.o
+gcc --print-file-name=crtbegin.o</code></pre>
+
+    <h3>总结：main.c 与 glibc 入口的完整拼接路径</h3>
+    <div class="svg-wrap">
+      <svg viewBox="0 0 700 280" xmlns="http://www.w3.org/2000/svg" style="min-width:560px">
+        <defs>
+          <marker id="arr7" markerWidth="7" markerHeight="5" refX="7" refY="2.5" orient="auto">
+            <path d="M0,0 L7,2.5 L0,5 Z" fill="#4f9cf9"/>
+          </marker>
+          <linearGradient id="g2" x1="0" y1="0" x2="1" y2="0">
+            <stop offset="0%" stop-color="#4f9cf9" stop-opacity="0.3"/>
+            <stop offset="100%" stop-color="#3ecf8e" stop-opacity="0.3"/>
+          </linearGradient>
+        </defs>
+
+        <!-- Timeline bar -->
+        <rect x="10" y="130" width="680" height="6" rx="3" fill="url(#g2)"/>
+
+        <!-- Files on timeline -->
+        <!-- crt1.o -->
+        <circle cx="60" cy="133" r="8" fill="#4f9cf9"/>
+        <rect x="20" y="20" width="80" height="52" rx="5" fill="#0a1520" stroke="#4f9cf9" stroke-opacity="0.6"/>
+        <text x="60" y="38" text-anchor="middle" fill="#4f9cf9" font-size="10" font-weight="700">crt1.o</text>
+        <text x="60" y="52" text-anchor="middle" fill="#546e7a" font-size="8">_start</text>
+        <text x="60" y="63" text-anchor="middle" fill="#546e7a" font-size="8">glibc CSU</text>
+        <line x1="60" y1="73" x2="60" y2="124" stroke="#4f9cf9" stroke-opacity="0.4" stroke-dasharray="3,2"/>
+
+        <!-- crti.o -->
+        <circle cx="165" cy="133" r="8" fill="#3ecf8e"/>
+        <rect x="125" y="20" width="80" height="52" rx="5" fill="#0a1a12" stroke="#3ecf8e" stroke-opacity="0.6"/>
+        <text x="165" y="38" text-anchor="middle" fill="#3ecf8e" font-size="10" font-weight="700">crti.o</text>
+        <text x="165" y="52" text-anchor="middle" fill="#546e7a" font-size="8">.init 序言</text>
+        <text x="165" y="63" text-anchor="middle" fill="#546e7a" font-size="8">glibc</text>
+        <line x1="165" y1="73" x2="165" y2="124" stroke="#3ecf8e" stroke-opacity="0.4" stroke-dasharray="3,2"/>
+
+        <!-- crtbegin.o -->
+        <circle cx="270" cy="133" r="8" fill="#f9a74f"/>
+        <rect x="230" y="20" width="80" height="52" rx="5" fill="#1a1200" stroke="#f9a74f" stroke-opacity="0.6"/>
+        <text x="270" y="38" text-anchor="middle" fill="#f9a74f" font-size="10" font-weight="700">crtbegin.o</text>
+        <text x="270" y="52" text-anchor="middle" fill="#546e7a" font-size="8">ctors 起始</text>
+        <text x="270" y="63" text-anchor="middle" fill="#546e7a" font-size="8">GCC</text>
+        <line x1="270" y1="73" x2="270" y2="124" stroke="#f9a74f" stroke-opacity="0.4" stroke-dasharray="3,2"/>
+
+        <!-- main.o -->
+        <circle cx="385" cy="133" r="10" fill="#f87171"/>
+        <rect x="340" y="20" width="90" height="52" rx="5" fill="#1a0808" stroke="#f87171" stroke-width="1.5"/>
+        <text x="385" y="38" text-anchor="middle" fill="#f87171" font-size="10" font-weight="700">main.o</text>
+        <text x="385" y="52" text-anchor="middle" fill="#8892a4" font-size="8">main() 函数</text>
+        <text x="385" y="63" text-anchor="middle" fill="#8892a4" font-size="8">用户编写</text>
+        <line x1="385" y1="73" x2="385" y2="122" stroke="#f87171" stroke-opacity="0.6" stroke-dasharray="3,2"/>
+
+        <!-- crtend.o -->
+        <circle cx="500" cy="133" r="8" fill="#f9a74f"/>
+        <rect x="460" y="20" width="80" height="52" rx="5" fill="#1a1200" stroke="#f9a74f" stroke-opacity="0.6"/>
+        <text x="500" y="38" text-anchor="middle" fill="#f9a74f" font-size="10" font-weight="700">crtend.o</text>
+        <text x="500" y="52" text-anchor="middle" fill="#546e7a" font-size="8">ctors 结束</text>
+        <text x="500" y="63" text-anchor="middle" fill="#546e7a" font-size="8">GCC</text>
+        <line x1="500" y1="73" x2="500" y2="124" stroke="#f9a74f" stroke-opacity="0.4" stroke-dasharray="3,2"/>
+
+        <!-- crtn.o -->
+        <circle cx="620" cy="133" r="8" fill="#3ecf8e"/>
+        <rect x="580" y="20" width="80" height="52" rx="5" fill="#0a1a12" stroke="#3ecf8e" stroke-opacity="0.6"/>
+        <text x="620" y="38" text-anchor="middle" fill="#3ecf8e" font-size="10" font-weight="700">crtn.o</text>
+        <text x="620" y="52" text-anchor="middle" fill="#546e7a" font-size="8">.init 尾声</text>
+        <text x="620" y="63" text-anchor="middle" fill="#546e7a" font-size="8">glibc</text>
+        <line x1="620" y1="73" x2="620" y2="124" stroke="#3ecf8e" stroke-opacity="0.4" stroke-dasharray="3,2"/>
+
+        <!-- Bottom: execution path -->
+        <text x="350" y="160" text-anchor="middle" fill="#546e7a" font-size="9">执行流向</text>
+
+        <rect x="10" y="170" width="680" height="65" rx="8" fill="#0e1520" stroke="#4f9cf9" stroke-opacity="0.25"/>
+
+        <text x="60" y="196" text-anchor="middle" fill="#4f9cf9" font-size="9" font-weight="600">_start</text>
+        <path d="M90,193 L118,193" stroke="#4f9cf9" stroke-width="1.2" marker-end="url(#arr7)"/>
+        <text x="150" y="196" text-anchor="middle" fill="#a78bfa" font-size="9" font-weight="600">__libc_start_main</text>
+        <path d="M200,193 L228,193" stroke="#4f9cf9" stroke-width="1.2" marker-end="url(#arr7)"/>
+        <text x="268" y="196" text-anchor="middle" fill="#3ecf8e" font-size="9" font-weight="600">__libc_init_first</text>
+        <path d="M310,193 L340,193" stroke="#4f9cf9" stroke-width="1.2" marker-end="url(#arr7)"/>
+        <text x="380" y="196" text-anchor="middle" fill="#3ecf8e" font-size="9" font-weight="600">全局构造函数</text>
+        <path d="M420,193 L448,193" stroke="#4f9cf9" stroke-width="1.2" marker-end="url(#arr7)"/>
+        <text x="490" y="196" text-anchor="middle" fill="#f87171" font-size="10" font-weight="700">main()</text>
+        <path d="M530,193 L558,193" stroke="#f87171" stroke-width="1.2" marker-end="url(#arr7)"/>
+        <text x="600" y="196" text-anchor="middle" fill="#f87171" font-size="9">exit()</text>
+
+        <text x="350" y="222" text-anchor="middle" fill="#546e7a" font-size="8">crt1.o(glibc) → __libc_start_main(glibc) → .init_array → main.o(用户) → .fini_array → _exit</text>
+        <text x="350" y="238" text-anchor="middle" fill="#546e7a" font-size="8">参考来源：GCC Internals §19.22.5 | glibc csu/start.S | startup-files-and-sequences.md</text>
+      </svg>
+    </div>
+    <p class="caption">图 14-1：CRT 链接顺序与执行流程全景（总结图）</p>
+
+    <div class="sources">
+      <strong>原文参考来源：</strong><br>
+      • GCC 官方文档 Overall Options: <a href="https://gcc.gnu.org/onlinedocs/gcc/Overall-Options.html">gcc.gnu.org/onlinedocs/gcc/Overall-Options.html</a><br>
+      • GCC Internals - Initialization: <a href="https://gcc.gnu.org/onlinedocs/gccint/Initialization.html">gcc.gnu.org/onlinedocs/gccint/Initialization.html</a><br>
+      • glibc start.S (x86-64): <a href="https://codebrowser.dev/glibc/glibc/sysdeps/x86_64/start.S.html">codebrowser.dev/glibc/glibc/sysdeps/x86_64/start.S.html</a><br>
+      • startup-files-and-sequences (MaskRay): <a href="https://gist.github.com/MaskRay/6c3910c7ab1df208c36cfedf965f6b51">gist.github.com/MaskRay/…</a><br>
+      • dev.gentoo.org CRT 文档: dev.gentoo.org/~vapier/crt.txt<br>
+      • How glibc calls main(): <a href="https://hammertux.github.io/libc-start">hammertux.github.io/libc-start</a>
+    </div>
+
+    <div class="first-principle">
+      <div class="first-principle-label">⚛ 第一性原理（全篇总结）</div>
+      <p>
+        从第一性原理来看，<code>main.c</code> 与 glibc 入口拼接的全过程，本质上是在解决一个根本问题：<strong>「一段用高级语言写的函数，如何成为操作系统可以直接跳转执行的程序入口？」</strong>
+      </p>
+      <p style="margin-top:10px">
+        这个问题分解为三层：
+        ① <strong>语言层</strong>：GCC 将 C 语义保持地翻译为机器指令（main.o），但 main() 只是一个普通函数，需要调用者来调用它。
+        ② <strong>运行时层</strong>：glibc 的 CRT 文件（crt1.o 等）提供调用者（_start → __libc_start_main），在 main 之前完成 C 运行时的初始化，在 main 之后完成清理。
+        ③ <strong>链接层</strong>：GNU ld 将所有目标文件按规则拼合，解析符号引用（main 的地址传给 __libc_start_main），填写 ELF 头的入口点（_start 的地址），最终生成操作系统可直接执行的二进制。
+      </p>
+      <p style="margin-top:10px">
+        整个链条的设计哲学是<strong>关注点分离与职责最小化</strong>：内核只保证加载和跳转；_start 只做 ABI 格式转换；__libc_start_main 只做运行时编排；main() 只做业务逻辑。每一层都不需要知道其他层的实现细节——这正是「分层抽象」的力量。
+      </p>
+    </div>
+  </section>
+
+</main>
+
+<!-- Keyboard hint -->
+<div class="kbd-hint">
+  <kbd class="kbd">←</kbd><kbd class="kbd">→</kbd> 翻章节
+</div>
+
+<script>
+  // ─── Section Data ──────────────────────────────────────
+  const sections = ['s0','s1','s2','s3','s4','s5','s6','s7','s8','s9','s10','s11','s12','s13','s14'];
+  let currentIdx = 0;
+
+  // ─── Progress Bar ──────────────────────────────────────
+  function updateProgress() {
+    const doc = document.documentElement;
+    const scrollTop = doc.scrollTop || document.body.scrollTop;
+    const scrollHeight = doc.scrollHeight - doc.clientHeight;
+    const pct = scrollHeight > 0 ? (scrollTop / scrollHeight) * 100 : 0;
+    document.getElementById('progress-bar').style.width = pct + '%';
+  }
+
+  // ─── Active Nav Highlight (IntersectionObserver) ───────
+  const navItems = document.querySelectorAll('.nav-item[data-section]');
+  const sectionEls = sections.map(id => document.getElementById(id));
+
+  const observer = new IntersectionObserver((entries) => {
+    entries.forEach(entry => {
+      if (entry.isIntersecting) {
+        const id = entry.target.id;
+        const idx = sections.indexOf(id);
+        if (idx !== -1) currentIdx = idx;
+        navItems.forEach(item => {
+          item.classList.toggle('active', item.dataset.section === id);
+        });
+      }
+    });
+  }, { rootMargin: '-20% 0px -60% 0px', threshold: 0 });
+
+  sectionEls.forEach(el => { if (el) observer.observe(el); });
+
+  // ─── Navigation ────────────────────────────────────────
+  function navTo(id) {
+    const el = document.getElementById(id);
+    if (el) {
+      el.scrollIntoView({ behavior: 'smooth', block: 'start' });
+      closeSidebar();
+    }
+  }
+
+  // ─── Keyboard Navigation ───────────────────────────────
+  document.addEventListener('keydown', (e) => {
+    if (e.key === 'ArrowRight' || e.key === 'ArrowDown') {
+      e.preventDefault();
+      const next = Math.min(currentIdx + 1, sections.length - 1);
+      navTo(sections[next]);
+    } else if (e.key === 'ArrowLeft' || e.key === 'ArrowUp') {
+      e.preventDefault();
+      const prev = Math.max(currentIdx - 1, 0);
+      navTo(sections[prev]);
+    }
+  });
+
+  // ─── Sidebar Toggle (Mobile) ───────────────────────────
+  function toggleSidebar() {
+    document.getElementById('sidebar').classList.toggle('open');
+    document.getElementById('overlay').classList.toggle('show');
+  }
+  function closeSidebar() {
+    document.getElementById('sidebar').classList.remove('open');
+    document.getElementById('overlay').classList.remove('show');
+  }
+
+  // ─── Scroll Events ─────────────────────────────────────
+  window.addEventListener('scroll', updateProgress, { passive: true });
+  updateProgress();
+</script>
+</body>
+</html>

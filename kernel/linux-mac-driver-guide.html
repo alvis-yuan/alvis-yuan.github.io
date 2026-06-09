@@ -1,0 +1,1876 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Linux MAC 驱动 Ring Buffer 与硬件描述符原理</title>
+<style>
+  :root {
+    --nav-width: 280px;
+    --accent: #3b82f6;
+    --accent-dark: #1d4ed8;
+    --bg: #0f172a;
+    --bg2: #1e293b;
+    --bg3: #334155;
+    --text: #e2e8f0;
+    --text2: #94a3b8;
+    --border: #334155;
+    --highlight: #f59e0b;
+    --green: #22c55e;
+    --red: #ef4444;
+    --purple: #a855f7;
+    --cyan: #06b6d4;
+  }
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  html { scroll-behavior: smooth; }
+  body {
+    font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, 'Helvetica Neue', Arial, sans-serif;
+    background: var(--bg);
+    color: var(--text);
+    line-height: 1.7;
+    overflow-x: hidden;
+  }
+
+  /* Progress Bar */
+  #progress-bar {
+    position: fixed;
+    top: 0; left: 0;
+    height: 3px;
+    background: linear-gradient(90deg, var(--accent), var(--highlight));
+    width: 0%;
+    z-index: 9999;
+    transition: width 0.1s ease;
+  }
+
+  /* Navigation */
+  #nav-toggle {
+    display: none;
+    position: fixed;
+    top: 16px; left: 16px;
+    z-index: 1100;
+    background: var(--bg2);
+    border: 1px solid var(--border);
+    color: var(--text);
+    border-radius: 8px;
+    width: 40px; height: 40px;
+    cursor: pointer;
+    font-size: 18px;
+    align-items: center;
+    justify-content: center;
+  }
+  #nav-overlay {
+    display: none;
+    position: fixed;
+    inset: 0;
+    background: rgba(0,0,0,0.5);
+    z-index: 900;
+  }
+  #sidebar {
+    position: fixed;
+    top: 0; left: 0;
+    width: var(--nav-width);
+    height: 100vh;
+    background: var(--bg2);
+    border-right: 1px solid var(--border);
+    overflow-y: auto;
+    z-index: 1000;
+    transition: transform 0.3s ease;
+    padding-bottom: 40px;
+  }
+  #sidebar::-webkit-scrollbar { width: 4px; }
+  #sidebar::-webkit-scrollbar-track { background: transparent; }
+  #sidebar::-webkit-scrollbar-thumb { background: var(--border); border-radius: 2px; }
+
+  .nav-header {
+    padding: 20px 16px 12px;
+    border-bottom: 1px solid var(--border);
+    position: sticky;
+    top: 0;
+    background: var(--bg2);
+    z-index: 10;
+  }
+  .nav-header h2 {
+    font-size: 13px;
+    font-weight: 700;
+    color: var(--accent);
+    text-transform: uppercase;
+    letter-spacing: 0.08em;
+  }
+  .nav-header p {
+    font-size: 11px;
+    color: var(--text2);
+    margin-top: 4px;
+  }
+
+  .nav-group { margin-top: 8px; }
+  .nav-group-title {
+    padding: 8px 16px 4px;
+    font-size: 10px;
+    font-weight: 700;
+    color: var(--text2);
+    text-transform: uppercase;
+    letter-spacing: 0.1em;
+  }
+  .nav-item {
+    display: block;
+    padding: 7px 16px 7px 24px;
+    font-size: 13px;
+    color: var(--text2);
+    text-decoration: none;
+    border-left: 3px solid transparent;
+    transition: all 0.15s ease;
+    line-height: 1.4;
+    cursor: pointer;
+  }
+  .nav-item:hover { color: var(--text); background: rgba(59,130,246,0.08); }
+  .nav-item.active {
+    color: var(--accent);
+    border-left-color: var(--accent);
+    background: rgba(59,130,246,0.1);
+    font-weight: 600;
+  }
+
+  /* Main Content */
+  #main {
+    margin-left: var(--nav-width);
+    min-height: 100vh;
+    padding: 3px 0 60px;
+  }
+  .section {
+    max-width: 860px;
+    margin: 0 auto;
+    padding: 48px 32px;
+    border-bottom: 1px solid var(--border);
+  }
+  .section:last-child { border-bottom: none; }
+
+  h1 {
+    font-size: clamp(22px, 4vw, 32px);
+    font-weight: 800;
+    background: linear-gradient(135deg, var(--accent), var(--cyan));
+    -webkit-background-clip: text;
+    -webkit-text-fill-color: transparent;
+    background-clip: text;
+    margin-bottom: 12px;
+    line-height: 1.3;
+  }
+  h2 {
+    font-size: clamp(18px, 3vw, 24px);
+    font-weight: 700;
+    color: var(--text);
+    margin: 36px 0 16px;
+    display: flex;
+    align-items: center;
+    gap: 10px;
+  }
+  h2::before {
+    content: '';
+    display: inline-block;
+    width: 4px; height: 22px;
+    background: var(--accent);
+    border-radius: 2px;
+    flex-shrink: 0;
+  }
+  h3 {
+    font-size: 16px;
+    font-weight: 600;
+    color: var(--cyan);
+    margin: 24px 0 10px;
+  }
+  p { color: var(--text2); margin-bottom: 14px; font-size: 15px; }
+  strong { color: var(--text); }
+
+  .source-link {
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+    padding: 6px 14px;
+    background: rgba(59,130,246,0.1);
+    border: 1px solid rgba(59,130,246,0.3);
+    border-radius: 20px;
+    font-size: 12px;
+    color: var(--accent);
+    text-decoration: none;
+    margin: 4px 4px 16px 0;
+    transition: all 0.2s;
+  }
+  .source-link:hover { background: rgba(59,130,246,0.2); }
+
+  .principle-box {
+    background: linear-gradient(135deg, rgba(168,85,247,0.1), rgba(59,130,246,0.1));
+    border: 1px solid rgba(168,85,247,0.3);
+    border-radius: 12px;
+    padding: 20px 24px;
+    margin: 24px 0;
+    position: relative;
+  }
+  .principle-box::before {
+    content: '🔬 第一性原理';
+    font-size: 12px;
+    font-weight: 700;
+    color: var(--purple);
+    text-transform: uppercase;
+    letter-spacing: 0.05em;
+    display: block;
+    margin-bottom: 10px;
+  }
+  .principle-box p { margin: 0; color: var(--text); font-size: 14px; line-height: 1.7; }
+
+  .info-box {
+    background: rgba(6,182,212,0.08);
+    border: 1px solid rgba(6,182,212,0.25);
+    border-radius: 10px;
+    padding: 16px 20px;
+    margin: 16px 0;
+    font-size: 14px;
+    color: var(--text2);
+  }
+  .info-box strong { color: var(--cyan); }
+
+  code {
+    font-family: 'JetBrains Mono', 'Fira Code', Consolas, monospace;
+    font-size: 13px;
+    background: var(--bg3);
+    color: var(--highlight);
+    padding: 2px 6px;
+    border-radius: 4px;
+  }
+  pre {
+    background: var(--bg3);
+    border: 1px solid var(--border);
+    border-radius: 10px;
+    padding: 20px;
+    overflow-x: auto;
+    margin: 16px 0;
+    font-size: 13px;
+    line-height: 1.6;
+  }
+  pre code { background: none; padding: 0; color: var(--text); }
+
+  .svg-container {
+    background: var(--bg2);
+    border: 1px solid var(--border);
+    border-radius: 12px;
+    padding: 20px;
+    margin: 24px 0;
+    overflow-x: auto;
+  }
+  .svg-container svg {
+    max-width: 100%;
+    height: auto;
+    display: block;
+    margin: 0 auto;
+  }
+  .svg-caption {
+    text-align: center;
+    font-size: 13px;
+    color: var(--text2);
+    margin-top: 12px;
+    font-style: italic;
+  }
+
+  .tag-grid {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 8px;
+    margin: 12px 0;
+  }
+  .tag {
+    padding: 4px 12px;
+    border-radius: 20px;
+    font-size: 12px;
+    font-weight: 600;
+  }
+  .tag-blue { background: rgba(59,130,246,0.15); color: #60a5fa; border: 1px solid rgba(59,130,246,0.3); }
+  .tag-green { background: rgba(34,197,94,0.15); color: #4ade80; border: 1px solid rgba(34,197,94,0.3); }
+  .tag-yellow { background: rgba(245,158,11,0.15); color: #fbbf24; border: 1px solid rgba(245,158,11,0.3); }
+  .tag-red { background: rgba(239,68,68,0.15); color: #f87171; border: 1px solid rgba(239,68,68,0.3); }
+  .tag-purple { background: rgba(168,85,247,0.15); color: #c084fc; border: 1px solid rgba(168,85,247,0.3); }
+
+  table {
+    width: 100%;
+    border-collapse: collapse;
+    font-size: 14px;
+    margin: 16px 0;
+  }
+  th {
+    background: var(--bg3);
+    color: var(--text);
+    padding: 10px 14px;
+    text-align: left;
+    font-weight: 600;
+    border: 1px solid var(--border);
+  }
+  td {
+    padding: 9px 14px;
+    border: 1px solid var(--border);
+    color: var(--text2);
+    vertical-align: top;
+  }
+  tr:nth-child(even) td { background: rgba(255,255,255,0.02); }
+
+  /* Keyboard nav hint */
+  .kbd-hint {
+    position: fixed;
+    bottom: 20px;
+    right: 20px;
+    background: var(--bg2);
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    padding: 8px 14px;
+    font-size: 12px;
+    color: var(--text2);
+    display: flex;
+    gap: 8px;
+    align-items: center;
+  }
+  kbd {
+    display: inline-block;
+    padding: 2px 6px;
+    background: var(--bg3);
+    border: 1px solid var(--border);
+    border-radius: 4px;
+    font-size: 11px;
+    color: var(--text);
+    font-family: monospace;
+  }
+
+  /* Responsive */
+  @media (max-width: 768px) {
+    #nav-toggle { display: flex; }
+    #sidebar {
+      transform: translateX(-100%);
+      box-shadow: 4px 0 20px rgba(0,0,0,0.5);
+    }
+    #sidebar.open { transform: translateX(0); }
+    #nav-overlay.open { display: block; }
+    #main { margin-left: 0; }
+    .section { padding: 40px 20px; }
+    .kbd-hint { display: none; }
+  }
+</style>
+</head>
+<body>
+
+<div id="progress-bar"></div>
+
+<button id="nav-toggle" aria-label="菜单">☰</button>
+<div id="nav-overlay"></div>
+
+<nav id="sidebar">
+  <div class="nav-header">
+    <h2>Linux MAC 驱动</h2>
+    <p>Ring Buffer &amp; 硬件描述符原理</p>
+  </div>
+
+  <div class="nav-group">
+    <div class="nav-group-title">基础概念</div>
+    <a class="nav-item" onclick="goSection(0)">概述与背景</a>
+    <a class="nav-item" onclick="goSection(1)">DMA 与内存映射</a>
+    <a class="nav-item" onclick="goSection(2)">Ring Buffer 结构原理</a>
+  </div>
+
+  <div class="nav-group">
+    <div class="nav-group-title">核心机制</div>
+    <a class="nav-item" onclick="goSection(3)">硬件描述符详解</a>
+    <a class="nav-item" onclick="goSection(4)">Head/Tail 指针与所有权</a>
+    <a class="nav-item" onclick="goSection(5)">描述符模式：RING vs CHAIN</a>
+  </div>
+
+  <div class="nav-group">
+    <div class="nav-group-title">数据流程</div>
+    <a class="nav-item" onclick="goSection(6)">接收流程（RX Path）</a>
+    <a class="nav-item" onclick="goSection(7)">发送流程（TX Path）</a>
+    <a class="nav-item" onclick="goSection(8)">NAPI 中断缓解机制</a>
+  </div>
+
+  <div class="nav-group">
+    <div class="nav-group-title">实践与调优</div>
+    <a class="nav-item" onclick="goSection(9)">性能调优与参数</a>
+    <a class="nav-item" onclick="goSection(10)">stmmac 驱动实例</a>
+  </div>
+</nav>
+
+<main id="main">
+
+<!-- ===== SECTION 0: 概述 ===== -->
+<section class="section" id="sec-0">
+  <h1>Linux MAC 驱动<br>Ring Buffer 与硬件描述符原理</h1>
+  <div class="tag-grid">
+    <span class="tag tag-blue">Linux Kernel</span>
+    <span class="tag tag-green">DMA Ring Buffer</span>
+    <span class="tag tag-yellow">Hardware Descriptor</span>
+    <span class="tag tag-purple">NIC Driver</span>
+    <span class="tag tag-red">NAPI</span>
+  </div>
+
+  <p>本文档系统讲解 Linux 内核中 MAC 驱动的 Ring Buffer（环形缓冲区）机制与硬件描述符（Hardware Descriptor）工作原理，以及数据包在发送（TX）和接收（RX）过程中的完整流程。</p>
+
+  <p><strong>参考权威来源：</strong></p>
+  <a class="source-link" href="https://docs.kernel.org/6.2/networking/device_drivers/ethernet/stmicro/stmmac.html" target="_blank">📄 Linux Kernel - stmmac Driver Docs</a>
+  <a class="source-link" href="https://www.kernel.org/doc/Documentation/DMA-API-HOWTO.txt" target="_blank">📄 Linux Kernel - DMA API HOWTO</a>
+  <a class="source-link" href="https://docs.redhat.com/en/documentation/red_hat_enterprise_linux/10/html/network_troubleshooting_and_performance_tuning/tuning-network-adapter-settings" target="_blank">📄 Red Hat RHEL 10 - Network Tuning</a>
+  <a class="source-link" href="https://kernel-internals.org/net/life-of-packet-rx/" target="_blank">📄 Linux Kernel Internals - Life of Packet</a>
+  <a class="source-link" href="https://stackoverflow.com/questions/36625892/descriptor-concept-in-nic" target="_blank">📄 StackOverflow - NIC Descriptor Concept</a>
+
+  <h2>系统架构总览</h2>
+
+  <div class="svg-container">
+    <svg viewBox="0 0 820 420" xmlns="http://www.w3.org/2000/svg" style="min-width:600px">
+      <defs>
+        <linearGradient id="gApp" x1="0%" y1="0%" x2="100%" y2="100%">
+          <stop offset="0%" style="stop-color:#3b82f6;stop-opacity:0.3"/>
+          <stop offset="100%" style="stop-color:#1d4ed8;stop-opacity:0.3"/>
+        </linearGradient>
+        <linearGradient id="gKernel" x1="0%" y1="0%" x2="100%" y2="100%">
+          <stop offset="0%" style="stop-color:#a855f7;stop-opacity:0.3"/>
+          <stop offset="100%" style="stop-color:#7c3aed;stop-opacity:0.3"/>
+        </linearGradient>
+        <linearGradient id="gHW" x1="0%" y1="0%" x2="100%" y2="100%">
+          <stop offset="0%" style="stop-color:#f59e0b;stop-opacity:0.3"/>
+          <stop offset="100%" style="stop-color:#d97706;stop-opacity:0.3"/>
+        </linearGradient>
+        <marker id="arrow" markerWidth="8" markerHeight="6" refX="8" refY="3" orient="auto">
+          <polygon points="0 0, 8 3, 0 6" fill="#60a5fa"/>
+        </marker>
+        <marker id="arrow-green" markerWidth="8" markerHeight="6" refX="8" refY="3" orient="auto">
+          <polygon points="0 0, 8 3, 0 6" fill="#4ade80"/>
+        </marker>
+      </defs>
+
+      <!-- User Space -->
+      <rect x="10" y="10" width="800" height="90" rx="10" fill="url(#gApp)" stroke="#3b82f6" stroke-width="1.5"/>
+      <text x="26" y="32" fill="#60a5fa" font-size="11" font-weight="700" font-family="monospace">用户空间 (User Space)</text>
+      <rect x="80" y="42" width="150" height="44" rx="8" fill="#1e293b" stroke="#3b82f6" stroke-width="1"/>
+      <text x="155" y="62" text-anchor="middle" fill="#e2e8f0" font-size="12" font-weight="600">应用程序</text>
+      <text x="155" y="76" text-anchor="middle" fill="#94a3b8" font-size="10">send()/recv()</text>
+      <rect x="590" y="42" width="150" height="44" rx="8" fill="#1e293b" stroke="#3b82f6" stroke-width="1"/>
+      <text x="665" y="62" text-anchor="middle" fill="#e2e8f0" font-size="12" font-weight="600">应用程序</text>
+      <text x="665" y="76" text-anchor="middle" fill="#94a3b8" font-size="10">sendmsg()/recvmsg()</text>
+
+      <!-- Kernel Space -->
+      <rect x="10" y="115" width="800" height="185" rx="10" fill="url(#gKernel)" stroke="#a855f7" stroke-width="1.5"/>
+      <text x="26" y="137" fill="#c084fc" font-size="11" font-weight="700" font-family="monospace">内核空间 (Kernel Space)</text>
+
+      <!-- Protocol Stack -->
+      <rect x="30" y="148" width="180" height="130" rx="8" fill="#1e293b" stroke="#7c3aed" stroke-width="1"/>
+      <text x="120" y="168" text-anchor="middle" fill="#c084fc" font-size="11" font-weight="700">协议栈</text>
+      <text x="120" y="184" text-anchor="middle" fill="#94a3b8" font-size="10">Socket Layer</text>
+      <line x1="120" y1="188" x2="120" y2="196" stroke="#334155" stroke-width="1"/>
+      <text x="120" y="206" text-anchor="middle" fill="#94a3b8" font-size="10">TCP/UDP</text>
+      <line x1="120" y1="210" x2="120" y2="218" stroke="#334155" stroke-width="1"/>
+      <text x="120" y="228" text-anchor="middle" fill="#94a3b8" font-size="10">IP Layer</text>
+      <line x1="120" y1="232" x2="120" y2="240" stroke="#334155" stroke-width="1"/>
+      <text x="120" y="250" text-anchor="middle" fill="#94a3b8" font-size="10">Ethernet / L2</text>
+      <line x1="120" y1="254" x2="120" y2="262" stroke="#334155" stroke-width="1"/>
+      <text x="120" y="272" text-anchor="middle" fill="#4ade80" font-size="10">dev_queue_xmit()</text>
+
+      <!-- NAPI + Ring Buffer -->
+      <rect x="240" y="148" width="220" height="130" rx="8" fill="#1e293b" stroke="#7c3aed" stroke-width="1"/>
+      <text x="350" y="168" text-anchor="middle" fill="#c084fc" font-size="11" font-weight="700">驱动层 / NAPI</text>
+      <rect x="254" y="178" width="88" height="32" rx="6" fill="#0f172a" stroke="#22c55e" stroke-width="1"/>
+      <text x="298" y="193" text-anchor="middle" fill="#4ade80" font-size="10" font-weight="600">TX Ring Buffer</text>
+      <text x="298" y="205" text-anchor="middle" fill="#94a3b8" font-size="9">描述符环形队列</text>
+      <rect x="358" y="178" width="88" height="32" rx="6" fill="#0f172a" stroke="#f59e0b" stroke-width="1"/>
+      <text x="402" y="193" text-anchor="middle" fill="#fbbf24" font-size="10" font-weight="600">RX Ring Buffer</text>
+      <text x="402" y="205" text-anchor="middle" fill="#94a3b8" font-size="9">描述符环形队列</text>
+      <rect x="254" y="220" width="192" height="28" rx="6" fill="#0f172a" stroke="#06b6d4" stroke-width="1"/>
+      <text x="350" y="235" text-anchor="middle" fill="#22d3ee" font-size="10" font-weight="600">sk_buff (skb) 管理</text>
+      <text x="350" y="244" text-anchor="middle" fill="#94a3b8" font-size="9">内核网络缓冲区结构</text>
+      <rect x="254" y="256" width="192" height="16" rx="4" fill="#0f172a" stroke="#7c3aed" stroke-width="1"/>
+      <text x="350" y="268" text-anchor="middle" fill="#c084fc" font-size="9">NAPI poll / SoftIRQ / HardIRQ</text>
+
+      <!-- DMA -->
+      <rect x="490" y="148" width="300" height="130" rx="8" fill="#1e293b" stroke="#7c3aed" stroke-width="1"/>
+      <text x="640" y="168" text-anchor="middle" fill="#c084fc" font-size="11" font-weight="700">DMA 子系统</text>
+      <rect x="506" y="178" width="128" height="44" rx="6" fill="#0f172a" stroke="#f59e0b" stroke-width="1"/>
+      <text x="570" y="197" text-anchor="middle" fill="#fbbf24" font-size="10" font-weight="600">DMA 地址映射</text>
+      <text x="570" y="210" text-anchor="middle" fill="#94a3b8" font-size="9">物理地址 ↔ 虚拟地址</text>
+      <rect x="646" y="178" width="128" height="44" rx="6" fill="#0f172a" stroke="#3b82f6" stroke-width="1"/>
+      <text x="710" y="197" text-anchor="middle" fill="#60a5fa" font-size="10" font-weight="600">MMIO 寄存器</text>
+      <text x="710" y="210" text-anchor="middle" fill="#94a3b8" font-size="9">Head/Tail 指针</text>
+      <rect x="506" y="232" width="268" height="34" rx="6" fill="#0f172a" stroke="#22c55e" stroke-width="1"/>
+      <text x="640" y="249" text-anchor="middle" fill="#4ade80" font-size="10" font-weight="600">系统 RAM</text>
+      <text x="640" y="262" text-anchor="middle" fill="#94a3b8" font-size="9">Ring Buffer 物理内存区域（预分配，连续）</text>
+
+      <!-- Hardware -->
+      <rect x="10" y="315" width="800" height="90" rx="10" fill="url(#gHW)" stroke="#f59e0b" stroke-width="1.5"/>
+      <text x="26" y="337" fill="#fbbf24" font-size="11" font-weight="700" font-family="monospace">硬件层 (Hardware)</text>
+      <rect x="60" y="348" width="160" height="44" rx="8" fill="#1e293b" stroke="#f59e0b" stroke-width="1"/>
+      <text x="140" y="368" text-anchor="middle" fill="#e2e8f0" font-size="12" font-weight="600">NIC / MAC 控制器</text>
+      <text x="140" y="382" text-anchor="middle" fill="#94a3b8" font-size="10">DMA 引擎 / 硬件FIFO</text>
+      <rect x="260" y="348" width="160" height="44" rx="8" fill="#1e293b" stroke="#f59e0b" stroke-width="1"/>
+      <text x="340" y="368" text-anchor="middle" fill="#e2e8f0" font-size="12" font-weight="600">PCIe / AXI 总线</text>
+      <text x="340" y="382" text-anchor="middle" fill="#94a3b8" font-size="10">DMA 传输通道</text>
+      <rect x="460" y="348" width="160" height="44" rx="8" fill="#1e293b" stroke="#f59e0b" stroke-width="1"/>
+      <text x="540" y="368" text-anchor="middle" fill="#e2e8f0" font-size="12" font-weight="600">PHY</text>
+      <text x="540" y="382" text-anchor="middle" fill="#94a3b8" font-size="10">物理层收发</text>
+      <rect x="660" y="348" width="140" height="44" rx="8" fill="#1e293b" stroke="#f59e0b" stroke-width="1"/>
+      <text x="730" y="368" text-anchor="middle" fill="#e2e8f0" font-size="12" font-weight="600">网线 / 以太网</text>
+      <text x="730" y="382" text-anchor="middle" fill="#94a3b8" font-size="10">物理信号传输</text>
+
+      <!-- Arrows: User ↔ Kernel -->
+      <line x1="155" y1="88" x2="155" y2="145" stroke="#60a5fa" stroke-width="2" marker-end="url(#arrow)"/>
+      <line x1="665" y1="145" x2="665" y2="88" stroke="#4ade80" stroke-width="2" marker-end="url(#arrow-green)"/>
+
+      <!-- Arrows: Kernel ↔ HW -->
+      <line x1="350" y1="300" x2="350" y2="342" stroke="#f59e0b" stroke-width="2" marker-end="url(#arrow)"/>
+      <line x1="400" y1="342" x2="400" y2="300" stroke="#f59e0b" stroke-width="2" marker-end="url(#arrow)"/>
+    </svg>
+    <p class="svg-caption">图 1：Linux 网络驱动完整架构层次图</p>
+  </div>
+
+  <div class="principle-box">
+    <p>从第一性原理看：网络 IO 的本质是<strong>两个独立运行的计算单元（CPU 与 NIC）</strong>需要高效共享数据。CPU 无法"推送"数据给 NIC，NIC 也无法直接调用 CPU 的函数。因此，双方约定一块共享的物理内存区域（Ring Buffer），用统一格式的数据结构（描述符）描述数据位置，再以寄存器中的指针（Head/Tail）标示各自的工作进度，最终实现零拷贝的高效协作。这是所有现代高性能网卡驱动的基本范式。</p>
+  </div>
+</section>
+
+<!-- ===== SECTION 1: DMA ===== -->
+<section class="section" id="sec-1">
+  <h2>DMA 与内存映射</h2>
+
+  <p>DMA（Direct Memory Access，直接内存访问）是 NIC 驱动高效工作的基础。其核心思想是：<strong>让硬件设备直接读写系统内存，无需 CPU 参与每次数据搬运</strong>。</p>
+
+  <div class="info-box">
+    <strong>来源：</strong> Linux 内核官方文档 <em>Dynamic DMA mapping Guide</em>（kernel.org/doc/Documentation/DMA-API-HOWTO.txt）<br><br>
+    网卡 DMA Ring 描述符是使用 Consistent DMA 映射（一致性映射）的典型场景：该内存区域对 CPU 和设备都始终可见，任何一方的写操作都立即对另一方可见，无需显式刷新缓存。
+  </div>
+
+  <h3>DMA 地址空间转换</h3>
+  <p>Linux 内核通过 DMA API 管理三种地址空间的转换：</p>
+
+  <div class="svg-container">
+    <svg viewBox="0 0 700 260" xmlns="http://www.w3.org/2000/svg" style="min-width:500px">
+      <defs>
+        <marker id="ar2" markerWidth="8" markerHeight="6" refX="8" refY="3" orient="auto">
+          <polygon points="0 0, 8 3, 0 6" fill="#60a5fa"/>
+        </marker>
+      </defs>
+      <!-- Three address spaces -->
+      <rect x="20" y="40" width="170" height="180" rx="10" fill="rgba(59,130,246,0.1)" stroke="#3b82f6" stroke-width="1.5"/>
+      <text x="105" y="65" text-anchor="middle" fill="#60a5fa" font-size="13" font-weight="700">虚拟地址</text>
+      <text x="105" y="82" text-anchor="middle" fill="#94a3b8" font-size="11">CPU Virtual Address</text>
+      <text x="105" y="110" text-anchor="middle" fill="#e2e8f0" font-size="12">void *virt_addr</text>
+      <text x="105" y="130" text-anchor="middle" fill="#94a3b8" font-size="11">内核 kmalloc()</text>
+      <text x="105" y="148" text-anchor="middle" fill="#94a3b8" font-size="11">分配的地址</text>
+      <text x="105" y="175" text-anchor="middle" fill="#fbbf24" font-size="11" font-weight="600">X (驱动可见)</text>
+
+      <rect x="260" y="40" width="170" height="180" rx="10" fill="rgba(245,158,11,0.1)" stroke="#f59e0b" stroke-width="1.5"/>
+      <text x="345" y="65" text-anchor="middle" fill="#fbbf24" font-size="13" font-weight="700">物理地址</text>
+      <text x="345" y="82" text-anchor="middle" fill="#94a3b8" font-size="11">CPU Physical Address</text>
+      <text x="345" y="110" text-anchor="middle" fill="#e2e8f0" font-size="12">phys_addr_t phys</text>
+      <text x="345" y="130" text-anchor="middle" fill="#94a3b8" font-size="11">virt_to_phys()</text>
+      <text x="345" y="148" text-anchor="middle" fill="#94a3b8" font-size="11">转换得到</text>
+      <text x="345" y="175" text-anchor="middle" fill="#fbbf24" font-size="11" font-weight="600">Y (RAM 中位置)</text>
+
+      <rect x="500" y="40" width="170" height="180" rx="10" fill="rgba(168,85,247,0.1)" stroke="#a855f7" stroke-width="1.5"/>
+      <text x="585" y="65" text-anchor="middle" fill="#c084fc" font-size="13" font-weight="700">DMA 地址</text>
+      <text x="585" y="82" text-anchor="middle" fill="#94a3b8" font-size="11">Bus / DMA Address</text>
+      <text x="585" y="110" text-anchor="middle" fill="#e2e8f0" font-size="12">dma_addr_t dma</text>
+      <text x="585" y="130" text-anchor="middle" fill="#94a3b8" font-size="11">dma_map_single()</text>
+      <text x="585" y="148" text-anchor="middle" fill="#94a3b8" font-size="11">映射得到</text>
+      <text x="585" y="175" text-anchor="middle" fill="#c084fc" font-size="11" font-weight="600">Z (NIC 使用此地址)</text>
+
+      <!-- Arrows -->
+      <line x1="192" y1="130" x2="255" y2="130" stroke="#60a5fa" stroke-width="2" marker-end="url(#ar2)"/>
+      <text x="224" y="122" text-anchor="middle" fill="#94a3b8" font-size="10">MMU</text>
+      <line x1="432" y1="130" x2="495" y2="130" stroke="#60a5fa" stroke-width="2" marker-end="url(#ar2)"/>
+      <text x="463" y="122" text-anchor="middle" fill="#94a3b8" font-size="10">IOMMU</text>
+
+      <!-- Bottom note -->
+      <rect x="20" y="230" width="650" height="26" rx="6" fill="rgba(59,130,246,0.08)" stroke="#3b82f6" stroke-width="1"/>
+      <text x="345" y="247" text-anchor="middle" fill="#60a5fa" font-size="11">驱动将 dma_addr_t Z 写入描述符，NIC 使用 Z 经 IOMMU 访问 Y（RAM），CPU 用 virt_addr X 访问同一块内存</text>
+    </svg>
+    <p class="svg-caption">图 2：DMA 三种地址空间关系</p>
+  </div>
+
+  <h3>一致性 DMA 内存（Consistent DMA Memory）</h3>
+  <p>Ring Buffer 的描述符区域使用<strong>一致性 DMA 内存</strong>分配，这是内核文档明确推荐的用法：</p>
+
+  <pre><code>/* 分配一致性 DMA 内存用于描述符环 */
+void *cpu_addr = dma_alloc_coherent(dev, 
+    ring_size * sizeof(struct dma_desc),
+    &dma_handle,   /* 返回 DMA 地址 */
+    GFP_KERNEL);
+
+/* CPU 用 cpu_addr（虚拟地址）操作描述符 */
+/* NIC 用 dma_handle（DMA 地址）访问描述符 */
+
+/* 注意：即使是一致性内存，写序列仍需内存屏障 */
+desc->word0 = address;
+wmb();  /* 写内存屏障，确保 NIC 看到正确的顺序 */
+desc->word1 = DESC_VALID;</code></pre>
+
+  <div class="principle-box">
+    <p>第一性原理：DMA 的本质是<strong>消除 CPU 在数据搬运中的中介角色</strong>。CPU 只需告知 NIC"数据在哪里（DMA 地址）"，NIC 的 DMA 引擎便可自主从内存读取或写入数据包，CPU 在此期间可以做其他计算。这是计算机体系结构中"专用硬件 + 共享内存"的经典协作模式，将数据移动的带宽瓶颈从 CPU 总线解耦至内存总线。</p>
+  </div>
+</section>
+
+<!-- ===== SECTION 2: Ring Buffer 结构 ===== -->
+<section class="section" id="sec-2">
+  <h2>Ring Buffer 结构原理</h2>
+
+  <p>根据 Red Hat Enterprise Linux 官方文档，NIC 暴露多个<strong>环形缓冲区（Ring Buffer）</strong>用于数据包传输。最简单的配置是一个 RX 队列和一个 TX 队列。Ring Buffer 是一个<strong>循环的固定大小 FIFO 队列</strong>，溢出时会覆盖已有数据。</p>
+
+  <div class="info-box">
+    <strong>来源：</strong> Red Hat RHEL 10 官方文档 <em>"Tuning network adapter settings"</em><br><br>
+    <em>"Ring buffers are circular buffers where an overflow overwrites existing data. The network card assigns a transmit (TX) and receive (RX) ring buffer. Receive ring buffers are shared between the device driver and the network interface controller (NIC)."</em>
+  </div>
+
+  <h3>Ring Buffer 核心属性</h3>
+  <div class="svg-container">
+    <svg viewBox="0 0 780 380" xmlns="http://www.w3.org/2000/svg" style="min-width:560px">
+      <defs>
+        <marker id="ar3" markerWidth="8" markerHeight="6" refX="8" refY="3" orient="auto">
+          <polygon points="0 0, 8 3, 0 6" fill="#60a5fa"/>
+        </marker>
+        <marker id="ar3g" markerWidth="8" markerHeight="6" refX="8" refY="3" orient="auto">
+          <polygon points="0 0, 8 3, 0 6" fill="#4ade80"/>
+        </marker>
+        <marker id="ar3y" markerWidth="8" markerHeight="6" refX="8" refY="3" orient="auto">
+          <polygon points="0 0, 8 3, 0 6" fill="#fbbf24"/>
+        </marker>
+      </defs>
+
+      <!-- Ring visualization -->
+      <!-- Center -->
+      <circle cx="260" cy="190" r="130" fill="rgba(30,41,59,0.8)" stroke="#334155" stroke-width="2"/>
+      <circle cx="260" cy="190" r="70" fill="#0f172a" stroke="#334155" stroke-width="1.5"/>
+      <text x="260" y="183" text-anchor="middle" fill="#94a3b8" font-size="11" font-weight="600">Ring Buffer</text>
+      <text x="260" y="198" text-anchor="middle" fill="#94a3b8" font-size="10">环形队列</text>
+
+      <!-- Descriptor slots (12 slots around the ring) -->
+      <!-- Slot positions: every 30 degrees -->
+      <!-- Slot 0: top (270 degrees = -90) -->
+      <!-- Using pre-calc positions -->
+
+      <!-- Driver owned (green) slots: 0,1,2,3,4 -->
+      <path d="M 260 60 A 130 130 0 0 1 320 75" fill="rgba(34,197,94,0.25)" stroke="#22c55e" stroke-width="2"/>
+      <path d="M 320 75 A 130 130 0 0 1 370 120" fill="rgba(34,197,94,0.25)" stroke="#22c55e" stroke-width="2"/>
+      <path d="M 370 120 A 130 130 0 0 1 390 190" fill="rgba(34,197,94,0.25)" stroke="#22c55e" stroke-width="2"/>
+      <path d="M 390 190 A 130 130 0 0 1 370 260" fill="rgba(34,197,94,0.25)" stroke="#22c55e" stroke-width="2"/>
+
+      <!-- NIC owned (yellow) slots -->
+      <path d="M 260 60 A 130 130 0 0 0 200 75" fill="rgba(245,158,11,0.25)" stroke="#f59e0b" stroke-width="2"/>
+      <path d="M 200 75 A 130 130 0 0 0 150 120" fill="rgba(245,158,11,0.25)" stroke="#f59e0b" stroke-width="2"/>
+      <path d="M 150 120 A 130 130 0 0 0 130 190" fill="rgba(245,158,11,0.25)" stroke="#f59e0b" stroke-width="2"/>
+      <path d="M 130 190 A 130 130 0 0 0 150 260" fill="rgba(245,158,11,0.25)" stroke="#f59e0b" stroke-width="2"/>
+      <path d="M 150 260 A 130 130 0 0 0 200 305" fill="rgba(245,158,11,0.25)" stroke="#f59e0b" stroke-width="2"/>
+      <path d="M 200 305 A 130 130 0 0 0 260 320" fill="rgba(245,158,11,0.25)" stroke="#f59e0b" stroke-width="2"/>
+      <path d="M 260 320 A 130 130 0 0 0 320 305" fill="rgba(245,158,11,0.25)" stroke="#f59e0b" stroke-width="2"/>
+      <path d="M 320 305 A 130 130 0 0 0 370 260" fill="rgba(245,158,11,0.25)" stroke="#f59e0b" stroke-width="2"/>
+
+      <!-- Tail pointer (driver controls) - at boundary between green and yellow going right -->
+      <circle cx="260" cy="60" r="8" fill="#22c55e" stroke="#0f172a" stroke-width="2"/>
+      <text x="260" y="38" text-anchor="middle" fill="#4ade80" font-size="12" font-weight="700">Tail</text>
+      <text x="260" y="52" text-anchor="middle" fill="#94a3b8" font-size="10">驱动写入</text>
+
+      <!-- Head pointer (NIC controls) - at boundary on right side -->
+      <circle cx="390" cy="190" r="8" fill="#f59e0b" stroke="#0f172a" stroke-width="2"/>
+      <text x="430" y="188" text-anchor="start" fill="#fbbf24" font-size="12" font-weight="700">Head</text>
+      <text x="430" y="202" text-anchor="start" fill="#94a3b8" font-size="10">NIC 控制</text>
+
+      <!-- Legend -->
+      <rect x="430" y="290" width="16" height="16" rx="3" fill="rgba(34,197,94,0.25)" stroke="#22c55e" stroke-width="1.5"/>
+      <text x="452" y="303" fill="#4ade80" font-size="12">驱动所有（空闲/处理中）</text>
+      <rect x="430" y="315" width="16" height="16" rx="3" fill="rgba(245,158,11,0.25)" stroke="#f59e0b" stroke-width="1.5"/>
+      <text x="452" y="328" fill="#fbbf24" font-size="12">NIC 所有（硬件处理中）</text>
+
+      <!-- Right side: properties -->
+      <rect x="500" y="30" width="260" height="240" rx="10" fill="rgba(30,41,59,0.8)" stroke="#334155" stroke-width="1"/>
+      <text x="630" y="55" text-anchor="middle" fill="#60a5fa" font-size="13" font-weight="700">Ring Buffer 属性</text>
+
+      <text x="520" y="80" fill="#94a3b8" font-size="12">✦ 基地址（Base Address）</text>
+      <text x="530" y="96" fill="#e2e8f0" font-size="11">   物理地址，写入 NIC 寄存器</text>
+      <text x="520" y="118" fill="#94a3b8" font-size="12">✦ 大小（Ring Size）</text>
+      <text x="530" y="134" fill="#e2e8f0" font-size="11">   可通过 ethtool -g/G 查看调整</text>
+      <text x="520" y="156" fill="#94a3b8" font-size="12">✦ Head 指针</text>
+      <text x="530" y="172" fill="#e2e8f0" font-size="11">   NIC 控制，指向下一个可用槽</text>
+      <text x="520" y="194" fill="#94a3b8" font-size="12">✦ Tail 指针</text>
+      <text x="530" y="210" fill="#e2e8f0" font-size="11">   驱动控制，写 MMIO 寄存器通知</text>
+      <text x="520" y="232" fill="#94a3b8" font-size="12">✦ 描述符（Descriptor）</text>
+      <text x="530" y="248" fill="#e2e8f0" font-size="11">   含数据包缓冲区指针+元数据</text>
+
+      <!-- ethtool command -->
+      <rect x="500" y="278" width="260" height="62" rx="8" fill="#0f172a" stroke="#334155" stroke-width="1"/>
+      <text x="515" y="296" fill="#22c55e" font-size="11" font-family="monospace"># 查看 Ring Buffer 大小</text>
+      <text x="515" y="312" fill="#e2e8f0" font-size="11" font-family="monospace">$ ethtool -g enp1s0</text>
+      <text x="515" y="328" fill="#94a3b8" font-size="10" font-family="monospace">RX: 4096 / TX: 4096 (max)</text>
+    </svg>
+    <p class="svg-caption">图 3：Ring Buffer 环形结构与 Head/Tail 所有权模型</p>
+  </div>
+
+  <h3>内存布局</h3>
+  <p>Ring Buffer 在 RAM 中是一段<strong>连续分配的物理内存</strong>，每个槽（Slot）存放一个描述符（Descriptor），描述符再指向实际的数据包缓冲区：</p>
+
+  <div class="svg-container">
+    <svg viewBox="0 0 740 200" xmlns="http://www.w3.org/2000/svg" style="min-width:500px">
+      <!-- RAM region -->
+      <rect x="10" y="20" width="720" height="60" rx="6" fill="rgba(30,41,59,0.8)" stroke="#334155" stroke-width="1"/>
+      <text x="18" y="14" fill="#94a3b8" font-size="11">RAM 中的描述符数组（连续物理内存）</text>
+
+      <!-- Descriptor slots -->
+      <rect x="20" y="28" width="90" height="44" rx="4" fill="rgba(34,197,94,0.2)" stroke="#22c55e" stroke-width="1.5"/>
+      <text x="65" y="48" text-anchor="middle" fill="#4ade80" font-size="11" font-weight="600">Desc[0]</text>
+      <text x="65" y="62" text-anchor="middle" fill="#94a3b8" font-size="10">Tail ▶</text>
+
+      <rect x="120" y="28" width="90" height="44" rx="4" fill="rgba(59,130,246,0.2)" stroke="#3b82f6" stroke-width="1.5"/>
+      <text x="165" y="48" text-anchor="middle" fill="#60a5fa" font-size="11" font-weight="600">Desc[1]</text>
+      <text x="165" y="62" text-anchor="middle" fill="#94a3b8" font-size="10">处理中</text>
+
+      <rect x="220" y="28" width="90" height="44" rx="4" fill="rgba(59,130,246,0.2)" stroke="#3b82f6" stroke-width="1.5"/>
+      <text x="265" y="48" text-anchor="middle" fill="#60a5fa" font-size="11" font-weight="600">Desc[2]</text>
+      <text x="265" y="62" text-anchor="middle" fill="#94a3b8" font-size="10">处理中</text>
+
+      <rect x="320" y="28" width="90" height="44" rx="4" fill="rgba(245,158,11,0.2)" stroke="#f59e0b" stroke-width="1.5"/>
+      <text x="365" y="48" text-anchor="middle" fill="#fbbf24" font-size="11" font-weight="600">Desc[3]</text>
+      <text x="365" y="62" text-anchor="middle" fill="#94a3b8" font-size="10">◀ Head</text>
+
+      <rect x="420" y="28" width="90" height="44" rx="4" fill="rgba(245,158,11,0.2)" stroke="#f59e0b" stroke-width="1.5"/>
+      <text x="465" y="48" text-anchor="middle" fill="#fbbf24" font-size="11" font-weight="600">Desc[4]</text>
+      <text x="465" y="62" text-anchor="middle" fill="#94a3b8" font-size="10">NIC使用</text>
+
+      <rect x="520" y="28" width="90" height="44" rx="4" fill="rgba(30,41,59,0.8)" stroke="#334155" stroke-width="1"/>
+      <text x="565" y="48" text-anchor="middle" fill="#64748b" font-size="11">Desc[N-2]</text>
+      <text x="565" y="62" text-anchor="middle" fill="#64748b" font-size="10">空闲</text>
+
+      <rect x="620" y="28" width="90" height="44" rx="4" fill="rgba(168,85,247,0.2)" stroke="#a855f7" stroke-width="1.5"/>
+      <text x="665" y="48" text-anchor="middle" fill="#c084fc" font-size="11" font-weight="600">Desc[N-1]</text>
+      <text x="665" y="62" text-anchor="middle" fill="#94a3b8" font-size="10">→ 回绕到[0]</text>
+
+      <!-- Dots for continuation -->
+      <text x="512" y="55" fill="#94a3b8" font-size="14">···</text>
+
+      <!-- Data buffers below -->
+      <text x="18" y="110" fill="#94a3b8" font-size="11">数据包缓冲区（可分散于RAM不同位置）</text>
+      <rect x="20" y="118" width="90" height="34" rx="4" fill="rgba(34,197,94,0.1)" stroke="#22c55e" stroke-width="1"/>
+      <text x="65" y="139" text-anchor="middle" fill="#4ade80" font-size="11">Packet Buf[0]</text>
+      <rect x="120" y="118" width="90" height="34" rx="4" fill="rgba(59,130,246,0.1)" stroke="#3b82f6" stroke-width="1"/>
+      <text x="165" y="139" text-anchor="middle" fill="#60a5fa" font-size="11">Packet Buf[1]</text>
+      <rect x="220" y="118" width="90" height="34" rx="4" fill="rgba(59,130,246,0.1)" stroke="#3b82f6" stroke-width="1"/>
+      <text x="265" y="139" text-anchor="middle" fill="#60a5fa" font-size="11">Packet Buf[2]</text>
+
+      <!-- Pointers from desc to buffer -->
+      <defs>
+        <marker id="ar4" markerWidth="7" markerHeight="5" refX="7" refY="2.5" orient="auto">
+          <polygon points="0 0, 7 2.5, 0 5" fill="#94a3b8"/>
+        </marker>
+      </defs>
+      <line x1="65" y1="72" x2="65" y2="116" stroke="#22c55e" stroke-width="1.5" stroke-dasharray="4,2" marker-end="url(#ar4)"/>
+      <line x1="165" y1="72" x2="165" y2="116" stroke="#3b82f6" stroke-width="1.5" stroke-dasharray="4,2" marker-end="url(#ar4)"/>
+      <line x1="265" y1="72" x2="265" y2="116" stroke="#3b82f6" stroke-width="1.5" stroke-dasharray="4,2" marker-end="url(#ar4)"/>
+
+      <text x="65" y="168" text-anchor="middle" fill="#94a3b8" font-size="10">dma_addr</text>
+      <text x="165" y="168" text-anchor="middle" fill="#94a3b8" font-size="10">dma_addr</text>
+      <text x="265" y="168" text-anchor="middle" fill="#94a3b8" font-size="10">dma_addr</text>
+    </svg>
+    <p class="svg-caption">图 4：RAM 中描述符数组与数据缓冲区的内存布局</p>
+  </div>
+
+  <div class="principle-box">
+    <p>第一性原理：环形缓冲区的本质是<strong>以固定大小的内存实现无限流</strong>的抽象——旧的已处理空间被循环复用，不需要动态内存分配，避免了分配/释放开销和内存碎片。环形结构的代价是：当生产者（如 NIC）比消费者（如 CPU）快时，会产生覆盖和丢包。这是一个在"零延迟零开销"与"无限缓冲"之间的工程折中。</p>
+  </div>
+</section>
+
+<!-- ===== SECTION 3: 硬件描述符 ===== -->
+<section class="section" id="sec-3">
+  <h2>硬件描述符详解</h2>
+
+  <p>硬件描述符（Hardware Descriptor）是驱动与 NIC 之间的<strong>数据契约</strong>：一个固定格式的内存结构，描述一个数据包缓冲区的物理位置、大小及控制标志。来源于 StackOverflow 的 NIC 描述符技术详解（参考 Intel XL710 数据手册 Chapter 8.3 &amp; 8.4）。</p>
+
+  <h3>RX 描述符（接收描述符）结构</h3>
+  <div class="svg-container">
+    <svg viewBox="0 0 740 320" xmlns="http://www.w3.org/2000/svg" style="min-width:520px">
+      <!-- Title -->
+      <text x="370" y="24" text-anchor="middle" fill="#fbbf24" font-size="13" font-weight="700">RX 描述符（union rx_desc）- 以 Intel XL710 为例</text>
+
+      <!-- Read phase (driver written) -->
+      <rect x="20" y="38" width="340" height="130" rx="8" fill="rgba(34,197,94,0.08)" stroke="#22c55e" stroke-width="1.5"/>
+      <text x="190" y="58" text-anchor="middle" fill="#4ade80" font-size="12" font-weight="700">READ 阶段（驱动初始化）</text>
+
+      <!-- 64-bit word 0 -->
+      <rect x="30" y="68" width="320" height="36" rx="4" fill="rgba(30,41,59,0.9)" stroke="#334155" stroke-width="1"/>
+      <rect x="30" y="68" width="320" height="16" rx="4" fill="rgba(34,197,94,0.2)"/>
+      <text x="40" y="81" fill="#94a3b8" font-size="9">bit 63:0</text>
+      <text x="190" y="81" text-anchor="middle" fill="#4ade80" font-size="11" font-weight="600">pkt_addr [63:0]</text>
+      <text x="190" y="97" text-anchor="middle" fill="#94a3b8" font-size="10">数据包缓冲区物理地址（DMA 地址）</text>
+
+      <!-- 64-bit word 1 -->
+      <rect x="30" y="112" width="320" height="36" rx="4" fill="rgba(30,41,59,0.9)" stroke="#334155" stroke-width="1"/>
+      <rect x="30" y="112" width="320" height="16" rx="4" fill="rgba(34,197,94,0.15)"/>
+      <text x="40" y="125" fill="#94a3b8" font-size="9">bit 63:0</text>
+      <text x="190" y="125" text-anchor="middle" fill="#4ade80" font-size="11" font-weight="600">hdr_addr [63:0]</text>
+      <text x="190" y="141" text-anchor="middle" fill="#94a3b8" font-size="10">头部缓冲区地址（通常不使用）</text>
+
+      <text x="190" y="175" text-anchor="middle" fill="#94a3b8" font-size="11">👆 驱动填写，NIC 读取后知道往哪里放包</text>
+
+      <!-- Writeback phase (NIC written) -->
+      <rect x="380" y="38" width="340" height="200" rx="8" fill="rgba(245,158,11,0.08)" stroke="#f59e0b" stroke-width="1.5"/>
+      <text x="550" y="58" text-anchor="middle" fill="#fbbf24" font-size="12" font-weight="700">WRITEBACK 阶段（NIC 回写）</text>
+
+      <!-- qword0 -->
+      <rect x="390" y="68" width="320" height="70" rx="4" fill="rgba(30,41,59,0.9)" stroke="#334155" stroke-width="1"/>
+      <rect x="390" y="68" width="160" height="32" rx="0" fill="rgba(245,158,11,0.2)" stroke="#f59e0b" stroke-width="0.5"/>
+      <rect x="550" y="68" width="160" height="32" rx="0" fill="rgba(168,85,247,0.2)" stroke="#a855f7" stroke-width="0.5"/>
+      <text x="470" y="82" text-anchor="middle" fill="#fbbf24" font-size="10">mirroring_status</text>
+      <text x="470" y="94" text-anchor="middle" fill="#94a3b8" font-size="9">16 bits</text>
+      <text x="630" y="82" text-anchor="middle" fill="#c084fc" font-size="10">l2tag1 / RSS Hash</text>
+      <text x="630" y="94" text-anchor="middle" fill="#94a3b8" font-size="9">32 bits</text>
+      <text x="550" y="128" text-anchor="middle" fill="#94a3b8" font-size="10">qword0：流量镜像状态 + L2标签 + RSS哈希</text>
+
+      <!-- qword1 -->
+      <rect x="390" y="146" width="320" height="40" rx="4" fill="rgba(30,41,59,0.9)" stroke="#334155" stroke-width="1"/>
+      <rect x="390" y="146" width="320" height="20" rx="0" fill="rgba(6,182,212,0.2)"/>
+      <text x="550" y="160" text-anchor="middle" fill="#22d3ee" font-size="10" font-weight="600">status_error_len [63:0]</text>
+      <text x="550" y="180" text-anchor="middle" fill="#94a3b8" font-size="10">qword1：状态位 | 错误码 | 包类型 | 数据长度</text>
+
+      <text x="550" y="225" text-anchor="middle" fill="#94a3b8" font-size="11">👆 NIC 接收完毕后回写，驱动读取包信息</text>
+
+      <!-- "Done" bit indicator -->
+      <rect x="20" y="230" width="700" height="70" rx="8" fill="rgba(30,41,59,0.8)" stroke="#334155" stroke-width="1"/>
+      <text x="370" y="252" text-anchor="middle" fill="#60a5fa" font-size="12" font-weight="700">DD 位（Descriptor Done）- 所有权标志</text>
+      <text x="370" y="272" text-anchor="middle" fill="#94a3b8" font-size="11">NIC 在 writeback.qword1.status_error_len 中设置 DD=1，表示该描述符已被 NIC 处理完毕</text>
+      <text x="370" y="289" text-anchor="middle" fill="#94a3b8" font-size="11">驱动轮询 DD 位来判断 NIC 是否已完成处理，避免额外的 PCIe 写操作（节省带宽）</text>
+    </svg>
+    <p class="svg-caption">图 5：RX 描述符的双阶段结构（Read/Writeback）</p>
+  </div>
+
+  <h3>TX 描述符结构</h3>
+  <div class="svg-container">
+    <svg viewBox="0 0 740 240" xmlns="http://www.w3.org/2000/svg" style="min-width:520px">
+      <text x="370" y="22" text-anchor="middle" fill="#4ade80" font-size="13" font-weight="700">TX 描述符 - e1000 驱动 Legacy 格式</text>
+
+      <!-- Legacy TX Desc -->
+      <rect x="20" y="36" width="700" height="164" rx="8" fill="rgba(30,41,59,0.8)" stroke="#22c55e" stroke-width="1.5"/>
+
+      <!-- Row 1: 64-bit buffer addr -->
+      <rect x="30" y="50" width="680" height="40" rx="4" fill="rgba(34,197,94,0.15)" stroke="#22c55e" stroke-width="1"/>
+      <text x="34" y="66" fill="#94a3b8" font-size="9">bit 63:0</text>
+      <text x="370" y="66" text-anchor="middle" fill="#4ade80" font-size="12" font-weight="600">Buffer Address [63:0]</text>
+      <text x="370" y="82" text-anchor="middle" fill="#94a3b8" font-size="10">数据包发送缓冲区的 DMA 地址（驱动填入，NIC 通过 DMA 从此地址读取数据发送）</text>
+
+      <!-- Row 2: split into fields -->
+      <rect x="30" y="98" width="170" height="40" rx="0" fill="rgba(168,85,247,0.15)" stroke="#a855f7" stroke-width="0.5"/>
+      <text x="115" y="113" text-anchor="middle" fill="#c084fc" font-size="10" font-weight="600">VLAN Tag</text>
+      <text x="115" y="128" text-anchor="middle" fill="#94a3b8" font-size="9">63:48</text>
+
+      <rect x="200" y="98" width="120" height="40" rx="0" fill="rgba(245,158,11,0.15)" stroke="#f59e0b" stroke-width="0.5"/>
+      <text x="260" y="113" text-anchor="middle" fill="#fbbf24" font-size="10" font-weight="600">Status</text>
+      <text x="260" y="128" text-anchor="middle" fill="#94a3b8" font-size="9">35:32</text>
+
+      <rect x="320" y="98" width="120" height="40" rx="0" fill="rgba(6,182,212,0.15)" stroke="#06b6d4" stroke-width="0.5"/>
+      <text x="380" y="113" text-anchor="middle" fill="#22d3ee" font-size="10" font-weight="600">Command</text>
+      <text x="380" y="128" text-anchor="middle" fill="#94a3b8" font-size="9">31:24（EOP/IFCS/IC..）</text>
+
+      <rect x="440" y="98" width="80" height="40" rx="0" fill="rgba(59,130,246,0.15)" stroke="#3b82f6" stroke-width="0.5"/>
+      <text x="480" y="113" text-anchor="middle" fill="#60a5fa" font-size="10" font-weight="600">DTYP</text>
+      <text x="480" y="128" text-anchor="middle" fill="#94a3b8" font-size="9">23:20</text>
+
+      <rect x="520" y="98" width="190" height="40" rx="0" fill="rgba(239,68,68,0.15)" stroke="#ef4444" stroke-width="0.5"/>
+      <text x="615" y="113" text-anchor="middle" fill="#f87171" font-size="10" font-weight="600">DTALEN (包长度)</text>
+      <text x="615" y="128" text-anchor="middle" fill="#94a3b8" font-size="9">19:0 (单位: 字节)</text>
+
+      <!-- Key flags -->
+      <rect x="30" y="148" width="680" height="42" rx="4" fill="rgba(0,0,0,0.2)" stroke="#334155" stroke-width="1"/>
+      <text x="36" y="162" fill="#60a5fa" font-size="11" font-weight="600">关键 Command 标志位：</text>
+      <text x="36" y="178" fill="#94a3b8" font-size="11">EOP（End Of Packet）= 此描述符是包的最后一个片段 | RS（Report Status）= NIC 完成后回写状态 | IFCS = 硬件插入 FCS</text>
+    </svg>
+    <p class="svg-caption">图 6：TX 描述符结构（e1000 驱动 Legacy 格式）</p>
+  </div>
+
+  <h3>描述符关键字段汇总</h3>
+  <table>
+    <tr><th>字段</th><th>方向</th><th>含义</th><th>谁填写</th></tr>
+    <tr><td><code>buffer_addr / pkt_addr</code></td><td>RX/TX</td><td>数据包缓冲区的 DMA 物理地址</td><td>驱动</td></tr>
+    <tr><td><code>length / DTALEN</code></td><td>TX</td><td>发送数据长度（字节）</td><td>驱动</td></tr>
+    <tr><td><code>status (DD bit)</code></td><td>RX/TX</td><td>描述符完成标志，NIC 设置=1表示处理完毕</td><td>NIC 回写</td></tr>
+    <tr><td><code>EOP (End of Packet)</code></td><td>TX</td><td>标识包的最后一个描述符（多段包）</td><td>驱动</td></tr>
+    <tr><td><code>checksum flags</code></td><td>RX/TX</td><td>硬件校验和卸载控制/结果</td><td>双方</td></tr>
+    <tr><td><code>RSS Hash</code></td><td>RX</td><td>硬件计算的 RSS 哈希值，用于多队列分发</td><td>NIC 回写</td></tr>
+    <tr><td><code>VLAN tag</code></td><td>RX/TX</td><td>硬件 VLAN 标签插入/剥离</td><td>双方</td></tr>
+    <tr><td><code>error bits</code></td><td>RX</td><td>硬件检测的错误（如 CRC 错误、校验和错误）</td><td>NIC 回写</td></tr>
+  </table>
+
+  <div class="principle-box">
+    <p>第一性原理：描述符是驱动与 NIC 之间的<strong>最小信息界面</strong>。NIC 只需知道"数据在哪（地址）、有多少（长度）、做什么（控制位）"，驱动只需知道"NIC 处理完了没（DD位）、结果如何（状态/错误位）"。双阶段（Read/Writeback）设计的精妙之处在于：NIC 复用同一块内存区域，先读取驱动写的配置，完成后写回结果，实现了<strong>零额外内存开销的状态传递</strong>，且 DD 位机制避免了 NIC 额外发出 PCIe 写操作来更新 Head 寄存器，节省了 PCIe 带宽。</p>
+  </div>
+</section>
+
+<!-- ===== SECTION 4: Head/Tail 指针 ===== -->
+<section class="section" id="sec-4">
+  <h2>Head/Tail 指针与所有权转移</h2>
+
+  <p>根据权威来源（L8LiLiang.github.io 引用自权威文献），发送和接收数据包的核心机制是：<strong>通过 Head 和 Tail 指针在驱动与硬件之间传递描述符的所有权</strong>。</p>
+
+  <div class="info-box">
+    <strong>来源引用：</strong> <em>"Sending and receiving packets is done by passing ownership of the DMA descriptors between driver and hardware via a head and a tail pointer. The driver controls the tail, the hardware controls the head. Both pointers are stored in device registers accessible via MMIO."</em>
+  </div>
+
+  <div class="svg-container">
+    <svg viewBox="0 0 780 460" xmlns="http://www.w3.org/2000/svg" style="min-width:560px">
+      <defs>
+        <marker id="arh" markerWidth="8" markerHeight="6" refX="8" refY="3" orient="auto">
+          <polygon points="0 0, 8 3, 0 6" fill="#60a5fa"/>
+        </marker>
+        <marker id="arh-g" markerWidth="8" markerHeight="6" refX="8" refY="3" orient="auto">
+          <polygon points="0 0, 8 3, 0 6" fill="#4ade80"/>
+        </marker>
+        <marker id="arh-y" markerWidth="8" markerHeight="6" refX="8" refY="3" orient="auto">
+          <polygon points="0 0, 8 3, 0 6" fill="#fbbf24"/>
+        </marker>
+      </defs>
+
+      <!-- Title: RX Ring -->
+      <text x="190" y="22" text-anchor="middle" fill="#fbbf24" font-size="13" font-weight="700">RX Ring - 接收队列</text>
+
+      <!-- RX Ring: 8 slots -->
+      <g transform="translate(20, 36)">
+        <!-- Slots 0-7 -->
+        <rect x="0" y="0" width="75" height="50" rx="4" fill="rgba(245,158,11,0.2)" stroke="#f59e0b" stroke-width="1.5"/>
+        <text x="37" y="20" text-anchor="middle" fill="#fbbf24" font-size="10" font-weight="600">Desc[0]</text>
+        <text x="37" y="34" text-anchor="middle" fill="#94a3b8" font-size="9">NIC 所有</text>
+        <text x="37" y="46" text-anchor="middle" fill="#94a3b8" font-size="8">等待接收</text>
+
+        <rect x="80" y="0" width="75" height="50" rx="4" fill="rgba(245,158,11,0.2)" stroke="#f59e0b" stroke-width="1.5"/>
+        <text x="117" y="20" text-anchor="middle" fill="#fbbf24" font-size="10" font-weight="600">Desc[1]</text>
+        <text x="117" y="34" text-anchor="middle" fill="#94a3b8" font-size="9">NIC 所有</text>
+        <text x="117" y="46" text-anchor="middle" fill="#94a3b8" font-size="8">包已写入↑</text>
+
+        <!-- HEAD marker above slot 2 -->
+        <rect x="160" y="0" width="75" height="50" rx="4" fill="rgba(245,158,11,0.35)" stroke="#f59e0b" stroke-width="2.5"/>
+        <text x="197" y="20" text-anchor="middle" fill="#fbbf24" font-size="10" font-weight="700">Desc[2]</text>
+        <text x="197" y="34" text-anchor="middle" fill="#fbbf24" font-size="9" font-weight="600">◀ HEAD</text>
+        <text x="197" y="46" text-anchor="middle" fill="#fbbf24" font-size="8">NIC 正在写</text>
+
+        <rect x="240" y="0" width="75" height="50" rx="4" fill="rgba(34,197,94,0.2)" stroke="#22c55e" stroke-width="1.5"/>
+        <text x="277" y="20" text-anchor="middle" fill="#4ade80" font-size="10" font-weight="600">Desc[3]</text>
+        <text x="277" y="34" text-anchor="middle" fill="#4ade80" font-size="9">驱动所有</text>
+        <text x="277" y="46" text-anchor="middle" fill="#94a3b8" font-size="8">处理 skb</text>
+
+        <rect x="320" y="0" width="75" height="50" rx="4" fill="rgba(34,197,94,0.2)" stroke="#22c55e" stroke-width="1.5"/>
+        <text x="357" y="20" text-anchor="middle" fill="#4ade80" font-size="10" font-weight="600">Desc[4]</text>
+        <text x="357" y="34" text-anchor="middle" fill="#4ade80" font-size="9">驱动所有</text>
+        <text x="357" y="46" text-anchor="middle" fill="#94a3b8" font-size="8">重新填充</text>
+
+        <!-- TAIL marker below slot 5 -->
+        <rect x="400" y="0" width="75" height="50" rx="4" fill="rgba(34,197,94,0.35)" stroke="#22c55e" stroke-width="2.5"/>
+        <text x="437" y="20" text-anchor="middle" fill="#4ade80" font-size="10" font-weight="700">Desc[5]</text>
+        <text x="437" y="34" text-anchor="middle" fill="#4ade80" font-size="9" font-weight="600">TAIL ▶</text>
+        <text x="437" y="46" text-anchor="middle" fill="#4ade80" font-size="8">驱动最后写</text>
+
+        <rect x="480" y="0" width="75" height="50" rx="4" fill="rgba(30,41,59,0.8)" stroke="#334155" stroke-width="1"/>
+        <text x="517" y="20" text-anchor="middle" fill="#64748b" font-size="10">Desc[6]</text>
+        <text x="517" y="34" text-anchor="middle" fill="#64748b" font-size="9">空闲</text>
+
+        <rect x="560" y="0" width="75" height="50" rx="4" fill="rgba(30,41,59,0.8)" stroke="#334155" stroke-width="1"/>
+        <text x="597" y="20" text-anchor="middle" fill="#64748b" font-size="10">Desc[7]</text>
+        <text x="597" y="34" text-anchor="middle" fill="#64748b" font-size="9">空闲</text>
+      </g>
+
+      <!-- Ownership rules -->
+      <rect x="20" y="108" width="720" height="42" rx="6" fill="rgba(30,41,59,0.8)" stroke="#334155" stroke-width="1"/>
+      <text x="30" y="124" fill="#22c55e" font-size="12" font-weight="600">所有权规则：</text>
+      <text x="140" y="124" fill="#94a3b8" font-size="12">HEAD→TAIL 之间 = NIC 所有（NIC 正在使用或已使用待驱动处理）；</text>
+      <text x="30" y="142" fill="#22c55e" font-size="12" font-weight="600"></text>
+      <text x="30" y="142" fill="#94a3b8" font-size="12">TAIL→HEAD 之间 = 驱动所有（驱动已处理并重新填充，等待 NIC 使用）</text>
+
+      <!-- Arrow: driver advances tail -->
+      <line x1="437" y1="92" x2="517" y2="92" stroke="#4ade80" stroke-width="2" stroke-dasharray="5,3" marker-end="url(#arh-g)"/>
+      <text x="477" y="105" text-anchor="middle" fill="#4ade80" font-size="10">驱动写 MMIO 移动 Tail</text>
+
+      <!-- Arrow: NIC advances head -->
+      <line x1="197" y1="36" x2="277" y2="36" stroke="#f59e0b" stroke-width="2" stroke-dasharray="5,3" marker-end="url(#arh-y)"/>
+      <text x="237" y="28" text-anchor="middle" fill="#fbbf24" font-size="10">NIC 移动 Head（内部）</text>
+
+      <!-- ===== TX Ring below ===== -->
+      <text x="190" y="178" text-anchor="middle" fill="#4ade80" font-size="13" font-weight="700">TX Ring - 发送队列</text>
+
+      <g transform="translate(20, 192)">
+        <!-- Slots 0-7 for TX -->
+        <rect x="0" y="0" width="75" height="50" rx="4" fill="rgba(34,197,94,0.2)" stroke="#22c55e" stroke-width="1.5"/>
+        <text x="37" y="20" text-anchor="middle" fill="#4ade80" font-size="10" font-weight="600">Desc[0]</text>
+        <text x="37" y="34" text-anchor="middle" fill="#94a3b8" font-size="9">驱动所有</text>
+        <text x="37" y="46" text-anchor="middle" fill="#94a3b8" font-size="8">TX完成清理</text>
+
+        <!-- CLEAN marker -->
+        <rect x="80" y="0" width="75" height="50" rx="4" fill="rgba(34,197,94,0.35)" stroke="#22c55e" stroke-width="2.5"/>
+        <text x="117" y="20" text-anchor="middle" fill="#4ade80" font-size="10" font-weight="700">Desc[1]</text>
+        <text x="117" y="34" text-anchor="middle" fill="#4ade80" font-size="9" font-weight="600">NTC ▶</text>
+        <text x="117" y="46" text-anchor="middle" fill="#94a3b8" font-size="8">next_to_clean</text>
+
+        <rect x="160" y="0" width="75" height="50" rx="4" fill="rgba(245,158,11,0.2)" stroke="#f59e0b" stroke-width="1.5"/>
+        <text x="197" y="20" text-anchor="middle" fill="#fbbf24" font-size="10" font-weight="600">Desc[2]</text>
+        <text x="197" y="34" text-anchor="middle" fill="#fbbf24" font-size="9">NIC 所有</text>
+        <text x="197" y="46" text-anchor="middle" fill="#94a3b8" font-size="8">NIC 正发送</text>
+
+        <rect x="240" y="0" width="75" height="50" rx="4" fill="rgba(245,158,11,0.2)" stroke="#f59e0b" stroke-width="1.5"/>
+        <text x="277" y="20" text-anchor="middle" fill="#fbbf24" font-size="10" font-weight="600">Desc[3]</text>
+        <text x="277" y="34" text-anchor="middle" fill="#fbbf24" font-size="9">NIC 所有</text>
+        <text x="277" y="46" text-anchor="middle" fill="#94a3b8" font-size="8">已传给NIC</text>
+
+        <rect x="320" y="0" width="75" height="50" rx="4" fill="rgba(245,158,11,0.35)" stroke="#f59e0b" stroke-width="2.5"/>
+        <text x="357" y="20" text-anchor="middle" fill="#fbbf24" font-size="10" font-weight="700">Desc[4]</text>
+        <text x="357" y="34" text-anchor="middle" fill="#fbbf24" font-size="9" font-weight="600">◀ HEAD</text>
+        <text x="357" y="46" text-anchor="middle" fill="#94a3b8" font-size="8">NIC读至此</text>
+
+        <!-- NTU marker -->
+        <rect x="400" y="0" width="75" height="50" rx="4" fill="rgba(59,130,246,0.35)" stroke="#3b82f6" stroke-width="2.5"/>
+        <text x="437" y="20" text-anchor="middle" fill="#60a5fa" font-size="10" font-weight="700">Desc[5]</text>
+        <text x="437" y="34" text-anchor="middle" fill="#60a5fa" font-size="9" font-weight="600">NTU ▶</text>
+        <text x="437" y="46" text-anchor="middle" fill="#94a3b8" font-size="8">next_to_use</text>
+
+        <rect x="480" y="0" width="75" height="50" rx="4" fill="rgba(30,41,59,0.8)" stroke="#334155" stroke-width="1"/>
+        <text x="517" y="20" text-anchor="middle" fill="#64748b" font-size="10">Desc[6]</text>
+        <text x="517" y="34" text-anchor="middle" fill="#64748b" font-size="9">空闲</text>
+
+        <rect x="560" y="0" width="75" height="50" rx="4" fill="rgba(30,41,59,0.8)" stroke="#334155" stroke-width="1"/>
+        <text x="597" y="20" text-anchor="middle" fill="#64748b" font-size="10">Desc[7]</text>
+        <text x="597" y="34" text-anchor="middle" fill="#64748b" font-size="9">空闲</text>
+      </g>
+
+      <!-- TX legend -->
+      <rect x="20" y="264" width="720" height="26" rx="6" fill="rgba(30,41,59,0.8)" stroke="#334155" stroke-width="1"/>
+      <text x="30" y="281" fill="#60a5fa" font-size="12">NTU（next_to_use）= 驱动下一个填入的槽；NTC（next_to_clean）= 驱动下一个回收的槽；HEAD = NIC 已读到的位置</text>
+
+      <!-- ===== MMIO Registers ===== -->
+      <rect x="20" y="304" width="720" height="140" rx="10" fill="rgba(30,41,59,0.8)" stroke="#a855f7" stroke-width="1.5"/>
+      <text x="370" y="325" text-anchor="middle" fill="#c084fc" font-size="13" font-weight="700">MMIO 寄存器（NIC 硬件寄存器）</text>
+
+      <rect x="40" y="336" width="160" height="52" rx="6" fill="rgba(245,158,11,0.15)" stroke="#f59e0b" stroke-width="1"/>
+      <text x="120" y="358" text-anchor="middle" fill="#fbbf24" font-size="12" font-weight="600">RDH / TDH</text>
+      <text x="120" y="374" text-anchor="middle" fill="#94a3b8" font-size="10">Head 寄存器</text>
+      <text x="120" y="384" text-anchor="middle" fill="#94a3b8" font-size="9">由 NIC 硬件更新</text>
+
+      <rect x="220" y="336" width="160" height="52" rx="6" fill="rgba(34,197,94,0.15)" stroke="#22c55e" stroke-width="1"/>
+      <text x="300" y="358" text-anchor="middle" fill="#4ade80" font-size="12" font-weight="600">RDT / TDT</text>
+      <text x="300" y="374" text-anchor="middle" fill="#94a3b8" font-size="10">Tail 寄存器</text>
+      <text x="300" y="384" text-anchor="middle" fill="#94a3b8" font-size="9">由驱动 writel() 写入</text>
+
+      <rect x="400" y="336" width="160" height="52" rx="6" fill="rgba(59,130,246,0.15)" stroke="#3b82f6" stroke-width="1"/>
+      <text x="480" y="358" text-anchor="middle" fill="#60a5fa" font-size="12" font-weight="600">RDBA / TDBA</text>
+      <text x="480" y="374" text-anchor="middle" fill="#94a3b8" font-size="10">Ring 基地址寄存器</text>
+      <text x="480" y="384" text-anchor="middle" fill="#94a3b8" font-size="9">Ring 物理起始地址</text>
+
+      <rect x="580" y="336" width="140" height="52" rx="6" fill="rgba(6,182,212,0.15)" stroke="#06b6d4" stroke-width="1"/>
+      <text x="650" y="358" text-anchor="middle" fill="#22d3ee" font-size="12" font-weight="600">RDLEN / TDLEN</text>
+      <text x="650" y="374" text-anchor="middle" fill="#94a3b8" font-size="10">Ring 长度寄存器</text>
+      <text x="650" y="384" text-anchor="middle" fill="#94a3b8" font-size="9">描述符数量</text>
+
+      <text x="370" y="432" text-anchor="middle" fill="#94a3b8" font-size="11">驱动通过 writel(value, mmio_addr + REG_OFFSET) 访问寄存器；这是驱动通知 NIC 新数据就绪的关键触发点</text>
+    </svg>
+    <p class="svg-caption">图 7：RX/TX Ring 的 Head/Tail 所有权机制与 MMIO 寄存器</p>
+  </div>
+
+  <div class="principle-box">
+    <p>第一性原理：Head/Tail 指针是一种<strong>无锁的生产者-消费者同步原语</strong>。NIC 是 RX 的生产者，CPU 是消费者；反之对 TX。双方各自只修改自己的指针，读取对方的指针，天然无竞争。Tail 需要写 MMIO（一次 PCIe 写），是昂贵操作，因此驱动会批量更新（填充多个描述符后再一次性移动 Tail），这是性能优化的关键所在。</p>
+  </div>
+</section>
+
+<!-- ===== SECTION 5: RING vs CHAIN ===== -->
+<section class="section" id="sec-5">
+  <h2>描述符模式：RING vs CHAIN</h2>
+
+  <p>根据 Linux 内核官方文档（stmmac driver docs），stmmac 驱动支持两种 DMA 描述符操作模式：<strong>RING（环形）模式</strong>和 <strong>CHAINED（链式）模式</strong>，默认使用 RING 模式。</p>
+
+  <div class="info-box">
+    <strong>来源：</strong> Linux Kernel Documentation - stmmac driver<br><br>
+    <em>"stmmac supports DMA descriptor to operate both in dual buffer (RING) and linked-list (CHAINED) mode. In RING each descriptor points to two data buffer pointers whereas in CHAINED mode they point to only one data buffer pointer. RING mode is the default. In CHAINED mode each descriptor will have pointer to next descriptor in the list, hence creating the explicit chaining in the descriptor itself, whereas such explicit chaining is not possible in RING mode."</em>
+  </div>
+
+  <div class="svg-container">
+    <svg viewBox="0 0 760 380" xmlns="http://www.w3.org/2000/svg" style="min-width:540px">
+      <defs>
+        <marker id="arc" markerWidth="8" markerHeight="6" refX="8" refY="3" orient="auto">
+          <polygon points="0 0, 8 3, 0 6" fill="#60a5fa"/>
+        </marker>
+        <marker id="arc2" markerWidth="8" markerHeight="6" refX="8" refY="3" orient="auto">
+          <polygon points="0 0, 8 3, 0 6" fill="#4ade80"/>
+        </marker>
+      </defs>
+
+      <!-- RING Mode: Left side -->
+      <text x="185" y="22" text-anchor="middle" fill="#60a5fa" font-size="14" font-weight="700">RING 模式（默认）</text>
+
+      <!-- Descriptors in array -->
+      <rect x="20" y="36" width="330" height="80" rx="8" fill="rgba(30,41,59,0.8)" stroke="#3b82f6" stroke-width="1.5"/>
+      <text x="185" y="54" text-anchor="middle" fill="#94a3b8" font-size="11">连续内存数组（无链表指针）</text>
+
+      <!-- Desc 0 -->
+      <rect x="30" y="62" width="80" height="42" rx="4" fill="rgba(59,130,246,0.2)" stroke="#3b82f6" stroke-width="1"/>
+      <text x="70" y="78" text-anchor="middle" fill="#60a5fa" font-size="10" font-weight="600">Desc[0]</text>
+      <text x="70" y="90" text-anchor="middle" fill="#94a3b8" font-size="9">buf1 | buf2</text>
+      <text x="70" y="100" text-anchor="middle" fill="#94a3b8" font-size="8">len | ctrl</text>
+
+      <!-- Desc 1 -->
+      <rect x="120" y="62" width="80" height="42" rx="4" fill="rgba(59,130,246,0.2)" stroke="#3b82f6" stroke-width="1"/>
+      <text x="160" y="78" text-anchor="middle" fill="#60a5fa" font-size="10" font-weight="600">Desc[1]</text>
+      <text x="160" y="90" text-anchor="middle" fill="#94a3b8" font-size="9">buf1 | buf2</text>
+
+      <!-- Desc 2 -->
+      <rect x="210" y="62" width="80" height="42" rx="4" fill="rgba(59,130,246,0.2)" stroke="#3b82f6" stroke-width="1"/>
+      <text x="250" y="78" text-anchor="middle" fill="#60a5fa" font-size="10" font-weight="600">Desc[2]</text>
+      <text x="250" y="90" text-anchor="middle" fill="#94a3b8" font-size="9">buf1 | buf2</text>
+
+      <!-- Last descriptor wraps to first (ring wrap arrow) -->
+      <rect x="300" y="62" width="38" height="42" rx="4" fill="rgba(168,85,247,0.2)" stroke="#a855f7" stroke-width="1"/>
+      <text x="319" y="80" text-anchor="middle" fill="#c084fc" font-size="9">Desc</text>
+      <text x="319" y="93" text-anchor="middle" fill="#c084fc" font-size="8">[N-1]</text>
+
+      <!-- Wrap arrow -->
+      <path d="M 338 83 Q 380 20 30 83" fill="none" stroke="#a855f7" stroke-width="1.5" stroke-dasharray="4,3" marker-end="url(#arc)"/>
+      <text x="200" y="18" text-anchor="middle" fill="#a855f7" font-size="10">尾部回绕到头部（不需要 next 指针）</text>
+
+      <!-- Data buffers below RING -->
+      <text x="185" y="140" text-anchor="middle" fill="#94a3b8" font-size="11">每个描述符可指向两个数据缓冲区</text>
+      <rect x="30" y="152" width="75" height="30" rx="4" fill="rgba(34,197,94,0.15)" stroke="#22c55e" stroke-width="1"/>
+      <text x="67" y="171" text-anchor="middle" fill="#4ade80" font-size="10">Buf1-A</text>
+      <rect x="115" y="152" width="75" height="30" rx="4" fill="rgba(34,197,94,0.15)" stroke="#22c55e" stroke-width="1"/>
+      <text x="152" y="171" text-anchor="middle" fill="#4ade80" font-size="10">Buf1-B</text>
+      <rect x="200" y="152" width="75" height="30" rx="4" fill="rgba(34,197,94,0.15)" stroke="#22c55e" stroke-width="1"/>
+      <text x="237" y="171" text-anchor="middle" fill="#4ade80" font-size="10">Buf2-A</text>
+      <rect x="285" y="152" width="58" height="30" rx="4" fill="rgba(34,197,94,0.15)" stroke="#22c55e" stroke-width="1"/>
+      <text x="314" y="171" text-anchor="middle" fill="#4ade80" font-size="10">Buf2-B</text>
+
+      <defs>
+        <marker id="arc3" markerWidth="6" markerHeight="5" refX="6" refY="2.5" orient="auto">
+          <polygon points="0 0, 6 2.5, 0 5" fill="#94a3b8"/>
+        </marker>
+      </defs>
+      <line x1="70" y1="104" x2="67" y2="150" stroke="#22c55e" stroke-width="1" stroke-dasharray="3,2" marker-end="url(#arc3)"/>
+      <line x1="160" y1="104" x2="152" y2="150" stroke="#22c55e" stroke-width="1" stroke-dasharray="3,2" marker-end="url(#arc3)"/>
+
+      <!-- RING pros/cons -->
+      <rect x="20" y="196" width="330" height="80" rx="6" fill="rgba(30,41,59,0.6)" stroke="#334155" stroke-width="1"/>
+      <text x="34" y="214" fill="#4ade80" font-size="11" font-weight="600">✓ 优势：</text>
+      <text x="34" y="230" fill="#94a3b8" font-size="11">• 每描述符双 buffer，效率更高</text>
+      <text x="34" y="246" fill="#94a3b8" font-size="11">• 无额外 next 指针，描述符更小</text>
+      <text x="34" y="262" fill="#f87171" font-size="11">✗ 限制：描述符必须连续分配</text>
+
+      <!-- CHAIN Mode: Right side -->
+      <text x="565" y="22" text-anchor="middle" fill="#4ade80" font-size="14" font-weight="700">CHAINED 模式（链式）</text>
+
+      <!-- Chain descriptors -->
+      <rect x="400" y="36" width="100" height="70" rx="6" fill="rgba(34,197,94,0.15)" stroke="#22c55e" stroke-width="1.5"/>
+      <text x="450" y="56" text-anchor="middle" fill="#4ade80" font-size="10" font-weight="600">Desc[0]</text>
+      <text x="450" y="72" text-anchor="middle" fill="#94a3b8" font-size="9">buf1_addr</text>
+      <text x="450" y="86" text-anchor="middle" fill="#60a5fa" font-size="9">next →</text>
+      <text x="450" y="98" text-anchor="middle" fill="#94a3b8" font-size="8">ctrl | len</text>
+
+      <rect x="520" y="36" width="100" height="70" rx="6" fill="rgba(34,197,94,0.15)" stroke="#22c55e" stroke-width="1.5"/>
+      <text x="570" y="56" text-anchor="middle" fill="#4ade80" font-size="10" font-weight="600">Desc[1]</text>
+      <text x="570" y="72" text-anchor="middle" fill="#94a3b8" font-size="9">buf1_addr</text>
+      <text x="570" y="86" text-anchor="middle" fill="#60a5fa" font-size="9">next →</text>
+
+      <rect x="640" y="36" width="100" height="70" rx="6" fill="rgba(34,197,94,0.15)" stroke="#22c55e" stroke-width="1.5"/>
+      <text x="690" y="56" text-anchor="middle" fill="#4ade80" font-size="10" font-weight="600">Desc[2]</text>
+      <text x="690" y="72" text-anchor="middle" fill="#94a3b8" font-size="9">buf1_addr</text>
+      <text x="690" y="86" text-anchor="middle" fill="#a855f7" font-size="9">next → [0]</text>
+
+      <!-- Chain next pointers -->
+      <line x1="500" y1="86" x2="518" y2="86" stroke="#60a5fa" stroke-width="2" marker-end="url(#arc)"/>
+      <line x1="620" y1="86" x2="638" y2="86" stroke="#60a5fa" stroke-width="2" marker-end="url(#arc)"/>
+      <!-- Wrap back -->
+      <path d="M 740 86 Q 760 140 450 140 Q 430 140 430 108" fill="none" stroke="#a855f7" stroke-width="1.5" stroke-dasharray="4,3" marker-end="url(#arc)"/>
+
+      <!-- Data buffers below CHAIN -->
+      <text x="565" y="158" text-anchor="middle" fill="#94a3b8" font-size="11">每个描述符只指向一个数据缓冲区</text>
+      <rect x="410" y="168" width="75" height="30" rx="4" fill="rgba(34,197,94,0.15)" stroke="#22c55e" stroke-width="1"/>
+      <text x="447" y="187" text-anchor="middle" fill="#4ade80" font-size="10">Buf-0</text>
+      <rect x="530" y="168" width="75" height="30" rx="4" fill="rgba(34,197,94,0.15)" stroke="#22c55e" stroke-width="1"/>
+      <text x="567" y="187" text-anchor="middle" fill="#4ade80" font-size="10">Buf-1</text>
+      <rect x="650" y="168" width="75" height="30" rx="4" fill="rgba(34,197,94,0.15)" stroke="#22c55e" stroke-width="1"/>
+      <text x="687" y="187" text-anchor="middle" fill="#4ade80" font-size="10">Buf-2</text>
+
+      <!-- CHAIN pros/cons -->
+      <rect x="400" y="214" width="340" height="80" rx="6" fill="rgba(30,41,59,0.6)" stroke="#334155" stroke-width="1"/>
+      <text x="414" y="232" fill="#4ade80" font-size="11" font-weight="600">✓ 优势：</text>
+      <text x="414" y="248" fill="#94a3b8" font-size="11">• 描述符可分散在不连续内存</text>
+      <text x="414" y="264" fill="#94a3b8" font-size="11">• 灵活支持不同大小的片段</text>
+      <text x="414" y="280" fill="#f87171" font-size="11">✗ 限制：额外 next 指针占空间，效率稍低</text>
+
+      <!-- Comparison table -->
+      <rect x="20" y="304" width="720" height="68" rx="8" fill="rgba(30,41,59,0.8)" stroke="#334155" stroke-width="1"/>
+      <text x="30" y="322" fill="#60a5fa" font-size="12" font-weight="700">选择命令：</text>
+      <text x="30" y="340" fill="#e2e8f0" font-size="12" font-family="monospace">modprobe stmmac chain_mode=0  # RING 模式（默认）</text>
+      <text x="30" y="358" fill="#e2e8f0" font-size="12" font-family="monospace">modprobe stmmac chain_mode=1  # CHAIN 模式</text>
+    </svg>
+    <p class="svg-caption">图 8：RING 模式与 CHAINED 模式对比（stmmac 驱动）</p>
+  </div>
+
+  <div class="principle-box">
+    <p>第一性原理：RING 与 CHAIN 是同一问题的两种权衡——<strong>用地址连续性换空间效率（RING），或用链表指针换布局灵活性（CHAIN）</strong>。RING 模式每描述符可携带两个 buffer 指针，适合高性能场景；CHAIN 模式利用链表可将描述符分散于任意物理地址，牺牲一点空间，换取内存分配的灵活性。实际工程中 RING 模式更常见，因为预分配的连续大块内存在现代内核中已可轻松满足。</p>
+  </div>
+</section>
+
+<!-- ===== SECTION 6: RX Flow ===== -->
+<section class="section" id="sec-6">
+  <h2>接收流程（RX Path）</h2>
+
+  <p>根据 Linux Kernel Internals 文档（<em>"Life of a Packet - receive"</em>）和 stmmac 官方文档，接收路径分为<strong>硬中断（HardIRQ）</strong>和 <strong>NAPI 软中断轮询</strong>两个阶段。</p>
+
+  <div class="info-box">
+    <strong>来源：</strong> Linux Kernel Internals - Life of a Packet (RX)（kernel-internals.org）<br><br>
+    <em>"When a packet arrives: 1. NIC writes packet data to the DMA buffer 2. NIC sets the 'done' bit on the ring descriptor 3. NIC raises a hardware interrupt"</em><br><br>
+    <strong>来源：</strong> stmmac 官方文档：<em>"When one or more packets are received, an interrupt happens. This is based on NAPI, so the interrupt handler signals only if there is work to be done, and it exits. Then the poll method will be scheduled at some future point. The incoming packets are stored, by the DMA, in a list of pre-allocated socket buffers in order to avoid the memcpy (zero-copy)."</em>
+  </div>
+
+  <div class="svg-container">
+    <svg viewBox="0 0 760 700" xmlns="http://www.w3.org/2000/svg" style="min-width:540px">
+      <defs>
+        <marker id="rrx" markerWidth="8" markerHeight="6" refX="8" refY="3" orient="auto">
+          <polygon points="0 0, 8 3, 0 6" fill="#60a5fa"/>
+        </marker>
+      </defs>
+
+      <!-- Phase Labels -->
+      <rect x="10" y="10" width="100" height="660" rx="6" fill="rgba(30,41,59,0.6)" stroke="#334155" stroke-width="1"/>
+      <text transform="rotate(-90 60 340)" x="60" y="340" text-anchor="middle" fill="#94a3b8" font-size="11" font-weight="600">接收完整流程（从网线到应用层）</text>
+
+      <!-- Step 1: Physical Layer -->
+      <rect x="130" y="10" width="610" height="60" rx="8" fill="rgba(245,158,11,0.15)" stroke="#f59e0b" stroke-width="1.5"/>
+      <text x="150" y="32" fill="#fbbf24" font-size="13" font-weight="700">① 物理接收</text>
+      <text x="150" y="52" fill="#94a3b8" font-size="12">数据包从网线到达 PHY 层 → 经过以太网帧解码 → 到达 NIC MAC 控制器内部 FIFO</text>
+
+      <!-- Step 2: DMA write -->
+      <rect x="130" y="82" width="610" height="70" rx="8" fill="rgba(245,158,11,0.15)" stroke="#f59e0b" stroke-width="1.5"/>
+      <text x="150" y="104" fill="#fbbf24" font-size="13" font-weight="700">② DMA 写入系统内存</text>
+      <text x="150" y="122" fill="#94a3b8" font-size="12">NIC DMA 引擎读取 RX Ring 中的 Head 位置描述符，获取预分配缓冲区地址</text>
+      <text x="150" y="140" fill="#94a3b8" font-size="12">将数据包内容通过 DMA 写入该物理地址（零拷贝）；NIC 设置描述符 DD 位=1，移动 Head</text>
+
+      <!-- Step 3: HardIRQ -->
+      <rect x="130" y="164" width="610" height="70" rx="8" fill="rgba(239,68,68,0.15)" stroke="#ef4444" stroke-width="1.5"/>
+      <text x="150" y="186" fill="#f87171" font-size="13" font-weight="700">③ 硬中断（HardIRQ）</text>
+      <text x="150" y="204" fill="#94a3b8" font-size="12">NIC 触发硬件中断（IRQ）→ CPU 执行中断处理程序</text>
+      <text x="150" y="222" fill="#e2e8f0" font-size="12" font-family="monospace">napi_schedule(&amp;napi);   // 调度 NAPI 轮询</text>
+      <!-- mini code -->
+
+      <!-- Step 4: Disable IRQ -->
+      <rect x="130" y="246" width="610" height="52" rx="8" fill="rgba(239,68,68,0.1)" stroke="#ef4444" stroke-width="1"/>
+      <text x="150" y="268" fill="#f87171" font-size="13" font-weight="700">④ 屏蔽 NIC 中断</text>
+      <text x="150" y="284" fill="#94a3b8" font-size="12">屏蔽 NIC 硬件中断（避免中断风暴），切换到 SoftIRQ 轮询模式，硬中断立即返回</text>
+
+      <!-- Step 5: SoftIRQ -->
+      <rect x="130" y="310" width="610" height="70" rx="8" fill="rgba(168,85,247,0.15)" stroke="#a855f7" stroke-width="1.5"/>
+      <text x="150" y="332" fill="#c084fc" font-size="13" font-weight="700">⑤ NET_RX_SOFTIRQ 触发 NAPI Poll</text>
+      <text x="150" y="350" fill="#94a3b8" font-size="12">ksoftirqd 或当前 CPU 执行 net_rx_action() → 调用驱动注册的 poll() 函数</text>
+      <text x="150" y="368" fill="#e2e8f0" font-size="12" font-family="monospace">// 每次最多处理 budget 个包（默认 64/300）</text>
+
+      <!-- Step 6: Driver poll -->
+      <rect x="130" y="392" width="610" height="100" rx="8" fill="rgba(59,130,246,0.15)" stroke="#3b82f6" stroke-width="1.5"/>
+      <text x="150" y="414" fill="#60a5fa" font-size="13" font-weight="700">⑥ 驱动 poll() 处理 RX Ring</text>
+      <text x="150" y="432" fill="#94a3b8" font-size="12">遍历 RX Ring，检查每个描述符的 DD 位：</text>
+      <text x="150" y="450" fill="#94a3b8" font-size="12">• 从预分配 skb 获取数据包（或构建新 skb）</text>
+      <text x="150" y="468" fill="#94a3b8" font-size="12">• 分配新的缓冲区，填入描述符，移动 Tail（通知 NIC 新空间就绪）</text>
+      <text x="150" y="484" fill="#e2e8f0" font-size="12" font-family="monospace">napi_gro_receive(napi, skb);   // 提交到 GRO 层</text>
+
+      <!-- Step 7: Protocol stack -->
+      <rect x="130" y="504" width="610" height="80" rx="8" fill="rgba(34,197,94,0.15)" stroke="#22c55e" stroke-width="1.5"/>
+      <text x="150" y="526" fill="#4ade80" font-size="13" font-weight="700">⑦ GRO / 协议栈处理</text>
+      <text x="150" y="544" fill="#94a3b8" font-size="12">GRO（Generic Receive Offload）尝试合并 TCP 分段 → __netif_receive_skb()</text>
+      <text x="150" y="562" fill="#94a3b8" font-size="12">→ ip_rcv() → tcp_v4_rcv() → 放入 socket 接收缓冲区</text>
+      <text x="150" y="578" fill="#94a3b8" font-size="12">（经过 netfilter PREROUTING → 路由 → netfilter INPUT）</text>
+
+      <!-- Step 8: App -->
+      <rect x="130" y="596" width="610" height="54" rx="8" fill="rgba(34,197,94,0.15)" stroke="#22c55e" stroke-width="1.5"/>
+      <text x="150" y="618" fill="#4ade80" font-size="13" font-weight="700">⑧ 应用层读取</text>
+      <text x="150" y="638" fill="#94a3b8" font-size="12">内核唤醒等待 epoll/poll/select 的应用程序 → 应用调用 read()/recv() 读取数据</text>
+
+      <!-- Connecting arrows -->
+      <line x1="435" y1="70" x2="435" y2="80" stroke="#60a5fa" stroke-width="2" marker-end="url(#rrx)"/>
+      <line x1="435" y1="152" x2="435" y2="162" stroke="#60a5fa" stroke-width="2" marker-end="url(#rrx)"/>
+      <line x1="435" y1="234" x2="435" y2="244" stroke="#60a5fa" stroke-width="2" marker-end="url(#rrx)"/>
+      <line x1="435" y1="298" x2="435" y2="308" stroke="#60a5fa" stroke-width="2" marker-end="url(#rrx)"/>
+      <line x1="435" y1="380" x2="435" y2="390" stroke="#60a5fa" stroke-width="2" marker-end="url(#rrx)"/>
+      <line x1="435" y1="492" x2="435" y2="502" stroke="#60a5fa" stroke-width="2" marker-end="url(#rrx)"/>
+      <line x1="435" y1="584" x2="435" y2="594" stroke="#60a5fa" stroke-width="2" marker-end="url(#rrx)"/>
+    </svg>
+    <p class="svg-caption">图 9：RX 完整接收流程（网线 → 应用层）</p>
+  </div>
+
+  <h3>RX 零拷贝实现细节</h3>
+  <pre><code>/* 驱动预分配 RX 缓冲区（ring 初始化时） */
+for (i = 0; i &lt; ring_size; i++) {
+    /* 分配 sk_buff 或 page pool 页面 */
+    buf = page_pool_alloc_pages(pool, GFP_ATOMIC);
+    /* 映射为 DMA 地址 */
+    ring->desc[i].dma_addr = dma_map_page(dev, buf, ...);
+    /* 驱动保存 skb 指针用于后续处理 */
+    ring->skb[i] = skb;
+}
+
+/* NAPI poll() 中处理已接收的数据包 */
+static int my_nic_poll(struct napi_struct *napi, int budget) {
+    while (pkts &lt; budget) {
+        desc = &ring->desc[ring->next_to_clean];
+        if (!(desc->status &amp; DD_BIT)) break; /* 未完成 */
+        
+        skb = napi_build_skb(rx_buf, headroom);
+        skb->protocol = eth_type_trans(skb, dev);
+        napi_gro_receive(napi, skb); /* 送入协议栈 */
+        
+        /* 补充新的空闲描述符 */
+        refill_rx_desc(ring, ring->next_to_clean);
+        ring->next_to_clean = (ring->next_to_clean + 1) % ring_size;
+        pkts++;
+    }
+    if (pkts &lt; budget)
+        napi_complete_done(napi, pkts); /* 重新开启中断 */
+    return pkts;
+}</code></pre>
+
+  <div class="principle-box">
+    <p>第一性原理：RX 路径的设计目标是<strong>最小化数据在内存中的移动次数</strong>。理想情况是数据包从网线到应用程序只有一次 DMA 写（NIC 写入预分配缓冲区）。NAPI 的引入解决了中断风暴问题——高速网络下每包中断会让 CPU 把所有时间花在中断处理上；改为"一次中断 → 轮询处理批量包"极大提升了 CPU 利用率（Interrupt Coalescing 的软件实现）。</p>
+  </div>
+</section>
+
+<!-- ===== SECTION 7: TX Flow ===== -->
+<section class="section" id="sec-7">
+  <h2>发送流程（TX Path）</h2>
+
+  <p>根据 linux-network-performance-parameters（github.com/leandromoreira）整理的完整 Linux 发送路径，以及 stmmac 官方文档，TX 路径分为<strong>内核协议栈填充描述符</strong>和 <strong>NIC DMA 读取发送</strong>两大阶段。</p>
+
+  <div class="info-box">
+    <strong>来源：</strong> stmmac 官方文档 - Transmit Process<br><br>
+    <em>"The xmit method is invoked when the kernel needs to transmit a packet; it sets the descriptors in the ring and informs the DMA engine, that there is a packet ready to be transmitted. Once the controller has finished transmitting the packet, timer will be scheduled to release the transmit resources."</em>
+  </div>
+
+  <div class="svg-container">
+    <svg viewBox="0 0 760 720" xmlns="http://www.w3.org/2000/svg" style="min-width:540px">
+      <defs>
+        <marker id="rtx" markerWidth="8" markerHeight="6" refX="8" refY="3" orient="auto">
+          <polygon points="0 0, 8 3, 0 6" fill="#4ade80"/>
+        </marker>
+      </defs>
+
+      <!-- Phase column -->
+      <rect x="10" y="10" width="100" height="700" rx="6" fill="rgba(30,41,59,0.6)" stroke="#334155" stroke-width="1"/>
+      <text transform="rotate(-90 60 360)" x="60" y="360" text-anchor="middle" fill="#94a3b8" font-size="11" font-weight="600">发送完整流程（从应用层到网线）</text>
+
+      <!-- Step 1: App send -->
+      <rect x="130" y="10" width="610" height="54" rx="8" fill="rgba(34,197,94,0.15)" stroke="#22c55e" stroke-width="1.5"/>
+      <text x="150" y="32" fill="#4ade80" font-size="13" font-weight="700">① 应用层调用 send()/sendmsg()</text>
+      <text x="150" y="50" fill="#94a3b8" font-size="12">应用程序调用系统调用 → 内核分配 sk_buff → 数据复制到内核空间</text>
+
+      <!-- Step 2: Protocol stack -->
+      <rect x="130" y="76" width="610" height="80" rx="8" fill="rgba(34,197,94,0.15)" stroke="#22c55e" stroke-width="1.5"/>
+      <text x="150" y="98" fill="#4ade80" font-size="13" font-weight="700">② 协议栈处理（L4 → L3 → L2）</text>
+      <text x="150" y="116" fill="#94a3b8" font-size="12">TCP 层构建头部 → IP 层添加 IP 头（路由查找、netfilter LOCAL_OUT）</text>
+      <text x="150" y="134" fill="#94a3b8" font-size="12">→ 以太网层添加 MAC 头 → dev_queue_xmit() 提交给设备队列</text>
+      <text x="150" y="150" fill="#94a3b8" font-size="12">→ QDisc（流量控制队列 queuelen=1000）→ 驱动 ndo_start_xmit()</text>
+
+      <!-- Step 3: Driver fills TX descriptor -->
+      <rect x="130" y="168" width="610" height="110" rx="8" fill="rgba(59,130,246,0.15)" stroke="#3b82f6" stroke-width="1.5"/>
+      <text x="150" y="190" fill="#60a5fa" font-size="13" font-weight="700">③ 驱动填充 TX 描述符（ndo_start_xmit）</text>
+      <text x="150" y="208" fill="#94a3b8" font-size="12">• 获取 TX Ring 的 next_to_use 槽位</text>
+      <text x="150" y="226" fill="#94a3b8" font-size="12">• 将 skb 数据映射为 DMA 地址：dma_map_single(dev, skb-&gt;data, ...)</text>
+      <text x="150" y="244" fill="#94a3b8" font-size="12">• 将 DMA 地址写入描述符的 buffer_addr 字段</text>
+      <text x="150" y="262" fill="#94a3b8" font-size="12">• 设置 EOP 标志、数据长度、校验和卸载等控制位；保存 skb 指针</text>
+
+      <!-- Step 4: Notify NIC -->
+      <rect x="130" y="290" width="610" height="70" rx="8" fill="rgba(59,130,246,0.15)" stroke="#3b82f6" stroke-width="1.5"/>
+      <text x="150" y="312" fill="#60a5fa" font-size="13" font-weight="700">④ 写 MMIO 寄存器通知 NIC（移动 Tail）</text>
+      <text x="150" y="330" fill="#94a3b8" font-size="12">驱动更新 next_to_use，调用 writel(new_tail, hw-&gt;tx_tail_reg)</text>
+      <text x="150" y="348" fill="#e2e8f0" font-size="12" font-family="monospace">writel(tx_ring-&gt;next_to_use, adapter-&gt;hw.io + TDT_REG);</text>
+
+      <!-- Step 5: NIC DMA read -->
+      <rect x="130" y="372" width="610" height="80" rx="8" fill="rgba(245,158,11,0.15)" stroke="#f59e0b" stroke-width="1.5"/>
+      <text x="150" y="394" fill="#fbbf24" font-size="13" font-weight="700">⑤ NIC DMA 读取并发送</text>
+      <text x="150" y="412" fill="#94a3b8" font-size="12">NIC 检测到 Tail 移动 → DMA 引擎从描述符的 buffer_addr 读取数据包</text>
+      <text x="150" y="430" fill="#94a3b8" font-size="12">→ 通过 PHY 发送到网线 → 发送完成后 NIC 设置描述符 DD=1</text>
+      <text x="150" y="444" fill="#94a3b8" font-size="12">（RS 标志让 NIC 在完成时回写状态；NIC 移动 Head 寄存器）</text>
+
+      <!-- Step 6: TX completion IRQ -->
+      <rect x="130" y="464" width="610" height="70" rx="8" fill="rgba(239,68,68,0.15)" stroke="#ef4444" stroke-width="1.5"/>
+      <text x="150" y="486" fill="#f87171" font-size="13" font-weight="700">⑥ TX 完成中断（HardIRQ）</text>
+      <text x="150" y="504" fill="#94a3b8" font-size="12">NIC 发出 TX 完成中断 → 驱动中断处理函数调度 NAPI</text>
+      <text x="150" y="522" fill="#e2e8f0" font-size="12" font-family="monospace">napi_schedule(&amp;tx_napi);  // 触发 TX clean softirq</text>
+
+      <!-- Step 7: TX clean -->
+      <rect x="130" y="546" width="610" height="90" rx="8" fill="rgba(168,85,247,0.15)" stroke="#a855f7" stroke-width="1.5"/>
+      <text x="150" y="568" fill="#c084fc" font-size="13" font-weight="700">⑦ TX 资源回收（NAPI/SoftIRQ）</text>
+      <text x="150" y="586" fill="#94a3b8" font-size="12">NAPI poll 检查 TX Ring：找到 DD=1 的描述符</text>
+      <text x="150" y="604" fill="#94a3b8" font-size="12">→ dma_unmap_single()（解除 DMA 映射）</text>
+      <text x="150" y="622" fill="#94a3b8" font-size="12">→ dev_kfree_skb_irq(skb)（释放 sk_buff）→ 该槽重新标为空闲</text>
+      <text x="150" y="640" fill="#94a3b8" font-size="12">→ next_to_clean 前移，如队列已解除阻塞则调用 netif_wake_queue()</text>
+
+      <!-- Step 8: netif_wake_queue -->
+      <rect x="130" y="648" width="610" height="52" rx="8" fill="rgba(168,85,247,0.1)" stroke="#a855f7" stroke-width="1"/>
+      <text x="150" y="670" fill="#c084fc" font-size="13" font-weight="700">⑧ 队列恢复</text>
+      <text x="150" y="688" fill="#94a3b8" font-size="12">若 TX Ring 空间充足，调用 netif_wake_queue() 通知上层继续发包</text>
+
+      <!-- Arrows -->
+      <line x1="435" y1="64" x2="435" y2="74" stroke="#4ade80" stroke-width="2" marker-end="url(#rtx)"/>
+      <line x1="435" y1="156" x2="435" y2="166" stroke="#4ade80" stroke-width="2" marker-end="url(#rtx)"/>
+      <line x1="435" y1="278" x2="435" y2="288" stroke="#4ade80" stroke-width="2" marker-end="url(#rtx)"/>
+      <line x1="435" y1="360" x2="435" y2="370" stroke="#4ade80" stroke-width="2" marker-end="url(#rtx)"/>
+      <line x1="435" y1="452" x2="435" y2="462" stroke="#4ade80" stroke-width="2" marker-end="url(#rtx)"/>
+      <line x1="435" y1="534" x2="435" y2="544" stroke="#4ade80" stroke-width="2" marker-end="url(#rtx)"/>
+      <line x1="435" y1="636" x2="435" y2="646" stroke="#4ade80" stroke-width="2" marker-end="url(#rtx)"/>
+    </svg>
+    <p class="svg-caption">图 10：TX 完整发送流程（应用层 → 网线）</p>
+  </div>
+
+  <h3>TX Ring 状态机</h3>
+  <div class="svg-container">
+    <svg viewBox="0 0 720 200" xmlns="http://www.w3.org/2000/svg" style="min-width:500px">
+      <defs>
+        <marker id="rs" markerWidth="8" markerHeight="6" refX="8" refY="3" orient="auto">
+          <polygon points="0 0, 8 3, 0 6" fill="#60a5fa"/>
+        </marker>
+      </defs>
+      <!-- States -->
+      <rect x="20" y="70" width="120" height="60" rx="8" fill="rgba(30,41,59,0.9)" stroke="#334155" stroke-width="1.5"/>
+      <text x="80" y="97" text-anchor="middle" fill="#94a3b8" font-size="12" font-weight="600">空闲</text>
+      <text x="80" y="113" text-anchor="middle" fill="#64748b" font-size="10">Free Slot</text>
+
+      <rect x="180" y="70" width="120" height="60" rx="8" fill="rgba(59,130,246,0.2)" stroke="#3b82f6" stroke-width="1.5"/>
+      <text x="240" y="92" text-anchor="middle" fill="#60a5fa" font-size="12" font-weight="600">驱动填充</text>
+      <text x="240" y="108" text-anchor="middle" fill="#60a5fa" font-size="10">Desc 已写好</text>
+      <text x="240" y="122" text-anchor="middle" fill="#94a3b8" font-size="9">NTU 前移</text>
+
+      <rect x="340" y="70" width="120" height="60" rx="8" fill="rgba(245,158,11,0.2)" stroke="#f59e0b" stroke-width="1.5"/>
+      <text x="400" y="92" text-anchor="middle" fill="#fbbf24" font-size="12" font-weight="600">NIC 发送中</text>
+      <text x="400" y="108" text-anchor="middle" fill="#fbbf24" font-size="10">DMA 读取包</text>
+      <text x="400" y="122" text-anchor="middle" fill="#94a3b8" font-size="9">Head→Tail间</text>
+
+      <rect x="500" y="70" width="120" height="60" rx="8" fill="rgba(34,197,94,0.2)" stroke="#22c55e" stroke-width="1.5"/>
+      <text x="560" y="92" text-anchor="middle" fill="#4ade80" font-size="12" font-weight="600">发送完成</text>
+      <text x="560" y="108" text-anchor="middle" fill="#4ade80" font-size="10">DD=1 回写</text>
+      <text x="560" y="122" text-anchor="middle" fill="#94a3b8" font-size="9">待驱动清理</text>
+
+      <!-- Transitions -->
+      <line x1="140" y1="100" x2="178" y2="100" stroke="#60a5fa" stroke-width="2" marker-end="url(#rs)"/>
+      <text x="159" y="92" text-anchor="middle" fill="#94a3b8" font-size="9">xmit()</text>
+      <text x="159" y="118" text-anchor="middle" fill="#94a3b8" font-size="9">dma_map</text>
+
+      <line x1="300" y1="100" x2="338" y2="100" stroke="#f59e0b" stroke-width="2" marker-end="url(#rs)"/>
+      <text x="319" y="92" text-anchor="middle" fill="#94a3b8" font-size="9">writel(Tail)</text>
+      <text x="319" y="118" text-anchor="middle" fill="#94a3b8" font-size="9">NIC 获得所有权</text>
+
+      <line x1="460" y1="100" x2="498" y2="100" stroke="#22c55e" stroke-width="2" marker-end="url(#rs)"/>
+      <text x="479" y="92" text-anchor="middle" fill="#94a3b8" font-size="9">NIC IRQ</text>
+      <text x="479" y="118" text-anchor="middle" fill="#94a3b8" font-size="9">DD 置位</text>
+
+      <!-- Return to idle -->
+      <path d="M 620 70 Q 680 20 80 20 Q 20 20 20 68" fill="none" stroke="#a855f7" stroke-width="1.5" stroke-dasharray="5,3" marker-end="url(#rs)"/>
+      <text x="350" y="16" text-anchor="middle" fill="#a855f7" font-size="10">TX clean: dma_unmap + kfree_skb → 槽重新变为空闲</text>
+
+      <!-- NTC arrow -->
+      <text x="560" y="158" text-anchor="middle" fill="#94a3b8" font-size="10">NTC（next_to_clean）</text>
+      <text x="80" y="158" text-anchor="middle" fill="#94a3b8" font-size="10">NTU（next_to_use）</text>
+    </svg>
+    <p class="svg-caption">图 11：TX 描述符状态机（空闲 → 填充 → NIC使用 → 完成 → 回收）</p>
+  </div>
+
+  <div class="principle-box">
+    <p>第一性原理：TX 路径的关键约束是<strong>所有权必须单向有序转移</strong>：驱动填充描述符 → 写 Tail 告知 NIC → NIC 发送完成回写 DD → 驱动回收。任何环节的顺序颠倒都会导致数据错乱。驱动必须维护 NTU（下一个填入）和 NTC（下一个回收）两个游标，NTC 追赶 NTU，形成一个永不相交的双指针模型。Ring 满（NTU+1==NTC）时必须停队（netif_stop_queue），否则会覆盖未发送的描述符。</p>
+  </div>
+</section>
+
+<!-- ===== SECTION 8: NAPI ===== -->
+<section class="section" id="sec-8">
+  <h2>NAPI 中断缓解机制</h2>
+
+  <p>NAPI（New API）是 Linux 内核中解决<strong>高速网络下中断风暴</strong>问题的核心机制。stmmac 文档明确记载此机制用于中断缓解（Interrupt Mitigation）。</p>
+
+  <div class="info-box">
+    <strong>来源：</strong> Linux Kernel Internals - Network Device and NAPI（kernel-internals.org）<br><br>
+    <em>"NAPI solves this by switching to a polling model when traffic is high: This batches work and dramatically reduces interrupt overhead at high packet rates."</em><br><br>
+    <strong>来源：</strong> stmmac 文档：<em>"The driver is able to mitigate the number of its DMA interrupts using NAPI for the reception on chips older than the 3.50. New chips have an HW RX Watchdog used for this mitigation."</em>
+  </div>
+
+  <div class="svg-container">
+    <svg viewBox="0 0 740 400" xmlns="http://www.w3.org/2000/svg" style="min-width:520px">
+      <defs>
+        <marker id="rna" markerWidth="8" markerHeight="6" refX="8" refY="3" orient="auto">
+          <polygon points="0 0, 8 3, 0 6" fill="#60a5fa"/>
+        </marker>
+      </defs>
+
+      <!-- Left: Without NAPI (Traditional) -->
+      <rect x="10" y="10" width="340" height="370" rx="10" fill="rgba(239,68,68,0.06)" stroke="#ef4444" stroke-width="1.5"/>
+      <text x="180" y="34" text-anchor="middle" fill="#f87171" font-size="13" font-weight="700">传统中断模式（无 NAPI）</text>
+
+      <!-- Packets arriving -->
+      <text x="180" y="60" text-anchor="middle" fill="#94a3b8" font-size="11">高速包到达（如 1000 pps）</text>
+
+      <!-- IRQ storms -->
+      <rect x="30" y="72" width="60" height="28" rx="4" fill="rgba(239,68,68,0.3)" stroke="#ef4444" stroke-width="1"/>
+      <text x="60" y="91" text-anchor="middle" fill="#f87171" font-size="10">IRQ!</text>
+      <rect x="100" y="72" width="60" height="28" rx="4" fill="rgba(239,68,68,0.3)" stroke="#ef4444" stroke-width="1"/>
+      <text x="130" y="91" text-anchor="middle" fill="#f87171" font-size="10">IRQ!</text>
+      <rect x="170" y="72" width="60" height="28" rx="4" fill="rgba(239,68,68,0.3)" stroke="#ef4444" stroke-width="1"/>
+      <text x="200" y="91" text-anchor="middle" fill="#f87171" font-size="10">IRQ!</text>
+      <rect x="240" y="72" width="60" height="28" rx="4" fill="rgba(239,68,68,0.3)" stroke="#ef4444" stroke-width="1"/>
+      <text x="270" y="91" text-anchor="middle" fill="#f87171" font-size="10">IRQ!</text>
+
+      <text x="180" y="130" text-anchor="middle" fill="#f87171" font-size="11">每包一次硬中断 → CPU 不堪重负</text>
+      <text x="180" y="148" text-anchor="middle" fill="#94a3b8" font-size="11">CPU 时间全消耗在中断处理上</text>
+
+      <!-- Timeline -->
+      <rect x="20" y="168" width="310" height="180" rx="6" fill="rgba(30,41,59,0.8)" stroke="#334155" stroke-width="1"/>
+      <text x="175" y="188" text-anchor="middle" fill="#94a3b8" font-size="11">CPU 时间线</text>
+      <!-- IRQ bars (many small) -->
+      <rect x="30" y="198" width="16" height="60" rx="2" fill="rgba(239,68,68,0.6)"/>
+      <rect x="55" y="198" width="16" height="60" rx="2" fill="rgba(239,68,68,0.6)"/>
+      <rect x="80" y="198" width="16" height="60" rx="2" fill="rgba(239,68,68,0.6)"/>
+      <rect x="105" y="198" width="16" height="60" rx="2" fill="rgba(239,68,68,0.6)"/>
+      <rect x="130" y="198" width="16" height="60" rx="2" fill="rgba(239,68,68,0.6)"/>
+      <rect x="155" y="198" width="16" height="60" rx="2" fill="rgba(239,68,68,0.6)"/>
+      <rect x="180" y="198" width="16" height="60" rx="2" fill="rgba(239,68,68,0.6)"/>
+      <rect x="205" y="198" width="16" height="60" rx="2" fill="rgba(239,68,68,0.6)"/>
+      <rect x="230" y="198" width="16" height="60" rx="2" fill="rgba(239,68,68,0.6)"/>
+      <rect x="255" y="198" width="16" height="60" rx="2" fill="rgba(239,68,68,0.6)"/>
+      <rect x="280" y="198" width="16" height="60" rx="2" fill="rgba(239,68,68,0.6)"/>
+      <rect x="305" y="198" width="16" height="60" rx="2" fill="rgba(239,68,68,0.6)"/>
+      <text x="175" y="280" text-anchor="middle" fill="#94a3b8" font-size="10">▲ IRQ（中断）</text>
+      <text x="175" y="340" text-anchor="middle" fill="#f87171" font-size="11">结果：CPU 利用率 ~100% 在中断上</text>
+
+      <!-- Right: With NAPI -->
+      <rect x="370" y="10" width="360" height="370" rx="10" fill="rgba(34,197,94,0.06)" stroke="#22c55e" stroke-width="1.5"/>
+      <text x="550" y="34" text-anchor="middle" fill="#4ade80" font-size="13" font-weight="700">NAPI 模式</text>
+
+      <text x="550" y="60" text-anchor="middle" fill="#94a3b8" font-size="11">高速包到达</text>
+
+      <!-- First IRQ only -->
+      <rect x="390" y="72" width="60" height="28" rx="4" fill="rgba(239,68,68,0.3)" stroke="#ef4444" stroke-width="1"/>
+      <text x="420" y="91" text-anchor="middle" fill="#f87171" font-size="10">IRQ! ✋</text>
+      <text x="480" y="87" fill="#94a3b8" font-size="10">→ 屏蔽后续 IRQ</text>
+      <text x="480" y="102" fill="#94a3b8" font-size="10">→ 调度 SoftIRQ</text>
+
+      <!-- NAPI poll block -->
+      <rect x="390" y="118" width="320" height="48" rx="6" fill="rgba(168,85,247,0.2)" stroke="#a855f7" stroke-width="1.5"/>
+      <text x="550" y="138" text-anchor="middle" fill="#c084fc" font-size="11" font-weight="600">NAPI poll() — 批量处理</text>
+      <text x="550" y="155" text-anchor="middle" fill="#94a3b8" font-size="10">一次处理 budget 个包（默认 64），极大摊薄中断开销</text>
+
+      <!-- Re-enable IRQ -->
+      <rect x="390" y="178" width="320" height="32" rx="6" fill="rgba(34,197,94,0.15)" stroke="#22c55e" stroke-width="1"/>
+      <text x="550" y="199" text-anchor="middle" fill="#4ade80" font-size="11">napi_complete_done() → 重新开启 IRQ</text>
+
+      <!-- CPU timeline with NAPI -->
+      <rect x="380" y="224" width="340" height="120" rx="6" fill="rgba(30,41,59,0.8)" stroke="#334155" stroke-width="1"/>
+      <text x="550" y="244" text-anchor="middle" fill="#94a3b8" font-size="11">CPU 时间线</text>
+      <!-- One IRQ + big poll block -->
+      <rect x="390" y="254" width="18" height="60" rx="2" fill="rgba(239,68,68,0.6)"/>
+      <text x="399" y="328" text-anchor="middle" fill="#94a3b8" font-size="9">IRQ</text>
+      <rect x="415" y="254" width="120" height="60" rx="2" fill="rgba(168,85,247,0.6)"/>
+      <text x="475" y="289" text-anchor="middle" fill="#e2e8f0" font-size="10">NAPI poll(64包)</text>
+      <rect x="542" y="254" width="80" height="60" rx="2" fill="rgba(59,130,246,0.3)"/>
+      <text x="582" y="289" text-anchor="middle" fill="#60a5fa" font-size="10">其他工作</text>
+      <rect x="630" y="254" width="18" height="60" rx="2" fill="rgba(239,68,68,0.6)"/>
+      <text x="639" y="328" text-anchor="middle" fill="#94a3b8" font-size="9">IRQ</text>
+      <rect x="655" y="254" width="52" height="60" rx="2" fill="rgba(168,85,247,0.6)"/>
+      <text x="681" y="289" text-anchor="middle" fill="#e2e8f0" font-size="10">poll</text>
+
+      <text x="550" y="356" text-anchor="middle" fill="#4ade80" font-size="11">结果：CPU 有时间处理其他任务</text>
+
+      <!-- Budget note -->
+      <rect x="10" y="390" width="720" height="0" rx="0"/>
+    </svg>
+    <p class="svg-caption">图 12：传统中断模式 vs NAPI 轮询模式对比</p>
+  </div>
+
+  <h3>NAPI Budget 机制</h3>
+  <table>
+    <tr><th>参数</th><th>默认值</th><th>含义</th><th>调整方式</th></tr>
+    <tr><td><code>netdev_budget</code></td><td>300 包/轮</td><td>每次 net_rx_action() 最多处理的总包数</td><td><code>sysctl net.core.netdev_budget</code></td></tr>
+    <tr><td><code>dev_weight</code></td><td>64 包/设备</td><td>每个设备每次 poll() 的包数上限</td><td><code>sysctl net.core.dev_weight</code></td></tr>
+    <tr><td><code>netdev_budget_usecs</code></td><td>8000 μs</td><td>每次 poll 的最长时间</td><td><code>sysctl net.core.netdev_budget_usecs</code></td></tr>
+    <tr><td><code>rx-usecs / rx-frames</code></td><td>硬件相关</td><td>硬件中断聚合（Interrupt Coalescing）</td><td><code>ethtool -C eth0</code></td></tr>
+  </table>
+
+  <div class="principle-box">
+    <p>第一性原理：NAPI 是对<strong>"最优批处理大小"</strong>的工程实践。中断是昂贵的（上下文切换、Cache Miss、不可抢占），而轮询是 CPU 浪费。NAPI 在两者之间找到平衡点：有数据到来时切换为轮询（高效批处理），空闲时恢复中断驱动（低延迟响应）。Budget 机制确保单个 NIC 不能垄断 CPU，这是公平调度在 I/O 层面的体现——每次"轮到"一个 NIC 处理，处理完预算后主动让出 CPU，让其他 NIC 或任务也有机会运行。</p>
+  </div>
+</section>
+
+<!-- ===== SECTION 9: Tuning ===== -->
+<section class="section" id="sec-9">
+  <h2>性能调优与参数</h2>
+
+  <p>根据 Red Hat Enterprise Linux 10 官方文档，高速网络场景（40 Gbps 及以上）的默认内核参数往往会导致丢包和性能下降，需要针对性调整。</p>
+
+  <div class="info-box">
+    <strong>来源：</strong> Red Hat RHEL 10 官方文档 - "Tuning network adapter settings"<br><br>
+    <em>"In high-speed networks with 40 Gbps and faster, certain default values of network adapter-related kernel settings can be a cause of packet drops and performance degradation. Tuning these settings can prevent such problems."</em>
+  </div>
+
+  <div class="svg-container">
+    <svg viewBox="0 0 740 360" xmlns="http://www.w3.org/2000/svg" style="min-width:500px">
+      <!-- Title -->
+      <text x="370" y="22" text-anchor="middle" fill="#60a5fa" font-size="14" font-weight="700">网络性能调优参数全景</text>
+
+      <!-- 4 parameter categories -->
+      <!-- Ring Buffer -->
+      <rect x="10" y="36" width="350" height="140" rx="8" fill="rgba(59,130,246,0.08)" stroke="#3b82f6" stroke-width="1.5"/>
+      <text x="185" y="58" text-anchor="middle" fill="#60a5fa" font-size="12" font-weight="700">Ring Buffer 大小</text>
+      <text x="20" y="78" fill="#4ade80" font-size="11" font-family="monospace"># 查看</text>
+      <text x="20" y="94" fill="#e2e8f0" font-size="11" font-family="monospace">ethtool -g enp1s0</text>
+      <text x="20" y="114" fill="#4ade80" font-size="11" font-family="monospace"># 设置（RX/TX 增大到最大值）</text>
+      <text x="20" y="130" fill="#e2e8f0" font-size="11" font-family="monospace">ethtool -G enp1s0 rx 4096 tx 4096</text>
+      <text x="20" y="154" fill="#94a3b8" font-size="11">高丢包率时首先检查此项</text>
+      <text x="20" y="170" fill="#94a3b8" font-size="11">RX: 255→4096  TX: 255→4096</text>
+
+      <!-- CPU backlog -->
+      <rect x="380" y="36" width="350" height="140" rx="8" fill="rgba(168,85,247,0.08)" stroke="#a855f7" stroke-width="1.5"/>
+      <text x="555" y="58" text-anchor="middle" fill="#c084fc" font-size="12" font-weight="700">CPU 背压队列</text>
+      <text x="390" y="78" fill="#4ade80" font-size="11" font-family="monospace"># 查看丢包统计</text>
+      <text x="390" y="94" fill="#e2e8f0" font-size="11" font-family="monospace">cat /proc/net/softnet_stat</text>
+      <text x="390" y="114" fill="#4ade80" font-size="11" font-family="monospace"># 增大 backlog</text>
+      <text x="390" y="130" fill="#e2e8f0" font-size="11" font-family="monospace">sysctl -w net.core.netdev_max_backlog=2000</text>
+      <text x="390" y="154" fill="#94a3b8" font-size="11">第二列持续增长时调整此参数</text>
+      <text x="390" y="170" fill="#94a3b8" font-size="11">CPU 队列满时会直接丢包</text>
+
+      <!-- TX Queue -->
+      <rect x="10" y="190" width="350" height="130" rx="8" fill="rgba(34,197,94,0.08)" stroke="#22c55e" stroke-width="1.5"/>
+      <text x="185" y="212" text-anchor="middle" fill="#4ade80" font-size="12" font-weight="700">发送队列长度</text>
+      <text x="20" y="232" fill="#4ade80" font-size="11" font-family="monospace"># 查看 TX 队列长度</text>
+      <text x="20" y="248" fill="#e2e8f0" font-size="11" font-family="monospace">ip -s link show enp1s0  # 看 qlen</text>
+      <text x="20" y="268" fill="#4ade80" font-size="11" font-family="monospace"># 增大到 2000</text>
+      <text x="20" y="284" fill="#e2e8f0" font-size="11" font-family="monospace">nmcli connection modify eth0 link.tx-queue-length 2000</text>
+      <text x="20" y="308" fill="#94a3b8" font-size="11">TX 错误频繁时调整，默认 1000</text>
+
+      <!-- ethtool stats -->
+      <rect x="380" y="190" width="350" height="130" rx="8" fill="rgba(245,158,11,0.08)" stroke="#f59e0b" stroke-width="1.5"/>
+      <text x="555" y="212" text-anchor="middle" fill="#fbbf24" font-size="12" font-weight="700">监控与诊断</text>
+      <text x="390" y="232" fill="#4ade80" font-size="11" font-family="monospace"># 查看 drop 统计</text>
+      <text x="390" y="248" fill="#e2e8f0" font-size="11" font-family="monospace">ethtool -S enp1s0 | grep drop</text>
+      <text x="390" y="268" fill="#4ade80" font-size="11" font-family="monospace"># 查看 SoftIRQ 统计</text>
+      <text x="390" y="284" fill="#e2e8f0" font-size="11" font-family="monospace">watch -n1 cat /proc/net/softnet_stat</text>
+      <text x="390" y="304" fill="#94a3b8" font-size="11">rx_queue_N_drops 高 → 增大 Ring Buffer</text>
+
+      <!-- Drop cascade -->
+      <rect x="10" y="332" width="720" height="24" rx="6" fill="rgba(30,41,59,0.8)" stroke="#334155" stroke-width="1"/>
+      <text x="370" y="348" text-anchor="middle" fill="#94a3b8" font-size="11">丢包发生点：Ring Buffer 满 → CPU backlog 满 → socket 接收缓冲区满 → TCP 窗口收缩（每一层都可能丢包）</text>
+    </svg>
+    <p class="svg-caption">图 13：关键网络性能调优参数与丢包排查路径</p>
+  </div>
+
+  <div class="principle-box">
+    <p>第一性原理：网络调优的本质是<strong>消除流水线瓶颈</strong>。数据从 NIC 到应用经历多个队列（Ring Buffer → CPU backlog → Socket buffer），任何一个队列溢出都导致丢包。调优的目标是让生产速率与消费速率在所有阶段保持匹配。Ring Buffer 是硬件 NIC 与内核的接口缓冲，增大它可以容忍突发流量；CPU backlog 是 NIC 中断与内核协议栈处理的解耦缓冲；最终 TCP 窗口是端到端流量控制。</p>
+  </div>
+</section>
+
+<!-- ===== SECTION 10: stmmac ===== -->
+<section class="section" id="sec-10">
+  <h2>stmmac 驱动实例</h2>
+
+  <p>stmmac（STMicroelectronics Ethernet Driver）是 Linux 内核中针对 Synopsys DesignWare Ethernet MAC IP 核的官方驱动，广泛用于 ARM SoC（如树莓派、STM32 等嵌入式系统）。以其为例说明 Ring Buffer 的具体实现。</p>
+
+  <div class="info-box">
+    <strong>来源：</strong> Linux Kernel stmmac Driver Documentation（docs.kernel.org/6.2/networking/device_drivers/ethernet/stmicro/stmmac.html）<br><br>
+    支持的 MAC 控制器：GMAC（≤3.73a）、GMAC4+（≥4.00a）、XGMAC2+（10G）、XLGMAC2+（100G）<br>
+    支持特性：多队列（最多 8 队列）、TSO、RSS、PTP 时间戳、EEE 节能以太网、硬件校验和卸载等
+  </div>
+
+  <h3>stmmac DMA 队列结构</h3>
+  <div class="svg-container">
+    <svg viewBox="0 0 740 420" xmlns="http://www.w3.org/2000/svg" style="min-width:520px">
+      <defs>
+        <marker id="rs2" markerWidth="8" markerHeight="6" refX="8" refY="3" orient="auto">
+          <polygon points="0 0, 8 3, 0 6" fill="#60a5fa"/>
+        </marker>
+      </defs>
+
+      <!-- stmmac_priv -->
+      <rect x="10" y="10" width="240" height="380" rx="10" fill="rgba(59,130,246,0.1)" stroke="#3b82f6" stroke-width="1.5"/>
+      <text x="130" y="34" text-anchor="middle" fill="#60a5fa" font-size="13" font-weight="700">stmmac_priv</text>
+      <text x="20" y="58" fill="#94a3b8" font-size="11">stmmac_dma_conf dma_conf</text>
+      <rect x="20" y="66" width="210" height="290" rx="6" fill="rgba(30,41,59,0.8)" stroke="#334155" stroke-width="1"/>
+      <text x="125" y="86" text-anchor="middle" fill="#c084fc" font-size="11" font-weight="600">stmmac_dma_conf</text>
+      <text x="30" y="106" fill="#94a3b8" font-size="10">dma_tx_size: u32 (TX 队列深度)</text>
+      <text x="30" y="122" fill="#94a3b8" font-size="10">dma_rx_size: u32 (RX 队列深度)</text>
+      <text x="30" y="142" fill="#60a5fa" font-size="10" font-weight="600">tx_queue[MAX_TX_QUEUES]</text>
+      <rect x="30" y="150" width="190" height="88" rx="4" fill="rgba(34,197,94,0.1)" stroke="#22c55e" stroke-width="1"/>
+      <text x="125" y="168" text-anchor="middle" fill="#4ade80" font-size="10" font-weight="600">stmmac_tx_queue</text>
+      <text x="40" y="184" fill="#94a3b8" font-size="9">struct dma_desc *dma_tx</text>
+      <text x="40" y="198" fill="#94a3b8" font-size="9">dma_addr_t dma_tx_phy</text>
+      <text x="40" y="212" fill="#94a3b8" font-size="9">struct sk_buff **tx_skbuff</text>
+      <text x="40" y="226" fill="#94a3b8" font-size="9">u32 cur_tx, dirty_tx</text>
+
+      <text x="30" y="254" fill="#60a5fa" font-size="10" font-weight="600">rx_queue[MAX_RX_QUEUES]</text>
+      <rect x="30" y="262" width="190" height="84" rx="4" fill="rgba(245,158,11,0.1)" stroke="#f59e0b" stroke-width="1"/>
+      <text x="125" y="280" text-anchor="middle" fill="#fbbf24" font-size="10" font-weight="600">stmmac_rx_queue</text>
+      <text x="40" y="296" fill="#94a3b8" font-size="9">struct dma_desc *dma_rx</text>
+      <text x="40" y="310" fill="#94a3b8" font-size="9">dma_addr_t dma_rx_phy</text>
+      <text x="40" y="324" fill="#94a3b8" font-size="9">struct sk_buff **rx_skbuff</text>
+      <text x="40" y="338" fill="#94a3b8" font-size="9">u32 cur_rx, dirty_rx</text>
+
+      <text x="30" y="362" fill="#94a3b8" font-size="9">struct napi_struct napi</text>
+      <text x="30" y="374" fill="#94a3b8" font-size="9">struct net_device *dev</text>
+
+      <!-- dma_desc structure -->
+      <rect x="280" y="10" width="440" height="200" rx="10" fill="rgba(245,158,11,0.1)" stroke="#f59e0b" stroke-width="1.5"/>
+      <text x="500" y="34" text-anchor="middle" fill="#fbbf24" font-size="13" font-weight="700">struct dma_desc（描述符）</text>
+
+      <rect x="294" y="48" width="410" height="148" rx="6" fill="rgba(30,41,59,0.8)" stroke="#334155" stroke-width="1"/>
+      <text x="499" y="68" text-anchor="middle" fill="#94a3b8" font-size="11">RING 模式（默认）: 双 Buffer 指针</text>
+
+      <rect x="304" y="80" width="188" height="36" rx="4" fill="rgba(59,130,246,0.2)" stroke="#3b82f6" stroke-width="1"/>
+      <text x="398" y="96" text-anchor="middle" fill="#60a5fa" font-size="11" font-weight="600">__le32 des0</text>
+      <text x="398" y="111" text-anchor="middle" fill="#94a3b8" font-size="9">Buffer 1 地址低32位 / 状态字</text>
+
+      <rect x="500" y="80" width="188" height="36" rx="4" fill="rgba(59,130,246,0.2)" stroke="#3b82f6" stroke-width="1"/>
+      <text x="594" y="96" text-anchor="middle" fill="#60a5fa" font-size="11" font-weight="600">__le32 des1</text>
+      <text x="594" y="111" text-anchor="middle" fill="#94a3b8" font-size="9">Buffer 2 地址 / 控制字</text>
+
+      <rect x="304" y="124" width="188" height="36" rx="4" fill="rgba(168,85,247,0.2)" stroke="#a855f7" stroke-width="1"/>
+      <text x="398" y="140" text-anchor="middle" fill="#c084fc" font-size="11" font-weight="600">__le32 des2</text>
+      <text x="398" y="155" text-anchor="middle" fill="#94a3b8" font-size="9">Buffer 1 长度 / 发送时间戳</text>
+
+      <rect x="500" y="124" width="188" height="36" rx="4" fill="rgba(168,85,247,0.2)" stroke="#a855f7" stroke-width="1"/>
+      <text x="594" y="140" text-anchor="middle" fill="#c084fc" font-size="11" font-weight="600">__le32 des3</text>
+      <text x="594" y="155" text-anchor="middle" fill="#94a3b8" font-size="9">控制标志 / OWN/FS/LS/CRC/...</text>
+
+      <text x="499" y="190" text-anchor="middle" fill="#94a3b8" font-size="10">des3 OWN bit=1 → NIC 所有；=0 → CPU 所有</text>
+
+      <!-- Transmit Process box -->
+      <rect x="280" y="224" width="440" height="186" rx="10" fill="rgba(34,197,94,0.08)" stroke="#22c55e" stroke-width="1.5"/>
+      <text x="500" y="248" text-anchor="middle" fill="#4ade80" font-size="12" font-weight="700">stmmac 发送流程（stmmac_main.c）</text>
+
+      <text x="294" y="272" fill="#94a3b8" font-size="11">1. stmmac_xmit() 被调用（ndo_start_xmit 回调）</text>
+      <text x="294" y="290" fill="#94a3b8" font-size="11">2. 调用 __init_dma_tx_desc_rings() 初始化（probe 时）</text>
+      <text x="294" y="308" fill="#94a3b8" font-size="11">3. 填写 des0~des3，设置 OWN bit=1（交给 NIC）</text>
+      <text x="294" y="326" fill="#94a3b8" font-size="11">4. 通知 DMA 引擎：stmmac_dma_start_tx()</text>
+      <text x="294" y="344" fill="#94a3b8" font-size="11">5. TX 完成后 NAPI poll 清理：dma_free_tx_skbufs()</text>
+      <text x="294" y="364" fill="#e2e8f0" font-size="11" font-family="monospace">CONFIG_STMMAC_ETH → device drivers → network → ethernet</text>
+      <text x="294" y="398" fill="#94a3b8" font-size="10">调试：debugfs /sys/kernel/debug/stmmac/descriptors_status</text>
+    </svg>
+    <p class="svg-caption">图 14：stmmac 驱动数据结构与描述符布局</p>
+  </div>
+
+  <h3>驱动初始化核心代码（官方注释）</h3>
+  <pre><code>/**
+ * __init_dma_tx_desc_rings - init the TX descriptor ring (per queue)
+ * @priv: driver private structure
+ * @dma_conf: structure to take the dma data
+ * @queue: TX queue index
+ * Description: this function initializes the DMA TX descriptors
+ * and allocates the socket buffers. It supports the chained and ring modes.
+ */
+static int __init_dma_tx_desc_rings(struct stmmac_priv *priv,
+                                     struct stmmac_dma_conf *dma_conf,
+                                     u32 queue)
+{
+    struct stmmac_tx_queue *tx_q = &dma_conf->tx_queue[queue];
+    int i;
+
+    /* Setup the chained descriptor addresses */
+    if (priv->descriptor_mode == STMMAC_CHAIN_MODE) {
+        stmmac_mode_init(priv, tx_q->dma_tx, tx_q->dma_tx_phy,
+                         dma_conf->dma_tx_size, 0);
+    }
+
+    for (i = 0; i &lt; dma_conf->dma_tx_size; i++) {
+        struct dma_desc *p = stmmac_get_tx_desc(priv, tx_q, i);
+        stmmac_clear_desc(priv, p);          /* 清空描述符 */
+        stmmac_set_tx_skb_dma_entry(tx_q, i, 0, 0, false);
+        tx_q->tx_skbuff[i] = NULL;          /* skb 指针置空 */
+    }
+    return 0;
+}</code></pre>
+
+  <h3>功能特性矩阵</h3>
+  <table>
+    <tr><th>特性</th><th>stmmac 支持</th><th>说明</th></tr>
+    <tr><td>多 TX/RX 队列</td><td>✅ 最多 8 队列</td><td>多核并行，减少锁竞争</td></tr>
+    <tr><td>TSO（TCP 分段卸载）</td><td>✅ GMAC ≥4.x</td><td>大包交给硬件分段，降低 CPU 负载</td></tr>
+    <tr><td>RSS（接收端扩展）</td><td>✅</td><td>硬件哈希分发包到不同 CPU</td></tr>
+    <tr><td>RING/CHAIN 模式</td><td>✅ 均支持</td><td>默认 RING，chain_mode=1 切换</td></tr>
+    <tr><td>硬件校验和卸载</td><td>✅ TX&amp;RX</td><td>TCP/UDP/IP 校验和由 NIC 完成</td></tr>
+    <tr><td>PTP 时间戳</td><td>✅ IEEE 1588</td><td>精确网络时间同步，扩展描述符</td></tr>
+    <tr><td>EEE 节能以太网</td><td>✅</td><td>空闲时进入低功耗 LPI 模式</td></tr>
+    <tr><td>VLAN 卸载</td><td>✅</td><td>硬件 VLAN 插入/删除/过滤</td></tr>
+  </table>
+
+  <div class="principle-box">
+    <p>第一性原理：stmmac 驱动是"软件驱动程序"与"硬件 IP 核规范"之间的<strong>完美翻译层</strong>。硬件 IP 核（DesignWare Ethernet MAC）定义了描述符格式、寄存器接口；Linux 内核定义了 ndo_start_xmit、napi_struct 等抽象接口；stmmac 驱动的唯一价值就是在两套语言之间做精确翻译——将内核的 sk_buff 转化为硬件描述符，将硬件的中断和 DMA 完成转化为内核的 NAPI 事件。这种分层设计使得同一个驱动可以支持数十种基于 DesignWare IP 的不同 SoC，充分体现了软件工程中接口抽象的力量。</p>
+  </div>
+</section>
+
+</main>
+
+<div class="kbd-hint">
+  <kbd>←</kbd> <kbd>→</kbd> 章节导航
+</div>
+
+<script>
+// ===== Section management =====
+const SECTION_COUNT = 11;
+let currentSection = 0;
+
+const sections = Array.from({length: SECTION_COUNT}, (_, i) => document.getElementById('sec-' + i));
+const navItems = Array.from(document.querySelectorAll('.nav-item'));
+
+function goSection(idx) {
+  idx = Math.max(0, Math.min(SECTION_COUNT - 1, idx));
+  currentSection = idx;
+  sections[idx].scrollIntoView({behavior: 'smooth', block: 'start'});
+  updateNav(idx);
+  closeMobileNav();
+}
+
+function updateNav(idx) {
+  navItems.forEach((item, i) => {
+    item.classList.toggle('active', i === idx);
+  });
+}
+
+// ===== Progress bar =====
+function updateProgress() {
+  const el = document.documentElement;
+  const scrollTop = document.documentElement.scrollTop || document.body.scrollTop;
+  const scrollHeight = document.documentElement.scrollHeight - document.documentElement.clientHeight;
+  const progress = scrollHeight > 0 ? (scrollTop / scrollHeight) * 100 : 0;
+  document.getElementById('progress-bar').style.width = progress + '%';
+
+  // Update active section
+  const scrollPos = scrollTop + window.innerHeight * 0.3;
+  for (let i = sections.length - 1; i >= 0; i--) {
+    if (sections[i] && sections[i].offsetTop <= scrollPos) {
+      if (currentSection !== i) {
+        currentSection = i;
+        updateNav(i);
+      }
+      break;
+    }
+  }
+}
+
+window.addEventListener('scroll', updateProgress, {passive: true});
+updateProgress();
+
+// ===== Keyboard navigation =====
+document.addEventListener('keydown', function(e) {
+  if (e.key === 'ArrowRight' || e.key === 'ArrowDown') {
+    e.preventDefault();
+    goSection(currentSection + 1);
+  } else if (e.key === 'ArrowLeft' || e.key === 'ArrowUp') {
+    e.preventDefault();
+    goSection(currentSection - 1);
+  }
+});
+
+// ===== Mobile hamburger =====
+const toggle = document.getElementById('nav-toggle');
+const sidebar = document.getElementById('sidebar');
+const overlay = document.getElementById('nav-overlay');
+
+function closeMobileNav() {
+  sidebar.classList.remove('open');
+  overlay.classList.remove('open');
+}
+
+toggle.addEventListener('click', function() {
+  const isOpen = sidebar.classList.contains('open');
+  if (isOpen) {
+    closeMobileNav();
+  } else {
+    sidebar.classList.add('open');
+    overlay.classList.add('open');
+  }
+});
+overlay.addEventListener('click', closeMobileNav);
+</script>
+</body>
+</html>

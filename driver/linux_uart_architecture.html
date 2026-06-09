@@ -1,0 +1,361 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>从第一性原理到 Linux 内核：UART (TTY) 通信架构全解</title>
+    <style>
+        :root {
+            --primary: #2c3e50;
+            --secondary: #34495e;
+            --accent: #2980b9;
+            --bg-color: #f8f9fa;
+            --text-color: #333;
+            --code-bg: #fdf6e3;
+            --border-color: #e0e0e0;
+        }
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
+            line-height: 1.6;
+            color: var(--text-color);
+            background-color: var(--bg-color);
+            max-width: 1200px;
+            margin: 0 auto;
+            padding: 20px;
+        }
+        h1, h2, h3 {
+            color: var(--primary);
+            border-bottom: 2px solid var(--accent);
+            padding-bottom: 5px;
+            margin-top: 40px;
+        }
+        h1 { font-size: 2.2em; text-align: center; border-bottom: none; margin-bottom: 10px; }
+        .subtitle { text-align: center; color: var(--secondary); margin-bottom: 40px; font-size: 1.2em; }
+        p { margin-bottom: 15px; text-align: justify; }
+        .principle-box {
+            background: #e8f4f8;
+            border-left: 5px solid var(--accent);
+            padding: 15px 20px;
+            margin: 20px 0;
+            border-radius: 0 5px 5px 0;
+            font-weight: 500;
+        }
+        code {
+            background-color: #eaeaea;
+            padding: 2px 5px;
+            border-radius: 4px;
+            font-family: Consolas, Monaco, monospace;
+            color: #c0392b;
+        }
+        .svg-container {
+            width: 100%;
+            display: flex;
+            justify-content: center;
+            margin: 30px 0;
+            background: white;
+            padding: 20px 0;
+            border-radius: 8px;
+            box-shadow: 0 4px 6px rgba(0,0,0,0.05);
+            border: 1px solid var(--border-color);
+        }
+        svg { max-width: 100%; height: auto; }
+        table {
+            width: 100%;
+            border-collapse: collapse;
+            margin: 20px 0;
+            background: white;
+            box-shadow: 0 1px 3px rgba(0,0,0,0.1);
+        }
+        th, td {
+            padding: 12px 15px;
+            border: 1px solid var(--border-color);
+            text-align: left;
+        }
+        th { background-color: var(--primary); color: white; }
+    </style>
+</head>
+<body>
+
+    <h1>从第一性原理到 Linux 内核：UART (TTY) 架构全解</h1>
+    <div class="subtitle">深度剖析 LDM 演进、核心对象与数据流转</div>
+
+    <h2>一、 UART 的第一性原理：解决异步通信的矛盾</h2>
+    <p>总线与点对点通信的本质区别在于“时钟与同步”。UART（通用异步收发传输器）<b>没有时钟线</b>，仅靠两根独立的数据线（TX 发送、RX 接收）进行点对点全双工通信。</p>
+    <ul>
+        <li><b>同步（无钟之钟）：</b> 双方必须在软件层面约定相同的“波特率（Baud Rate）”。时间成为了隐形的同步介质。</li>
+        <li><b>帧定界：</b> 线路空闲时保持高电平。用从高到低的跳变作为<b>起始位</b>唤醒接收方；用固定宽度的拉高作为<b>停止位</b>结束一帧。</li>
+        <li><b>硬件解耦：</b> CPU 速度是纳秒级，UART 是微秒级。硬件引入 <b>移位寄存器</b> 和 <b>FIFO 缓存</b>，抹平极端的速率差。</li>
+    </ul>
+    <div class="principle-box">
+        第一性原理总结：时间的契约与空间换时间的缓冲哲学。CPU 绝不参与机械的移位等待，硬件控制器成为了极速 CPU 与慢速物理世界之间的巨型减震器。
+    </div>
+
+    <h2>二、 架构哲学分歧：为什么 UART 没有像 I2C 那样的总线？</h2>
+    <p>在 Linux 架构史中，I2C 拥有标准的 LDM（Linux 设备模型）总线，而早期的 UART 却没有。这是由于两者诞生时的“第一性原理”不同：</p>
+    <table>
+        <tr>
+            <th>属性</th>
+            <th>I2C 的灵魂 (集成电路总线)</th>
+            <th>传统 UART 的灵魂 (终端节点)</th>
+        </tr>
+        <tr>
+            <td>设计初衷</td>
+            <td>连接 PCB 板子上的多种芯片，需要拓扑管理</td>
+            <td>连接人机交互设备（键盘、显示器、TTY终端）</td>
+        </tr>
+        <tr>
+            <td>内核认知</td>
+            <td>挂载外设的物理总线</td>
+            <td>提供纯粹字符流的逻辑端点 (Endpoint)</td>
+        </tr>
+        <tr>
+            <td>暴露接口</td>
+            <td>LDM 自动加载驱动提供业务接口 (如 /dev/input)</td>
+            <td>直接暴露字符设备 /dev/ttyS0 给用户态</td>
+        </tr>
+    </table>
+
+    <p>随着嵌入式发展，蓝牙、GPS 等智能芯片挂载到 UART 上，传统 TTY 模式暴露出严重的<b>设备匹配和电源管理缺失</b>问题。Linux 4.11 引入了 <code>serdev</code> (Serial Device Bus) 完美解决了这一痛点。</p>
+
+    <!-- SVG 1: TTY vs Serdev 架构对比 -->
+    <div class="svg-container">
+        <svg viewBox="0 0 900 450">
+            <defs>
+                <marker id="arrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="6" markerHeight="6" orient="auto-start-reverse">
+                    <path d="M 0 0 L 10 5 L 0 10 z" fill="#2c3e50" />
+                </marker>
+                <marker id="arrow-blue" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="6" markerHeight="6" orient="auto-start-reverse">
+                    <path d="M 0 0 L 10 5 L 0 10 z" fill="#2980b9" />
+                </marker>
+            </defs>
+            
+            <!-- Backgrounds -->
+            <rect x="10" y="10" width="420" height="420" fill="#f8f9fa" stroke="#e0e0e0" rx="10"/>
+            <rect x="460" y="10" width="420" height="420" fill="#f8f9fa" stroke="#e0e0e0" rx="10"/>
+            
+            <text x="220" y="40" font-size="18" font-weight="bold" text-anchor="middle" fill="#2c3e50">传统 TTY 架构 (无 LDM 总线)</text>
+            <text x="670" y="40" font-size="18" font-weight="bold" text-anchor="middle" fill="#2980b9">现代 Serdev 架构 (遵循 LDM)</text>
+
+            <!-- User Space Line -->
+            <line x1="20" y1="120" x2="880" y2="120" stroke="#bdc3c7" stroke-dasharray="5,5"/>
+            <text x="450" y="110" font-size="12" fill="#7f8c8d" text-anchor="middle">用户空间 (User Space) ↑ | ↓ 内核空间 (Kernel Space)</text>
+
+            <!-- TTY Route -->
+            <rect x="140" y="60" width="160" height="40" fill="#ecf0f1" stroke="#34495e" rx="5"/>
+            <text x="220" y="85" font-size="14" text-anchor="middle">外设守护进程 (如 gpsd)</text>
+            
+            <rect x="140" y="150" width="160" height="40" fill="#ecf0f1" stroke="#34495e" rx="5"/>
+            <text x="220" y="175" font-size="14" text-anchor="middle">字符设备 /dev/ttyS0</text>
+            
+            <rect x="140" y="220" width="160" height="40" fill="#ecf0f1" stroke="#34495e" rx="5"/>
+            <text x="220" y="245" font-size="14" text-anchor="middle">TTY Core & Ldisc</text>
+
+            <!-- Serdev Route -->
+            <rect x="590" y="60" width="160" height="40" fill="#ecf0f1" stroke="#2980b9" rx="5"/>
+            <text x="670" y="85" font-size="14" text-anchor="middle">业务子系统 (如 Input/Net)</text>
+            
+            <rect x="590" y="150" width="160" height="40" fill="#d4e6f1" stroke="#2980b9" rx="5"/>
+            <text x="670" y="175" font-size="14" text-anchor="middle">LDM 外设驱动 (GPS/蓝牙)</text>
+            
+            <rect x="590" y="220" width="160" height="40" fill="#d4e6f1" stroke="#2980b9" rx="5"/>
+            <text x="670" y="245" font-size="14" text-anchor="middle">Serdev 虚拟总线</text>
+
+            <!-- Common Lower -->
+            <rect x="140" y="290" width="160" height="40" fill="#ecf0f1" stroke="#34495e" rx="5"/>
+            <text x="220" y="315" font-size="14" text-anchor="middle">Serial Core</text>
+            
+            <rect x="590" y="290" width="160" height="40" fill="#ecf0f1" stroke="#34495e" rx="5"/>
+            <text x="670" y="315" font-size="14" text-anchor="middle">Serial Core</text>
+
+            <rect x="140" y="360" width="160" height="40" fill="#ecf0f1" stroke="#34495e" rx="5"/>
+            <text x="220" y="385" font-size="14" text-anchor="middle">UART 硬件驱动 (uart_ops)</text>
+            
+            <rect x="590" y="360" width="160" height="40" fill="#ecf0f1" stroke="#34495e" rx="5"/>
+            <text x="670" y="385" font-size="14" text-anchor="middle">UART 硬件驱动 (uart_ops)</text>
+
+            <!-- Arrows -->
+            <line x1="220" y1="100" x2="220" y2="140" stroke="#2c3e50" stroke-width="2" marker-end="url(#arrow)"/>
+            <line x1="220" y1="190" x2="220" y2="210" stroke="#2c3e50" stroke-width="2" marker-end="url(#arrow)"/>
+            <line x1="220" y1="260" x2="220" y2="280" stroke="#2c3e50" stroke-width="2" marker-end="url(#arrow)"/>
+            <line x1="220" y1="330" x2="220" y2="350" stroke="#2c3e50" stroke-width="2" marker-end="url(#arrow)"/>
+
+            <line x1="670" y1="100" x2="670" y2="140" stroke="#2980b9" stroke-width="2" marker-end="url(#arrow-blue)"/>
+            <line x1="670" y1="190" x2="670" y2="210" stroke="#2980b9" stroke-width="2" marker-end="url(#arrow-blue)"/>
+            <line x1="670" y1="260" x2="670" y2="280" stroke="#2980b9" stroke-width="2" marker-end="url(#arrow-blue)"/>
+            <line x1="670" y1="330" x2="670" y2="350" stroke="#2980b9" stroke-width="2" marker-end="url(#arrow-blue)"/>
+
+            <!-- Comments -->
+            <text x="310" y="165" font-size="12" fill="#c0392b">无外设拓扑感知</text>
+            <text x="310" y="240" font-size="12" fill="#c0392b">依赖用户态切线路规程</text>
+            
+            <text x="760" y="240" font-size="12" fill="#27ae60">DTS 解析节点，动态挂载</text>
+            <text x="760" y="165" font-size="12" fill="#27ae60">完美支持电源管理(PM)</text>
+        </svg>
+    </div>
+    
+    <div class="principle-box">
+        破局法则：当现实硬件已经变成了总线形态，软件就必须跟进。serdev 并没有重写 TTY，而是在 Serial Core 向上汇报时加了一个分流阀（MUX），让现代设备完美回归 LDM 的怀抱。
+    </div>
+
+    <h2>三、 核心抽象概念：6大对象与指针级联</h2>
+    <p>如果走传统的 TTY 路线，内核不使用 LDM 总线，它是如何将千差万别的控制器与用户空间关联起来的？答案是<b>面向对象的抽象与指针级联</b>。系统启动并执行 <code>open()</code> 时，会建立以下关联：</p>
+
+    <!-- SVG 2: 数据结构指针级联图 -->
+    <div class="svg-container">
+        <svg viewBox="0 0 900 500">
+            <defs>
+                <marker id="ptr" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="6" markerHeight="6" orient="auto">
+                    <path d="M 0 0 L 10 5 L 0 10 z" fill="#e74c3c" />
+                </marker>
+            </defs>
+
+            <!-- Layers -->
+            <rect x="50" y="20" width="800" height="130" fill="#fcf3cf" stroke="#f1c40f" stroke-dasharray="4" rx="10"/>
+            <text x="70" y="45" font-size="16" font-weight="bold" fill="#d35400">TTY / 协议层 (动态生命周期)</text>
+
+            <rect x="50" y="170" width="800" height="160" fill="#d5f5e3" stroke="#2ecc71" stroke-dasharray="4" rx="10"/>
+            <text x="70" y="195" font-size="16" font-weight="bold" fill="#27ae60">Serial Core / 缓冲层 (承上启下)</text>
+
+            <rect x="50" y="350" width="800" height="130" fill="#ebdef0" stroke="#9b59b6" stroke-dasharray="4" rx="10"/>
+            <text x="70" y="375" font-size="16" font-weight="bold" fill="#8e44ad">硬件驱动层 (物理抽象)</text>
+
+            <!-- Objects -->
+            <rect x="150" y="70" width="200" height="60" fill="white" stroke="#333" rx="5"/>
+            <text x="250" y="95" font-size="14" font-weight="bold" text-anchor="middle">struct tty_struct</text>
+            <text x="250" y="115" font-size="12" fill="#555" text-anchor="middle">表示一次打开的会话</text>
+
+            <rect x="450" y="70" width="200" height="60" fill="white" stroke="#333" rx="5"/>
+            <text x="550" y="95" font-size="14" font-weight="bold" text-anchor="middle">struct tty_ldisc</text>
+            <text x="550" y="115" font-size="12" fill="#555" text-anchor="middle">线路规程 (协议翻译官)</text>
+
+            <rect x="150" y="210" width="500" height="100" fill="white" stroke="#333" rx="5"/>
+            <text x="400" y="235" font-size="14" font-weight="bold" text-anchor="middle">struct uart_state (桥梁)</text>
+            <rect x="170" y="250" width="200" height="40" fill="#fdf2e9" stroke="#e67e22" rx="3"/>
+            <text x="270" y="275" font-size="12" text-anchor="middle">内嵌: struct tty_port (含 Flip Buf)</text>
+            <rect x="430" y="250" width="200" height="40" fill="#eaf2f8" stroke="#3498db" rx="3"/>
+            <text x="530" y="275" font-size="12" text-anchor="middle">缓冲: xmit_buf (发送水库)</text>
+
+            <rect x="150" y="400" width="220" height="60" fill="white" stroke="#333" rx="5"/>
+            <text x="260" y="425" font-size="14" font-weight="bold" text-anchor="middle">struct uart_port</text>
+            <text x="260" y="445" font-size="12" fill="#555" text-anchor="middle">物理端口抽象 (寄存器/IRQ)</text>
+
+            <rect x="430" y="400" width="220" height="60" fill="white" stroke="#333" rx="5"/>
+            <text x="540" y="425" font-size="14" font-weight="bold" text-anchor="middle">struct uart_ops</text>
+            <text x="540" y="445" font-size="12" fill="#555" text-anchor="middle">操作函数集 (start_tx等)</text>
+
+            <!-- Pointers (Arrows) -->
+            <path d="M 350 100 L 440 100" stroke="#e74c3c" stroke-width="2" marker-end="url(#ptr)"/>
+            <text x="395" y="90" font-size="12" fill="#c0392b" text-anchor="middle">->ldisc</text>
+
+            <path d="M 250 130 C 250 170, 200 170, 200 210" stroke="#e74c3c" stroke-width="2" fill="none" marker-end="url(#ptr)"/>
+            <text x="180" y="180" font-size="12" fill="#c0392b">->driver_data</text>
+
+            <path d="M 270 310 L 270 390" stroke="#e74c3c" stroke-width="2" marker-end="url(#ptr)"/>
+            <text x="280" y="350" font-size="12" fill="#c0392b">->port (hw_port)</text>
+
+            <path d="M 370 430 L 420 430" stroke="#e74c3c" stroke-width="2" marker-end="url(#ptr)"/>
+            <text x="395" y="420" font-size="12" fill="#c0392b">->ops</text>
+        </svg>
+    </div>
+
+    <ul>
+        <li><code>uart_driver</code>: 总厂。管理同类芯片（如 8250）的全部逻辑。</li>
+        <li><code>uart_port</code>: 具象化物理抽象。每一个 <code>uart_add_one_port()</code> 代表系统中增加了一个可用的 TX/RX 通道。</li>
+        <li><code>uart_state</code>: 黏合剂。上方挂接软状态（tty_port），下方挂接硬实体（uart_port），内部维护 TX 环形缓冲区。</li>
+        <li><code>tty_ldisc</code>: 协议过滤器。决定收发的数据是纯透传，还是被当作回车换行指令解析。</li>
+    </ul>
+
+    <h2>四、 核心本质：数据的收发流转路由 (MSC)</h2>
+    <p>串行通信的本质冲突是“突发的硬件中断”与“不确定的软件调度”之间的矛盾。内核连建三道“水库”（TX Circular Buffer，RX Flip Buffer，TTY Read Buffer），用空间的冗余换取了系统时序的优雅。</p>
+
+    <!-- SVG 3: TX/RX Message Sequence Chart -->
+    <div class="svg-container">
+        <svg viewBox="0 0 1000 650">
+            <defs>
+                <marker id="seq-arrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="6" markerHeight="6" orient="auto">
+                    <path d="M 0 0 L 10 5 L 0 10 z" fill="#34495e" />
+                </marker>
+                <marker id="seq-arrow-rev" viewBox="0 0 10 10" refX="1" refY="5" markerWidth="6" markerHeight="6" orient="auto-start-reverse">
+                    <path d="M 10 0 L 0 5 L 10 10 z" fill="#e74c3c" />
+                </marker>
+            </defs>
+
+            <!-- Lifelines Backgrounds -->
+            <line x1="120" y1="50" x2="120" y2="600" stroke="#bdc3c7" stroke-dasharray="4"/>
+            <line x1="280" y1="50" x2="280" y2="600" stroke="#bdc3c7" stroke-dasharray="4"/>
+            <line x1="440" y1="50" x2="440" y2="600" stroke="#bdc3c7" stroke-dasharray="4"/>
+            <line x1="600" y1="50" x2="600" y2="600" stroke="#bdc3c7" stroke-dasharray="4"/>
+            <line x1="760" y1="50" x2="760" y2="600" stroke="#bdc3c7" stroke-dasharray="4"/>
+            <line x1="920" y1="50" x2="920" y2="600" stroke="#bdc3c7" stroke-dasharray="4"/>
+
+            <!-- Headers -->
+            <rect x="70" y="20" width="100" height="30" fill="#3498db" rx="5"/><text x="120" y="40" fill="white" font-size="12" text-anchor="middle">用户应用</text>
+            <rect x="230" y="20" width="100" height="30" fill="#2ecc71" rx="5"/><text x="280" y="40" fill="white" font-size="12" text-anchor="middle">TTY Core</text>
+            <rect x="390" y="20" width="100" height="30" fill="#2ecc71" rx="5"/><text x="440" y="40" fill="white" font-size="12" text-anchor="middle">线路规程 Ldisc</text>
+            <rect x="550" y="20" width="100" height="30" fill="#f1c40f" rx="5"/><text x="600" y="40" fill="black" font-size="12" text-anchor="middle">Serial Core</text>
+            <rect x="710" y="20" width="100" height="30" fill="#e67e22" rx="5"/><text x="760" y="40" fill="white" font-size="12" text-anchor="middle">底层驱动(ops)</text>
+            <rect x="870" y="20" width="100" height="30" fill="#e74c3c" rx="5"/><text x="920" y="40" fill="white" font-size="12" text-anchor="middle">UART 硬件</text>
+
+            <!-- TX Flow -->
+            <text x="50" y="80" font-size="16" font-weight="bold" fill="#2980b9">▶ 发送路径 (自顶向下，蓄水与开闸)</text>
+            
+            <line x1="120" y1="110" x2="270" y2="110" stroke="#34495e" stroke-width="2" marker-end="url(#seq-arrow)"/>
+            <text x="195" y="100" font-size="12" text-anchor="middle">1. write("HELLO")</text>
+
+            <line x1="280" y1="130" x2="430" y2="130" stroke="#34495e" stroke-width="2" marker-end="url(#seq-arrow)"/>
+            <text x="360" y="120" font-size="12" text-anchor="middle">2. 协议过滤加工</text>
+
+            <line x1="440" y1="150" x2="590" y2="150" stroke="#34495e" stroke-width="2" marker-end="url(#seq-arrow)"/>
+            <text x="515" y="140" font-size="12" text-anchor="middle">3. 传递数据流</text>
+
+            <rect x="560" y="170" width="80" height="30" fill="#d6eaf8" rx="3"/><text x="600" y="190" font-size="11" text-anchor="middle">拷入 xmit Buf</text>
+
+            <line x1="600" y1="220" x2="750" y2="220" stroke="#34495e" stroke-width="2" marker-end="url(#seq-arrow)"/>
+            <text x="675" y="210" font-size="12" text-anchor="middle">4. start_tx()</text>
+
+            <line x1="760" y1="240" x2="910" y2="240" stroke="#34495e" stroke-width="2" marker-end="url(#seq-arrow)"/>
+            <text x="835" y="230" font-size="12" text-anchor="middle">5. 开启 TXE 中断</text>
+
+            <path d="M 920 260 C 850 280, 850 300, 920 320" stroke="#e74c3c" stroke-width="1.5" stroke-dasharray="3" fill="none" marker-end="url(#seq-arrow)"/>
+            <text x="830" y="295" font-size="11" fill="#c0392b">中断触发: 取 buf 发送</text>
+
+            <!-- Divider -->
+            <line x1="50" y1="350" x2="950" y2="350" stroke="#95a5a6" stroke-width="2" stroke-dasharray="10,5"/>
+
+            <!-- RX Flow -->
+            <text x="50" y="380" font-size="16" font-weight="bold" fill="#27ae60">◀ 接收路径 (自底向上，硬中断到软中断)</text>
+
+            <line x1="910" y1="410" x2="760" y2="410" stroke="#e74c3c" stroke-width="2" marker-end="url(#seq-arrow-rev)"/>
+            <text x="835" y="400" font-size="12" text-anchor="middle">1. RX 收到字符 (中断)</text>
+
+            <line x1="760" y1="440" x2="610" y2="440" stroke="#34495e" stroke-width="2" marker-end="url(#seq-arrow-rev)"/>
+            <text x="685" y="430" font-size="12" text-anchor="middle">2. 塞入 Flip Buffer</text>
+            <text x="685" y="455" font-size="10" fill="#7f8c8d" text-anchor="middle">(退出硬中断，极快)</text>
+
+            <line x1="600" y1="480" x2="450" y2="480" stroke="#34495e" stroke-width="2" marker-dasharray="5" marker-end="url(#seq-arrow-rev)"/>
+            <text x="525" y="470" font-size="12" text-anchor="middle">3. Workqueue 软中断推</text>
+
+            <line x1="440" y1="510" x2="290" y2="510" stroke="#34495e" stroke-width="2" marker-end="url(#seq-arrow-rev)"/>
+            <text x="365" y="500" font-size="12" text-anchor="middle">4. 协议解析 (退格等)</text>
+
+            <rect x="240" y="525" width="80" height="30" fill="#d5f5e3" rx="3"/><text x="280" y="545" font-size="11" text-anchor="middle">存 read Buf</text>
+
+            <line x1="280" y1="570" x2="130" y2="570" stroke="#34495e" stroke-width="2" marker-end="url(#seq-arrow-rev)"/>
+            <text x="205" y="560" font-size="12" text-anchor="middle">5. 唤醒 read()</text>
+
+        </svg>
+    </div>
+
+    <h2>五、 终极总结</h2>
+    <div class="principle-box">
+        <p>UART 在 Linux 中的形态是一部活生生的计算机架构编年史：</p>
+        <ol>
+            <li><b>底层机制：</b> 积极拥抱现代，依靠 <code>uart_port</code> 和 <code>platform_bus</code> 解决 M 种芯片的硬件差异。</li>
+            <li><b>上层策略：</b> 坚守历史，用自己发明的 <code>线路规程 (Line Discipline)</code> 和 <code>tty_struct</code> 维护着 UNIX 古老的终端语义。</li>
+            <li><b>扩展破局：</b> 当传统的“万物皆文件（/dev/ttyS*）+ 用户态 udev”无法满足现代复杂外设的电源与拓扑管理时，内核果断架起 <code>serdev</code> 总线，实现了通信接口与业务设备的优雅解耦。</li>
+        </ol>
+        <p><b>“指针即路由，缓冲即解耦。”</b> 这就是 UART 在 Linux 内核中生存的终极哲学。</p>
+    </div>
+
+</body>
+</html>

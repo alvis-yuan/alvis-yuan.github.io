@@ -1,0 +1,557 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>打印全链路数据流分析：入口、排队、渲染、驱动与状态查询</title>
+  <style>
+    :root {
+      --bg:#0f1117;
+      --bg2:#161b22;
+      --bg3:#1e2530;
+      --border:#30363d;
+      --accent:#0a84ff;
+      --green:#30d158;
+      --red:#ff453a;
+      --violet:#bf5af2;
+      --warn:#ffa657;
+      --text:#e6edf3;
+      --muted:#8b949e;
+      --cyan:#64d2ff;
+      --code:#d2a8ff;
+    }
+    * { box-sizing:border-box; }
+    html { scroll-behavior:smooth; }
+    body {
+      margin:0;
+      background:var(--bg);
+      color:var(--text);
+      font-family:"Segoe UI", "Noto Sans SC", sans-serif;
+      line-height:1.72;
+    }
+    a { color:var(--cyan); text-decoration:none; }
+    a:hover { text-decoration:underline; }
+    code {
+      padding:1px 5px;
+      border:1px solid var(--border);
+      border-radius:4px;
+      background:rgba(110,118,129,.16);
+      color:var(--code);
+      font-family:"SFMono-Regular", Consolas, monospace;
+      font-size:.92em;
+    }
+    pre {
+      max-width:100%;
+      overflow:auto;
+      margin:14px 0;
+      padding:14px 16px;
+      border:1px solid var(--border);
+      border-radius:8px;
+      background:#0b0f14;
+      color:#c9d1d9;
+      font-family:"SFMono-Regular", Consolas, monospace;
+      font-size:12px;
+      line-height:1.55;
+    }
+    .topbar {
+      position:fixed;
+      top:0;
+      left:0;
+      right:0;
+      z-index:20;
+      display:flex;
+      align-items:center;
+      gap:14px;
+      min-height:54px;
+      padding:0 22px;
+      background:rgba(15,17,23,.94);
+      border-bottom:1px solid var(--border);
+      backdrop-filter:blur(10px);
+    }
+    .brand { font-weight:800; letter-spacing:.2px; }
+    .toplinks { margin-left:auto; display:flex; gap:12px; font-size:13px; }
+    #menuButton {
+      display:none;
+      border:1px solid var(--border);
+      border-radius:6px;
+      background:var(--bg2);
+      color:var(--text);
+      padding:6px 9px;
+      cursor:pointer;
+    }
+    #progressBar {
+      position:fixed;
+      top:54px;
+      left:0;
+      z-index:30;
+      height:3px;
+      width:0;
+      background:linear-gradient(90deg,var(--accent),var(--green));
+    }
+    .layout { display:flex; padding-top:57px; }
+    nav {
+      position:fixed;
+      top:57px;
+      bottom:0;
+      width:286px;
+      overflow:auto;
+      padding:18px 16px 28px;
+      background:var(--bg2);
+      border-right:1px solid var(--border);
+    }
+    nav details { margin-bottom:10px; }
+    nav summary { cursor:pointer; color:var(--text); font-weight:700; margin-bottom:8px; }
+    nav a {
+      display:block;
+      padding:7px 10px;
+      margin:2px 0;
+      border-radius:6px;
+      color:var(--muted);
+      font-size:13px;
+    }
+    nav a.active, nav a:hover { background:var(--bg3); color:var(--text); text-decoration:none; }
+    main { width:100%; max-width:1180px; margin-left:286px; padding:34px 42px 72px; }
+    section { margin:0 0 46px; scroll-margin-top:76px; }
+    h1 { margin:0 0 12px; font-size:32px; line-height:1.25; }
+    h2 { margin:0 0 14px; font-size:24px; border-bottom:1px solid var(--border); padding-bottom:8px; }
+    h3 { margin:24px 0 10px; font-size:18px; }
+    .lead { color:var(--muted); font-size:16px; max-width:940px; }
+    .grid { display:grid; grid-template-columns:repeat(2,minmax(0,1fr)); gap:16px; }
+    .card { border:1px solid var(--border); border-radius:8px; background:var(--bg2); padding:16px; }
+    .card h3 { margin-top:0; }
+    .tag {
+      display:inline-block;
+      margin:2px 4px 2px 0;
+      padding:2px 8px;
+      border:1px solid var(--border);
+      border-radius:999px;
+      color:var(--muted);
+      background:rgba(110,118,129,.12);
+      font-size:12px;
+    }
+    table { width:100%; border-collapse:collapse; margin:14px 0; overflow:hidden; border-radius:8px; }
+    th, td { border:1px solid var(--border); padding:10px 12px; vertical-align:top; }
+    th { background:var(--bg3); text-align:left; }
+    td { background:rgba(22,27,34,.72); }
+    .note { border-left:4px solid var(--accent); background:rgba(10,132,255,.09); padding:12px 14px; border-radius:6px; }
+    .warn { border-left:4px solid var(--warn); background:rgba(255,166,87,.1); padding:12px 14px; border-radius:6px; }
+    .principle { border-left:4px solid var(--green); background:rgba(48,209,88,.09); padding:12px 14px; border-radius:6px; margin-top:18px; }
+    .svg-wrap { margin:18px 0; overflow:auto; border:1px solid var(--border); border-radius:8px; background:#0b0f14; }
+    svg { display:block; max-width:100%; min-width:760px; height:auto; }
+    .box { fill:#161b22; stroke:#30363d; stroke-width:1.5; rx:8; }
+    .box2 { fill:#1e2530; stroke:#30363d; stroke-width:1.5; rx:8; }
+    .api { fill:rgba(10,132,255,.18); stroke:var(--accent); stroke-width:1.5; rx:8; }
+    .server { fill:rgba(48,209,88,.15); stroke:var(--green); stroke-width:1.5; rx:8; }
+    .hot { fill:rgba(255,166,87,.16); stroke:var(--warn); stroke-width:1.5; rx:8; }
+    .bad { fill:rgba(255,69,58,.16); stroke:var(--red); stroke-width:1.5; rx:8; }
+    .violet { fill:rgba(191,90,242,.16); stroke:var(--violet); stroke-width:1.5; rx:8; }
+    .wire { stroke:var(--muted); stroke-width:2; fill:none; marker-end:url(#arrow); }
+    .wire-blue { stroke:var(--accent); stroke-width:2; fill:none; marker-end:url(#arrowBlue); }
+    .wire-green { stroke:var(--green); stroke-width:2; fill:none; marker-end:url(#arrowGreen); }
+    .wire-warn { stroke:var(--warn); stroke-width:2; fill:none; marker-end:url(#arrowWarn); }
+    .wire-red { stroke:var(--red); stroke-width:2; fill:none; marker-end:url(#arrowRed); }
+    .svg-title { fill:var(--text); font-size:16px; font-weight:800; }
+    .svg-text { fill:var(--text); font-size:13px; }
+    .svg-small { fill:var(--muted); font-size:11px; }
+    .chapter-nav { display:flex; justify-content:space-between; gap:12px; margin-top:36px; }
+    .chapter-nav a { border:1px solid var(--border); border-radius:6px; padding:10px 14px; background:var(--bg2); }
+    @media (max-width:900px) {
+      #menuButton { display:block; }
+      .toplinks { display:none; }
+      nav { transform:translateX(-100%); transition:transform .18s ease; z-index:18; }
+      body.nav-open nav { transform:translateX(0); }
+      main { margin-left:0; padding:26px 18px 58px; }
+      .grid { grid-template-columns:1fr; }
+      h1 { font-size:26px; }
+      svg { min-width:720px; }
+    }
+  </style>
+</head>
+<body>
+  <header class="topbar">
+    <button id="menuButton" aria-label="打开目录">目录</button>
+    <div class="brand">Print dataflow</div>
+    <div class="toplinks">
+      <a href="print-module-flow.html">共享内存结构</a>
+      <a href="print-command-parser-design.html">指令解析设计</a>
+    </div>
+  </header>
+  <div id="progressBar"></div>
+  <div class="layout">
+    <nav id="sidebar">
+      <details open>
+        <summary>总览</summary>
+        <a href="#intro">分析范围</a>
+        <a href="#map">全链路地图</a>
+      </details>
+      <details open>
+        <summary>数据进入与排队</summary>
+        <a href="#entry">外部入口</a>
+        <a href="#shared-write">写入共享内存</a>
+        <a href="#queueing">通道队列到全局队列</a>
+      </details>
+      <details open>
+        <summary>打印执行</summary>
+        <a href="#scheduler">主循环调度</a>
+        <a href="#parse-render">解析与渲染</a>
+        <a href="#driver-write">写入底层驱动</a>
+      </details>
+      <details open>
+        <summary>状态与控制</summary>
+        <a href="#status">底层状态查询</a>
+        <a href="#control">控制命令与实时命令</a>
+        <a href="#failure">异常与重打</a>
+        <a href="#summary">结论</a>
+      </details>
+    </nav>
+
+    <main>
+      <section id="intro">
+        <h1>打印全链路数据流分析：从外部数据到驱动状态</h1>
+        <p class="lead">本文沿着真实代码路径，把外部发送来的打印数据如何进入系统、如何按通道排队、如何进入 ESC/POS/TSPL 解析、如何栅格化并写入底层打印驱动，以及应用如何查询底层状态串起来。核心代码位于 <code>server/print/src</code> 与 <code>libcommon/print_api.c</code>。</p>
+        <div class="note">一句话概括：外部入口只负责收数据并调用 <code>print_channel_send_data()</code>；共享内存保存任务和 buffer；PrintServer 主循环定时把通道任务刷到全局队列；普通 ESC/POS 数据由 <code>printer_send_data()</code> 逐字节解析，文本经 <code>LineBuffer</code> 栅格化，图片类命令可直接输出点行；最终 <code>PrnDotLine()</code> 和 <code>PrnIoctl()</code> 通过 <code>write/ioctl</code> 触达内核驱动。</div>
+        <div class="principle"><strong>第一性原理：</strong>打印系统要同时解决两个问题：数据面按顺序消费字节，控制面及时处理状态和设备动作。这个项目用共享内存承载数据面，用消息队列和 ioctl 承载控制面。</div>
+      </section>
+
+      <section id="map">
+        <h2>全链路地图</h2>
+        <div class="svg-wrap">
+          <svg viewBox="0 0 1180 560" role="img" aria-label="打印全链路数据流">
+            <defs>
+              <marker id="arrow" markerWidth="10" markerHeight="10" refX="8" refY="3" orient="auto"><path d="M0,0 L0,6 L9,3 z" fill="#8b949e"/></marker>
+              <marker id="arrowBlue" markerWidth="10" markerHeight="10" refX="8" refY="3" orient="auto"><path d="M0,0 L0,6 L9,3 z" fill="#0a84ff"/></marker>
+              <marker id="arrowGreen" markerWidth="10" markerHeight="10" refX="8" refY="3" orient="auto"><path d="M0,0 L0,6 L9,3 z" fill="#30d158"/></marker>
+              <marker id="arrowWarn" markerWidth="10" markerHeight="10" refX="8" refY="3" orient="auto"><path d="M0,0 L0,6 L9,3 z" fill="#ffa657"/></marker>
+              <marker id="arrowRed" markerWidth="10" markerHeight="10" refX="8" refY="3" orient="auto"><path d="M0,0 L0,6 L9,3 z" fill="#ff453a"/></marker>
+            </defs>
+            <text x="28" y="34" class="svg-title">外部入口 -> 共享内存队列 -> PrintServer 调度 -> 解析/渲染 -> 驱动</text>
+            <rect x="52" y="86" width="178" height="86" class="api"/><text x="94" y="122" class="svg-text">外部入口</text><text x="78" y="148" class="svg-small">USB/TCP/BLE/SPP</text>
+            <rect x="52" y="236" width="178" height="86" class="api"/><text x="82" y="272" class="svg-text">业务入口</text><text x="74" y="298" class="svg-small">HTTPS/MQTT/CGI</text>
+            <rect x="306" y="160" width="190" height="96" class="hot"/><text x="342" y="196" class="svg-text">libcommon API</text><text x="332" y="222" class="svg-small">print_channel_send_data</text>
+            <rect x="572" y="86" width="190" height="86" class="violet"/><text x="618" y="122" class="svg-text">task_pool</text><text x="606" y="148" class="svg-small">print_task_t</text>
+            <rect x="572" y="236" width="190" height="86" class="violet"/><text x="610" y="272" class="svg-text">buffer_pool</text><text x="604" y="298" class="svg-small">250 字节块链</text>
+            <rect x="838" y="160" width="190" height="96" class="server"/><text x="882" y="196" class="svg-text">全局任务队列</text><text x="878" y="222" class="svg-small">send_next_buffer</text>
+            <rect x="572" y="386" width="190" height="86" class="server"/><text x="608" y="422" class="svg-text">解析/渲染</text><text x="604" y="448" class="svg-small">Cmd_Proc / LineBuffer</text>
+            <rect x="838" y="386" width="190" height="86" class="bad"/><text x="882" y="422" class="svg-text">内核驱动</text><text x="866" y="448" class="svg-small">write / ioctl / status</text>
+            <path d="M230 129 C264 150 278 176 306 190" class="wire-blue"/>
+            <path d="M230 279 C264 260 278 232 306 220" class="wire-blue"/>
+            <path d="M496 196 C532 158 542 132 572 128" class="wire-warn"/>
+            <path d="M496 222 C532 250 542 278 572 280" class="wire-warn"/>
+            <path d="M762 128 C810 136 830 162 838 190" class="wire-green"/>
+            <path d="M762 280 C810 272 830 246 838 222" class="wire-green"/>
+            <path d="M933 256 C902 344 786 386 762 420" class="wire-green"/>
+            <path d="M762 430 H838" class="wire-red"/>
+          </svg>
+        </div>
+        <table>
+          <tr><th>阶段</th><th>关键函数/结构</th><th>职责</th></tr>
+          <tr><td>外部接入</td><td><code>usb.c</code>、<code>tcpserver.c</code>、BLE/SPP 模块、业务应用</td><td>收外部字节或订单数据，选择通道 ID。</td></tr>
+          <tr><td>API 写入</td><td><code>print_channel_send_data()</code>、<code>append_data_to_channel()</code></td><td>创建任务、分配 buffer、写入共享内存。</td></tr>
+          <tr><td>队列调度</td><td><code>flush_channels()</code>、<code>append_task_to_queue()</code></td><td>把各通道当前任务收敛到全局打印队列。</td></tr>
+          <tr><td>发送执行</td><td><code>send_next_buffer()</code></td><td>按打印状态、缺纸、TSPL/ESC/POS 模式发送 buffer。</td></tr>
+          <tr><td>解析渲染</td><td><code>printer_send_data()</code>、<code>Cmd_Proc()</code>、<code>LineBuffer</code></td><td>逐字节解释 ESC/POS，生成点阵行。</td></tr>
+          <tr><td>驱动边界</td><td><code>PrnDotLine()</code>、<code>PrnIoctl()</code>、<code>PrnGetStatus()</code></td><td>通过 <code>write()</code>/<code>ioctl()</code> 和内核打印驱动交互。</td></tr>
+        </table>
+        <div class="principle"><strong>第一性原理：</strong>端到端数据流的稳定性来自边界清晰：入口不碰硬件，客户端不调度，调度器不理解业务订单，驱动层不理解 ESC/POS。</div>
+      </section>
+
+      <section id="entry">
+        <h2>外部入口</h2>
+        <p>外部数据来源分两类：一种是物理/网络输入，例如 USB、TCP、串口、BLE、SPP；另一种是业务侧输入，例如 HTTPS/MQTT/CGI/内部测试。它们最终都收敛到 <code>print_channel_send_data()</code> 或带 flag/orderNo 的变体。</p>
+        <table>
+          <tr><th>来源</th><th>调用点</th><th>通道</th><th>特点</th></tr>
+          <tr><td>USB</td><td><code>server/print/src/usb.c</code></td><td><code>PRINT_CHN_ID_USB</code> / <code>PRINT_CHN_ID_USB_IAP2</code></td><td>外部主机直接下发 ESC/POS 字节流。</td></tr>
+          <tr><td>TCP</td><td><code>server/print/src/tcpserver.c</code></td><td><code>PRINT_CHN_ID_TCP_BEGIN + index</code></td><td>网络 socket 收到多少写多少，按连接映射通道。</td></tr>
+          <tr><td>BLE/SPP</td><td><code>server/bluetooth/**</code></td><td><code>PRINT_CHN_ID_BLE</code> / <code>PRINT_CHN_ID_SPP...</code></td><td>蓝牙数据分片到达，通常 <code>copies=0</code> 追加到当前任务。</td></tr>
+          <tr><td>云订单/业务</td><td><code>application/app0</code>、<code>cgi/service</code></td><td><code>PRINT_CHN_ID_HTTPS</code>、<code>PRINT_CHN_ID_MQTT</code>、<code>PRINT_CHN_ID_CGI</code></td><td>一般有明确份数，创建完整任务并返回 task id。</td></tr>
+          <tr><td>内部任务</td><td><code>PrintInfopage.c</code>、工厂测试、模式提示小票</td><td><code>PRINT_CHN_ID_INT</code></td><td>系统自己生成打印内容，也走同一队列。</td></tr>
+        </table>
+        <pre><code>// 典型入口形式
+print_channel_send_data(PRINT_CHN_ID_USB, data, len, 0);
+print_channel_send_data(PRINT_CHN_ID_TCP_BEGIN + index, rcvbuf, ret, 0);
+print_channel_send_data_cloud(PRINT_CHN_ID_HTTPS, data, len, copies, orderNo);</code></pre>
+        <div class="principle"><strong>第一性原理：</strong>入口层只做“把外部字节归属到哪个通道”。只要所有来源都收敛到统一 API，后面的排队、缺纸、重打、状态逻辑就能复用。</div>
+      </section>
+
+      <section id="shared-write">
+        <h2>写入共享内存</h2>
+        <p><code>libcommon/print_api.c</code> 是应用侧写共享内存的核心。它先判断是否为实时命令；普通数据则创建或复用通道当前任务，把数据拆成 <code>PRINT_BUFFER_SIZE</code> 大小的小块写入 <code>buffer_pool</code>，并挂到 <code>print_task_t</code> 的 buffer 链表。</p>
+        <pre><code>if (copies == 0)
+    return append_data_to_channel(chn_id, data, len, flag);
+
+t = task_new();
+TASK_AT(t)->chn_id = chn_id;
+TASK_AT(t)->id = next_task_id();
+TASK_AT(t)->copies = copies;
+
+while (len > 0) {
+    b = buffer_new();
+    append_buffer_to_task(t, b);
+    memcpy(BUFFER_AT(b)->data, data + bytes_copied, l);
+    BUFFER_AT(b)->len = l;
+}
+
+append_task_to_channel_task_queue(chn_id, t);</code></pre>
+        <div class="svg-wrap">
+          <svg viewBox="0 0 1080 470" role="img" aria-label="共享内存写入结构">
+            <text x="28" y="34" class="svg-title">一个任务由 task 元数据和多个 250 字节 buffer 组成</text>
+            <rect x="74" y="94" width="210" height="104" class="api"/><text x="112" y="130" class="svg-text">print_channel_t</text><text x="108" y="156" class="svg-small">当前 task / task_queue</text>
+            <rect x="384" y="94" width="210" height="104" class="hot"/><text x="430" y="130" class="svg-text">print_task_t</text><text x="416" y="156" class="svg-small">id / copies / flags</text><text x="416" y="180" class="svg-small">head / tail / sent</text>
+            <rect x="714" y="62" width="180" height="72" class="violet"/><text x="760" y="104" class="svg-text">buffer #1</text>
+            <rect x="714" y="178" width="180" height="72" class="violet"/><text x="760" y="220" class="svg-text">buffer #2</text>
+            <rect x="714" y="294" width="180" height="72" class="violet"/><text x="760" y="336" class="svg-text">buffer #N</text>
+            <path d="M284 146 H384" class="wire-blue"/>
+            <path d="M594 146 C640 100 676 98 714 98" class="wire-warn"/>
+            <path d="M804 134 V178" class="wire-warn"/>
+            <path d="M804 250 V294" class="wire-warn"/>
+          </svg>
+        </div>
+        <p><code>copies == 0</code> 的入口表示“追加到当前通道任务”，适合 USB/TCP/蓝牙这种流式到达的数据；<code>copies > 0</code> 的入口直接创建完整任务并放到该通道的任务队列，适合订单打印。</p>
+        <div class="principle"><strong>第一性原理：</strong>外部数据到达粒度不可控，驱动消费粒度也不可控。中间用固定小块链表解耦两端，可以避免大块内存搬移，并支持跨多次接收拼成一个任务。</div>
+      </section>
+
+      <section id="queueing">
+        <h2>通道队列到全局队列</h2>
+        <p>共享内存里有两级队列。第一级是每个通道自己的当前任务和通道任务队列，第二级是 PrintServer 唯一消费的全局打印队列。<code>flush_channels()</code> 周期性扫描所有通道，把已经完成的任务追加到全局队列。</p>
+        <table>
+          <tr><th>触发条件</th><th>代码行为</th><th>适用场景</th></tr>
+          <tr><td>通道任务队列已有完整任务</td><td>取 <code>channel->task_queue.head</code>，调用 <code>append_task_to_queue(t)</code></td><td>业务侧一次性下发完整订单。</td></tr>
+          <tr><td>当前流式任务超时无新数据</td><td><code>no_data_received >= task_end_timeout</code> 后认为任务完整</td><td>USB/TCP/BLE/SPP 字节流没有显式结束符。</td></tr>
+          <tr><td>指定接收长度已满足</td><td><code>bytes_received >= bytes_to_receive</code></td><td>某些命令或任务知道期望长度。</td></tr>
+          <tr><td>边接收边打印策略</td><td>队列空、打印机空闲、buffer 大于 1 时可提前入全局队列</td><td>大任务减少首张输出延迟。</td></tr>
+        </table>
+        <pre><code>if (complete) {
+    TASK_FLAG_CLEAR(TASK_AT(channel->task), TASK_FLAG_RECV_NOT_COMPLETE);
+    append_task_to_queue(channel->task);
+    channel->task = INDEX_NULL;
+} else if (task_print_strategy == PRN_START_PRINT_DURING_RECEIVING && ... ) {
+    TASK_FLAG_SET(TASK_AT(channel->task), TASK_FLAG_RECV_NOT_COMPLETE);
+    append_task_to_queue(channel->task);
+}</code></pre>
+        <div class="principle"><strong>第一性原理：</strong>多入口系统必须先在入口侧分流，再在执行侧串行化。通道队列保护来源之间的边界，全局队列保证硬件只按一个顺序消费。</div>
+      </section>
+
+      <section id="scheduler">
+        <h2>主循环调度</h2>
+        <p><code>print_queue_run()</code> 是 PrintServer 的核心调度循环。启动时 <code>main()</code> 先初始化 <code>printer_init()</code>、<code>print_queue_init()</code>、USB/TCP/serial，再启动 TSPL 线程并进入 <code>print_queue_run()</code>。循环里同时做四件事：查询驱动状态、刷新通道、检查当前任务完成/重打、发送下一批 buffer。</p>
+        <pre><code>while (g_process_running) {
+    PrnGetStatus(&status);
+    PrnStatusToShmStatus(&status);
+
+    flush_channels(msec, shm->status.printing);
+
+    if (shm->status.printing == 0)
+        check_task_print_status();
+
+    if (!shm->status.step_motor_overheated)
+        send_next_buffer(curr_paper_status);
+}</code></pre>
+        <div class="svg-wrap">
+          <svg viewBox="0 0 1080 500" role="img" aria-label="PrintServer 主循环">
+            <text x="28" y="34" class="svg-title">PrintServer 每 20/100ms 驱动一次状态和队列</text>
+            <rect x="96" y="92" width="190" height="78" class="server"/><text x="132" y="138" class="svg-text">PrnGetStatus</text>
+            <rect x="392" y="92" width="190" height="78" class="hot"/><text x="430" y="138" class="svg-text">flush_channels</text>
+            <rect x="688" y="92" width="190" height="78" class="violet"/><text x="714" y="138" class="svg-text">check_task_status</text>
+            <rect x="392" y="292" width="190" height="78" class="api"/><text x="430" y="338" class="svg-text">send_next_buffer</text>
+            <path d="M286 132 H392" class="wire-blue"/>
+            <path d="M582 132 H688" class="wire-blue"/>
+            <path d="M783 170 C760 254 632 298 582 324" class="wire-green"/>
+            <path d="M392 332 C250 306 164 226 190 170" class="wire"/>
+          </svg>
+        </div>
+        <p><code>send_next_buffer()</code> 会根据缺纸、开盖、过热、TSPL 解析标志、任务是否仍在接收等条件决定是否发送。普通 ESC/POS 每次最多发送 128 个 buffer；标签模式可放宽到 2048 个 buffer。</p>
+        <div class="principle"><strong>第一性原理：</strong>调度循环不是简单 while-print，它同时是“硬件状态采样器、队列推进器、异常恢复器”。打印能否稳定，取决于这三类职责是否按同一个节拍协调。</div>
+      </section>
+
+      <section id="parse-render">
+        <h2>解析与渲染</h2>
+        <p>普通 ESC/POS 分支中，<code>send_next_buffer()</code> 调用 <code>printer_send_data()</code>。后者加 <code>Cmd_Mutex</code>，设置当前 buffer id 和 offset，然后逐字节调用 <code>Cmd_Proc()</code>。<code>Cmd_Start()</code> 根据控制字节进入 DLE/ESC/FS/GS 子解析器，否则走字符渲染。</p>
+        <pre><code>for (Cmd_BufferOffset = offset; Cmd_BufferOffset < buf->len; Cmd_BufferOffset++) {
+    Cmd_Proc(buf->data[Cmd_BufferOffset]);
+    if (RUNTIME_FLAG_IS_SET(RTF_KERN_BUF_FULL)) {
+        rc = PRN_BUF_FULL;
+        break;
+    }
+}</code></pre>
+        <p>文本路径大致是：<code>Char_Proc()</code> 判断 UTF-8/CJK/ASCII/code page，调用 <code>ASC_Proc()</code>、<code>CodePage_Proc()</code> 或 <code>Unicode_Proc()</code>，再通过 <code>AppendToLineBuffer()</code> 写入行缓冲。遇到 <code>LF</code>、缓冲满、显式打印命令时，<code>lineBuffer->printLine()</code> 把这一行变成点阵输出。</p>
+        <div class="svg-wrap">
+          <svg viewBox="0 0 1120 540" role="img" aria-label="ESC/POS 解析渲染路径">
+            <text x="28" y="34" class="svg-title">普通 ESC/POS：字节解释和点阵生成分两步</text>
+            <rect x="70" y="92" width="180" height="78" class="api"/><text x="110" y="138" class="svg-text">print_buffer_t</text>
+            <rect x="344" y="92" width="180" height="78" class="server"/><text x="390" y="138" class="svg-text">Cmd_Proc</text>
+            <rect x="618" y="50" width="180" height="78" class="hot"/><text x="660" y="96" class="svg-text">ESC/GS 指令</text>
+            <rect x="618" y="178" width="180" height="78" class="hot"/><text x="664" y="224" class="svg-text">字符数据</text>
+            <rect x="884" y="178" width="180" height="78" class="violet"/><text x="930" y="224" class="svg-text">LineBuffer</text>
+            <rect x="884" y="330" width="180" height="78" class="bad"/><text x="930" y="376" class="svg-text">PrnDotLine</text>
+            <path d="M250 132 H344" class="wire-blue"/>
+            <path d="M524 132 C570 92 588 90 618 88" class="wire-warn"/>
+            <path d="M524 132 C570 190 588 216 618 216" class="wire-warn"/>
+            <path d="M798 216 H884" class="wire-green"/>
+            <path d="M974 256 V330" class="wire-red"/>
+            <path d="M708 128 C738 260 850 330 884 360" class="wire-red"/><text x="724" y="304" class="svg-small">位图/栅格图等可直接输出点行</text>
+          </svg>
+        </div>
+        <p>不是所有内容都必须先进入 <code>LineBuffer</code>。位图、栅格图、下载图像等 GS 指令在 <code>GS_Instruct.c</code> 中可以直接构造点阵并调用 <code>PrnDotLine()</code>。页模式下，<code>LineBuffer</code> 会先 paint 到 <code>PageBuffer</code>，再由页模式逻辑输出。</p>
+        <div class="principle"><strong>第一性原理：</strong>解析器负责把字节变成“打印意图”，渲染器负责把意图变成“点阵行”。文本适合先排版成行，图片类命令本来就是点阵，直接写点行更自然。</div>
+      </section>
+
+      <section id="driver-write">
+        <h2>写入底层驱动</h2>
+        <p>底层写入集中在 <code>server/print/src/printer.c</code>。<code>PrnDotLine()</code> 接收单色或灰度点阵数据，把数据装入 <code>PrnDivBuf</code>，再调用 <code>write_to_kernel()</code>。<code>write_to_kernel()</code> 最终通过 <code>write(PrnFd, PrnDivBuf, SizeOfPrnDivBuf)</code> 写内核驱动。</p>
+        <pre><code>static inline int write_to_kernel(void)
+{
+    int ret = write(PrnFd, PrnDivBuf, SizeOfPrnDivBuf);
+    if (ret == PRN_BUF_FULL) {
+        while (1) {
+            SysDelay(100);
+            ret = write(PrnFd, PrnDivBuf, 0);
+            if (ret != PRN_BUF_FULL)
+                break;
+        }
+    }
+    return ret;
+}</code></pre>
+        <p><code>PrnDotLine(NULL, 0, PRN_DATA_MONO)</code> 是一个特殊 flush/探测调用，会执行 <code>write(PrnFd, PrnDivBuf, 0)</code>。<code>send_next_buffer()</code> 在发普通数据前会先调用一次 <code>printer_send_data(NULL, 0)</code>，用于确认内核缓冲是否可继续接收。</p>
+        <table>
+          <tr><th>底层接口</th><th>系统调用</th><th>用途</th></tr>
+          <tr><td><code>PrnDotLine()</code></td><td><code>write()</code></td><td>写点阵打印数据；处理内核缓冲满。</td></tr>
+          <tr><td><code>PrnIoctl(PRN_CMD_GET_STATUS)</code></td><td><code>ioctl()</code></td><td>查询驱动状态。</td></tr>
+          <tr><td><code>PrnIoctl(PRN_CMD_CUT)</code></td><td><code>ioctl()</code></td><td>切刀等机械动作。</td></tr>
+          <tr><td><code>PrnIoctl(PRN_CMD_SEND_EMBEDDED_COMMAND)</code></td><td><code>write()</code></td><td>发送嵌入式底层命令，并可能 flush ring buffer。</td></tr>
+        </table>
+        <div class="principle"><strong>第一性原理：</strong>驱动层只认点阵、控制码和 ioctl 命令。ESC/POS 的语义必须在进入驱动前被消化成这些更底层的动作。</div>
+      </section>
+
+      <section id="status">
+        <h2>底层状态查询</h2>
+        <p>状态链路方向和打印数据相反：PrintServer 周期性从驱动取状态，转换成共享内存里的 <code>print_status_t</code>；应用侧查询只是读取共享内存快照。这样应用不会直接碰驱动，也不会让多个进程同时 ioctl 打印设备。</p>
+        <pre><code>int PrnGetStatus(PRN_STATUS *status)
+{
+    uint32_t dataOutLength = sizeof(PRN_STATUS);
+    return PrnIoctl(PRN_CMD_GET_STATUS, NULL, 0, status, &dataOutLength);
+}
+
+int print_get_status(print_status_t *status)
+{
+    memcpy(status, &shm->status, sizeof(print_status_t));
+    return 0;
+}</code></pre>
+        <div class="svg-wrap">
+          <svg viewBox="0 0 1080 460" role="img" aria-label="状态查询链路">
+            <text x="28" y="34" class="svg-title">状态从驱动向共享内存回流，应用只读快照</text>
+            <rect x="74" y="100" width="200" height="86" class="bad"/><text x="118" y="136" class="svg-text">内核打印驱动</text><text x="116" y="162" class="svg-small">PRN_STATUS</text>
+            <rect x="388" y="100" width="200" height="86" class="server"/><text x="440" y="136" class="svg-text">PrnGetStatus</text><text x="430" y="162" class="svg-small">ioctl GET_STATUS</text>
+            <rect x="704" y="100" width="220" height="86" class="violet"/><text x="748" y="136" class="svg-text">shm->status</text><text x="742" y="162" class="svg-small">print_status_t 快照</text>
+            <rect x="704" y="286" width="220" height="86" class="api"/><text x="748" y="322" class="svg-text">应用/订阅者</text><text x="742" y="348" class="svg-small">print_get_status / sem_status</text>
+            <path d="M274 144 H388" class="wire-red"/>
+            <path d="M588 144 H704" class="wire-green"/>
+            <path d="M814 186 V286" class="wire-blue"/>
+          </svg>
+        </div>
+        <p><code>PrnStatusToShmStatus()</code> 做字段映射，例如 <code>status->state & 0x01</code> 映射为 <code>printing</code>，纸张位和异常位映射为 <code>no_paper</code>、<code>paper_jam</code>、<code>paper_not_taken</code>，开盖映射为 <code>platen_opened</code>，温度和电压字段映射为过热/电压异常。</p>
+        <p>如果应用调用 <code>print_status_change_subscribe()</code>，库里会启动 <code>status_thread()</code> 等待 <code>sem_status</code>。PrintServer 发现状态变化后按订阅数 <code>sem_post(sem_status)</code>，应用线程再复制 <code>shm->status</code> 并回调。</p>
+        <div class="principle"><strong>第一性原理：</strong>状态查询要避免“每个应用都打到硬件”。由唯一硬件 owner 采样并发布快照，可以降低驱动竞争，也让实时命令、任务调度和应用查询看到同一份状态。</div>
+      </section>
+
+      <section id="control">
+        <h2>控制命令与实时命令</h2>
+        <p>控制面不走大块打印数据队列，而是通过 POSIX 消息队列进入 <code>print_mqueue_thread()</code>。例如设置走纸、切刀、打印模式、浓度、获取纸张位置、坏点检测、清除开盖状态等，最终由 PrintServer 调用 <code>PrnIoctl()</code> 或更新共享内存。</p>
+        <pre><code>case PRINT_CMD_DO_CUT:
+    PrnIoctl(PRN_CMD_CUT, NULL, 0, NULL, NULL);
+    break;
+
+case PRINT_CMD_HANDLE_REALTIME_COMMAND:
+    Realtime_Proc(msg.handle_realtime_command.chn_id,
+                  msg.handle_realtime_command.data,
+                  msg.handle_realtime_command.len);
+    break;</code></pre>
+        <p>实时命令有一条特殊路径：应用侧 <code>handle_realtime_command()</code> 在写共享内存前识别 <code>DLE EOT</code>、<code>GS I</code>、<code>ESC p</code>、<code>GS ( T</code>、<code>GS ( E</code> 等子集，并把它们封装成 <code>PRINT_CMD_HANDLE_REALTIME_COMMAND</code>。PrintServer 收到后调用 <code>Realtime_Proc()</code>，再由 <code>ReplyToHost()</code> 回到 USB/TCP/BLE/SPP 等来源。</p>
+        <div class="principle"><strong>第一性原理：</strong>打印数据是顺序流，控制命令是事件。把事件从数据流中抽出来可以提升响应速度，但必须保持命令规格一致，避免普通解析器和实时解析器行为漂移。</div>
+      </section>
+
+      <section id="failure">
+        <h2>异常与重打</h2>
+        <p>队列层和驱动层都参与异常处理。缺纸/开盖时，<code>send_next_buffer()</code> 会停止普通任务发送；主循环检测到从有纸到缺纸时调用 <code>out_of_paper_detected()</code>。任务完成不是以“buffer 全发完”立刻释放，而是结合驱动 buffer id 判断最后一个 buffer 是否真正打印完成。</p>
+        <table>
+          <tr><th>异常点</th><th>处理位置</th><th>作用</th></tr>
+          <tr><td>缺纸/开盖</td><td><code>print_queue_run()</code>、<code>send_next_buffer()</code></td><td>停止继续发送，必要时标记重打。</td></tr>
+          <tr><td>内核缓冲满</td><td><code>PrnDotLine()</code>、<code>printer_send_data()</code></td><td>等待驱动释放，或设置 <code>RTF_KERN_BUF_FULL</code> 暂停当前 buffer。</td></tr>
+          <tr><td>任务删除</td><td><code>check_task_print_status()</code></td><td>标记 <code>TASK_FLAG_DONT_PRINT</code> 后清理队列、恢复运行时状态。</td></tr>
+          <tr><td>多份打印</td><td><code>check_task_print_status()</code></td><td>当前份完成后重置 <code>buf_to_send</code> 和 <code>buf_offset</code> 从头再发。</td></tr>
+          <tr><td>不可重打任务</td><td><code>send_next_buffer()</code></td><td>已发送 buffer 可提前释放，节省共享内存。</td></tr>
+        </table>
+        <div class="warn">这里的关键不是“发完共享内存 buffer 就完成”，而是“驱动确认对应 buffer id 已打印完成”。这也是代码里 <code>send_buffer_id()</code>、<code>compare_buffer_id()</code>、<code>PRN_CMD_GET_BUFFER_ID</code> 存在的原因。</div>
+        <div class="principle"><strong>第一性原理：</strong>打印是物理过程，软件队列完成不等于纸面完成。可靠任务生命周期必须以硬件进度为准，而不是以内存消费为准。</div>
+      </section>
+
+      <section id="summary">
+        <h2>结论</h2>
+        <div class="grid">
+          <div class="card"><h3>数据流主线</h3><p>外部入口调用 <code>print_channel_send_data()</code>，数据进入共享内存 task/buffer，PrintServer 把通道任务刷入全局队列，再由 <code>send_next_buffer()</code> 推进打印。</p></div>
+          <div class="card"><h3>渲染主线</h3><p>普通 ESC/POS 经 <code>printer_send_data()</code> 逐字节进入 <code>Cmd_Proc()</code>，文本写入 <code>LineBuffer</code> 后输出点阵，图片类命令可以直接 <code>PrnDotLine()</code>。</p></div>
+          <div class="card"><h3>驱动主线</h3><p><code>PrnDotLine()</code> 通过 <code>write()</code> 写打印点行，<code>PrnIoctl()</code> 通过 <code>ioctl()</code> 做切刀、状态、纸张位置、模式等控制。</p></div>
+          <div class="card"><h3>状态主线</h3><p>PrintServer 周期性 <code>PrnGetStatus()</code>，映射到 <code>shm->status</code>；应用 <code>print_get_status()</code> 读快照，订阅者通过 <code>sem_status</code> 收变化通知。</p></div>
+        </div>
+        <p>
+          <span class="tag">print_channel_send_data</span>
+          <span class="tag">append_data_to_channel</span>
+          <span class="tag">flush_channels</span>
+          <span class="tag">send_next_buffer</span>
+          <span class="tag">printer_send_data</span>
+          <span class="tag">Cmd_Proc</span>
+          <span class="tag">LineBuffer</span>
+          <span class="tag">PrnDotLine</span>
+          <span class="tag">PrnGetStatus</span>
+        </p>
+        <div class="principle"><strong>第一性原理：</strong>这条链路的核心设计是“单硬件 owner + 共享内存队列 + 流式解析 + 状态快照”。它牺牲了一些结构简洁性，但换来了多来源输入、异常重打和底层驱动隔离。</div>
+      </section>
+
+      <div class="chapter-nav">
+        <a id="prevChapter" href="#intro">上一节</a>
+        <a id="nextChapter" href="#map">下一节</a>
+      </div>
+    </main>
+  </div>
+
+  <script>
+    const sections = Array.from(document.querySelectorAll('main section'));
+    const links = Array.from(document.querySelectorAll('nav a'));
+    const progressBar = document.getElementById('progressBar');
+    const menuButton = document.getElementById('menuButton');
+    const prevChapter = document.getElementById('prevChapter');
+    const nextChapter = document.getElementById('nextChapter');
+
+    function currentIndex() {
+      let index = 0;
+      for (let i = 0; i < sections.length; i++) {
+        if (sections[i].getBoundingClientRect().top <= 92) index = i;
+      }
+      return index;
+    }
+
+    function updateNav() {
+      const index = currentIndex();
+      const id = sections[index].id;
+      links.forEach(link => link.classList.toggle('active', link.getAttribute('href') === '#' + id));
+      const scrollable = document.documentElement.scrollHeight - window.innerHeight;
+      progressBar.style.width = scrollable > 0 ? (window.scrollY / scrollable * 100) + '%' : '0%';
+      prevChapter.href = '#' + sections[Math.max(0, index - 1)].id;
+      nextChapter.href = '#' + sections[Math.min(sections.length - 1, index + 1)].id;
+    }
+
+    menuButton.addEventListener('click', () => document.body.classList.toggle('nav-open'));
+    links.forEach(link => link.addEventListener('click', () => document.body.classList.remove('nav-open')));
+    window.addEventListener('scroll', updateNav, { passive:true });
+    window.addEventListener('resize', updateNav);
+    window.addEventListener('keydown', event => {
+      const index = currentIndex();
+      if (event.key === 'ArrowLeft') {
+        location.hash = '#' + sections[Math.max(0, index - 1)].id;
+      } else if (event.key === 'ArrowRight') {
+        location.hash = '#' + sections[Math.min(sections.length - 1, index + 1)].id;
+      }
+    });
+    updateNav();
+  </script>
+</body>
+</html>

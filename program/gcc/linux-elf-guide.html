@@ -1,0 +1,1809 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Linux ELF 文件结构深度解析</title>
+<style>
+  :root {
+    --bg: #0f1117;
+    --sidebar-bg: #161b22;
+    --sidebar-border: #21262d;
+    --accent: #58a6ff;
+    --accent2: #f78166;
+    --accent3: #3fb950;
+    --accent4: #d2a8ff;
+    --text: #e6edf3;
+    --text-muted: #8b949e;
+    --card-bg: #1c2128;
+    --card-border: #30363d;
+    --code-bg: #161b22;
+    --highlight: #388bfd1a;
+    --progress-h: 3px;
+    --sidebar-w: 280px;
+  }
+  *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+  html { scroll-behavior: smooth; font-size: 15px; }
+  body {
+    background: var(--bg);
+    color: var(--text);
+    font-family: 'Segoe UI', 'PingFang SC', 'Microsoft YaHei', system-ui, sans-serif;
+    line-height: 1.7;
+    overflow-x: hidden;
+  }
+
+  /* ── Progress bar ── */
+  #progress-bar {
+    position: fixed; top: 0; left: 0; height: var(--progress-h);
+    width: 0%; background: linear-gradient(90deg, var(--accent), var(--accent4));
+    z-index: 1000; transition: width .1s;
+  }
+
+  /* ── Top nav (mobile) ── */
+  #topnav {
+    display: none;
+    position: fixed; top: var(--progress-h); left: 0; right: 0;
+    height: 52px; background: var(--sidebar-bg);
+    border-bottom: 1px solid var(--sidebar-border);
+    align-items: center; justify-content: space-between;
+    padding: 0 16px; z-index: 900;
+  }
+  #topnav .brand { font-size: 1rem; font-weight: 700; color: var(--accent); }
+  #hamburger {
+    background: none; border: none; cursor: pointer;
+    display: flex; flex-direction: column; gap: 5px;
+  }
+  #hamburger span {
+    display: block; width: 22px; height: 2px;
+    background: var(--text); border-radius: 2px;
+    transition: transform .3s, opacity .3s;
+  }
+  #hamburger.open span:nth-child(1) { transform: translateY(7px) rotate(45deg); }
+  #hamburger.open span:nth-child(2) { opacity: 0; }
+  #hamburger.open span:nth-child(3) { transform: translateY(-7px) rotate(-45deg); }
+
+  /* ── Sidebar ── */
+  #sidebar {
+    position: fixed; top: var(--progress-h); left: 0;
+    width: var(--sidebar-w); height: 100vh;
+    background: var(--sidebar-bg);
+    border-right: 1px solid var(--sidebar-border);
+    overflow-y: auto; z-index: 800;
+    display: flex; flex-direction: column;
+    transition: transform .3s;
+  }
+  #sidebar::-webkit-scrollbar { width: 4px; }
+  #sidebar::-webkit-scrollbar-track { background: transparent; }
+  #sidebar::-webkit-scrollbar-thumb { background: var(--card-border); border-radius: 2px; }
+  .sidebar-header {
+    padding: 20px 16px 12px;
+    border-bottom: 1px solid var(--sidebar-border);
+  }
+  .sidebar-header .title { font-size: 1rem; font-weight: 700; color: var(--accent); }
+  .sidebar-header .sub { font-size: .75rem; color: var(--text-muted); margin-top: 4px; }
+  .sidebar-group { padding: 12px 0 4px; }
+  .sidebar-group-label {
+    padding: 0 16px 6px;
+    font-size: .7rem; font-weight: 700;
+    text-transform: uppercase; letter-spacing: .08em;
+    color: var(--text-muted);
+  }
+  .nav-item {
+    display: flex; align-items: center; gap: 8px;
+    padding: 6px 16px; cursor: pointer;
+    font-size: .82rem; color: var(--text-muted);
+    border-left: 3px solid transparent;
+    transition: all .2s; text-decoration: none;
+  }
+  .nav-item:hover { background: var(--highlight); color: var(--text); }
+  .nav-item.active { color: var(--accent); border-left-color: var(--accent); background: var(--highlight); }
+  .nav-item .num {
+    flex-shrink: 0; width: 20px; height: 20px;
+    border-radius: 50%; background: var(--card-bg);
+    font-size: .7rem; display: flex; align-items: center; justify-content: center;
+    color: var(--text-muted);
+  }
+  .nav-item.active .num { background: var(--accent); color: #fff; }
+
+  /* ── Main content ── */
+  #main {
+    margin-left: var(--sidebar-w);
+    min-height: 100vh;
+    padding: calc(var(--progress-h) + 0px) 0 80px;
+  }
+
+  /* ── Sections ── */
+  .section {
+    max-width: 860px;
+    margin: 0 auto;
+    padding: 48px 40px 0;
+  }
+  .section:first-child { padding-top: 64px; }
+
+  /* ── Headings ── */
+  .section-tag {
+    font-size: .7rem; font-weight: 700; letter-spacing: .12em;
+    text-transform: uppercase; color: var(--accent); margin-bottom: 6px;
+  }
+  h1.page-title {
+    font-size: 2rem; font-weight: 800; line-height: 1.2;
+    background: linear-gradient(135deg, var(--accent), var(--accent4));
+    -webkit-background-clip: text; -webkit-text-fill-color: transparent;
+    margin-bottom: 12px;
+  }
+  h2.sec-title {
+    font-size: 1.4rem; font-weight: 700; color: var(--text);
+    padding-bottom: 8px;
+    border-bottom: 1px solid var(--card-border);
+    margin-bottom: 20px;
+  }
+  h3.subsec { font-size: 1.05rem; font-weight: 600; color: var(--accent4); margin: 24px 0 10px; }
+
+  /* ── Paragraph ── */
+  p { margin-bottom: 12px; color: #c9d1d9; }
+  p strong { color: var(--text); }
+
+  /* ── Cards ── */
+  .card {
+    background: var(--card-bg); border: 1px solid var(--card-border);
+    border-radius: 10px; padding: 20px; margin-bottom: 16px;
+  }
+  .card-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(220px, 1fr)); gap: 12px; margin-bottom: 20px; }
+  .card-item {
+    background: var(--card-bg); border: 1px solid var(--card-border);
+    border-radius: 8px; padding: 14px;
+    transition: border-color .2s;
+  }
+  .card-item:hover { border-color: var(--accent); }
+  .card-item .label { font-size: .75rem; color: var(--text-muted); margin-bottom: 4px; }
+  .card-item .value { font-size: .9rem; font-weight: 600; color: var(--text); }
+
+  /* ── Code ── */
+  pre, code {
+    font-family: 'Fira Code', 'Consolas', 'Monaco', monospace;
+    font-size: .82rem;
+  }
+  pre {
+    background: var(--code-bg); border: 1px solid var(--card-border);
+    border-radius: 8px; padding: 16px; overflow-x: auto;
+    margin-bottom: 16px; line-height: 1.6;
+  }
+  code { background: #21262d; padding: 1px 5px; border-radius: 3px; font-size: .82em; }
+  pre code { background: none; padding: 0; }
+  .cm { color: #8b949e; }   /* comment */
+  .ck { color: #ff7b72; }   /* keyword */
+  .cs { color: #79c0ff; }   /* string/type */
+  .cn { color: #f2cc60; }   /* number */
+  .cf { color: #d2a8ff; }   /* function */
+  .co { color: #3fb950; }   /* ok/green */
+
+  /* ── Tables ── */
+  .tbl-wrap { overflow-x: auto; margin-bottom: 20px; }
+  table { width: 100%; border-collapse: collapse; font-size: .83rem; }
+  th {
+    background: #21262d; color: var(--accent);
+    font-weight: 700; padding: 10px 14px; text-align: left;
+    border-bottom: 1px solid var(--card-border);
+  }
+  td {
+    padding: 8px 14px; border-bottom: 1px solid #21262d;
+    color: #c9d1d9; vertical-align: top;
+  }
+  tr:hover td { background: var(--highlight); }
+  td code { font-size: .78rem; }
+  .badge {
+    display: inline-block; padding: 2px 8px; border-radius: 12px;
+    font-size: .7rem; font-weight: 700;
+  }
+  .badge-r { background: #f7816633; color: #f78166; }
+  .badge-g { background: #3fb95033; color: #3fb950; }
+  .badge-b { background: #58a6ff33; color: #58a6ff; }
+  .badge-p { background: #d2a8ff33; color: #d2a8ff; }
+  .badge-y { background: #f2cc6033; color: #f2cc60; }
+
+  /* ── Principle box ── */
+  .principle {
+    background: linear-gradient(135deg, #1f2e1f, #1c2128);
+    border: 1px solid #3fb95055;
+    border-left: 4px solid var(--accent3);
+    border-radius: 8px; padding: 18px 20px; margin-top: 32px;
+  }
+  .principle .p-label {
+    font-size: .72rem; font-weight: 800; text-transform: uppercase;
+    letter-spacing: .1em; color: var(--accent3); margin-bottom: 8px;
+    display: flex; align-items: center; gap: 6px;
+  }
+  .principle p { color: #b2d9b2; margin-bottom: 0; }
+
+  /* ── SVG ── */
+  svg text { font-family: 'Consolas', 'Monaco', monospace; }
+  .svg-wrap { overflow-x: auto; margin-bottom: 20px; }
+  .svg-wrap svg { display: block; max-width: 100%; }
+
+  /* ── Source link ── */
+  .source-link {
+    display: inline-flex; align-items: center; gap: 4px;
+    font-size: .75rem; color: var(--text-muted);
+    border: 1px solid var(--card-border); border-radius: 6px;
+    padding: 4px 10px; margin-bottom: 20px; text-decoration: none;
+    transition: border-color .2s, color .2s;
+  }
+  .source-link:hover { border-color: var(--accent); color: var(--accent); }
+
+  /* ── Footer ── */
+  .section-footer {
+    text-align: center; padding: 40px; color: var(--text-muted); font-size: .8rem;
+  }
+
+  /* ── Keyboard hint ── */
+  .kbd-hint {
+    position: fixed; bottom: 20px; right: 20px;
+    background: var(--card-bg); border: 1px solid var(--card-border);
+    border-radius: 8px; padding: 8px 14px; font-size: .73rem;
+    color: var(--text-muted); z-index: 500;
+    display: flex; align-items: center; gap: 6px;
+  }
+  kbd {
+    background: #21262d; border: 1px solid var(--card-border);
+    border-radius: 4px; padding: 1px 6px; font-size: .7rem;
+  }
+
+  /* ── Mobile ── */
+  @media (max-width: 768px) {
+    :root { --sidebar-w: 260px; }
+    #topnav { display: flex; }
+    #sidebar {
+      top: calc(var(--progress-h) + 52px);
+      height: calc(100vh - 52px - var(--progress-h));
+      transform: translateX(-100%);
+    }
+    #sidebar.open { transform: translateX(0); }
+    #main { margin-left: 0; padding-top: calc(var(--progress-h) + 52px); }
+    .section { padding: 32px 16px 0; }
+    .section:first-child { padding-top: 36px; }
+    h1.page-title { font-size: 1.4rem; }
+    h2.sec-title { font-size: 1.2rem; }
+    .kbd-hint { display: none; }
+    .section-footer { padding: 24px 16px; }
+  }
+  @media (max-width: 480px) {
+    .card-grid { grid-template-columns: 1fr 1fr; }
+  }
+
+  /* ── Overlay ── */
+  #overlay {
+    display: none; position: fixed; inset: 0;
+    background: rgba(0,0,0,.5); z-index: 700;
+  }
+  #overlay.open { display: block; }
+
+  /* section divider */
+  .sec-divider { height: 1px; background: var(--card-border); margin: 48px 40px 0; max-width: 860px; margin-left: auto; margin-right: auto; }
+</style>
+</head>
+<body>
+
+<div id="progress-bar"></div>
+
+<!-- Mobile top nav -->
+<nav id="topnav">
+  <span class="brand">ELF 文件结构</span>
+  <button id="hamburger" aria-label="菜单">
+    <span></span><span></span><span></span>
+  </button>
+</nav>
+
+<!-- Overlay -->
+<div id="overlay"></div>
+
+<!-- Sidebar -->
+<aside id="sidebar">
+  <div class="sidebar-header">
+    <div class="title">ELF 文件结构</div>
+    <div class="sub">Linux 可执行与链接格式</div>
+  </div>
+
+  <div class="sidebar-group">
+    <div class="sidebar-group-label">概览</div>
+    <a class="nav-item active" data-sec="s0" href="#s0"><span class="num">0</span>什么是 ELF</a>
+  </div>
+
+  <div class="sidebar-group">
+    <div class="sidebar-group-label">文件结构</div>
+    <a class="nav-item" data-sec="s1" href="#s1"><span class="num">1</span>ELF 头 (ELF Header)</a>
+    <a class="nav-item" data-sec="s2" href="#s2"><span class="num">2</span>节区头表 (Section Header)</a>
+    <a class="nav-item" data-sec="s3" href="#s3"><span class="num">3</span>程序头表 (Program Header)</a>
+    <a class="nav-item" data-sec="s4" href="#s4"><span class="num">4</span>节 vs 段 — 两种视图</a>
+  </div>
+
+  <div class="sidebar-group">
+    <div class="sidebar-group-label">重要节区</div>
+    <a class="nav-item" data-sec="s5" href="#s5"><span class="num">5</span>核心节区详解</a>
+    <a class="nav-item" data-sec="s6" href="#s6"><span class="num">6</span>符号表与重定位</a>
+    <a class="nav-item" data-sec="s7" href="#s7"><span class="num">7</span>动态链接节区</a>
+  </div>
+
+  <div class="sidebar-group">
+    <div class="sidebar-group-label">生成过程</div>
+    <a class="nav-item" data-sec="s8" href="#s8"><span class="num">8</span>编译链接全流程</a>
+    <a class="nav-item" data-sec="s9" href="#s9"><span class="num">9</span>加载与执行</a>
+  </div>
+
+  <div class="sidebar-group">
+    <div class="sidebar-group-label">工具</div>
+    <a class="nav-item" data-sec="s10" href="#s10"><span class="num">10</span>常用分析工具</a>
+  </div>
+</aside>
+
+<!-- Main -->
+<main id="main">
+
+  <!-- ═══════ S0 ═══════ -->
+  <div class="section" id="s0">
+    <div class="section-tag">Linux 系统编程</div>
+    <h1 class="page-title">Linux ELF 文件结构深度解析</h1>
+    <p>ELF（<strong>Executable and Linkable Format</strong>，可执行与链接格式）是 Linux 及绝大多数类 UNIX 系统中的标准二进制文件格式，用于：普通可执行文件、可重定位目标文件（<code>.o</code>）、共享对象（<code>.so</code>）以及核心转储（core dump）文件。</p>
+
+    <a class="source-link" href="https://www.man7.org/linux/man-pages/man5/elf.5.html" target="_blank">
+      📄 原文参考：man7.org — elf(5) Linux manual page
+    </a>
+    <a class="source-link" href="https://en.wikipedia.org/wiki/Executable_and_Linkable_Format" target="_blank">
+      📄 参考：Wikipedia — Executable and Linkable Format
+    </a>
+
+    <h2 class="sec-title">ELF 文件的四种类型</h2>
+    <div class="card-grid">
+      <div class="card-item">
+        <div class="label">ET_REL <code>0x01</code></div>
+        <div class="value">可重定位文件</div>
+        <p style="font-size:.78rem;color:var(--text-muted);margin-top:6px">编译器生成的 <code>.o</code> 文件，地址待链接器填写</p>
+      </div>
+      <div class="card-item">
+        <div class="label">ET_EXEC <code>0x02</code></div>
+        <div class="value">可执行文件</div>
+        <p style="font-size:.78rem;color:var(--text-muted);margin-top:6px">可直接运行，含固定加载地址</p>
+      </div>
+      <div class="card-item">
+        <div class="label">ET_DYN <code>0x03</code></div>
+        <div class="value">共享目标文件</div>
+        <p style="font-size:.78rem;color:var(--text-muted);margin-top:6px"><code>.so</code> 动态库，也用于 PIE 可执行</p>
+      </div>
+      <div class="card-item">
+        <div class="label">ET_CORE <code>0x04</code></div>
+        <div class="value">核心转储文件</div>
+        <p style="font-size:.78rem;color:var(--text-muted);margin-top:6px">进程崩溃时由内核生成，用于调试</p>
+      </div>
+    </div>
+
+    <h2 class="sec-title">文件整体布局（可视化）</h2>
+    <div class="svg-wrap">
+      <svg viewBox="0 0 700 420" width="700" height="420" xmlns="http://www.w3.org/2000/svg">
+        <defs>
+          <linearGradient id="g1" x1="0" y1="0" x2="1" y2="0">
+            <stop offset="0%" stop-color="#58a6ff" stop-opacity=".25"/>
+            <stop offset="100%" stop-color="#58a6ff" stop-opacity=".08"/>
+          </linearGradient>
+          <linearGradient id="g2" x1="0" y1="0" x2="1" y2="0">
+            <stop offset="0%" stop-color="#3fb950" stop-opacity=".25"/>
+            <stop offset="100%" stop-color="#3fb950" stop-opacity=".08"/>
+          </linearGradient>
+          <linearGradient id="g3" x1="0" y1="0" x2="1" y2="0">
+            <stop offset="0%" stop-color="#f78166" stop-opacity=".25"/>
+            <stop offset="100%" stop-color="#f78166" stop-opacity=".08"/>
+          </linearGradient>
+          <linearGradient id="g4" x1="0" y1="0" x2="1" y2="0">
+            <stop offset="0%" stop-color="#d2a8ff" stop-opacity=".25"/>
+            <stop offset="100%" stop-color="#d2a8ff" stop-opacity=".08"/>
+          </linearGradient>
+          <linearGradient id="g5" x1="0" y1="0" x2="1" y2="0">
+            <stop offset="0%" stop-color="#f2cc60" stop-opacity=".25"/>
+            <stop offset="100%" stop-color="#f2cc60" stop-opacity=".08"/>
+          </linearGradient>
+        </defs>
+
+        <!-- File container -->
+        <rect x="60" y="20" width="260" height="380" rx="8" fill="#1c2128" stroke="#30363d" stroke-width="1.5"/>
+        <text x="190" y="14" text-anchor="middle" fill="#8b949e" font-size="11">ELF 文件（磁盘）</text>
+
+        <!-- Blocks -->
+        <!-- ELF Header -->
+        <rect x="70" y="30" width="240" height="55" rx="5" fill="url(#g1)" stroke="#58a6ff" stroke-width="1"/>
+        <text x="190" y="52" text-anchor="middle" fill="#58a6ff" font-size="12" font-weight="bold">ELF Header</text>
+        <text x="190" y="68" text-anchor="middle" fill="#8b949e" font-size="10">魔数 · 类型 · 架构 · 入口点</text>
+        <text x="80" y="48" fill="#58a6ff" font-size="9">0x00</text>
+
+        <!-- Program Header Table -->
+        <rect x="70" y="93" width="240" height="45" rx="5" fill="url(#g3)" stroke="#f78166" stroke-width="1"/>
+        <text x="190" y="112" text-anchor="middle" fill="#f78166" font-size="12" font-weight="bold">Program Header Table</text>
+        <text x="190" y="127" text-anchor="middle" fill="#8b949e" font-size="10">段描述（运行时视图）</text>
+        <text x="80" y="108" fill="#f78166" font-size="9">e_phoff</text>
+
+        <!-- .text -->
+        <rect x="70" y="146" width="240" height="36" rx="5" fill="url(#g2)" stroke="#3fb950" stroke-width="1"/>
+        <text x="190" y="168" text-anchor="middle" fill="#3fb950" font-size="12" font-weight="bold">.text &nbsp; 代码节</text>
+
+        <!-- .rodata -->
+        <rect x="70" y="190" width="240" height="30" rx="5" fill="url(#g2)" stroke="#3fb950" stroke-width=".8" stroke-dasharray="4,2"/>
+        <text x="190" y="209" text-anchor="middle" fill="#3fb950" font-size="11">.rodata &nbsp; 只读数据节</text>
+
+        <!-- .data -->
+        <rect x="70" y="228" width="240" height="30" rx="5" fill="url(#g4)" stroke="#d2a8ff" stroke-width="1"/>
+        <text x="190" y="247" text-anchor="middle" fill="#d2a8ff" font-size="11">.data &nbsp; 已初始化数据节</text>
+
+        <!-- .bss -->
+        <rect x="70" y="266" width="240" height="28" rx="5" fill="url(#g4)" stroke="#d2a8ff" stroke-width=".8" stroke-dasharray="4,2"/>
+        <text x="190" y="284" text-anchor="middle" fill="#d2a8ff" font-size="11">.bss &nbsp; 未初始化（BSS）节</text>
+
+        <!-- Other sections -->
+        <rect x="70" y="302" width="240" height="28" rx="5" fill="url(#g5)" stroke="#f2cc60" stroke-width=".8"/>
+        <text x="190" y="320" text-anchor="middle" fill="#f2cc60" font-size="11">.symtab / .strtab / .debug_*</text>
+
+        <!-- Section Header Table -->
+        <rect x="70" y="338" width="240" height="52" rx="5" fill="url(#g1)" stroke="#58a6ff" stroke-width="1"/>
+        <text x="190" y="358" text-anchor="middle" fill="#58a6ff" font-size="12" font-weight="bold">Section Header Table</text>
+        <text x="190" y="374" text-anchor="middle" fill="#8b949e" font-size="10">节描述（链接时视图）</text>
+        <text x="80" y="354" fill="#58a6ff" font-size="9">e_shoff</text>
+
+        <!-- Memory side -->
+        <rect x="390" y="60" width="250" height="340" rx="8" fill="#1c2128" stroke="#30363d" stroke-width="1.5"/>
+        <text x="515" y="54" text-anchor="middle" fill="#8b949e" font-size="11">虚拟内存（运行时）</text>
+
+        <!-- TEXT segment -->
+        <rect x="400" y="70" width="230" height="80" rx="5" fill="url(#g3)" stroke="#f78166" stroke-width="1.2"/>
+        <text x="515" y="92" text-anchor="middle" fill="#f78166" font-size="11" font-weight="bold">LOAD 段（R-X）</text>
+        <text x="515" y="107" text-anchor="middle" fill="#8b949e" font-size="10">.text + .rodata</text>
+        <text x="515" y="121" text-anchor="middle" fill="#8b949e" font-size="10">只读 + 可执行</text>
+        <text x="408" y="85" fill="#f78166" font-size="9">0x400000</text>
+
+        <!-- DATA segment -->
+        <rect x="400" y="160" width="230" height="80" rx="5" fill="url(#g4)" stroke="#d2a8ff" stroke-width="1.2"/>
+        <text x="515" y="182" text-anchor="middle" fill="#d2a8ff" font-size="11" font-weight="bold">LOAD 段（RW-）</text>
+        <text x="515" y="197" text-anchor="middle" fill="#8b949e" font-size="10">.data + .bss</text>
+        <text x="515" y="211" text-anchor="middle" fill="#8b949e" font-size="10">可读写，BSS 零填充</text>
+        <text x="408" y="175" fill="#d2a8ff" font-size="9">0x600000</text>
+
+        <!-- Dynamic -->
+        <rect x="400" y="250" width="230" height="55" rx="5" fill="url(#g5)" stroke="#f2cc60" stroke-width="1"/>
+        <text x="515" y="272" text-anchor="middle" fill="#f2cc60" font-size="11" font-weight="bold">动态链接段</text>
+        <text x="515" y="287" text-anchor="middle" fill="#8b949e" font-size="10">PT_DYNAMIC / PT_INTERP</text>
+
+        <!-- Stack/Heap -->
+        <rect x="400" y="315" width="230" height="55" rx="5" fill="url(#g2)" stroke="#3fb950" stroke-width="1"/>
+        <text x="515" y="337" text-anchor="middle" fill="#3fb950" font-size="11" font-weight="bold">Stack / Heap</text>
+        <text x="515" y="352" text-anchor="middle" fill="#8b949e" font-size="10">运行时分配，非文件映射</text>
+
+        <!-- Arrow: load -->
+        <path d="M 315 175 Q 355 175 395 165" fill="none" stroke="#f78166" stroke-width="1.5" stroke-dasharray="6,3" marker-end="url(#arr)"/>
+        <path d="M 315 245 Q 355 245 395 215" fill="none" stroke="#d2a8ff" stroke-width="1.5" stroke-dasharray="6,3" marker-end="url(#arr2)"/>
+        <text x="335" y="162" fill="#8b949e" font-size="10">mmap</text>
+        <text x="335" y="235" fill="#8b949e" font-size="10">mmap</text>
+
+        <defs>
+          <marker id="arr" markerWidth="8" markerHeight="8" refX="6" refY="3" orient="auto">
+            <path d="M0,0 L0,6 L8,3 z" fill="#f78166"/>
+          </marker>
+          <marker id="arr2" markerWidth="8" markerHeight="8" refX="6" refY="3" orient="auto">
+            <path d="M0,0 L0,6 L8,3 z" fill="#d2a8ff"/>
+          </marker>
+        </defs>
+      </svg>
+    </div>
+
+    <div class="principle">
+      <div class="p-label">⚡ 第一性原理</div>
+      <p>ELF 本质上是一种<strong>自描述的二进制容器</strong>：文件头告诉你"我是谁"，节区头表告诉链接器"数据在哪"，程序头表告诉操作系统"如何加载我"。三张表的设计让同一份数据可以同时服务于编译工具链（静态视图）和操作系统加载器（动态视图），这是 ELF 灵活性的根本所在。</p>
+    </div>
+  </div>
+
+  <div class="sec-divider"></div>
+
+  <!-- ═══════ S1 ═══════ -->
+  <div class="section" id="s1">
+    <h2 class="sec-title">① ELF 头（ELF Header）</h2>
+    <p>ELF 头位于文件偏移 <code>0x00</code>，是整个文件的"目录"，大小固定：32 位为 52 字节，64 位为 64 字节。由 <code>Elf64_Ehdr</code> 结构体定义（源自 <code>&lt;elf.h&gt;</code>）。</p>
+
+    <a class="source-link" href="https://www.man7.org/linux/man-pages/man5/elf.5.html" target="_blank">📄 来源：man7.org elf(5) — ELF header (Ehdr)</a>
+
+    <pre><span class="ck">typedef</span> <span class="ck">struct</span> {
+    <span class="cm">/* e_ident[16] — 魔数和基本属性 */</span>
+    <span class="cs">unsigned char</span> e_ident[EI_NIDENT]; <span class="cm">/* 16 字节标识数组 */</span>
+    <span class="cs">uint16_t</span>      e_type;             <span class="cm">/* 文件类型 (ET_EXEC / ET_DYN …) */</span>
+    <span class="cs">uint16_t</span>      e_machine;          <span class="cm">/* 目标架构 (EM_X86_64 / EM_ARM …) */</span>
+    <span class="cs">uint32_t</span>      e_version;          <span class="cm">/* ELF 版本，始终为 EV_CURRENT(1) */</span>
+    <span class="cs">ElfN_Addr</span>     e_entry;            <span class="cm">/* 程序入口虚拟地址 */</span>
+    <span class="cs">ElfN_Off</span>      e_phoff;            <span class="cm">/* 程序头表在文件中的偏移 */</span>
+    <span class="cs">ElfN_Off</span>      e_shoff;            <span class="cm">/* 节区头表在文件中的偏移 */</span>
+    <span class="cs">uint32_t</span>      e_flags;            <span class="cm">/* 处理器相关标志 */</span>
+    <span class="cs">uint16_t</span>      e_ehsize;           <span class="cm">/* ELF 头本身大小（字节） */</span>
+    <span class="cs">uint16_t</span>      e_phentsize;        <span class="cm">/* 程序头表每条目大小 */</span>
+    <span class="cs">uint16_t</span>      e_phnum;            <span class="cm">/* 程序头表条目数量 */</span>
+    <span class="cs">uint16_t</span>      e_shentsize;        <span class="cm">/* 节区头表每条目大小 */</span>
+    <span class="cs">uint16_t</span>      e_shnum;            <span class="cm">/* 节区头表条目数量 */</span>
+    <span class="cs">uint16_t</span>      e_shstrndx;         <span class="cm">/* 节名字符串表的节区索引 */</span>
+} <span class="cf">Elf64_Ehdr</span>;</pre>
+
+    <h3 class="subsec">e_ident[16] 魔数详解</h3>
+    <div class="svg-wrap">
+      <svg viewBox="0 0 700 120" width="700" height="120" xmlns="http://www.w3.org/2000/svg">
+        <rect x="10" y="10" width="680" height="100" rx="8" fill="#1c2128" stroke="#30363d"/>
+        <text x="350" y="28" text-anchor="middle" fill="#8b949e" font-size="10">e_ident[16] 字节布局</text>
+        <!-- bytes -->
+        <g font-size="9" font-family="Consolas,Monaco,monospace" text-anchor="middle">
+          <!-- byte 0 -->
+          <rect x="18" y="34" width="50" height="30" rx="3" fill="#58a6ff22" stroke="#58a6ff" stroke-width="1"/>
+          <text x="43" y="47" fill="#58a6ff">0x7F</text>
+          <text x="43" y="58" fill="#8b949e">EI_MAG0</text>
+          <text x="43" y="100" fill="#8b949e" font-size="8">[0]</text>
+          <!-- byte 1-3 -->
+          <rect x="72" y="34" width="110" height="30" rx="3" fill="#58a6ff22" stroke="#58a6ff" stroke-width="1"/>
+          <text x="127" y="47" fill="#58a6ff">45 4C 46</text>
+          <text x="127" y="58" fill="#8b949e">'E' 'L' 'F'</text>
+          <text x="127" y="100" fill="#8b949e" font-size="8">[1..3]</text>
+          <!-- byte 4 -->
+          <rect x="186" y="34" width="60" height="30" rx="3" fill="#3fb95022" stroke="#3fb950" stroke-width="1"/>
+          <text x="216" y="47" fill="#3fb950">CLASS</text>
+          <text x="216" y="58" fill="#8b949e">1=32b 2=64b</text>
+          <text x="216" y="100" fill="#8b949e" font-size="8">[4]</text>
+          <!-- byte 5 -->
+          <rect x="250" y="34" width="60" height="30" rx="3" fill="#3fb95022" stroke="#3fb950" stroke-width="1"/>
+          <text x="280" y="47" fill="#3fb950">DATA</text>
+          <text x="280" y="58" fill="#8b949e">1=LE 2=BE</text>
+          <text x="280" y="100" fill="#8b949e" font-size="8">[5]</text>
+          <!-- byte 6 -->
+          <rect x="314" y="34" width="55" height="30" rx="3" fill="#f2cc6022" stroke="#f2cc60" stroke-width="1"/>
+          <text x="341" y="47" fill="#f2cc60">VERSION</text>
+          <text x="341" y="58" fill="#8b949e">= 1</text>
+          <text x="341" y="100" fill="#8b949e" font-size="8">[6]</text>
+          <!-- byte 7 -->
+          <rect x="373" y="34" width="65" height="30" rx="3" fill="#f2cc6022" stroke="#f2cc60" stroke-width="1"/>
+          <text x="405" y="47" fill="#f2cc60">OS/ABI</text>
+          <text x="405" y="58" fill="#8b949e">0=SysV</text>
+          <text x="405" y="100" fill="#8b949e" font-size="8">[7]</text>
+          <!-- byte 8 -->
+          <rect x="442" y="34" width="65" height="30" rx="3" fill="#f7816622" stroke="#f78166" stroke-width="1"/>
+          <text x="474" y="47" fill="#f78166">ABI VER</text>
+          <text x="474" y="58" fill="#8b949e">= 0</text>
+          <text x="474" y="100" fill="#8b949e" font-size="8">[8]</text>
+          <!-- byte 9-15 -->
+          <rect x="511" y="34" width="170" height="30" rx="3" fill="#30363d" stroke="#30363d" stroke-width="1"/>
+          <text x="596" y="47" fill="#8b949e">PADDING (zeros)</text>
+          <text x="596" y="58" fill="#555">reserved</text>
+          <text x="596" y="100" fill="#8b949e" font-size="8">[9..15]</text>
+        </g>
+      </svg>
+    </div>
+
+    <h3 class="subsec">readelf 实际输出示例（/bin/ls）</h3>
+    <pre><span class="cm">$ readelf -h /bin/ls</span>
+ELF Header:
+  Magic:   <span class="cn">7f 45 4c 46</span> 02 01 01 00 00 00 00 00 00 00 00 00
+  Class:                             <span class="co">ELF64</span>
+  Data:                              <span class="co">2's complement, little endian</span>
+  Version:                           1 (current)
+  OS/ABI:                            <span class="co">UNIX - System V</span>
+  ABI Version:                       0
+  Type:                              <span class="cs">DYN (Position-Independent Executable)</span>
+  Machine:                           <span class="cs">Advanced Micro Devices X86-64</span>
+  Version:                           0x1
+  Entry point address:               <span class="cn">0x6180</span>
+  Start of program headers:          <span class="cn">64</span> (bytes into file)
+  Start of section headers:          <span class="cn">145256</span> (bytes into file)
+  Size of this header:               64 (bytes)
+  Number of program headers:         11
+  Number of section headers:         30
+  Section header string table index: 29</pre>
+
+    <h3 class="subsec">e_machine 常见架构码</h3>
+    <div class="tbl-wrap">
+      <table>
+        <thead><tr><th>宏名</th><th>值</th><th>含义</th></tr></thead>
+        <tbody>
+          <tr><td><code>EM_386</code></td><td>0x03</td><td>Intel 80386 (x86)</td></tr>
+          <tr><td><code>EM_ARM</code></td><td>0x28</td><td>ARM (AArch32)</td></tr>
+          <tr><td><code>EM_X86_64</code></td><td>0x3E</td><td>AMD x86-64</td></tr>
+          <tr><td><code>EM_AARCH64</code></td><td>0xB7</td><td>ARM 64 位 (AArch64)</td></tr>
+          <tr><td><code>EM_RISCV</code></td><td>0xF3</td><td>RISC-V</td></tr>
+          <tr><td><code>EM_MIPS</code></td><td>0x08</td><td>MIPS RS3000</td></tr>
+          <tr><td><code>EM_PPC64</code></td><td>0x15</td><td>PowerPC 64-bit</td></tr>
+        </tbody>
+      </table>
+    </div>
+
+    <div class="principle">
+      <div class="p-label">⚡ 第一性原理</div>
+      <p>ELF 头是文件的"身份证"——它用 16 字节的 <code>e_ident</code> 数组把文件的类别、字节序、版本、ABI 等基本特征编码成独立于具体机器的统一格式，后续所有偏移量都从这里出发。操作系统、链接器和调试器读取这个头之后，才能决定如何解释后面的所有字节。</p>
+    </div>
+  </div>
+
+  <div class="sec-divider"></div>
+
+  <!-- ═══════ S2 ═══════ -->
+  <div class="section" id="s2">
+    <h2 class="sec-title">② 节区头表（Section Header Table）</h2>
+    <p>节区头表（SHT）是一个 <code>Elf64_Shdr</code> 结构体数组，每个结构体描述文件中的一个节（section）。它是链接器、汇编器和调试器使用的<strong>静态视图</strong>。运行时加载时，节区头表本身并非必需（stripped 的二进制文件可以去掉它）。</p>
+
+    <a class="source-link" href="https://www.man7.org/linux/man-pages/man5/elf.5.html" target="_blank">📄 来源：man7.org elf(5) — Section header (Shdr)</a>
+
+    <pre><span class="ck">typedef</span> <span class="ck">struct</span> {
+    <span class="cs">uint32_t</span>   sh_name;      <span class="cm">/* 节名在 .shstrtab 中的字符串偏移 */</span>
+    <span class="cs">uint32_t</span>   sh_type;      <span class="cm">/* 节类型 (SHT_PROGBITS / SHT_SYMTAB …) */</span>
+    <span class="cs">uint64_t</span>   sh_flags;     <span class="cm">/* 属性标志 (SHF_ALLOC / SHF_WRITE / SHF_EXECINSTR …) */</span>
+    <span class="cs">Elf64_Addr</span> sh_addr;      <span class="cm">/* 若被加载，节在内存中的起始虚拟地址 */</span>
+    <span class="cs">Elf64_Off</span>  sh_offset;    <span class="cm">/* 节在文件中的偏移 */</span>
+    <span class="cs">uint64_t</span>   sh_size;      <span class="cm">/* 节的字节大小 */</span>
+    <span class="cs">uint32_t</span>   sh_link;      <span class="cm">/* 关联节的索引（语义依 sh_type 而定） */</span>
+    <span class="cs">uint32_t</span>   sh_info;      <span class="cm">/* 附加信息（语义依 sh_type 而定） */</span>
+    <span class="cs">uint64_t</span>   sh_addralign; <span class="cm">/* 内存对齐要求（0/1 表示无要求） */</span>
+    <span class="cs">uint64_t</span>   sh_entsize;   <span class="cm">/* 若节为固定大小条目的表，此为每条目大小 */</span>
+} <span class="cf">Elf64_Shdr</span>;</pre>
+
+    <h3 class="subsec">sh_type 常见类型</h3>
+    <div class="tbl-wrap">
+      <table>
+        <thead><tr><th>类型宏</th><th>含义</th></tr></thead>
+        <tbody>
+          <tr><td><code>SHT_NULL</code></td><td>空节，第 0 号节始终为此类型</td></tr>
+          <tr><td><code>SHT_PROGBITS</code></td><td>程序数据（代码、初始化数据等），由程序定义语义</td></tr>
+          <tr><td><code>SHT_SYMTAB</code></td><td>符号表（链接期，含所有符号）</td></tr>
+          <tr><td><code>SHT_DYNSYM</code></td><td>动态符号表（运行期）</td></tr>
+          <tr><td><code>SHT_STRTAB</code></td><td>字符串表</td></tr>
+          <tr><td><code>SHT_RELA</code></td><td>带显式加数的重定位条目</td></tr>
+          <tr><td><code>SHT_REL</code></td><td>不带显式加数的重定位条目</td></tr>
+          <tr><td><code>SHT_NOBITS</code></td><td>不占文件空间的节（如 <code>.bss</code>）</td></tr>
+          <tr><td><code>SHT_DYNAMIC</code></td><td>动态链接信息</td></tr>
+          <tr><td><code>SHT_NOTE</code></td><td>辅助信息（如 Build-ID）</td></tr>
+          <tr><td><code>SHT_HASH</code></td><td>符号哈希表</td></tr>
+          <tr><td><code>SHT_GNU_HASH</code></td><td>GNU 扩展哈希表（更快）</td></tr>
+        </tbody>
+      </table>
+    </div>
+
+    <h3 class="subsec">sh_flags 标志位</h3>
+    <div class="tbl-wrap">
+      <table>
+        <thead><tr><th>标志</th><th>含义</th></tr></thead>
+        <tbody>
+          <tr><td><code>SHF_WRITE</code></td><td>节在运行时可写</td></tr>
+          <tr><td><code>SHF_ALLOC</code></td><td>节需被加载到内存中</td></tr>
+          <tr><td><code>SHF_EXECINSTR</code></td><td>节包含可执行机器指令</td></tr>
+          <tr><td><code>SHF_MERGE</code></td><td>节中数据可被合并以节省空间</td></tr>
+          <tr><td><code>SHF_STRINGS</code></td><td>节中数据为 null 结尾字符串</td></tr>
+          <tr><td><code>SHF_LINK_ORDER</code></td><td>对链接顺序有特殊要求</td></tr>
+          <tr><td><code>SHF_TLS</code></td><td>线程本地存储</td></tr>
+        </tbody>
+      </table>
+    </div>
+
+    <div class="principle">
+      <div class="p-label">⚡ 第一性原理</div>
+      <p>节区头表是给<strong>工具</strong>看的——它把文件切成有意义的逻辑块，让链接器知道哪些代码需要合并、哪些符号需要解析、哪些重定位需要处理。节的存在是因为"不同属性的数据需要不同的处理方式"这一根本需求。</p>
+    </div>
+  </div>
+
+  <div class="sec-divider"></div>
+
+  <!-- ═══════ S3 ═══════ -->
+  <div class="section" id="s3">
+    <h2 class="sec-title">③ 程序头表（Program Header Table）</h2>
+    <p>程序头表（PHT）是一个 <code>Elf64_Phdr</code> 结构体数组，描述可执行文件或共享对象如何被操作系统<strong>映射到进程虚拟地址空间</strong>。它是运行时视图，链接时生成，仅可执行文件和共享对象才有。</p>
+
+    <a class="source-link" href="https://www.man7.org/linux/man-pages/man5/elf.5.html" target="_blank">📄 来源：man7.org elf(5) — Program header (Phdr)</a>
+
+    <pre><span class="ck">typedef</span> <span class="ck">struct</span> {
+    <span class="cs">uint32_t</span>   p_type;    <span class="cm">/* 段类型 (PT_LOAD / PT_DYNAMIC / PT_INTERP …) */</span>
+    <span class="cs">uint32_t</span>   p_flags;   <span class="cm">/* 段权限标志 PF_R | PF_W | PF_X */</span>
+    <span class="cs">Elf64_Off</span>  p_offset;  <span class="cm">/* 段在文件中的偏移 */</span>
+    <span class="cs">Elf64_Addr</span> p_vaddr;   <span class="cm">/* 段在内存中的虚拟地址 */</span>
+    <span class="cs">Elf64_Addr</span> p_paddr;   <span class="cm">/* 段的物理地址（嵌入式系统用，Linux 忽略） */</span>
+    <span class="cs">uint64_t</span>   p_filesz;  <span class="cm">/* 段在文件中的字节大小 */</span>
+    <span class="cs">uint64_t</span>   p_memsz;   <span class="cm">/* 段在内存中的字节大小（≥ p_filesz） */</span>
+    <span class="cs">uint64_t</span>   p_align;   <span class="cm">/* 对齐要求（页大小的整数倍，通常 0x1000） */</span>
+} <span class="cf">Elf64_Phdr</span>;</pre>
+
+    <h3 class="subsec">p_type 常见段类型</h3>
+    <div class="tbl-wrap">
+      <table>
+        <thead><tr><th>类型</th><th>作用</th></tr></thead>
+        <tbody>
+          <tr><td><code>PT_NULL</code></td><td>未使用的条目，程序头表可含多个</td></tr>
+          <tr><td><code>PT_LOAD</code></td><td><strong>可加载段</strong>——只有此类型才被 mmap 进内存。按 p_vaddr 升序排列</td></tr>
+          <tr><td><code>PT_DYNAMIC</code></td><td>动态链接元数据（含 DT_NEEDED 等标签）</td></tr>
+          <tr><td><code>PT_INTERP</code></td><td>动态链接器路径，如 <code>/lib64/ld-linux-x86-64.so.2</code></td></tr>
+          <tr><td><code>PT_NOTE</code></td><td>辅助信息（如 NT_GNU_BUILD_ID）</td></tr>
+          <tr><td><code>PT_PHDR</code></td><td>程序头表自身的位置与大小</td></tr>
+          <tr><td><code>PT_TLS</code></td><td>线程本地存储模板</td></tr>
+          <tr><td><code>PT_GNU_STACK</code></td><td>Linux 内核用此标志控制栈的可执行权限（NX 位）</td></tr>
+          <tr><td><code>PT_GNU_RELRO</code></td><td>标记链接后可置为只读的区域（RELRO 安全加固）</td></tr>
+        </tbody>
+      </table>
+    </div>
+
+    <h3 class="subsec">p_flags 权限标志</h3>
+    <div class="card-grid">
+      <div class="card-item">
+        <div class="label">PF_R (0x4)</div>
+        <div class="value" style="color:var(--accent3)">可读</div>
+      </div>
+      <div class="card-item">
+        <div class="label">PF_W (0x2)</div>
+        <div class="value" style="color:var(--accent4)">可写</div>
+      </div>
+      <div class="card-item">
+        <div class="label">PF_X (0x1)</div>
+        <div class="value" style="color:var(--accent2)">可执行</div>
+      </div>
+    </div>
+    <p>代码段通常为 <code>PF_R | PF_X</code>（5），数据段通常为 <code>PF_R | PF_W</code>（6）。</p>
+
+    <h3 class="subsec">p_filesz vs p_memsz</h3>
+    <div class="svg-wrap">
+      <svg viewBox="0 0 600 140" width="600" height="140" xmlns="http://www.w3.org/2000/svg">
+        <!-- file -->
+        <rect x="20" y="20" width="200" height="40" rx="4" fill="#1c2128" stroke="#30363d"/>
+        <rect x="20" y="20" width="160" height="40" rx="4" fill="#3fb95022" stroke="#3fb950"/>
+        <text x="100" y="45" text-anchor="middle" fill="#3fb950" font-size="11">p_filesz（文件中实际字节）</text>
+        <text x="14" y="16" fill="#8b949e" font-size="10">文件</text>
+        <line x1="180" y1="20" x2="180" y2="60" stroke="#30363d" stroke-dasharray="4,2"/>
+        <text x="190" y="45" fill="#555" font-size="10">(空白)</text>
+
+        <!-- memory -->
+        <rect x="20" y="80" width="260" height="40" rx="4" fill="#1c2128" stroke="#30363d"/>
+        <rect x="20" y="80" width="160" height="40" rx="4" fill="#3fb95022" stroke="#3fb950"/>
+        <rect x="180" y="80" width="100" height="40" rx="0" fill="#d2a8ff22" stroke="#d2a8ff" stroke-dasharray="4,2"/>
+        <text x="100" y="105" text-anchor="middle" fill="#3fb950" font-size="11">映射自文件</text>
+        <text x="230" y="100" text-anchor="middle" fill="#d2a8ff" font-size="10">零填充</text>
+        <text x="230" y="113" text-anchor="middle" fill="#d2a8ff" font-size="9">（.bss）</text>
+        <text x="14" y="76" fill="#8b949e" font-size="10">内存</text>
+
+        <!-- brace -->
+        <path d="M 290 80 L 300 80 L 300 120 L 290 120" fill="none" stroke="#f2cc60" stroke-width="1.2"/>
+        <text x="360" y="97" fill="#f2cc60" font-size="10">p_memsz</text>
+        <text x="360" y="110" fill="#f2cc60" font-size="10">≥ p_filesz</text>
+
+        <path d="M 290 20 L 300 20 L 300 60 L 290 60" fill="none" stroke="#3fb950" stroke-width="1.2"/>
+        <text x="360" y="37" fill="#3fb950" font-size="10">p_filesz</text>
+      </svg>
+    </div>
+    <p>当 <code>p_memsz &gt; p_filesz</code> 时，超出的部分在内存中被零初始化。这正是 <code>.bss</code> 节不占文件空间的机制：BSS 数据属于数据段，但仅在内存中存在，文件大小为 0。</p>
+
+    <div class="principle">
+      <div class="p-label">⚡ 第一性原理</div>
+      <p>程序头表是给<strong>操作系统内核/加载器</strong>看的——它以"段"为粒度将文件内容映射到虚拟内存，赋予权限（R/W/X），并驱动 mmap 系统调用。只有 <code>PT_LOAD</code> 段才会被实际加载进内存，这个设计节省了物理内存，并通过不同权限位提供了基本的安全隔离。</p>
+    </div>
+  </div>
+
+  <div class="sec-divider"></div>
+
+  <!-- ═══════ S4 ═══════ -->
+  <div class="section" id="s4">
+    <h2 class="sec-title">④ 节（Section）vs 段（Segment）——两种视图</h2>
+    <p>ELF 的一个核心设计是：<strong>同一份数据</strong>被两套表以不同角度描述。</p>
+
+    <a class="source-link" href="https://linuxvox.com/blog/what-s-the-difference-of-section-and-segment-in-elf-file-format/" target="_blank">📄 参考：linuxvox.com — Sections vs Segments in ELF</a>
+
+    <div class="tbl-wrap">
+      <table>
+        <thead>
+          <tr><th>维度</th><th>节（Section）</th><th>段（Segment）</th></tr>
+        </thead>
+        <tbody>
+          <tr><td>目的</td><td>链接、调试、分析</td><td>加载到内存、执行</td></tr>
+          <tr><td>描述结构</td><td>节区头表（SHT）</td><td>程序头表（PHT）</td></tr>
+          <tr><td>使用者</td><td>链接器 ld、汇编器 as、调试器 gdb</td><td>OS 加载器、内核</td></tr>
+          <tr><td>内容粒度</td><td>逻辑分组（代码、数据、符号…）</td><td>一个或多个节的集合</td></tr>
+          <tr><td>权限控制</td><td>无直接权限，用 sh_flags 提示</td><td>显式 R/W/X 权限（p_flags）</td></tr>
+          <tr><td>内存映射</td><td>不直接加载到内存</td><td>映射进进程虚拟空间</td></tr>
+          <tr><td>关系</td><td>一个段可包含多个节</td><td>一个节可属于一个或多个段</td></tr>
+        </tbody>
+      </table>
+    </div>
+
+    <h3 class="subsec">节→段 映射关系（SVG 可视化）</h3>
+    <div class="svg-wrap">
+      <svg viewBox="0 0 680 280" width="680" height="280" xmlns="http://www.w3.org/2000/svg">
+        <!-- Sections side -->
+        <text x="130" y="22" text-anchor="middle" fill="#8b949e" font-size="11">节（Sections）</text>
+        <rect x="20" y="30" width="220" height="240" rx="6" fill="#1c2128" stroke="#30363d"/>
+
+        <!-- section boxes -->
+        <rect x="30" y="42" width="200" height="28" rx="4" fill="#3fb95033" stroke="#3fb950" stroke-width="1"/>
+        <text x="130" y="61" text-anchor="middle" fill="#3fb950" font-size="11">.text</text>
+
+        <rect x="30" y="76" width="200" height="28" rx="4" fill="#3fb95033" stroke="#3fb950" stroke-width="1"/>
+        <text x="130" y="95" text-anchor="middle" fill="#3fb950" font-size="11">.rodata</text>
+
+        <rect x="30" y="110" width="200" height="28" rx="4" fill="#d2a8ff33" stroke="#d2a8ff" stroke-width="1"/>
+        <text x="130" y="129" text-anchor="middle" fill="#d2a8ff" font-size="11">.data</text>
+
+        <rect x="30" y="144" width="200" height="28" rx="4" fill="#d2a8ff33" stroke="#d2a8ff" stroke-width="1" stroke-dasharray="4,2"/>
+        <text x="130" y="163" text-anchor="middle" fill="#d2a8ff" font-size="11">.bss</text>
+
+        <rect x="30" y="178" width="200" height="28" rx="4" fill="#f2cc6033" stroke="#f2cc60" stroke-width="1"/>
+        <text x="130" y="197" text-anchor="middle" fill="#f2cc60" font-size="11">.dynamic</text>
+
+        <rect x="30" y="212" width="200" height="28" rx="4" fill="#58a6ff33" stroke="#58a6ff" stroke-width="1"/>
+        <text x="130" y="231" text-anchor="middle" fill="#58a6ff" font-size="11">.symtab / .debug_*</text>
+
+        <!-- Arrows -->
+        <!-- text+rodata → LOAD R-X -->
+        <path d="M 232 56 Q 340 56 430 90" fill="none" stroke="#f78166" stroke-width="1.5" marker-end="url(#a3)"/>
+        <path d="M 232 90 Q 340 90 430 100" fill="none" stroke="#f78166" stroke-width="1.5"/>
+
+        <!-- data+bss → LOAD RW -->
+        <path d="M 232 124 Q 340 140 430 155" fill="none" stroke="#d2a8ff" stroke-width="1.5" marker-end="url(#a4)"/>
+        <path d="M 232 158 Q 340 158 430 165" fill="none" stroke="#d2a8ff" stroke-width="1.5"/>
+
+        <!-- dynamic → DYNAMIC -->
+        <path d="M 232 192 Q 340 205 430 210" fill="none" stroke="#f2cc60" stroke-width="1.5" marker-end="url(#a5)"/>
+
+        <defs>
+          <marker id="a3" markerWidth="8" markerHeight="8" refX="6" refY="3" orient="auto">
+            <path d="M0,0 L0,6 L8,3 z" fill="#f78166"/>
+          </marker>
+          <marker id="a4" markerWidth="8" markerHeight="8" refX="6" refY="3" orient="auto">
+            <path d="M0,0 L0,6 L8,3 z" fill="#d2a8ff"/>
+          </marker>
+          <marker id="a5" markerWidth="8" markerHeight="8" refX="6" refY="3" orient="auto">
+            <path d="M0,0 L0,6 L8,3 z" fill="#f2cc60"/>
+          </marker>
+        </defs>
+
+        <!-- note: no arrow for .symtab -->
+        <text x="300" y="250" text-anchor="middle" fill="#555" font-size="9">（.symtab/.debug 不加载进内存）</text>
+
+        <!-- Segments side -->
+        <text x="540" y="22" text-anchor="middle" fill="#8b949e" font-size="11">段（Segments）</text>
+        <rect x="425" y="30" width="240" height="240" rx="6" fill="#1c2128" stroke="#30363d"/>
+
+        <!-- segment boxes -->
+        <rect x="435" y="42" width="220" height="65" rx="4" fill="#f7816622" stroke="#f78166" stroke-width="1.3"/>
+        <text x="545" y="65" text-anchor="middle" fill="#f78166" font-size="11" font-weight="bold">PT_LOAD (R-X)</text>
+        <text x="545" y="82" text-anchor="middle" fill="#8b949e" font-size="10">.text + .rodata</text>
+        <text x="545" y="97" text-anchor="middle" fill="#8b949e" font-size="9">只读 + 可执行</text>
+
+        <rect x="435" y="118" width="220" height="65" rx="4" fill="#d2a8ff22" stroke="#d2a8ff" stroke-width="1.3"/>
+        <text x="545" y="141" text-anchor="middle" fill="#d2a8ff" font-size="11" font-weight="bold">PT_LOAD (RW-)</text>
+        <text x="545" y="158" text-anchor="middle" fill="#8b949e" font-size="10">.data + .bss</text>
+        <text x="545" y="173" text-anchor="middle" fill="#8b949e" font-size="9">可读写</text>
+
+        <rect x="435" y="194" width="220" height="40" rx="4" fill="#f2cc6022" stroke="#f2cc60" stroke-width="1"/>
+        <text x="545" y="218" text-anchor="middle" fill="#f2cc60" font-size="11">PT_DYNAMIC</text>
+
+        <text x="545" y="258" text-anchor="middle" fill="#555" font-size="9">（调试信息不出现在段中）</text>
+      </svg>
+    </div>
+
+    <div class="principle">
+      <div class="p-label">⚡ 第一性原理</div>
+      <p>节和段是同一份数据的<strong>两种投影</strong>。节服务于"如何构建程序"（静态），段服务于"如何运行程序"（动态）。这种双视图设计使得同一个 ELF 文件可以被链接器精细操作、也可以被加载器高效映射，而无需维护两份数据副本。</p>
+    </div>
+  </div>
+
+  <div class="sec-divider"></div>
+
+  <!-- ═══════ S5 ═══════ -->
+  <div class="section" id="s5">
+    <h2 class="sec-title">⑤ 核心节区详解</h2>
+    <p>以下是 ELF 可执行文件中最重要的标准节区，它们的名称、类型和标志由 ABI 规范定义。</p>
+
+    <a class="source-link" href="https://linuxvox.com/blog/what-s-the-difference-of-section-and-segment-in-elf-file-format/" target="_blank">📄 参考：linuxvox.com — Common Section Types</a>
+
+    <div class="tbl-wrap">
+      <table>
+        <thead>
+          <tr><th>节区名</th><th>类型</th><th>标志</th><th>说明</th></tr>
+        </thead>
+        <tbody>
+          <tr>
+            <td><code>.text</code></td>
+            <td><span class="badge badge-g">PROGBITS</span></td>
+            <td>AX</td>
+            <td>编译后的机器指令（程序代码）。可执行、只读。</td>
+          </tr>
+          <tr>
+            <td><code>.rodata</code></td>
+            <td><span class="badge badge-g">PROGBITS</span></td>
+            <td>A</td>
+            <td>只读数据，如字符串字面量 <code>"Hello"</code>、全局常量。</td>
+          </tr>
+          <tr>
+            <td><code>.data</code></td>
+            <td><span class="badge badge-g">PROGBITS</span></td>
+            <td>WA</td>
+            <td>已初始化的全局变量和静态变量（非零初始值）。</td>
+          </tr>
+          <tr>
+            <td><code>.bss</code></td>
+            <td><span class="badge badge-b">NOBITS</span></td>
+            <td>WA</td>
+            <td>未初始化或零初始化的全局/静态变量。<strong>不占文件空间</strong>，运行时由 OS 零填充。</td>
+          </tr>
+          <tr>
+            <td><code>.symtab</code></td>
+            <td><span class="badge badge-p">SYMTAB</span></td>
+            <td>—</td>
+            <td>完整符号表（链接期）。含函数名、变量名及地址。stripped 时被移除。</td>
+          </tr>
+          <tr>
+            <td><code>.dynsym</code></td>
+            <td><span class="badge badge-p">DYNSYM</span></td>
+            <td>A</td>
+            <td>动态符号表（运行期），为动态链接器服务，不可被 strip。</td>
+          </tr>
+          <tr>
+            <td><code>.strtab</code></td>
+            <td><span class="badge badge-b">STRTAB</span></td>
+            <td>—</td>
+            <td>符号名字符串表，供 <code>.symtab</code> 使用。</td>
+          </tr>
+          <tr>
+            <td><code>.dynstr</code></td>
+            <td><span class="badge badge-b">STRTAB</span></td>
+            <td>A</td>
+            <td>动态字符串表，供 <code>.dynsym</code> 和 <code>.dynamic</code> 使用。</td>
+          </tr>
+          <tr>
+            <td><code>.shstrtab</code></td>
+            <td><span class="badge badge-b">STRTAB</span></td>
+            <td>—</td>
+            <td>节区名字符串表，存储所有节区的名称字符串。</td>
+          </tr>
+          <tr>
+            <td><code>.rela.text</code></td>
+            <td><span class="badge badge-r">RELA</span></td>
+            <td>—</td>
+            <td>针对 <code>.text</code> 的重定位条目（带加数）。链接器用于修正地址。</td>
+          </tr>
+          <tr>
+            <td><code>.plt</code></td>
+            <td><span class="badge badge-g">PROGBITS</span></td>
+            <td>AX</td>
+            <td>过程链接表（Procedure Linkage Table），延迟绑定的跳板代码。</td>
+          </tr>
+          <tr>
+            <td><code>.got</code></td>
+            <td><span class="badge badge-g">PROGBITS</span></td>
+            <td>WA</td>
+            <td>全局偏移表（Global Offset Table），存储动态符号的运行时地址。</td>
+          </tr>
+          <tr>
+            <td><code>.got.plt</code></td>
+            <td><span class="badge badge-g">PROGBITS</span></td>
+            <td>WA</td>
+            <td>PLT 专用的 GOT 部分，初始指向 PLT 解析桩。</td>
+          </tr>
+          <tr>
+            <td><code>.dynamic</code></td>
+            <td><span class="badge badge-y">DYNAMIC</span></td>
+            <td>WA</td>
+            <td>动态链接元数据数组（DT_ 标签列表）。</td>
+          </tr>
+          <tr>
+            <td><code>.interp</code></td>
+            <td><span class="badge badge-g">PROGBITS</span></td>
+            <td>A</td>
+            <td>动态链接器路径字符串，如 <code>/lib64/ld-linux-x86-64.so.2</code>。</td>
+          </tr>
+          <tr>
+            <td><code>.note.gnu.build-id</code></td>
+            <td><span class="badge badge-b">NOTE</span></td>
+            <td>A</td>
+            <td>GNU Build ID，用于唯一标识二进制构建，关联调试符号。</td>
+          </tr>
+          <tr>
+            <td><code>.debug_*</code></td>
+            <td><span class="badge badge-g">PROGBITS</span></td>
+            <td>—</td>
+            <td>DWARF 调试信息（不加载进内存）。含源码行号、变量类型等。</td>
+          </tr>
+          <tr>
+            <td><code>.eh_frame</code></td>
+            <td><span class="badge badge-g">PROGBITS</span></td>
+            <td>A</td>
+            <td>异常处理帧信息，C++ 异常展开和栈回溯使用。</td>
+          </tr>
+          <tr>
+            <td><code>.init / .fini</code></td>
+            <td><span class="badge badge-g">PROGBITS</span></td>
+            <td>AX</td>
+            <td>程序初始化/终止代码，在 <code>main()</code> 前/后由运行时调用。</td>
+          </tr>
+        </tbody>
+      </table>
+    </div>
+
+    <h3 class="subsec">.bss 为什么不占文件空间？</h3>
+    <div class="card">
+      <p>C 标准规定：未初始化或零初始化的全局/静态变量在程序启动时值为 0。ELF 利用这一点：把这些变量放入 <code>.bss</code> 节（<code>SHT_NOBITS</code>），节头记录其大小但<strong>不在文件中分配字节</strong>。OS 加载时，将 <code>.bss</code> 对应的内存页清零（通过 mmap 匿名映射或 memset）。一个拥有 10 MB 全局数组的程序，其文件大小可能只有几 KB。</p>
+      <pre><span class="cm">// 以下变量进入 .bss，不占文件空间</span>
+<span class="ck">static int</span> big_array[1024 * 1024];  <span class="cm">// 4 MB，.bss</span>
+<span class="ck">int</span> counter;                         <span class="cm">// 4 B，.bss</span>
+
+<span class="cm">// 以下变量进入 .data，占文件空间</span>
+<span class="ck">int</span> initialized = <span class="cn">42</span>;               <span class="cm">// .data</span></pre>
+    </div>
+
+    <div class="principle">
+      <div class="p-label">⚡ 第一性原理</div>
+      <p>每个节区的存在都是因为"不同种类的数据需要不同的处理策略"。代码只读可执行，数据可读写，字符串可共享合并，重定位信息是临时的……ELF 将这些差异编码进节的类型和标志，而不是强迫所有内容遵循同一规则。</p>
+    </div>
+  </div>
+
+  <div class="sec-divider"></div>
+
+  <!-- ═══════ S6 ═══════ -->
+  <div class="section" id="s6">
+    <h2 class="sec-title">⑥ 符号表与重定位</h2>
+
+    <a class="source-link" href="https://www.man7.org/linux/man-pages/man5/elf.5.html" target="_blank">📄 来源：man7.org elf(5) — Symbol table & Relocation entries</a>
+
+    <h3 class="subsec">符号表结构（Elf64_Sym）</h3>
+    <pre><span class="ck">typedef</span> <span class="ck">struct</span> {
+    <span class="cs">uint32_t</span>      st_name;  <span class="cm">/* 符号名在 .strtab 中的偏移 */</span>
+    <span class="cs">unsigned char</span> st_info;  <span class="cm">/* 符号类型（低4位）+ 绑定属性（高4位） */</span>
+    <span class="cs">unsigned char</span> st_other; <span class="cm">/* 符号可见性 */</span>
+    <span class="cs">uint16_t</span>      st_shndx; <span class="cm">/* 所属节区索引 */</span>
+    <span class="cs">Elf64_Addr</span>    st_value; <span class="cm">/* 符号值（通常是地址） */</span>
+    <span class="cs">uint64_t</span>      st_size;  <span class="cm">/* 符号大小（字节） */</span>
+} <span class="cf">Elf64_Sym</span>;</pre>
+
+    <h3 class="subsec">符号绑定属性（st_info 高 4 位）</h3>
+    <div class="tbl-wrap">
+      <table>
+        <thead><tr><th>值</th><th>宏名</th><th>含义</th></tr></thead>
+        <tbody>
+          <tr><td>0</td><td><code>STB_LOCAL</code></td><td>局部符号，文件内可见，链接时不导出</td></tr>
+          <tr><td>1</td><td><code>STB_GLOBAL</code></td><td>全局符号，跨目标文件可见</td></tr>
+          <tr><td>2</td><td><code>STB_WEAK</code></td><td>弱符号，优先级低于全局符号，可被覆盖</td></tr>
+        </tbody>
+      </table>
+    </div>
+
+    <h3 class="subsec">符号类型（st_info 低 4 位）</h3>
+    <div class="tbl-wrap">
+      <table>
+        <thead><tr><th>值</th><th>宏名</th><th>含义</th></tr></thead>
+        <tbody>
+          <tr><td>0</td><td><code>STT_NOTYPE</code></td><td>未指定类型</td></tr>
+          <tr><td>1</td><td><code>STT_OBJECT</code></td><td>数据对象（变量、数组等）</td></tr>
+          <tr><td>2</td><td><code>STT_FUNC</code></td><td>函数或代码</td></tr>
+          <tr><td>3</td><td><code>STT_SECTION</code></td><td>节区（用于重定位）</td></tr>
+          <tr><td>4</td><td><code>STT_FILE</code></td><td>源文件名</td></tr>
+          <tr><td>6</td><td><code>STT_TLS</code></td><td>线程本地存储对象</td></tr>
+        </tbody>
+      </table>
+    </div>
+
+    <h3 class="subsec">重定位条目结构</h3>
+    <p>重定位是连接"符号引用"与"符号定义"的桥梁。目标文件（<code>.o</code>）中的跨文件引用地址未知，重定位条目记录"哪里需要填地址、用哪个符号"。</p>
+    <pre><span class="cm">/* 不带加数（.rel.* 节用） */</span>
+<span class="ck">typedef</span> <span class="ck">struct</span> {
+    <span class="cs">Elf64_Addr</span> r_offset; <span class="cm">/* 需修正位置的偏移/虚拟地址 */</span>
+    <span class="cs">uint64_t</span>   r_info;   <span class="cm">/* 高32位=符号表索引，低32位=重定位类型 */</span>
+} <span class="cf">Elf64_Rel</span>;
+
+<span class="cm">/* 带加数（.rela.* 节用，x86-64 常用） */</span>
+<span class="ck">typedef</span> <span class="ck">struct</span> {
+    <span class="cs">Elf64_Addr</span> r_offset;
+    <span class="cs">uint64_t</span>   r_info;
+    <span class="cs">int64_t</span>    r_addend; <span class="cm">/* 计算时的常量加数 */</span>
+} <span class="cf">Elf64_Rela</span>;</pre>
+
+    <h3 class="subsec">重定位过程示意</h3>
+    <div class="svg-wrap">
+      <svg viewBox="0 0 660 200" width="660" height="200" xmlns="http://www.w3.org/2000/svg">
+        <!-- .o file -->
+        <rect x="10" y="20" width="180" height="160" rx="6" fill="#1c2128" stroke="#30363d"/>
+        <text x="100" y="15" text-anchor="middle" fill="#8b949e" font-size="10">main.o（可重定位）</text>
+        <rect x="20" y="30" width="160" height="40" rx="4" fill="#3fb95022" stroke="#3fb950"/>
+        <text x="100" y="48" text-anchor="middle" fill="#3fb950" font-size="11">.text</text>
+        <text x="100" y="62" text-anchor="middle" fill="#8b949e" font-size="9">call 0x00000000 ← ??</text>
+        <rect x="20" y="78" width="160" height="40" rx="4" fill="#f7816622" stroke="#f78166"/>
+        <text x="100" y="96" text-anchor="middle" fill="#f78166" font-size="11">.rela.text</text>
+        <text x="100" y="110" text-anchor="middle" fill="#8b949e" font-size="9">printf@plt  R_X86_64_PLT32</text>
+        <rect x="20" y="126" width="160" height="40" rx="4" fill="#58a6ff22" stroke="#58a6ff"/>
+        <text x="100" y="144" text-anchor="middle" fill="#58a6ff" font-size="11">.symtab</text>
+        <text x="100" y="158" text-anchor="middle" fill="#8b949e" font-size="9">printf (UNDEF)</text>
+
+        <!-- ld -->
+        <rect x="255" y="75" width="80" height="50" rx="20" fill="#21262d" stroke="#f2cc60" stroke-width="1.5"/>
+        <text x="295" y="103" text-anchor="middle" fill="#f2cc60" font-size="12" font-weight="bold">ld</text>
+        <text x="295" y="118" text-anchor="middle" fill="#8b949e" font-size="9">链接器</text>
+
+        <!-- arrows -->
+        <path d="M 192 100 L 252 100" fill="none" stroke="#8b949e" stroke-width="1.2" marker-end="url(#a6)"/>
+        <path d="M 337 100 L 430 100" fill="none" stroke="#8b949e" stroke-width="1.2" marker-end="url(#a6)"/>
+        <defs>
+          <marker id="a6" markerWidth="8" markerHeight="8" refX="6" refY="3" orient="auto">
+            <path d="M0,0 L0,6 L8,3 z" fill="#8b949e"/>
+          </marker>
+        </defs>
+
+        <!-- libc.so -->
+        <rect x="210" y="140" width="170" height="40" rx="4" fill="#d2a8ff22" stroke="#d2a8ff"/>
+        <text x="295" y="158" text-anchor="middle" fill="#d2a8ff" font-size="10">libc.so / printf</text>
+        <text x="295" y="172" text-anchor="middle" fill="#8b949e" font-size="9">地址已知 or PLT桩</text>
+        <path d="M 295 140 L 295 127" fill="none" stroke="#d2a8ff" stroke-width="1" stroke-dasharray="3,2" marker-end="url(#a7)"/>
+        <defs>
+          <marker id="a7" markerWidth="8" markerHeight="8" refX="6" refY="3" orient="auto">
+            <path d="M0,0 L0,6 L8,3 z" fill="#d2a8ff"/>
+          </marker>
+        </defs>
+
+        <!-- executable -->
+        <rect x="435" y="20" width="210" height="160" rx="6" fill="#1c2128" stroke="#30363d"/>
+        <text x="540" y="15" text-anchor="middle" fill="#8b949e" font-size="10">a.out（可执行）</text>
+        <rect x="445" y="30" width="190" height="40" rx="4" fill="#3fb95022" stroke="#3fb950"/>
+        <text x="540" y="48" text-anchor="middle" fill="#3fb950" font-size="11">.text（已修正）</text>
+        <text x="540" y="62" text-anchor="middle" fill="#8b949e" font-size="9">call printf@plt  ✓</text>
+        <rect x="445" y="78" width="190" height="40" rx="4" fill="#f2cc6022" stroke="#f2cc60"/>
+        <text x="540" y="98" text-anchor="middle" fill="#f2cc60" font-size="11">.plt / .got.plt</text>
+        <text x="540" y="112" text-anchor="middle" fill="#8b949e" font-size="9">运行时解析跳转</text>
+        <rect x="445" y="126" width="190" height="40" rx="4" fill="#58a6ff22" stroke="#58a6ff"/>
+        <text x="540" y="144" text-anchor="middle" fill="#58a6ff" font-size="11">.dynsym</text>
+        <text x="540" y="158" text-anchor="middle" fill="#8b949e" font-size="9">printf (GLOBAL)</text>
+      </svg>
+    </div>
+
+    <div class="principle">
+      <div class="p-label">⚡ 第一性原理</div>
+      <p>符号表是程序的"名字簿"，重定位条目是"待填空的账单"。编译器在不知道其他文件地址的情况下先写下"TODO: 这里需要 printf 的地址"，链接器汇总所有目标文件后统一"结账"——填入正确地址。这种分阶段的间接寻址设计使得独立编译（separate compilation）成为可能。</p>
+    </div>
+  </div>
+
+  <div class="sec-divider"></div>
+
+  <!-- ═══════ S7 ═══════ -->
+  <div class="section" id="s7">
+    <h2 class="sec-title">⑦ 动态链接节区</h2>
+    <p>动态链接允许多个进程共享同一份库代码，节省内存。核心机制依赖 <code>.dynamic</code>、<code>.plt</code>、<code>.got</code> 三个节区协同工作。</p>
+
+    <a class="source-link" href="https://www.man7.org/linux/man-pages/man5/elf.5.html" target="_blank">📄 来源：man7.org elf(5) — Dynamic tags (Dyn)</a>
+
+    <h3 class="subsec">.dynamic 节 — 动态标签数组</h3>
+    <pre><span class="ck">typedef</span> <span class="ck">struct</span> {
+    <span class="cs">Elf64_Sxword</span> d_tag;  <span class="cm">/* 标签类型 (DT_NEEDED / DT_SYMTAB …) */</span>
+    <span class="ck">union</span> {
+        <span class="cs">Elf64_Xword</span> d_val; <span class="cm">/* 整数值 */</span>
+        <span class="cs">Elf64_Addr</span>  d_ptr; <span class="cm">/* 虚拟地址 */</span>
+    } d_un;
+} <span class="cf">Elf64_Dyn</span>;</pre>
+
+    <h3 class="subsec">常见 DT_ 标签</h3>
+    <div class="tbl-wrap">
+      <table>
+        <thead><tr><th>标签</th><th>含义</th></tr></thead>
+        <tbody>
+          <tr><td><code>DT_NEEDED</code></td><td>所依赖的共享库名称（在 .dynstr 中的偏移），可出现多次</td></tr>
+          <tr><td><code>DT_SYMTAB</code></td><td>动态符号表（.dynsym）地址</td></tr>
+          <tr><td><code>DT_STRTAB</code></td><td>动态字符串表（.dynstr）地址</td></tr>
+          <tr><td><code>DT_RELA / DT_REL</code></td><td>动态重定位表地址</td></tr>
+          <tr><td><code>DT_PLTGOT</code></td><td>PLT/GOT 地址</td></tr>
+          <tr><td><code>DT_JMPREL</code></td><td>PLT 专用重定位表地址</td></tr>
+          <tr><td><code>DT_INIT / DT_FINI</code></td><td>初始化/终止函数地址</td></tr>
+          <tr><td><code>DT_SONAME</code></td><td>共享库自身的名称</td></tr>
+          <tr><td><code>DT_RPATH / DT_RUNPATH</code></td><td>运行时库搜索路径</td></tr>
+          <tr><td><code>DT_BIND_NOW</code></td><td>立即绑定所有符号（关闭延迟绑定）</td></tr>
+          <tr><td><code>DT_NULL</code></td><td>标记数组结束</td></tr>
+        </tbody>
+      </table>
+    </div>
+
+    <h3 class="subsec">PLT + GOT 延迟绑定机制</h3>
+    <div class="svg-wrap">
+      <svg viewBox="0 0 680 260" width="680" height="260" xmlns="http://www.w3.org/2000/svg">
+        <!-- First call -->
+        <text x="340" y="16" text-anchor="middle" fill="#8b949e" font-size="11">延迟绑定（Lazy Binding）流程</text>
+
+        <!-- .text -->
+        <rect x="10" y="28" width="130" height="50" rx="5" fill="#3fb95022" stroke="#3fb950"/>
+        <text x="75" y="48" text-anchor="middle" fill="#3fb950" font-size="10">.text</text>
+        <text x="75" y="63" text-anchor="middle" fill="#8b949e" font-size="9">call printf@plt</text>
+
+        <!-- arrow 1 -->
+        <path d="M 142 53 L 178 53" fill="none" stroke="#8b949e" stroke-width="1.2" marker-end="url(#b1)"/>
+        <text x="160" y="47" text-anchor="middle" fill="#8b949e" font-size="8">①</text>
+        <defs><marker id="b1" markerWidth="8" markerHeight="8" refX="6" refY="3" orient="auto"><path d="M0,0 L0,6 L8,3 z" fill="#8b949e"/></marker></defs>
+
+        <!-- .plt -->
+        <rect x="180" y="28" width="130" height="80" rx="5" fill="#f7816622" stroke="#f78166"/>
+        <text x="245" y="48" text-anchor="middle" fill="#f78166" font-size="10">.plt (printf桩)</text>
+        <text x="245" y="63" text-anchor="middle" fill="#8b949e" font-size="9">jmp *GOT[printf]</text>
+        <text x="245" y="77" text-anchor="middle" fill="#8b949e" font-size="8">（首次→解析桩）</text>
+        <text x="245" y="89" text-anchor="middle" fill="#8b949e" font-size="8">push index; jmp PLT[0]</text>
+
+        <!-- arrow 2 - to GOT -->
+        <path d="M 312 53 L 368 53" fill="none" stroke="#8b949e" stroke-width="1.2" marker-end="url(#b2)"/>
+        <text x="340" y="47" text-anchor="middle" fill="#8b949e" font-size="8">② jmp</text>
+        <defs><marker id="b2" markerWidth="8" markerHeight="8" refX="6" refY="3" orient="auto"><path d="M0,0 L0,6 L8,3 z" fill="#8b949e"/></marker></defs>
+
+        <!-- .got.plt -->
+        <rect x="370" y="28" width="130" height="55" rx="5" fill="#f2cc6022" stroke="#f2cc60"/>
+        <text x="435" y="48" text-anchor="middle" fill="#f2cc60" font-size="10">.got.plt[printf]</text>
+        <text x="435" y="62" text-anchor="middle" fill="#8b949e" font-size="9">首次=PLT解析入口</text>
+        <text x="435" y="75" text-anchor="middle" fill="#8b949e" font-size="9">之后=printf真实地址</text>
+
+        <!-- arrow 3 - to dynamic linker -->
+        <path d="M 435 85 L 435 130" fill="none" stroke="#8b949e" stroke-width="1.2" marker-end="url(#b3)"/>
+        <text x="448" y="113" fill="#8b949e" font-size="8">③ 解析</text>
+        <defs><marker id="b3" markerWidth="8" markerHeight="8" refX="6" refY="3" orient="auto"><path d="M0,0 L0,6 L8,3 z" fill="#8b949e"/></marker></defs>
+
+        <!-- dynamic linker -->
+        <rect x="330" y="132" width="210" height="55" rx="5" fill="#d2a8ff22" stroke="#d2a8ff"/>
+        <text x="435" y="152" text-anchor="middle" fill="#d2a8ff" font-size="11">动态链接器 ld-linux</text>
+        <text x="435" y="168" text-anchor="middle" fill="#8b949e" font-size="9">查找 printf 真实地址 → 写入 GOT</text>
+        <text x="435" y="181" text-anchor="middle" fill="#8b949e" font-size="9">下次直接跳转，无需再解析</text>
+
+        <!-- arrow 4 - write back -->
+        <path d="M 370 155 L 245 115" fill="none" stroke="#3fb950" stroke-width="1.2" stroke-dasharray="5,2" marker-end="url(#b4)"/>
+        <text x="295" y="128" fill="#3fb950" font-size="8">④ 写入真实地址</text>
+        <defs><marker id="b4" markerWidth="8" markerHeight="8" refX="6" refY="3" orient="auto"><path d="M0,0 L0,6 L8,3 z" fill="#3fb950"/></marker></defs>
+
+        <!-- libc -->
+        <rect x="535" y="132" width="130" height="40" rx="5" fill="#58a6ff22" stroke="#58a6ff"/>
+        <text x="600" y="152" text-anchor="middle" fill="#58a6ff" font-size="10">libc.so</text>
+        <text x="600" y="165" text-anchor="middle" fill="#8b949e" font-size="9">printf 实现</text>
+        <path d="M 540 152 L 495 165" fill="none" stroke="#58a6ff" stroke-width="1" stroke-dasharray="3,2" marker-end="url(#b5)"/>
+        <defs><marker id="b5" markerWidth="8" markerHeight="8" refX="6" refY="3" orient="auto"><path d="M0,0 L0,6 L8,3 z" fill="#58a6ff"/></marker></defs>
+
+        <!-- legend -->
+        <rect x="10" y="210" width="650" height="44" rx="5" fill="#161b22" stroke="#30363d"/>
+        <text x="25" y="228" fill="#f78166" font-size="9">第一次调用</text>
+        <text x="25" y="243" fill="#8b949e" font-size="9">① call→PLT ② PLT jmp GOT（→PLT解析桩）③ 调用动态链接器解析 ④ 写入真实地址</text>
+        <text x="380" y="228" fill="#3fb950" font-size="9">后续调用</text>
+        <text x="380" y="243" fill="#8b949e" font-size="9">① call→PLT ② PLT jmp GOT（已有真实地址）→ 直接进入 printf，无解析开销</text>
+      </svg>
+    </div>
+
+    <div class="principle">
+      <div class="p-label">⚡ 第一性原理</div>
+      <p>PLT+GOT 的延迟绑定是"懒计算"思想的应用：只有当函数<strong>第一次被调用时</strong>才解析其地址，避免程序启动时解析所有动态符号的开销。GOT 作为一层间接层，使得地址可在运行时被修改，而 .text 代码（只读）始终不变——这是位置无关代码（PIC）的核心机制。</p>
+    </div>
+  </div>
+
+  <div class="sec-divider"></div>
+
+  <!-- ═══════ S8 ═══════ -->
+  <div class="section" id="s8">
+    <h2 class="sec-title">⑧ ELF 的编译链接生成全流程</h2>
+    <p>一个 C 源文件变成可执行 ELF，要经历四个阶段。每个阶段都有专用工具，GCC 驱动程序（<code>gcc</code>）默认会依次调用它们。</p>
+
+    <a class="source-link" href="https://medium.com/@dassomnath/handcrafting-x64-elf-from-specification-to-bytes-9986b342eb89" target="_blank">📄 参考：Handcrafting x64 ELF — From Specification to Bytes</a>
+    <a class="source-link" href="https://cs4157.github.io/www/2024-1/lect/15-elf-intro.html" target="_blank">📄 参考：Columbia CS4157 — Introduction to ELF</a>
+
+    <div class="svg-wrap">
+      <svg viewBox="0 0 700 340" width="700" height="340" xmlns="http://www.w3.org/2000/svg">
+        <!-- Stage 1: Preprocessing -->
+        <rect x="20" y="20" width="150" height="60" rx="8" fill="#1c2128" stroke="#58a6ff" stroke-width="1.5"/>
+        <text x="95" y="45" text-anchor="middle" fill="#58a6ff" font-size="12" font-weight="bold">① 预处理</text>
+        <text x="95" y="60" text-anchor="middle" fill="#8b949e" font-size="10">cpp / gcc -E</text>
+        <text x="95" y="74" text-anchor="middle" fill="#8b949e" font-size="9">main.c → main.i</text>
+
+        <path d="M 172 50 L 208 50" fill="none" stroke="#58a6ff" stroke-width="1.5" marker-end="url(#c1)"/>
+        <defs><marker id="c1" markerWidth="8" markerHeight="8" refX="6" refY="3" orient="auto"><path d="M0,0 L0,6 L8,3 z" fill="#58a6ff"/></marker></defs>
+
+        <!-- Stage 2: Compilation -->
+        <rect x="210" y="20" width="150" height="60" rx="8" fill="#1c2128" stroke="#3fb950" stroke-width="1.5"/>
+        <text x="285" y="45" text-anchor="middle" fill="#3fb950" font-size="12" font-weight="bold">② 编译</text>
+        <text x="285" y="60" text-anchor="middle" fill="#8b949e" font-size="10">gcc -S</text>
+        <text x="285" y="74" text-anchor="middle" fill="#8b949e" font-size="9">main.i → main.s</text>
+
+        <path d="M 362 50 L 398 50" fill="none" stroke="#3fb950" stroke-width="1.5" marker-end="url(#c2)"/>
+        <defs><marker id="c2" markerWidth="8" markerHeight="8" refX="6" refY="3" orient="auto"><path d="M0,0 L0,6 L8,3 z" fill="#3fb950"/></marker></defs>
+
+        <!-- Stage 3: Assembly -->
+        <rect x="400" y="20" width="150" height="60" rx="8" fill="#1c2128" stroke="#f2cc60" stroke-width="1.5"/>
+        <text x="475" y="45" text-anchor="middle" fill="#f2cc60" font-size="12" font-weight="bold">③ 汇编</text>
+        <text x="475" y="60" text-anchor="middle" fill="#8b949e" font-size="10">as / gcc -c</text>
+        <text x="475" y="74" text-anchor="middle" fill="#8b949e" font-size="9">main.s → main.o</text>
+
+        <path d="M 552 50 L 588 50" fill="none" stroke="#f2cc60" stroke-width="1.5" marker-end="url(#c3)"/>
+        <defs><marker id="c3" markerWidth="8" markerHeight="8" refX="6" refY="3" orient="auto"><path d="M0,0 L0,6 L8,3 z" fill="#f2cc60"/></marker></defs>
+
+        <!-- Stage 4: Linking -->
+        <rect x="590" y="20" width="100" height="60" rx="8" fill="#1c2128" stroke="#f78166" stroke-width="1.5"/>
+        <text x="640" y="45" text-anchor="middle" fill="#f78166" font-size="12" font-weight="bold">④ 链接</text>
+        <text x="640" y="60" text-anchor="middle" fill="#8b949e" font-size="10">ld / gcc</text>
+        <text x="640" y="74" text-anchor="middle" fill="#8b949e" font-size="9">.o → ELF</text>
+
+        <!-- details boxes -->
+        <!-- Preprocess detail -->
+        <rect x="10" y="110" width="170" height="100" rx="6" fill="#161b22" stroke="#58a6ff44"/>
+        <text x="95" y="126" text-anchor="middle" fill="#58a6ff" font-size="9" font-weight="bold">展开宏 #define</text>
+        <text x="95" y="140" text-anchor="middle" fill="#8b949e" font-size="9">包含头文件 #include</text>
+        <text x="95" y="154" text-anchor="middle" fill="#8b949e" font-size="9">处理条件编译 #if</text>
+        <text x="95" y="168" text-anchor="middle" fill="#8b949e" font-size="9">去除注释</text>
+        <text x="95" y="182" text-anchor="middle" fill="#555" font-size="8">输出：纯 C 代码</text>
+        <text x="95" y="198" text-anchor="middle" fill="#555" font-size="8">无预处理指令</text>
+
+        <!-- Compile detail -->
+        <rect x="200" y="110" width="170" height="100" rx="6" fill="#161b22" stroke="#3fb95044"/>
+        <text x="285" y="126" text-anchor="middle" fill="#3fb950" font-size="9" font-weight="bold">词法 / 语法分析</text>
+        <text x="285" y="140" text-anchor="middle" fill="#8b949e" font-size="9">生成 AST</text>
+        <text x="285" y="154" text-anchor="middle" fill="#8b949e" font-size="9">语义分析 / 类型检查</text>
+        <text x="285" y="168" text-anchor="middle" fill="#8b949e" font-size="9">优化（-O2 / -O3）</text>
+        <text x="285" y="182" text-anchor="middle" fill="#555" font-size="8">输出：目标架构汇编</text>
+        <text x="285" y="198" text-anchor="middle" fill="#555" font-size="8">人类可读 (.s)</text>
+
+        <!-- Assemble detail -->
+        <rect x="390" y="110" width="170" height="100" rx="6" fill="#161b22" stroke="#f2cc6044"/>
+        <text x="475" y="126" text-anchor="middle" fill="#f2cc60" font-size="9" font-weight="bold">汇编→机器码</text>
+        <text x="475" y="140" text-anchor="middle" fill="#8b949e" font-size="9">生成 .text / .data 节</text>
+        <text x="475" y="154" text-anchor="middle" fill="#8b949e" font-size="9">生成 .symtab</text>
+        <text x="475" y="168" text-anchor="middle" fill="#8b949e" font-size="9">生成 .rela.text 重定位</text>
+        <text x="475" y="182" text-anchor="middle" fill="#555" font-size="8">输出：ET_REL ELF</text>
+        <text x="475" y="198" text-anchor="middle" fill="#555" font-size="8">可重定位目标文件</text>
+
+        <!-- Link detail -->
+        <rect x="575" y="110" width="115" height="100" rx="6" fill="#161b22" stroke="#f7816644"/>
+        <text x="632" y="126" text-anchor="middle" fill="#f78166" font-size="9" font-weight="bold">符号解析</text>
+        <text x="632" y="140" text-anchor="middle" fill="#8b949e" font-size="9">重定位计算</text>
+        <text x="632" y="154" text-anchor="middle" fill="#8b949e" font-size="9">合并各节</text>
+        <text x="632" y="168" text-anchor="middle" fill="#8b949e" font-size="9">生成 PHT</text>
+        <text x="632" y="182" text-anchor="middle" fill="#555" font-size="8">输出：ET_EXEC</text>
+        <text x="632" y="196" text-anchor="middle" fill="#555" font-size="8">or ET_DYN ELF</text>
+
+        <!-- output types -->
+        <rect x="10" y="230" width="680" height="100" rx="8" fill="#1c2128" stroke="#30363d"/>
+        <text x="350" y="248" text-anchor="middle" fill="#8b949e" font-size="10" font-weight="bold">各阶段产物</text>
+
+        <rect x="25" y="256" width="140" height="60" rx="4" fill="#161b22" stroke="#58a6ff55"/>
+        <text x="95" y="275" text-anchor="middle" fill="#58a6ff" font-size="9" font-weight="bold">main.i</text>
+        <text x="95" y="289" text-anchor="middle" fill="#8b949e" font-size="8">纯 C 源码</text>
+        <text x="95" y="303" text-anchor="middle" fill="#555" font-size="8">无 ELF 格式</text>
+
+        <rect x="185" y="256" width="140" height="60" rx="4" fill="#161b22" stroke="#3fb95055"/>
+        <text x="255" y="275" text-anchor="middle" fill="#3fb950" font-size="9" font-weight="bold">main.s</text>
+        <text x="255" y="289" text-anchor="middle" fill="#8b949e" font-size="8">汇编源码</text>
+        <text x="255" y="303" text-anchor="middle" fill="#555" font-size="8">无 ELF 格式</text>
+
+        <rect x="345" y="256" width="160" height="60" rx="4" fill="#161b22" stroke="#f2cc6055"/>
+        <text x="425" y="275" text-anchor="middle" fill="#f2cc60" font-size="9" font-weight="bold">main.o</text>
+        <text x="425" y="289" text-anchor="middle" fill="#8b949e" font-size="8">ET_REL ELF</text>
+        <text x="425" y="303" text-anchor="middle" fill="#555" font-size="8">含 SHT，无 PHT</text>
+
+        <rect x="520" y="256" width="160" height="60" rx="4" fill="#161b22" stroke="#f7816655"/>
+        <text x="600" y="275" text-anchor="middle" fill="#f78166" font-size="9" font-weight="bold">a.out / libfoo.so</text>
+        <text x="600" y="289" text-anchor="middle" fill="#8b949e" font-size="8">ET_EXEC / ET_DYN</text>
+        <text x="600" y="303" text-anchor="middle" fill="#555" font-size="8">含 SHT + PHT</text>
+      </svg>
+    </div>
+
+    <h3 class="subsec">GCC 分步调用示例</h3>
+    <pre><span class="cm"># ① 预处理（停在此阶段）</span>
+<span class="cf">cpp</span> main.c -o main.i
+<span class="cm"># 或</span>
+<span class="cf">gcc</span> -E main.c -o main.i
+
+<span class="cm"># ② 编译（停在此阶段，生成汇编）</span>
+<span class="cf">gcc</span> -S main.i -o main.s
+
+<span class="cm"># ③ 汇编（停在此阶段，生成可重定位 ELF）</span>
+<span class="cf">as</span> main.s -o main.o
+<span class="cm"># 或</span>
+<span class="cf">gcc</span> -c main.c -o main.o
+
+<span class="cm"># ④ 链接（生成可执行 ELF）</span>
+<span class="cf">ld</span> main.o /lib/x86_64-linux-gnu/crt1.o \
+   /lib/x86_64-linux-gnu/crti.o \
+   /lib/x86_64-linux-gnu/crtn.o \
+   -lc -dynamic-linker /lib64/ld-linux-x86-64.so.2 \
+   -o main
+<span class="cm"># 或直接用 gcc 驱动</span>
+<span class="cf">gcc</span> main.c -o main</pre>
+
+    <h3 class="subsec">链接时节区合并</h3>
+    <div class="svg-wrap">
+      <svg viewBox="0 0 640 200" width="640" height="200" xmlns="http://www.w3.org/2000/svg">
+        <text x="320" y="16" text-anchor="middle" fill="#8b949e" font-size="11">链接器合并多个目标文件的同名节</text>
+
+        <!-- foo.o -->
+        <rect x="10" y="25" width="130" height="160" rx="5" fill="#1c2128" stroke="#30363d"/>
+        <text x="75" y="42" text-anchor="middle" fill="#8b949e" font-size="10">foo.o</text>
+        <rect x="18" y="48" width="114" height="28" rx="3" fill="#3fb95022" stroke="#3fb950" stroke-width="1"/>
+        <text x="75" y="67" text-anchor="middle" fill="#3fb950" font-size="10">.text</text>
+        <rect x="18" y="82" width="114" height="28" rx="3" fill="#d2a8ff22" stroke="#d2a8ff" stroke-width="1"/>
+        <text x="75" y="101" text-anchor="middle" fill="#d2a8ff" font-size="10">.data</text>
+        <rect x="18" y="116" width="114" height="28" rx="3" fill="#58a6ff22" stroke="#58a6ff" stroke-width="1"/>
+        <text x="75" y="135" text-anchor="middle" fill="#58a6ff" font-size="10">.rodata</text>
+        <rect x="18" y="150" width="114" height="28" rx="3" fill="#f7816622" stroke="#f78166" stroke-width="1"/>
+        <text x="75" y="169" text-anchor="middle" fill="#f78166" font-size="10">.rela.text</text>
+
+        <!-- bar.o -->
+        <rect x="155" y="25" width="130" height="160" rx="5" fill="#1c2128" stroke="#30363d"/>
+        <text x="220" y="42" text-anchor="middle" fill="#8b949e" font-size="10">bar.o</text>
+        <rect x="163" y="48" width="114" height="28" rx="3" fill="#3fb95022" stroke="#3fb950" stroke-width="1"/>
+        <text x="220" y="67" text-anchor="middle" fill="#3fb950" font-size="10">.text</text>
+        <rect x="163" y="82" width="114" height="28" rx="3" fill="#d2a8ff22" stroke="#d2a8ff" stroke-width="1"/>
+        <text x="220" y="101" text-anchor="middle" fill="#d2a8ff" font-size="10">.data</text>
+        <rect x="163" y="116" width="114" height="28" rx="3" fill="#58a6ff22" stroke="#58a6ff" stroke-width="1"/>
+        <text x="220" y="135" text-anchor="middle" fill="#58a6ff" font-size="10">.rodata</text>
+        <rect x="163" y="150" width="114" height="28" rx="3" fill="#f2cc6022" stroke="#f2cc60" stroke-width="1"/>
+        <text x="220" y="169" text-anchor="middle" fill="#f2cc60" font-size="10">.bss</text>
+
+        <!-- ld -->
+        <text x="335" y="110" text-anchor="middle" fill="#f2cc60" font-size="28" font-weight="bold">ld</text>
+        <path d="M 287 105 L 318 105" fill="none" stroke="#8b949e" stroke-width="1.5" marker-end="url(#d1)"/>
+        <path d="M 360 105 L 390 105" fill="none" stroke="#8b949e" stroke-width="1.5" marker-end="url(#d1)"/>
+        <defs><marker id="d1" markerWidth="8" markerHeight="8" refX="6" refY="3" orient="auto"><path d="M0,0 L0,6 L8,3 z" fill="#8b949e"/></marker></defs>
+
+        <!-- a.out -->
+        <rect x="393" y="25" width="235" height="160" rx="5" fill="#1c2128" stroke="#30363d"/>
+        <text x="510" y="42" text-anchor="middle" fill="#8b949e" font-size="10">a.out（合并后）</text>
+        <rect x="401" y="48" width="219" height="28" rx="3" fill="#3fb95022" stroke="#3fb950" stroke-width="1.5"/>
+        <text x="510" y="67" text-anchor="middle" fill="#3fb950" font-size="10">.text (foo+bar)</text>
+        <rect x="401" y="82" width="219" height="28" rx="3" fill="#d2a8ff22" stroke="#d2a8ff" stroke-width="1.5"/>
+        <text x="510" y="101" text-anchor="middle" fill="#d2a8ff" font-size="10">.data (foo+bar)</text>
+        <rect x="401" y="116" width="219" height="28" rx="3" fill="#58a6ff22" stroke="#58a6ff" stroke-width="1.5"/>
+        <text x="510" y="135" text-anchor="middle" fill="#58a6ff" font-size="10">.rodata (foo+bar)</text>
+        <rect x="401" y="150" width="219" height="28" rx="3" fill="#f2cc6022" stroke="#f2cc60" stroke-width="1.5"/>
+        <text x="510" y="169" text-anchor="middle" fill="#f2cc60" font-size="10">.bss (bar，无 .rela)</text>
+      </svg>
+    </div>
+
+    <div class="principle">
+      <div class="p-label">⚡ 第一性原理</div>
+      <p>编译流水线的每一步都是一次<strong>语言翻译</strong>：源码→中间表示→汇编→机器码→链接。每步只做最小必要的工作，并将结果通过标准格式（ELF）传递给下一步。这种管道化设计使得工具链高度可替换（可以用 clang 替代 gcc，用 lld 替代 ld），这是 UNIX 哲学的具体体现。</p>
+    </div>
+  </div>
+
+  <div class="sec-divider"></div>
+
+  <!-- ═══════ S9 ═══════ -->
+  <div class="section" id="s9">
+    <h2 class="sec-title">⑨ ELF 的加载与执行</h2>
+    <p>当你执行 <code>./a.out</code>，从 shell 到程序跑起来，内核和动态链接器共同完成 ELF 的加载过程。</p>
+
+    <a class="source-link" href="https://wiki.osdev.org/ELF" target="_blank">📄 参考：OSDev Wiki — Loading ELF Binaries</a>
+
+    <h3 class="subsec">加载过程时序（详细）</h3>
+    <div class="svg-wrap">
+      <svg viewBox="0 0 660 420" width="660" height="420" xmlns="http://www.w3.org/2000/svg">
+        <defs>
+          <marker id="e1" markerWidth="8" markerHeight="8" refX="6" refY="3" orient="auto">
+            <path d="M0,0 L0,6 L8,3 z" fill="#8b949e"/>
+          </marker>
+        </defs>
+
+        <!-- Timeline actors -->
+        <text x="90" y="28" text-anchor="middle" fill="#58a6ff" font-size="11" font-weight="bold">Shell/进程</text>
+        <text x="270" y="28" text-anchor="middle" fill="#f78166" font-size="11" font-weight="bold">Linux 内核</text>
+        <text x="450" y="28" text-anchor="middle" fill="#3fb950" font-size="11" font-weight="bold">动态链接器</text>
+        <text x="600" y="28" text-anchor="middle" fill="#d2a8ff" font-size="11" font-weight="bold">用户程序</text>
+
+        <!-- Vertical lines -->
+        <line x1="90" y1="35" x2="90" y2="405" stroke="#58a6ff" stroke-width="1" stroke-dasharray="4,3" opacity=".4"/>
+        <line x1="270" y1="35" x2="270" y2="405" stroke="#f78166" stroke-width="1" stroke-dasharray="4,3" opacity=".4"/>
+        <line x1="450" y1="35" x2="450" y2="405" stroke="#3fb950" stroke-width="1" stroke-dasharray="4,3" opacity=".4"/>
+        <line x1="600" y1="35" x2="600" y2="405" stroke="#d2a8ff" stroke-width="1" stroke-dasharray="4,3" opacity=".4"/>
+
+        <!-- Steps -->
+        <!-- 1 -->
+        <rect x="45" y="42" width="90" height="28" rx="4" fill="#58a6ff22" stroke="#58a6ff" stroke-width="1"/>
+        <text x="90" y="61" text-anchor="middle" fill="#58a6ff" font-size="9">execve("./a.out")</text>
+        <path d="M 137 56 L 225 56" fill="none" stroke="#8b949e" stroke-width="1.2" marker-end="url(#e1)"/>
+
+        <!-- 2 -->
+        <rect x="183" y="78" width="175" height="28" rx="4" fill="#f7816622" stroke="#f78166" stroke-width="1"/>
+        <text x="270" y="97" text-anchor="middle" fill="#f78166" font-size="9">读 ELF Header → 验证魔数、架构</text>
+
+        <!-- 3 -->
+        <rect x="183" y="116" width="175" height="28" rx="4" fill="#f7816622" stroke="#f78166" stroke-width="1"/>
+        <text x="270" y="135" text-anchor="middle" fill="#f78166" font-size="9">读 PHT → 找 PT_INTERP</text>
+
+        <!-- 4 -->
+        <rect x="183" y="154" width="175" height="28" rx="4" fill="#f7816622" stroke="#f78166" stroke-width="1"/>
+        <text x="270" y="173" text-anchor="middle" fill="#f78166" font-size="9">mmap PT_LOAD 段到虚拟地址</text>
+
+        <!-- 5 -->
+        <rect x="183" y="192" width="175" height="28" rx="4" fill="#f7816622" stroke="#f78166" stroke-width="1"/>
+        <text x="270" y="211" text-anchor="middle" fill="#f78166" font-size="9">加载动态链接器本身（mmap）</text>
+
+        <!-- 6 -->
+        <rect x="183" y="230" width="175" height="28" rx="4" fill="#f7816622" stroke="#f78166" stroke-width="1"/>
+        <text x="270" y="249" text-anchor="middle" fill="#f78166" font-size="9">构建 auxv，跳转到 ld-linux</text>
+        <path d="M 360 244 L 407 244" fill="none" stroke="#8b949e" stroke-width="1.2" marker-end="url(#e1)"/>
+
+        <!-- 7 -->
+        <rect x="363" y="258" width="175" height="28" rx="4" fill="#3fb95022" stroke="#3fb950" stroke-width="1"/>
+        <text x="450" y="277" text-anchor="middle" fill="#3fb950" font-size="9">读 .dynamic → DT_NEEDED</text>
+
+        <!-- 8 -->
+        <rect x="363" y="296" width="175" height="28" rx="4" fill="#3fb95022" stroke="#3fb950" stroke-width="1"/>
+        <text x="450" y="315" text-anchor="middle" fill="#3fb950" font-size="9">mmap 所有依赖 .so</text>
+
+        <!-- 9 -->
+        <rect x="363" y="334" width="175" height="28" rx="4" fill="#3fb95022" stroke="#3fb950" stroke-width="1"/>
+        <text x="450" y="353" text-anchor="middle" fill="#3fb950" font-size="9">重定位 + 符号解析</text>
+
+        <!-- 10 -->
+        <rect x="363" y="372" width="175" height="28" rx="4" fill="#3fb95022" stroke="#3fb950" stroke-width="1"/>
+        <text x="450" y="391" text-anchor="middle" fill="#3fb950" font-size="9">调用 .init / DT_INIT_ARRAY</text>
+        <path d="M 540 386 L 557 386" fill="none" stroke="#8b949e" stroke-width="1.2" marker-end="url(#e1)"/>
+
+        <!-- 11 -->
+        <rect x="558" y="372" width="90" height="28" rx="4" fill="#d2a8ff22" stroke="#d2a8ff" stroke-width="1"/>
+        <text x="603" y="386" text-anchor="middle" fill="#d2a8ff" font-size="9">main() 开始执行</text>
+
+        <!-- Step labels -->
+        <text x="8" y="60" fill="#555" font-size="8">①</text>
+        <text x="8" y="98" fill="#555" font-size="8">②</text>
+        <text x="8" y="136" fill="#555" font-size="8">③</text>
+        <text x="8" y="174" fill="#555" font-size="8">④</text>
+        <text x="8" y="212" fill="#555" font-size="8">⑤</text>
+        <text x="8" y="250" fill="#555" font-size="8">⑥</text>
+        <text x="8" y="278" fill="#555" font-size="8">⑦</text>
+        <text x="8" y="316" fill="#555" font-size="8">⑧</text>
+        <text x="8" y="354" fill="#555" font-size="8">⑨</text>
+        <text x="8" y="392" fill="#555" font-size="8">⑩</text>
+      </svg>
+    </div>
+
+    <h3 class="subsec">内存布局（运行时）</h3>
+    <div class="svg-wrap">
+      <svg viewBox="0 0 380 340" width="380" height="340" xmlns="http://www.w3.org/2000/svg">
+        <text x="190" y="16" text-anchor="middle" fill="#8b949e" font-size="11">Linux x86-64 进程虚拟地址空间</text>
+
+        <!-- address bars -->
+        <rect x="60" y="25" width="260" height="30" rx="4" fill="#d2a8ff22" stroke="#d2a8ff" stroke-width="1"/>
+        <text x="190" y="44" text-anchor="middle" fill="#d2a8ff" font-size="10">内核空间（0xFFFF800000000000 ~）</text>
+
+        <rect x="60" y="62" width="260" height="30" rx="4" fill="#f7816622" stroke="#f78166" stroke-width="1"/>
+        <text x="190" y="81" text-anchor="middle" fill="#f78166" font-size="10">栈（Stack）↓ 向低地址增长</text>
+        <text x="330" y="69" fill="#8b949e" font-size="8">高地址</text>
+
+        <rect x="60" y="99" width="260" height="24" rx="4" fill="#f2cc6022" stroke="#f2cc60" stroke-width="1"/>
+        <text x="190" y="115" text-anchor="middle" fill="#f2cc60" font-size="10">mmap 区域（共享库等）</text>
+
+        <rect x="60" y="130" width="260" height="24" rx="4" fill="#3fb95022" stroke="#3fb950" stroke-width="1"/>
+        <text x="190" y="146" text-anchor="middle" fill="#3fb950" font-size="10">堆（Heap）↑ 向高地址增长</text>
+
+        <rect x="60" y="161" width="260" height="22" rx="4" fill="#d2a8ff22" stroke="#d2a8ff" stroke-width=".8" stroke-dasharray="4,2"/>
+        <text x="190" y="176" text-anchor="middle" fill="#d2a8ff" font-size="10">.bss（零初始化）</text>
+
+        <rect x="60" y="190" width="260" height="22" rx="4" fill="#d2a8ff22" stroke="#d2a8ff" stroke-width="1"/>
+        <text x="190" y="205" text-anchor="middle" fill="#d2a8ff" font-size="10">.data（已初始化）</text>
+
+        <rect x="60" y="219" width="260" height="22" rx="4" fill="#58a6ff22" stroke="#58a6ff" stroke-width=".8"/>
+        <text x="190" y="234" text-anchor="middle" fill="#58a6ff" font-size="10">.rodata（只读数据）</text>
+
+        <rect x="60" y="248" width="260" height="22" rx="4" fill="#3fb95022" stroke="#3fb950" stroke-width="1.2"/>
+        <text x="190" y="263" text-anchor="middle" fill="#3fb950" font-size="10">.text（代码，R-X）</text>
+
+        <rect x="60" y="277" width="260" height="22" rx="4" fill="#58a6ff22" stroke="#58a6ff" stroke-width="1.2"/>
+        <text x="190" y="292" text-anchor="middle" fill="#58a6ff" font-size="10">ELF Header + PHT</text>
+        <text x="330" y="296" fill="#8b949e" font-size="8">低地址</text>
+        <text x="25" y="296" fill="#8b949e" font-size="8">0x400000</text>
+
+        <!-- Braces -->
+        <path d="M 52 161 L 42 161 L 42 211 L 52 211" fill="none" stroke="#d2a8ff" stroke-width="1"/>
+        <text x="35" y="188" text-anchor="middle" fill="#d2a8ff" font-size="8" transform="rotate(-90,35,188)">RW 段</text>
+
+        <path d="M 52 219 L 42 219 L 42 270 L 52 270" fill="none" stroke="#f78166" stroke-width="1"/>
+        <text x="35" y="248" text-anchor="middle" fill="#f78166" font-size="8" transform="rotate(-90,35,248)">RX 段</text>
+      </svg>
+    </div>
+
+    <div class="principle">
+      <div class="p-label">⚡ 第一性原理</div>
+      <p>ELF 加载是"按需映射"的过程——内核通过 mmap 将文件内容懒加载到虚拟地址空间，只有真正被访问的页才触发物理内存分配（缺页异常）。动态链接器则负责在运行时完成编译期未能确定的最终地址绑定。整个过程是"编译期静态分析 + 链接期部分解析 + 运行期最终确定"的三阶段延迟求值策略。</p>
+    </div>
+  </div>
+
+  <div class="sec-divider"></div>
+
+  <!-- ═══════ S10 ═══════ -->
+  <div class="section" id="s10">
+    <h2 class="sec-title">⑩ 常用 ELF 分析工具</h2>
+    <p>Linux 提供了完整的 ELF 分析工具链，全部来自 GNU binutils 和系统工具。</p>
+
+    <div class="tbl-wrap">
+      <table>
+        <thead><tr><th>工具</th><th>常用命令</th><th>功能</th></tr></thead>
+        <tbody>
+          <tr>
+            <td><code>readelf</code></td>
+            <td><code>readelf -h/-S/-l/-s/-d file</code></td>
+            <td>读取 ELF 头、节区表、程序头表、符号表、动态节</td>
+          </tr>
+          <tr>
+            <td><code>objdump</code></td>
+            <td><code>objdump -d/-D/-x/-t file</code></td>
+            <td>反汇编、显示各节内容、符号表</td>
+          </tr>
+          <tr>
+            <td><code>nm</code></td>
+            <td><code>nm -n/-u file</code></td>
+            <td>列出符号表，按地址排序或仅显示未定义符号</td>
+          </tr>
+          <tr>
+            <td><code>ldd</code></td>
+            <td><code>ldd ./a.out</code></td>
+            <td>列出程序的动态库依赖（DT_NEEDED）</td>
+          </tr>
+          <tr>
+            <td><code>file</code></td>
+            <td><code>file ./a.out</code></td>
+            <td>识别 ELF 类型、架构、链接方式</td>
+          </tr>
+          <tr>
+            <td><code>size</code></td>
+            <td><code>size ./a.out</code></td>
+            <td>显示 .text / .data / .bss 的大小</td>
+          </tr>
+          <tr>
+            <td><code>strip</code></td>
+            <td><code>strip -s ./a.out</code></td>
+            <td>去除 .symtab/.debug_* 等调试信息</td>
+          </tr>
+          <tr>
+            <td><code>objcopy</code></td>
+            <td><code>objcopy -O binary file.elf file.bin</code></td>
+            <td>ELF 格式转换，提取裸二进制</td>
+          </tr>
+          <tr>
+            <td><code>patchelf</code></td>
+            <td><code>patchelf --set-interpreter ... file</code></td>
+            <td>修改 ELF 的动态链接器路径、RPATH 等</td>
+          </tr>
+          <tr>
+            <td><code>gdb</code></td>
+            <td><code>gdb ./a.out</code></td>
+            <td>结合 .debug_* DWARF 信息进行源码级调试</td>
+          </tr>
+        </tbody>
+      </table>
+    </div>
+
+    <h3 class="subsec">常用 readelf 命令速查</h3>
+    <pre><span class="cm"># 查看 ELF 头</span>
+<span class="cf">readelf</span> -h /bin/ls
+
+<span class="cm"># 查看所有节区（Section Header Table）</span>
+<span class="cf">readelf</span> -S ./a.out
+
+<span class="cm"># 查看程序头表（Segment Header Table）</span>
+<span class="cf">readelf</span> -l ./a.out
+
+<span class="cm"># 查看符号表</span>
+<span class="cf">readelf</span> -s ./a.out
+
+<span class="cm"># 查看动态节</span>
+<span class="cf">readelf</span> -d ./a.out
+
+<span class="cm"># 查看重定位条目</span>
+<span class="cf">readelf</span> -r ./a.out
+
+<span class="cm"># 查看全部信息</span>
+<span class="cf">readelf</span> -a ./a.out
+
+<span class="cm"># 查看 .text 反汇编</span>
+<span class="cf">objdump</span> -d -M intel ./a.out
+
+<span class="cm"># 查看动态库依赖</span>
+<span class="cf">ldd</span> /bin/ls
+
+<span class="cm"># 显示各节大小</span>
+<span class="cf">size</span> ./a.out</pre>
+
+    <div class="principle">
+      <div class="p-label">⚡ 第一性原理</div>
+      <p>这些工具都是同一个思想的具体实现：<strong>按照 ELF 规范的结构定义，解析二进制文件中特定偏移处的字节序列，并以人类可读的格式呈现</strong>。ELF 自描述的设计（文件头包含所有表的偏移和大小）使得任何工具都可以独立解析文件，无需外部元数据。这是"自包含"设计原则的胜利。</p>
+    </div>
+
+    <div class="section-footer">
+      <p>内容来源：<a href="https://www.man7.org/linux/man-pages/man5/elf.5.html" style="color:var(--accent)">man7.org elf(5)</a> · <a href="https://en.wikipedia.org/wiki/Executable_and_Linkable_Format" style="color:var(--accent)">Wikipedia ELF</a> · <a href="https://linuxvox.com/blog/what-s-the-difference-of-section-and-segment-in-elf-file-format/" style="color:var(--accent)">linuxvox.com</a> · <a href="https://cs4157.github.io/www/2024-1/lect/15-elf-intro.html" style="color:var(--accent)">Columbia CS4157</a></p>
+      <p style="margin-top:8px">Linux man-pages 6.18 · 2026-02-08</p>
+    </div>
+  </div>
+
+</main>
+
+<!-- Keyboard hint -->
+<div class="kbd-hint">
+  <kbd>←</kbd><kbd>→</kbd> 章节导航
+</div>
+
+<script>
+// ── Data ──
+const sections = ['s0','s1','s2','s3','s4','s5','s6','s7','s8','s9','s10'];
+let currentIdx = 0;
+
+// ── Progress bar ──
+function updateProgress() {
+  const scrollTop = window.scrollY || document.documentElement.scrollTop;
+  const docH = document.documentElement.scrollHeight - window.innerHeight;
+  const pct = docH > 0 ? (scrollTop / docH) * 100 : 0;
+  document.getElementById('progress-bar').style.width = pct + '%';
+}
+
+// ── Active nav tracking ──
+function updateActiveNav() {
+  const navItems = document.querySelectorAll('.nav-item[data-sec]');
+  let activeId = sections[0];
+  sections.forEach(id => {
+    const el = document.getElementById(id);
+    if (!el) return;
+    const rect = el.getBoundingClientRect();
+    if (rect.top <= 120) activeId = id;
+  });
+  navItems.forEach(item => {
+    const isSec = item.dataset.sec;
+    item.classList.toggle('active', isSec === activeId);
+  });
+  currentIdx = sections.indexOf(activeId);
+}
+
+// ── Keyboard navigation ──
+document.addEventListener('keydown', e => {
+  if (e.key === 'ArrowRight' || e.key === 'ArrowDown') {
+    e.preventDefault();
+    const next = Math.min(currentIdx + 1, sections.length - 1);
+    scrollToSection(next);
+  } else if (e.key === 'ArrowLeft' || e.key === 'ArrowUp') {
+    e.preventDefault();
+    const prev = Math.max(currentIdx - 1, 0);
+    scrollToSection(prev);
+  }
+});
+
+function scrollToSection(idx) {
+  const el = document.getElementById(sections[idx]);
+  if (el) {
+    const offset = window.innerWidth <= 768 ? 60 : 8;
+    const top = el.getBoundingClientRect().top + window.scrollY - offset;
+    window.scrollTo({ top, behavior: 'smooth' });
+    currentIdx = idx;
+  }
+}
+
+// ── Nav click ──
+document.querySelectorAll('.nav-item[data-sec]').forEach(item => {
+  item.addEventListener('click', e => {
+    e.preventDefault();
+    const sec = item.dataset.sec;
+    const idx = sections.indexOf(sec);
+    scrollToSection(idx);
+    // close mobile menu
+    closeMobileMenu();
+  });
+});
+
+// ── Mobile menu ──
+const hamburger = document.getElementById('hamburger');
+const sidebar = document.getElementById('sidebar');
+const overlay = document.getElementById('overlay');
+
+function closeMobileMenu() {
+  hamburger.classList.remove('open');
+  sidebar.classList.remove('open');
+  overlay.classList.remove('open');
+}
+
+hamburger.addEventListener('click', () => {
+  const isOpen = sidebar.classList.toggle('open');
+  hamburger.classList.toggle('open', isOpen);
+  overlay.classList.toggle('open', isOpen);
+});
+
+overlay.addEventListener('click', closeMobileMenu);
+
+// ── Scroll handler ──
+let ticking = false;
+window.addEventListener('scroll', () => {
+  if (!ticking) {
+    requestAnimationFrame(() => {
+      updateProgress();
+      updateActiveNav();
+      ticking = false;
+    });
+    ticking = true;
+  }
+});
+
+// init
+updateProgress();
+updateActiveNav();
+</script>
+</body>
+</html>

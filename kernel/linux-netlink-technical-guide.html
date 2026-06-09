@@ -1,0 +1,1491 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Linux Netlink 通信原理深度解析</title>
+<style>
+  :root {
+    --bg: #0f1117;
+    --bg2: #161b27;
+    --bg3: #1e2535;
+    --border: #2a3347;
+    --accent: #4f9ef8;
+    --accent2: #7c6af7;
+    --accent3: #2dd4bf;
+    --text: #e2e8f0;
+    --text2: #94a3b8;
+    --text3: #64748b;
+    --yellow: #f59e0b;
+    --green: #22c55e;
+    --red: #ef4444;
+    --orange: #f97316;
+    --nav-w: 280px;
+    --header-h: 52px;
+  }
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  html { scroll-behavior: smooth; }
+  body {
+    font-family: 'Segoe UI', system-ui, -apple-system, sans-serif;
+    background: var(--bg);
+    color: var(--text);
+    line-height: 1.7;
+    overflow-x: hidden;
+  }
+
+  /* ── Progress bar ── */
+  #progress-bar {
+    position: fixed; top: 0; left: 0; height: 3px;
+    background: linear-gradient(90deg, var(--accent), var(--accent2), var(--accent3));
+    z-index: 9999; width: 0%; transition: width 0.1s;
+    box-shadow: 0 0 8px var(--accent);
+  }
+
+  /* ── Top header ── */
+  #top-header {
+    position: fixed; top: 0; left: 0; right: 0; height: var(--header-h);
+    background: rgba(15,17,23,0.96);
+    backdrop-filter: blur(12px);
+    border-bottom: 1px solid var(--border);
+    display: flex; align-items: center;
+    padding: 0 16px; z-index: 900; gap: 12px;
+  }
+  #hamburger {
+    display: none; flex-direction: column; gap: 5px;
+    cursor: pointer; padding: 4px; background: none; border: none;
+  }
+  #hamburger span {
+    display: block; width: 22px; height: 2px;
+    background: var(--text); border-radius: 2px;
+    transition: all 0.3s;
+  }
+  .header-title {
+    font-size: 0.95rem; font-weight: 600; color: var(--accent);
+    white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+  }
+  .header-badge {
+    margin-left: auto; font-size: 0.72rem; padding: 3px 10px;
+    border-radius: 12px; background: rgba(79,158,248,0.12);
+    color: var(--accent); border: 1px solid rgba(79,158,248,0.25);
+    white-space: nowrap;
+  }
+
+  /* ── Layout ── */
+  #layout {
+    display: flex;
+    padding-top: var(--header-h);
+    min-height: 100vh;
+  }
+
+  /* ── Sidebar ── */
+  #sidebar {
+    position: fixed; top: var(--header-h); left: 0; bottom: 0;
+    width: var(--nav-w);
+    background: var(--bg2);
+    border-right: 1px solid var(--border);
+    overflow-y: auto; overflow-x: hidden;
+    z-index: 800;
+    transition: transform 0.3s ease;
+  }
+  #sidebar::-webkit-scrollbar { width: 4px; }
+  #sidebar::-webkit-scrollbar-track { background: transparent; }
+  #sidebar::-webkit-scrollbar-thumb { background: var(--border); border-radius: 2px; }
+
+  .nav-group {
+    padding: 16px 12px 8px;
+    font-size: 0.68rem; font-weight: 700; letter-spacing: 0.08em;
+    color: var(--text3); text-transform: uppercase;
+  }
+  .nav-item {
+    display: flex; align-items: center; gap: 8px;
+    padding: 7px 16px; margin: 1px 8px;
+    border-radius: 7px; cursor: pointer;
+    font-size: 0.82rem; color: var(--text2);
+    transition: all 0.18s; text-decoration: none;
+    border-left: 2px solid transparent;
+  }
+  .nav-item:hover { background: var(--bg3); color: var(--text); }
+  .nav-item.active {
+    background: rgba(79,158,248,0.1);
+    color: var(--accent);
+    border-left-color: var(--accent);
+    font-weight: 600;
+  }
+  .nav-item .nav-num {
+    font-size: 0.68rem; color: var(--text3); min-width: 18px; font-weight: 500;
+  }
+
+  /* ── Main content ── */
+  #main {
+    margin-left: var(--nav-w);
+    flex: 1; min-width: 0;
+    padding: 40px 48px 80px;
+    max-width: 960px;
+  }
+
+  /* ── Sections ── */
+  .section {
+    margin-bottom: 72px;
+    scroll-margin-top: calc(var(--header-h) + 20px);
+  }
+  .section-header {
+    display: flex; align-items: center; gap: 14px;
+    margin-bottom: 28px; padding-bottom: 14px;
+    border-bottom: 1px solid var(--border);
+  }
+  .section-num {
+    display: inline-flex; align-items: center; justify-content: center;
+    width: 34px; height: 34px; border-radius: 8px;
+    background: linear-gradient(135deg, var(--accent), var(--accent2));
+    font-size: 0.85rem; font-weight: 700; color: #fff;
+    flex-shrink: 0;
+  }
+  .section-title { font-size: 1.5rem; font-weight: 700; }
+
+  h3 {
+    font-size: 1.1rem; font-weight: 600; margin: 28px 0 12px;
+    color: var(--text);
+    display: flex; align-items: center; gap: 8px;
+  }
+  h3::before {
+    content: ''; display: block; width: 4px; height: 18px;
+    background: var(--accent); border-radius: 2px; flex-shrink: 0;
+  }
+  p { color: var(--text2); margin-bottom: 14px; }
+  strong { color: var(--text); font-weight: 600; }
+  em { color: var(--accent3); font-style: normal; font-weight: 500; }
+
+  /* Code */
+  code {
+    font-family: 'Cascadia Code', 'Fira Code', 'Consolas', monospace;
+    font-size: 0.84em; background: rgba(79,158,248,0.1);
+    color: var(--accent3); padding: 1px 5px; border-radius: 4px;
+  }
+  pre {
+    background: #0a0d14; border: 1px solid var(--border);
+    border-radius: 10px; padding: 20px; overflow-x: auto;
+    margin: 16px 0; position: relative;
+  }
+  pre code {
+    background: none; color: #c9d1d9; padding: 0;
+    font-size: 0.83rem; line-height: 1.6;
+  }
+  .kw { color: #ff7b72; }
+  .ty { color: #79c0ff; }
+  .cm { color: #6a737d; font-style: italic; }
+  .st { color: #a5d6ff; }
+  .nu { color: #f97316; }
+  .fn { color: #d2a8ff; }
+
+  /* Cards / callouts */
+  .card {
+    background: var(--bg2); border: 1px solid var(--border);
+    border-radius: 12px; padding: 20px 24px; margin: 16px 0;
+  }
+  .callout {
+    border-radius: 10px; padding: 16px 20px; margin: 16px 0;
+    display: flex; gap: 14px; align-items: flex-start;
+  }
+  .callout-info { background: rgba(79,158,248,0.08); border: 1px solid rgba(79,158,248,0.2); }
+  .callout-warn { background: rgba(245,158,11,0.08); border: 1px solid rgba(245,158,11,0.2); }
+  .callout-tip  { background: rgba(45,212,191,0.08); border: 1px solid rgba(45,212,191,0.2); }
+  .callout-key  { background: rgba(124,106,247,0.08); border: 1px solid rgba(124,106,247,0.2); }
+  .callout-icon { font-size: 1.2rem; flex-shrink: 0; }
+  .callout-body { font-size: 0.9rem; color: var(--text2); }
+  .callout-body strong { color: var(--text); }
+
+  /* First-principle box */
+  .fp-box {
+    background: linear-gradient(135deg, rgba(124,106,247,0.12), rgba(79,158,248,0.06));
+    border: 1px solid rgba(124,106,247,0.3);
+    border-radius: 12px; padding: 20px 24px; margin-top: 32px;
+  }
+  .fp-box-title {
+    font-size: 0.8rem; font-weight: 700; letter-spacing: 0.06em;
+    text-transform: uppercase; color: var(--accent2); margin-bottom: 10px;
+    display: flex; align-items: center; gap: 8px;
+  }
+  .fp-box p { color: var(--text); font-size: 0.92rem; }
+
+  /* Tables */
+  table {
+    width: 100%; border-collapse: collapse;
+    margin: 16px 0; font-size: 0.85rem;
+  }
+  th {
+    background: var(--bg3); padding: 10px 14px;
+    text-align: left; color: var(--text); font-weight: 600;
+    border-bottom: 2px solid var(--border);
+    border-right: 1px solid var(--border);
+  }
+  th:last-child { border-right: none; }
+  td {
+    padding: 9px 14px; border-bottom: 1px solid var(--border);
+    border-right: 1px solid var(--border); color: var(--text2);
+    vertical-align: top;
+  }
+  td:last-child { border-right: none; }
+  tr:last-child td { border-bottom: none; }
+  tr:hover td { background: rgba(255,255,255,0.02); }
+  .td-code { font-family: monospace; color: var(--accent3); font-size: 0.82rem; }
+
+  /* Badges */
+  .badge {
+    display: inline-block; font-size: 0.7rem; font-weight: 700;
+    padding: 2px 8px; border-radius: 4px; margin: 1px;
+  }
+  .badge-blue  { background: rgba(79,158,248,0.15); color: var(--accent); }
+  .badge-green { background: rgba(34,197,94,0.15); color: var(--green); }
+  .badge-yellow{ background: rgba(245,158,11,0.15); color: var(--yellow); }
+  .badge-red   { background: rgba(239,68,68,0.15); color: var(--red); }
+  .badge-purple{ background: rgba(124,106,247,0.15); color: var(--accent2); }
+  .badge-teal  { background: rgba(45,212,191,0.15); color: var(--accent3); }
+
+  /* Source links */
+  .source-link {
+    display: inline-flex; align-items: center; gap: 6px;
+    font-size: 0.75rem; color: var(--text3);
+    background: var(--bg3); border: 1px solid var(--border);
+    padding: 3px 10px; border-radius: 5px; text-decoration: none;
+    transition: all 0.2s; margin: 4px 4px 0 0;
+  }
+  .source-link:hover { color: var(--accent); border-color: var(--accent); }
+
+  /* Keyboard nav hint */
+  .key-hint {
+    display: inline-flex; align-items: center; justify-content: center;
+    width: 22px; height: 22px; border: 1px solid var(--border);
+    border-radius: 5px; font-size: 0.75rem; color: var(--text3);
+    background: var(--bg3);
+  }
+
+  /* Mobile overlay */
+  #sidebar-overlay {
+    display: none; position: fixed; inset: 0;
+    background: rgba(0,0,0,0.6); z-index: 799;
+  }
+
+  /* SVG diagrams */
+  .diagram-wrap {
+    background: #080b12; border: 1px solid var(--border);
+    border-radius: 12px; padding: 24px 16px; margin: 20px 0;
+    overflow-x: auto;
+  }
+  .diagram-wrap svg { display: block; margin: 0 auto; }
+
+  /* ── Responsive ── */
+  @media (max-width: 900px) {
+    #hamburger { display: flex; }
+    #sidebar {
+      transform: translateX(-100%);
+    }
+    #sidebar.open {
+      transform: translateX(0);
+    }
+    #sidebar-overlay.show { display: block; }
+    #main {
+      margin-left: 0;
+      padding: 28px 20px 60px;
+    }
+  }
+  @media (max-width: 520px) {
+    #main { padding: 20px 14px 60px; }
+    .section-title { font-size: 1.25rem; }
+  }
+</style>
+</head>
+<body>
+
+<div id="progress-bar"></div>
+
+<!-- ── Top header ── -->
+<header id="top-header">
+  <button id="hamburger" aria-label="菜单">
+    <span></span><span></span><span></span>
+  </button>
+  <div class="header-title">Linux Netlink 通信原理深度解析</div>
+  <div style="margin-left:auto;display:flex;align-items:center;gap:8px">
+    <span class="key-hint">←</span>
+    <span class="key-hint">→</span>
+    <span style="font-size:0.72rem;color:var(--text3);margin-left:2px">翻章节</span>
+    <span class="header-badge">RFC 3549 · kernel.org</span>
+  </div>
+</header>
+
+<div id="sidebar-overlay"></div>
+
+<!-- ── Layout ── -->
+<div id="layout">
+  <!-- ── Sidebar navigation ── -->
+  <nav id="sidebar">
+    <div class="nav-group">概述</div>
+    <a class="nav-item active" href="#s0" data-idx="0">
+      <span class="nav-num">0</span> 引言与背景
+    </a>
+
+    <div class="nav-group">核心原理</div>
+    <a class="nav-item" href="#s1" data-idx="1">
+      <span class="nav-num">1</span> 通信架构模型
+    </a>
+    <a class="nav-item" href="#s2" data-idx="2">
+      <span class="nav-num">2</span> Socket 创建与地址
+    </a>
+    <a class="nav-item" href="#s3" data-idx="3">
+      <span class="nav-num">3</span> 消息格式与协议头
+    </a>
+    <a class="nav-item" href="#s4" data-idx="4">
+      <span class="nav-num">4</span> 字段设计背景详解
+    </a>
+
+    <div class="nav-group">深度剖析</div>
+    <a class="nav-item" href="#s5" data-idx="5">
+      <span class="nav-num">5</span> pid 字段的混乱本质
+    </a>
+    <a class="nav-item" href="#s6" data-idx="6">
+      <span class="nav-num">6</span> 消息收发完整流程
+    </a>
+    <a class="nav-item" href="#s7" data-idx="7">
+      <span class="nav-num">7</span> 协议族与类型
+    </a>
+
+    <div class="nav-group">应用与演进</div>
+    <a class="nav-item" href="#s8" data-idx="8">
+      <span class="nav-num">8</span> Generic Netlink
+    </a>
+    <a class="nav-item" href="#s9" data-idx="9">
+      <span class="nav-num">9</span> 适用场景
+    </a>
+    <a class="nav-item" href="#s10" data-idx="10">
+      <span class="nav-num">10</span> 对比其它 IPC
+    </a>
+  </nav>
+
+  <!-- ── Main content ── -->
+  <main id="main">
+
+    <!-- ─────────────── S0: 引言 ─────────────── -->
+    <section class="section" id="s0">
+      <div class="section-header">
+        <span class="section-num">0</span>
+        <h2 class="section-title">引言与背景</h2>
+      </div>
+
+      <p>Netlink 是 Linux 内核提供的一种特殊 <strong>IPC（进程间通信）</strong> 机制，设计用于内核态与用户态进程之间，以及不同用户态进程之间的双向通信。它以标准 POSIX Socket API 为接口，使用地址族 <code>AF_NETLINK</code>，协议规范定义于 <strong>RFC 3549</strong>（"Linux Netlink as an IP Services Protocol"）。</p>
+
+      <div class="callout callout-info">
+        <span class="callout-icon">📖</span>
+        <div class="callout-body">
+          <strong>权威原文：</strong>"Netlink is used to transfer information between kernel and user-space processes. It consists of a standard sockets-based interface for user space processes and an internal kernel API for kernel modules." — Linux man7 netlink(7)
+        </div>
+      </div>
+
+      <h3>历史起源</h3>
+      <p>Netlink 的前身是 Linux 2.0 时代的 <strong>netlink 字符设备</strong>（由 Alan Cox 编写）。在 Linux 2.1 内核中，Alexey Kuznetsov 将其扩展为今天我们熟知的 socket 接口形式，并将其提升为 IP 服务抽象层。BSD 4.4 的路由 socket（<code>AF_ROUTE</code>）是最早的同类设计，Linux 的 Netlink 是其超集演进。</p>
+
+      <h3>设计目标</h3>
+      <p>Netlink 被设计为 <code>ioctl()</code> 的替代品，核心目标是：以 <strong>TLV（Type-Length-Value）</strong> 格式替换固定 C 结构体，使协议具备扩展性，允许在不破坏兼容性的前提下添加新字段。</p>
+
+      <div class="diagram-wrap">
+        <svg viewBox="0 0 680 200" width="640" height="200" xmlns="http://www.w3.org/2000/svg">
+          <defs>
+            <linearGradient id="g1" x1="0%" y1="0%" x2="100%" y2="100%">
+              <stop offset="0%" style="stop-color:#4f9ef8;stop-opacity:0.25"/>
+              <stop offset="100%" style="stop-color:#7c6af7;stop-opacity:0.12"/>
+            </linearGradient>
+            <linearGradient id="g2" x1="0%" y1="0%" x2="100%" y2="100%">
+              <stop offset="0%" style="stop-color:#22c55e;stop-opacity:0.25"/>
+              <stop offset="100%" style="stop-color:#2dd4bf;stop-opacity:0.12"/>
+            </linearGradient>
+            <marker id="arr" markerWidth="8" markerHeight="8" refX="4" refY="4" orient="auto">
+              <path d="M0,0 L8,4 L0,8 Z" fill="#4f9ef8"/>
+            </marker>
+            <marker id="arr2" markerWidth="8" markerHeight="8" refX="4" refY="4" orient="auto">
+              <path d="M8,0 L0,4 L8,8 Z" fill="#22c55e"/>
+            </marker>
+          </defs>
+          <!-- User space box -->
+          <rect x="20" y="30" width="240" height="140" rx="10" fill="url(#g1)" stroke="#4f9ef8" stroke-width="1.2"/>
+          <text x="140" y="56" text-anchor="middle" fill="#4f9ef8" font-size="12" font-weight="700">用户空间 (User Space)</text>
+          <rect x="44" y="66" width="192" height="30" rx="6" fill="rgba(79,158,248,0.15)" stroke="#4f9ef8" stroke-width="0.8"/>
+          <text x="140" y="86" text-anchor="middle" fill="#e2e8f0" font-size="11">应用程序 / 路由守护进程</text>
+          <rect x="44" y="106" width="192" height="28" rx="6" fill="rgba(79,158,248,0.12)" stroke="#4f9ef8" stroke-width="0.8"/>
+          <text x="140" y="124" text-anchor="middle" fill="#e2e8f0" font-size="11">socket(AF_NETLINK, SOCK_RAW, ...)</text>
+          <rect x="44" y="142" width="192" height="20" rx="5" fill="rgba(79,158,248,0.1)" stroke="#4f9ef8" stroke-width="0.8"/>
+          <text x="140" y="156" text-anchor="middle" fill="#94a3b8" font-size="10">sendmsg / recvmsg</text>
+
+          <!-- Netlink layer -->
+          <rect x="272" y="75" width="136" height="52" rx="8" fill="rgba(245,158,11,0.12)" stroke="#f59e0b" stroke-width="1.4"/>
+          <text x="340" y="98" text-anchor="middle" fill="#f59e0b" font-size="11" font-weight="700">Netlink</text>
+          <text x="340" y="116" text-anchor="middle" fill="#94a3b8" font-size="10">net/core/af_netlink.c</text>
+
+          <!-- Kernel space box -->
+          <rect x="420" y="30" width="240" height="140" rx="10" fill="url(#g2)" stroke="#22c55e" stroke-width="1.2"/>
+          <text x="540" y="56" text-anchor="middle" fill="#22c55e" font-size="12" font-weight="700">内核空间 (Kernel Space)</text>
+          <rect x="444" y="66" width="192" height="30" rx="6" fill="rgba(34,197,94,0.15)" stroke="#22c55e" stroke-width="0.8"/>
+          <text x="540" y="86" text-anchor="middle" fill="#e2e8f0" font-size="11">内核模块 / 网络子系统</text>
+          <rect x="444" y="106" width="192" height="28" rx="6" fill="rgba(34,197,94,0.12)" stroke="#22c55e" stroke-width="0.8"/>
+          <text x="540" y="124" text-anchor="middle" fill="#e2e8f0" font-size="11">netlink_kernel_create()</text>
+          <rect x="444" y="142" width="192" height="20" rx="5" fill="rgba(34,197,94,0.1)" stroke="#22c55e" stroke-width="0.8"/>
+          <text x="540" y="156" text-anchor="middle" fill="#94a3b8" font-size="10">nlmsg_unicast / nlmsg_broadcast</text>
+
+          <!-- Arrows -->
+          <line x1="236" y1="96" x2="272" y2="96" stroke="#4f9ef8" stroke-width="1.8" marker-end="url(#arr)"/>
+          <line x1="408" y1="108" x2="372" y2="108" stroke="#22c55e" stroke-width="1.8" marker-end="url(#arr2)"/>
+          <text x="340" y="176" text-anchor="middle" fill="#64748b" font-size="10">AF_NETLINK Socket IPC 通道</text>
+        </svg>
+      </div>
+
+      <div class="fp-box">
+        <div class="fp-box-title">⚡ 第一性原理</div>
+        <p>Netlink 存在的根本原因：<strong>操作系统内核与用户空间处于不同内存保护域</strong>，二者之间需要一条"受控的通信管道"。ioctl/procfs 是早期"补丁式"方案，而 Netlink 回归本质——用标准 socket IPC 模型连接两个保护域，以最小固定头 + 可扩展 TLV 负载表达任意复杂语义，是"连接保护域边界"这一根本需求的最简洁实现。</p>
+      </div>
+
+      <div style="margin-top:16px">
+        <a class="source-link" href="https://datatracker.ietf.org/doc/html/rfc3549" target="_blank">📄 RFC 3549 原文</a>
+        <a class="source-link" href="https://docs.kernel.org/userspace-api/netlink/intro.html" target="_blank">📄 kernel.org Netlink Intro</a>
+        <a class="source-link" href="https://man7.org/linux/man-pages/man7/netlink.7.html" target="_blank">📄 man7 netlink(7)</a>
+      </div>
+    </section>
+
+    <!-- ─────────────── S1: 架构模型 ─────────────── -->
+    <section class="section" id="s1">
+      <div class="section-header">
+        <span class="section-num">1</span>
+        <h2 class="section-title">通信架构模型</h2>
+      </div>
+
+      <p>RFC 3549 将 Netlink 通信抽象为 <strong>转发引擎组件（FEC, Forwarding Engine Component）</strong> 与 <strong>控制面组件（CPC, Control Plane Component）</strong> 之间的协议通道。内核 = FEC，用户空间 = CPC，Netlink 是连接两者的"广播总线"。</p>
+
+      <h3>三种消息交换模式</h3>
+      <p>根据 kernel.org 官方文档，Netlink socket 上存在三种典型的消息交换模式：</p>
+
+      <div class="diagram-wrap">
+        <svg viewBox="0 0 660 220" width="640" height="220" xmlns="http://www.w3.org/2000/svg">
+          <defs>
+            <marker id="a1" markerWidth="7" markerHeight="7" refX="3.5" refY="3.5" orient="auto">
+              <path d="M0,0 L7,3.5 L0,7 Z" fill="#4f9ef8"/>
+            </marker>
+            <marker id="a2" markerWidth="7" markerHeight="7" refX="3.5" refY="3.5" orient="auto">
+              <path d="M7,0 L0,3.5 L7,7 Z" fill="#4f9ef8"/>
+            </marker>
+          </defs>
+          <!-- DO -->
+          <rect x="10" y="10" width="190" height="195" rx="10" fill="rgba(79,158,248,0.06)" stroke="rgba(79,158,248,0.3)" stroke-width="1"/>
+          <text x="105" y="34" text-anchor="middle" fill="#4f9ef8" font-size="12" font-weight="700">① do（单次操作）</text>
+          <rect x="28" y="50" width="60" height="28" rx="5" fill="rgba(79,158,248,0.2)" stroke="#4f9ef8" stroke-width="1"/>
+          <text x="58" y="69" text-anchor="middle" fill="#fff" font-size="10">用户空间</text>
+          <rect x="118" y="50" width="60" height="28" rx="5" fill="rgba(34,197,94,0.2)" stroke="#22c55e" stroke-width="1"/>
+          <text x="148" y="69" text-anchor="middle" fill="#fff" font-size="10">内核空间</text>
+          <!-- arrows do -->
+          <line x1="88" y1="65" x2="118" y2="65" stroke="#4f9ef8" stroke-width="1.5" marker-end="url(#a1)"/>
+          <text x="103" y="58" text-anchor="middle" fill="#94a3b8" font-size="9">Request</text>
+          <line x1="118" y1="82" x2="88" y2="82" stroke="#22c55e" stroke-width="1.5" marker-end="url(#a2)"/>
+          <text x="103" y="95" text-anchor="middle" fill="#94a3b8" font-size="9">ACK/Response</text>
+          <text x="105" y="120" text-anchor="middle" fill="#64748b" font-size="10">NLM_F_REQUEST</text>
+          <text x="105" y="136" text-anchor="middle" fill="#64748b" font-size="10">| NLM_F_ACK</text>
+          <text x="105" y="158" text-anchor="middle" fill="#94a3b8" font-size="9">例：修改路由、设置接口</text>
+          <text x="105" y="174" text-anchor="middle" fill="#94a3b8" font-size="9">同步请求-响应</text>
+          <text x="105" y="194" text-anchor="middle" fill="#f59e0b" font-size="9">⬧ 单次双向</text>
+
+          <!-- DUMP -->
+          <rect x="215" y="10" width="210" height="195" rx="10" fill="rgba(124,106,247,0.06)" stroke="rgba(124,106,247,0.3)" stroke-width="1"/>
+          <text x="320" y="34" text-anchor="middle" fill="#7c6af7" font-size="12" font-weight="700">② dump（批量查询）</text>
+          <rect x="233" y="50" width="60" height="28" rx="5" fill="rgba(79,158,248,0.2)" stroke="#4f9ef8" stroke-width="1"/>
+          <text x="263" y="69" text-anchor="middle" fill="#fff" font-size="10">用户空间</text>
+          <rect x="343" y="50" width="60" height="28" rx="5" fill="rgba(34,197,94,0.2)" stroke="#22c55e" stroke-width="1"/>
+          <text x="373" y="69" text-anchor="middle" fill="#fff" font-size="10">内核空间</text>
+          <line x1="293" y1="65" x2="343" y2="65" stroke="#4f9ef8" stroke-width="1.5" marker-end="url(#a1)"/>
+          <text x="318" y="58" text-anchor="middle" fill="#94a3b8" font-size="9">Dump Request</text>
+          <line x1="343" y1="78" x2="293" y2="78" stroke="#22c55e" stroke-width="1.5" stroke-dasharray="4,2" marker-end="url(#a2)"/>
+          <line x1="343" y1="90" x2="293" y2="90" stroke="#22c55e" stroke-width="1.5" stroke-dasharray="4,2" marker-end="url(#a2)"/>
+          <line x1="343" y1="102" x2="293" y2="102" stroke="#22c55e" stroke-width="1.5" marker-end="url(#a2)"/>
+          <text x="318" y="118" text-anchor="middle" fill="#94a3b8" font-size="9">多个响应消息</text>
+          <text x="320" y="138" text-anchor="middle" fill="#64748b" font-size="10">NLM_F_DUMP</text>
+          <text x="320" y="154" text-anchor="middle" fill="#64748b" font-size="10">= NLM_F_ROOT</text>
+          <text x="320" y="170" text-anchor="middle" fill="#64748b" font-size="10">| NLM_F_MATCH</text>
+          <text x="320" y="190" text-anchor="middle" fill="#f59e0b" font-size="9">⬧ 以 NLMSG_DONE 结束</text>
+
+          <!-- MULTICAST -->
+          <rect x="440" y="10" width="210" height="195" rx="10" fill="rgba(45,212,191,0.06)" stroke="rgba(45,212,191,0.3)" stroke-width="1"/>
+          <text x="545" y="34" text-anchor="middle" fill="#2dd4bf" font-size="12" font-weight="700">③ multicast（异步通知）</text>
+          <rect x="462" y="50" width="164" height="28" rx="5" fill="rgba(34,197,94,0.2)" stroke="#22c55e" stroke-width="1"/>
+          <text x="544" y="69" text-anchor="middle" fill="#fff" font-size="10">内核（事件源）</text>
+          <rect x="462" y="108" width="70" height="24" rx="5" fill="rgba(79,158,248,0.2)" stroke="#4f9ef8" stroke-width="1"/>
+          <text x="497" y="124" text-anchor="middle" fill="#fff" font-size="9">进程 A</text>
+          <rect x="546" y="108" width="70" height="24" rx="5" fill="rgba(79,158,248,0.2)" stroke="#4f9ef8" stroke-width="1"/>
+          <text x="581" y="124" text-anchor="middle" fill="#fff" font-size="9">进程 B</text>
+          <line x1="500" y1="78" x2="490" y2="108" stroke="#2dd4bf" stroke-width="1.5" marker-end="url(#a1)"/>
+          <line x1="572" y1="78" x2="568" y2="108" stroke="#2dd4bf" stroke-width="1.5" marker-end="url(#a1)"/>
+          <text x="545" y="152" text-anchor="middle" fill="#64748b" font-size="10">订阅 nl_groups</text>
+          <text x="545" y="166" text-anchor="middle" fill="#94a3b8" font-size="9">无需请求，内核主动推送</text>
+          <text x="545" y="184" text-anchor="middle" fill="#f59e0b" font-size="9">⬧ seq=0, pid=0</text>
+        </svg>
+      </div>
+
+      <h3>消息队列模型</h3>
+      <p>Netlink 是 <strong>异步</strong> 的：发送方调用 <code>sendmsg()</code> 将消息放入接收方的 socket 队列，然后调用接收方的回调；接收方在回调上下文中决定立即处理还是延后处理。这与 <code>ioctl()</code> 的同步阻塞模型有本质区别，允许内核在不影响调度粒度的前提下处理大量消息。</p>
+
+      <div class="callout callout-warn">
+        <span class="callout-icon">⚠️</span>
+        <div class="callout-body">
+          <strong>可靠性说明：</strong>Netlink 默认提供 <strong>不可靠</strong> 通信（RFC 3549 原文："by default, however, Netlink provides an unreliable communication"）。可以通过序列号 + ACK + 重传定时器组合构建可靠层，但 Netlink 本身不保证交付。
+        </div>
+      </div>
+
+      <div class="fp-box">
+        <div class="fp-box-title">⚡ 第一性原理</div>
+        <p>通信的本质是<strong>状态同步</strong>：内核维护着网络状态（路由表、接口、防火墙规则），用户空间需要读取或修改这些状态。三种模式对应三种同步需求——"做一件事"、"读全部状态"、"监听变化"。所有复杂的协议细节，都是在这三个基本需求上的工程约束叠加。</p>
+      </div>
+    </section>
+
+    <!-- ─────────────── S2: Socket 与地址 ─────────────── -->
+    <section class="section" id="s2">
+      <div class="section-header">
+        <span class="section-num">2</span>
+        <h2 class="section-title">Socket 创建与地址结构</h2>
+      </div>
+
+      <h3>创建 Netlink Socket</h3>
+      <pre><code><span class="cm">/* 用户空间：创建 Netlink Socket */</span>
+<span class="ty">int</span> fd = <span class="fn">socket</span>(AF_NETLINK,   <span class="cm">/* 地址族：AF_NETLINK */</span>
+               SOCK_RAW,      <span class="cm">/* 类型：RAW 或 DGRAM，对 Netlink 无区别 */</span>
+               NETLINK_ROUTE);<span class="cm">/* 协议类型：选择与哪个子系统通信 */</span>
+
+<span class="cm">/* 内核空间：创建 Netlink Socket */</span>
+<span class="kw">struct</span> <span class="ty">sock</span> *nl_sk = <span class="fn">netlink_kernel_create</span>(&amp;init_net,
+                                            NETLINK_ROUTE,
+                                            &amp;cfg); <span class="cm">/* cfg.input = 回调函数 */</span></code></pre>
+
+      <h3>sockaddr_nl：Netlink 地址结构</h3>
+      <p>Netlink 地址结构定义于 <code>include/uapi/linux/netlink.h</code>：</p>
+
+      <pre><code><span class="kw">struct</span> <span class="ty">sockaddr_nl</span> {
+    __kernel_sa_family_t nl_family;  <span class="cm">/* 必须为 AF_NETLINK */</span>
+    <span class="ty">unsigned short</span>       nl_pad;     <span class="cm">/* 填 0，保留字段 */</span>
+    __u32                nl_pid;     <span class="cm">/* Port ID（本地地址） */</span>
+    __u32                nl_groups;  <span class="cm">/* 组播组掩码，每位代表一个组 */</span>
+};</code></pre>
+
+      <div class="diagram-wrap">
+        <svg viewBox="0 0 620 160" width="600" height="160" xmlns="http://www.w3.org/2000/svg">
+          <!-- sockaddr_nl 结构体字节图 -->
+          <text x="10" y="20" fill="#94a3b8" font-size="11" font-weight="600">struct sockaddr_nl 内存布局（共 12 字节）</text>
+          <!-- Bytes -->
+          <rect x="10" y="32" width="80" height="40" rx="4" fill="rgba(79,158,248,0.15)" stroke="#4f9ef8" stroke-width="1"/>
+          <text x="50" y="50" text-anchor="middle" fill="#4f9ef8" font-size="10" font-weight="600">nl_family</text>
+          <text x="50" y="65" text-anchor="middle" fill="#94a3b8" font-size="9">2B  AF_NETLINK=16</text>
+
+          <rect x="96" y="32" width="60" height="40" rx="4" fill="rgba(100,116,139,0.15)" stroke="#64748b" stroke-width="1"/>
+          <text x="126" y="50" text-anchor="middle" fill="#64748b" font-size="10" font-weight="600">nl_pad</text>
+          <text x="126" y="65" text-anchor="middle" fill="#94a3b8" font-size="9">2B  = 0</text>
+
+          <rect x="162" y="32" width="180" height="40" rx="4" fill="rgba(245,158,11,0.15)" stroke="#f59e0b" stroke-width="1"/>
+          <text x="252" y="50" text-anchor="middle" fill="#f59e0b" font-size="10" font-weight="600">nl_pid</text>
+          <text x="252" y="65" text-anchor="middle" fill="#94a3b8" font-size="9">4B  Port ID（本地 unicast 地址）</text>
+
+          <rect x="348" y="32" width="260" height="40" rx="4" fill="rgba(124,106,247,0.15)" stroke="#7c6af7" stroke-width="1"/>
+          <text x="478" y="50" text-anchor="middle" fill="#7c6af7" font-size="10" font-weight="600">nl_groups</text>
+          <text x="478" y="65" text-anchor="middle" fill="#94a3b8" font-size="9">4B  组播组位掩码（bit 0~31 = group 1~32）</text>
+
+          <!-- Legend -->
+          <text x="10" y="105" fill="#94a3b8" font-size="10">nl_pid 取值规则：</text>
+          <text x="10" y="120" fill="#22c55e" font-size="10">● 内核 → 用户发送时：nl_pid = 0</text>
+          <text x="10" y="134" fill="#4f9ef8" font-size="10">● 用户绑定单 socket：nl_pid = getpid()</text>
+          <text x="300" y="120" fill="#f97316" font-size="10">● 多线程多 socket：nl_pid = pthread_self() &lt;&lt; 16 | getpid()</text>
+          <text x="300" y="134" fill="#64748b" font-size="10">● bind(nl_pid=0)：内核自动分配（等于 getpid()）</text>
+        </svg>
+      </div>
+
+      <h3>bind() 绑定</h3>
+      <p>类比 TCP/IP 的 <code>bind()</code>，Netlink 的 <code>bind()</code> 为 socket 分配一个本地地址（Port ID）。当 <code>nl_pid = 0</code> 时，内核自动将该 socket 的 Port ID 设置为当前进程的 PID（<code>getpid()</code> 返回值）。<strong>如果跳过 bind()，则需要手动管理 nl_pid 字段。</strong></p>
+
+      <pre><code><span class="kw">struct</span> <span class="ty">sockaddr_nl</span> src_addr;
+<span class="fn">memset</span>(&amp;src_addr, <span class="nu">0</span>, <span class="kw">sizeof</span>(src_addr));
+src_addr.nl_family = AF_NETLINK;
+src_addr.nl_pid    = <span class="fn">getpid</span>();  <span class="cm">/* 本进程只需一个 netlink socket 时 */</span>
+src_addr.nl_groups = <span class="nu">0</span>;         <span class="cm">/* 不订阅组播 */</span>
+<span class="fn">bind</span>(fd, (<span class="kw">struct</span> <span class="ty">sockaddr</span> *)&amp;src_addr, <span class="kw">sizeof</span>(src_addr));</code></pre>
+
+      <div class="callout callout-tip">
+        <span class="callout-icon">💡</span>
+        <div class="callout-body">
+          <strong>多线程场景的 nl_pid 公式：</strong><br>
+          单 socket：<code>nl_pid = getpid()</code><br>
+          多线程各自有独立 socket：<code>nl_pid = pthread_self() &lt;&lt; 16 | getpid()</code><br>
+          — 出处：Kevin Kaichuan He, "Why and How to Use Netlink Socket", Linux Journal 2005
+        </div>
+      </div>
+
+      <div class="fp-box">
+        <div class="fp-box-title">⚡ 第一性原理</div>
+        <p>地址的本质是<strong>路由标识符</strong>。Netlink 中的 <code>nl_pid</code> 是 unicast 地址（内核用它把回复送到正确的进程），<code>nl_groups</code> 是 multicast 地址（订阅关心的事件流）。与 IP 地址/端口号的设计哲学完全一致——"谁在哪里监听"。0 表示"让系统帮我选"，这是 socket bind 语义的通用约定。</p>
+      </div>
+    </section>
+
+    <!-- ─────────────── S3: 消息格式 ─────────────── -->
+    <section class="section" id="s3">
+      <div class="section-header">
+        <span class="section-num">3</span>
+        <h2 class="section-title">消息格式与协议头</h2>
+      </div>
+
+      <p>Netlink 消息始终以 <strong>固定大小的 <code>struct nlmsghdr</code></strong> 开头，后跟协议特定的负载。定义于 <code>include/uapi/linux/netlink.h</code>（内核官方源码）：</p>
+
+      <pre><code><span class="cm">/**
+ * struct nlmsghdr - fixed format metadata header of Netlink messages
+ * @nlmsg_len:   Length of message including header
+ * @nlmsg_type:  Message content type
+ * @nlmsg_flags: Additional flags
+ * @nlmsg_seq:   Sequence number
+ * @nlmsg_pid:   Sending process port ID
+ */</span>
+<span class="kw">struct</span> <span class="ty">nlmsghdr</span> {
+    __u32 nlmsg_len;    <span class="cm">/* 消息总长度（含 header） */</span>
+    __u16 nlmsg_type;   <span class="cm">/* 消息类型 */</span>
+    __u16 nlmsg_flags;  <span class="cm">/* 附加标志 */</span>
+    __u32 nlmsg_seq;    <span class="cm">/* 序列号 */</span>
+    __u32 nlmsg_pid;    <span class="cm">/* 发送端 Port ID */</span>
+}; <span class="cm">/* 共 16 字节 */</span></code></pre>
+
+      <div class="diagram-wrap">
+        <svg viewBox="0 0 640 340" width="620" height="340" xmlns="http://www.w3.org/2000/svg">
+          <text x="10" y="20" fill="#94a3b8" font-size="11" font-weight="600">Netlink 消息完整结构（RFC 3549 § 2.2 + 内核 uAPI）</text>
+
+          <!-- nlmsghdr -->
+          <rect x="10" y="30" width="608" height="32" rx="0" fill="rgba(79,158,248,0.2)" stroke="#4f9ef8" stroke-width="1.5"/>
+          <text x="20" y="51" fill="#4f9ef8" font-size="11" font-weight="700">struct nlmsghdr（16 B）</text>
+          <text x="580" y="51" text-anchor="end" fill="#64748b" font-size="10">固定大小</text>
+
+          <!-- nlmsghdr fields -->
+          <rect x="10" y="62" width="152" height="36" rx="0" fill="rgba(79,158,248,0.12)" stroke="#4f9ef8" stroke-width="0.8"/>
+          <text x="86" y="76" text-anchor="middle" fill="#4f9ef8" font-size="10" font-weight="600">nlmsg_len</text>
+          <text x="86" y="90" text-anchor="middle" fill="#94a3b8" font-size="9">u32 · 总长度（含header）</text>
+
+          <rect x="163" y="62" width="115" height="36" rx="0" fill="rgba(124,106,247,0.12)" stroke="#7c6af7" stroke-width="0.8"/>
+          <text x="220" y="76" text-anchor="middle" fill="#7c6af7" font-size="10" font-weight="600">nlmsg_type</text>
+          <text x="220" y="90" text-anchor="middle" fill="#94a3b8" font-size="9">u16 · 消息类型</text>
+
+          <rect x="279" y="62" width="115" height="36" rx="0" fill="rgba(245,158,11,0.12)" stroke="#f59e0b" stroke-width="0.8"/>
+          <text x="336" y="76" text-anchor="middle" fill="#f59e0b" font-size="10" font-weight="600">nlmsg_flags</text>
+          <text x="336" y="90" text-anchor="middle" fill="#94a3b8" font-size="9">u16 · 控制标志</text>
+
+          <rect x="395" y="62" width="110" height="36" rx="0" fill="rgba(34,197,94,0.12)" stroke="#22c55e" stroke-width="0.8"/>
+          <text x="450" y="76" text-anchor="middle" fill="#22c55e" font-size="10" font-weight="600">nlmsg_seq</text>
+          <text x="450" y="90" text-anchor="middle" fill="#94a3b8" font-size="9">u32 · 序列号</text>
+
+          <rect x="506" y="62" width="112" height="36" rx="0" fill="rgba(249,115,22,0.12)" stroke="#f97316" stroke-width="0.8"/>
+          <text x="562" y="76" text-anchor="middle" fill="#f97316" font-size="10" font-weight="600">nlmsg_pid</text>
+          <text x="562" y="90" text-anchor="middle" fill="#94a3b8" font-size="9">u32 · Port ID</text>
+
+          <!-- Protocol-specific header -->
+          <rect x="10" y="106" width="608" height="32" rx="0" fill="rgba(45,212,191,0.12)" stroke="#2dd4bf" stroke-width="1.2" stroke-dasharray="6,3"/>
+          <text x="20" y="128" fill="#2dd4bf" font-size="11">协议特定 Header（可选，如 ifinfomsg / rtmsg / genlmsghdr）</text>
+
+          <!-- TLV Attrs -->
+          <rect x="10" y="146" width="608" height="120" rx="0" fill="rgba(124,106,247,0.06)" stroke="rgba(124,106,247,0.3)" stroke-width="1" stroke-dasharray="5,3"/>
+          <text x="20" y="164" fill="#7c6af7" font-size="11">TLV 属性区（0 个或多个 struct nlattr）</text>
+
+          <rect x="18" y="172" width="60" height="30" rx="3" fill="rgba(124,106,247,0.15)" stroke="#7c6af7" stroke-width="0.8"/>
+          <text x="48" y="189" text-anchor="middle" fill="#7c6af7" font-size="9">nla_len</text>
+          <rect x="80" y="172" width="60" height="30" rx="3" fill="rgba(124,106,247,0.15)" stroke="#7c6af7" stroke-width="0.8"/>
+          <text x="110" y="189" text-anchor="middle" fill="#7c6af7" font-size="9">nla_type</text>
+          <rect x="142" y="172" width="100" height="30" rx="3" fill="rgba(124,106,247,0.08)" stroke="#7c6af7" stroke-width="0.8"/>
+          <text x="192" y="189" text-anchor="middle" fill="#94a3b8" font-size="9">data...</text>
+          <text x="260" y="189" fill="#64748b" font-size="10">  ... padding to 4B ...</text>
+
+          <rect x="18" y="208" width="60" height="30" rx="3" fill="rgba(124,106,247,0.15)" stroke="#7c6af7" stroke-width="0.8"/>
+          <text x="48" y="225" text-anchor="middle" fill="#7c6af7" font-size="9">nla_len</text>
+          <rect x="80" y="208" width="60" height="30" rx="3" fill="rgba(124,106,247,0.15)" stroke="#7c6af7" stroke-width="0.8"/>
+          <text x="110" y="225" text-anchor="middle" fill="#7c6af7" font-size="9">nla_type</text>
+          <rect x="142" y="208" width="180" height="30" rx="3" fill="rgba(124,106,247,0.08)" stroke="#7c6af7" stroke-width="0.8"/>
+          <text x="232" y="225" text-anchor="middle" fill="#94a3b8" font-size="9">data...</text>
+
+          <!-- Alignment note -->
+          <text x="10" y="286" fill="#64748b" font-size="10">⬧ nlmsg_len 包含 header（长度字段本身包含 header），nla_len 包含 nlattr header 但不含 padding</text>
+          <text x="10" y="302" fill="#64748b" font-size="10">⬧ 属性必须 4 字节对齐（从消息起点算）</text>
+          <text x="10" y="318" fill="#64748b" font-size="10">⬧ 内核宏 NLMSG_ALIGN / NLA_ALIGN 处理对齐，NLMSG_DATA(nlh) 指向 payload 起点</text>
+        </svg>
+      </div>
+
+      <h3>四种控制消息类型（nlmsg_type）</h3>
+      <table>
+        <tr><th>常量</th><th>值</th><th>含义</th></tr>
+        <tr><td class="td-code">NLMSG_NOOP</td><td class="td-code">1</td><td>空操作，忽略此消息（实践中极少使用）</td></tr>
+        <tr><td class="td-code">NLMSG_ERROR</td><td class="td-code">2</td><td>操作错误或 ACK，payload 为 struct nlmsgerr（含 error 码 + 原始请求头）</td></tr>
+        <tr><td class="td-code">NLMSG_DONE</td><td class="td-code">3</td><td>标志多段消息（dump）的结束</td></tr>
+        <tr><td class="td-code">NLMSG_OVERRUN</td><td class="td-code">4</td><td>缓冲区溢出（迄今未被实际使用）</td></tr>
+      </table>
+      <p>协议特定消息类型从 <code>NLMSG_MIN_TYPE = 0x10</code> 开始分配（前 16 个值保留给控制消息）。</p>
+
+      <div class="fp-box">
+        <div class="fp-box-title">⚡ 第一性原理</div>
+        <p>固定 16 字节的 <code>nlmsghdr</code> 是协议的"最小公约数"：内核 Netlink 核心只需解析这 16 字节即可路由任意子系统的消息，就像 IP 报头只解析到目的地址就能转发一样。固定头 + 可变 TLV 是通信协议设计的黄金法则：<strong>路由信息固定，业务载荷可扩展</strong>。</p>
+      </div>
+
+      <a class="source-link" href="https://github.com/torvalds/linux/blob/master/include/uapi/linux/netlink.h" target="_blank">📄 内核源码 include/uapi/linux/netlink.h</a>
+    </section>
+
+    <!-- ─────────────── S4: 字段设计背景 ─────────────── -->
+    <section class="section" id="s4">
+      <div class="section-header">
+        <span class="section-num">4</span>
+        <h2 class="section-title">协议头字段设计背景详解</h2>
+      </div>
+
+      <p>以下逐字段解析 <code>nlmsghdr</code> 五个字段的设计背景，均基于 kernel.org 官方文档、RFC 3549 及内核源码。</p>
+
+      <h3>① nlmsg_len：消息总长度</h3>
+      <div class="card">
+        <p><strong>类型：</strong><code>__u32</code>，<strong>含义：</strong>消息总长度，<strong>包含</strong> nlmsghdr header 本身</p>
+        <p><strong>设计原因：</strong>Netlink 是数据报（datagram）模式，每个消息必须由单次 <code>recv()</code> 完整读取。内核需要在解析 payload 之前就知道消息边界，<code>nlmsg_len</code> 是 Netlink 核心（<code>af_netlink.c</code>）唯一真正强制使用的字段。</p>
+        <div class="callout callout-info" style="margin-top:10px">
+          <span class="callout-icon">📌</span>
+          <div class="callout-body">原文（netlink-examples Kevin Kaichuan He 2005）："nlmsg_len has to be completed with the total length of the netlink message, including the header, and is <strong>required by netlink core</strong>."</div>
+        </div>
+        <p>多段消息（multipart）中，每个分段都有自己完整的 <code>nlmsghdr</code>，<code>nlmsg_len</code> 指定本段长度；整个 multipart 序列以 <code>NLMSG_DONE</code> 消息结束，且除最后一条外所有消息设置 <code>NLM_F_MULTI</code> 标志。</p>
+      </div>
+
+      <h3>② nlmsg_type：消息内容类型</h3>
+      <div class="card">
+        <p><strong>类型：</strong><code>__u16</code>，<strong>含义：</strong>消息类型/命令</p>
+        <p><strong>设计原因：</strong>在 Classic Netlink 中，每个协议族（如 NETLINK_ROUTE）用此字段区分操作（RTM_NEWROUTE / RTM_DELROUTE / RTM_GETROUTE 等）。</p>
+        <p>在 Generic Netlink 中，此字段变为 <strong>Family ID（子系统标识符）</strong>，操作命令改由 <code>genlmsghdr.cmd</code> 表达。这是因为 Generic Netlink 要在单个协议号下复用多个子系统。</p>
+        <table>
+          <tr><th>上下文</th><th>nlmsg_type 含义</th></tr>
+          <tr><td>Classic Netlink</td><td>操作类型（如 RTM_NEWROUTE = 24）</td></tr>
+          <tr><td>Generic Netlink</td><td>Family ID（子系统 ID，动态分配）</td></tr>
+          <tr><td>控制消息</td><td>NLMSG_NOOP/ERROR/DONE/OVERRUN（0~3）</td></tr>
+        </table>
+        <div class="callout callout-info" style="margin-top:10px">
+          <span class="callout-icon">📌</span>
+          <div class="callout-body">原文（kernel.org）："nlmsg_type can be used by applications and is an <strong>opaque value to netlink core</strong>."（内核 Netlink 核心不解析此字段，由各子系统自行定义语义）</div>
+        </div>
+      </div>
+
+      <h3>③ nlmsg_flags：控制标志位</h3>
+      <div class="card">
+        <p><strong>类型：</strong><code>__u16</code>，<strong>含义：</strong>控制标志，由 Netlink 核心读取和更新</p>
+        <p><strong>设计原因：</strong>集中表达消息控制语义，避免在每种协议里重复定义。分为基本标志和请求类型特定标志：</p>
+        <table>
+          <tr><th>标志</th><th>值</th><th>含义</th><th>场景</th></tr>
+          <tr><td class="td-code">NLM_F_REQUEST</td><td class="td-code">0x01</td><td>这是一个请求消息</td><td>所有请求必须设置</td></tr>
+          <tr><td class="td-code">NLM_F_MULTI</td><td class="td-code">0x02</td><td>属于多段消息</td><td>dump 响应各段</td></tr>
+          <tr><td class="td-code">NLM_F_ACK</td><td class="td-code">0x04</td><td>请求成功时也返回 ACK</td><td>推荐始终设置</td></tr>
+          <tr><td class="td-code">NLM_F_ECHO</td><td class="td-code">0x08</td><td>将产生的通知回显到请求者</td><td>调试用</td></tr>
+          <tr><td class="td-code">NLM_F_DUMP_INTR</td><td class="td-code">0x10</td><td>dump 被中断，结果可能不一致</td><td>应重新 dump</td></tr>
+          <tr><td class="td-code">NLM_F_DUMP</td><td class="td-code">0x300</td><td>= NLM_F_ROOT | NLM_F_MATCH</td><td>GET 全量查询</td></tr>
+          <tr><td class="td-code">NLM_F_REPLACE</td><td class="td-code">0x100</td><td>替换已有对象</td><td>NEW 请求</td></tr>
+          <tr><td class="td-code">NLM_F_CREATE</td><td class="td-code">0x400</td><td>不存在则创建</td><td>NEW 请求</td></tr>
+          <tr><td class="td-code">NLM_F_EXCL</td><td class="td-code">0x200</td><td>只有对象已存在才成功</td><td>NEW 请求</td></tr>
+        </table>
+        <div class="callout callout-warn" style="margin-top:10px">
+          <span class="callout-icon">⚠️</span>
+          <div class="callout-body">
+            <strong>关于 NLM_F_ACK：</strong>官方文档建议始终设置此标志，因为若不设置，内核在成功时<em>不会</em>发回 NLMSG_ERROR（即使需要区分"发送成功"与"执行成功"也无法判断）。
+          </div>
+        </div>
+      </div>
+
+      <h3>④ nlmsg_seq：序列号</h3>
+      <div class="card">
+        <p><strong>类型：</strong><code>__u32</code>，<strong>含义：</strong>序列号，用于匹配请求与响应</p>
+        <p><strong>设计原因：</strong>与 TCP 序列号类似，用于在异步环境中将响应与请求配对。内核在响应中 echo 回相同的 <code>nlmsg_seq</code>，用户空间凭此判断是哪次请求的回复。</p>
+        <div class="callout callout-info" style="margin-top:10px">
+          <span class="callout-icon">📌</span>
+          <div class="callout-body">原文（kernel.org 官方）："nlmsg_seq should be a set to a monotonically increasing value. The value gets echoed back in responses and <strong>doesn't matter in practice</strong>, but setting it to an increasing value for each message sent is considered good hygiene."</div>
+        </div>
+        <p>异步通知（multicast 事件）的 <code>nlmsg_seq = 0</code>，因为它们不是对任何请求的响应。若内核维护单调递增的通知序列号，也可填入非零值。</p>
+      </div>
+
+      <h3>⑤ nlmsg_pid：Port ID（发送端地址）</h3>
+      <div class="card">
+        <p><strong>类型：</strong><code>__u32</code>，<strong>含义：</strong>发送端 Port ID（Netlink 地址）</p>
+        <p>这是最令人困惑的字段，下一章节专项深入分析。简要说明：</p>
+        <div class="callout callout-info" style="margin-top:10px">
+          <span class="callout-icon">📌</span>
+          <div class="callout-body">原文（kernel.org 官方）："nlmsg_pid is the Netlink equivalent of an address. This field can be set to <strong>0</strong> when talking to the kernel. See nlmsg_pid for the (uncommon) uses of the field." 以及 Generic Netlink 例子中注释："Port ID, set to 0"</div>
+        </div>
+      </div>
+
+      <div class="fp-box">
+        <div class="fp-box-title">⚡ 第一性原理</div>
+        <p>五个字段各司其职，对应通信的五个根本问题：<strong>多大（len）</strong>、<strong>是什么（type）</strong>、<strong>怎么做（flags）</strong>、<strong>第几次（seq）</strong>、<strong>谁发的（pid）</strong>。这正是任何通信协议最小必要元数据的完整集合。内核 Netlink 核心只关心 <code>len</code> 和 <code>flags</code>，其余字段对核心透明，由应用层自行解释——这是良好分层设计的体现。</p>
+      </div>
+    </section>
+
+    <!-- ─────────────── S5: pid 混乱 ─────────────── -->
+    <section class="section" id="s5">
+      <div class="section-header">
+        <span class="section-num">5</span>
+        <h2 class="section-title">pid 字段的混乱本质</h2>
+      </div>
+
+      <div class="callout callout-warn">
+        <span class="callout-icon">🔥</span>
+        <div class="callout-body">
+          <strong>这是实践中最常见的困惑来源。</strong> <code>nlmsg_pid</code> 字段名中含 "pid"，但它<strong>不是</strong> Linux 进程 PID，而是 Netlink 的 <strong>Port ID（端口标识符）</strong>。两者在单 socket 场景下碰巧相等，导致广泛误解。
+        </div>
+      </div>
+
+      <h3>名字演变历史</h3>
+      <p>根据内核官方文档，<code>nlmsg_pid</code> 最初被称为 "Process ID"（因为最常见用法是填入 <code>getpid()</code>），后来内核官方将其重命名为 <strong>"Sending process port ID"</strong>，并在注释中明确说明：</p>
+
+      <div class="callout callout-info">
+        <span class="callout-icon">📌</span>
+        <div class="callout-body">原文（kernel.org nlmsg_pid 节）："It is referred to as Port ID, sometimes Process ID because for historical reasons if the application does not select (bind() to) an explicit Port ID kernel will automatically assign it the ID equal to its Process ID (as reported by the getpid() system call)."</div>
+      </div>
+
+      <div class="callout callout-info">
+        <span class="callout-icon">📌</span>
+        <div class="callout-body">原文（RFC 3549 § 2.3.2）："Process ID (PID): 32 bits — The PID of the process sending the message. The PID is used by the kernel to multiplex to the correct sockets. A PID of zero is used when sending messages to user space from the kernel."</div>
+      </div>
+
+      <h3>完整混乱分析</h3>
+
+      <div class="diagram-wrap">
+        <svg viewBox="0 0 640 320" width="620" height="320" xmlns="http://www.w3.org/2000/svg">
+          <defs>
+            <marker id="barr" markerWidth="7" markerHeight="7" refX="3.5" refY="3.5" orient="auto">
+              <path d="M0,0 L7,3.5 L0,7 Z" fill="#f97316"/>
+            </marker>
+          </defs>
+          <text x="10" y="22" fill="#94a3b8" font-size="11" font-weight="700">nlmsg_pid / nl_pid 的四种场景</text>
+
+          <!-- Scene 1 -->
+          <rect x="10" y="34" width="290" height="118" rx="8" fill="rgba(34,197,94,0.06)" stroke="rgba(34,197,94,0.3)" stroke-width="1"/>
+          <text x="20" y="54" fill="#22c55e" font-size="10" font-weight="700">场景①：用户→内核（最常见）</text>
+          <text x="20" y="72" fill="#94a3b8" font-size="9">内核是消息接收方</text>
+          <rect x="20" y="78" width="270" height="20" rx="3" fill="rgba(79,158,248,0.1)" stroke="#4f9ef8" stroke-width="0.6"/>
+          <text x="28" y="92" fill="#2dd4bf" font-size="10" font-family="monospace">目标地址 sockaddr_nl.nl_pid = 0</text>
+          <rect x="20" y="102" width="270" height="20" rx="3" fill="rgba(79,158,248,0.1)" stroke="#4f9ef8" stroke-width="0.6"/>
+          <text x="28" y="116" fill="#2dd4bf" font-size="10" font-family="monospace">nlmsg_pid = getpid() 或 0</text>
+          <text x="20" y="138" fill="#64748b" font-size="9">→ nlmsg_pid 对内核核心是透明的，内核子系统</text>
+          <text x="20" y="150" fill="#64748b" font-size="9">   可能从中读取 pid 用于回复路由</text>
+
+          <!-- Scene 2 -->
+          <rect x="320" y="34" width="308" height="118" rx="8" fill="rgba(245,158,11,0.06)" stroke="rgba(245,158,11,0.3)" stroke-width="1"/>
+          <text x="330" y="54" fill="#f59e0b" font-size="10" font-weight="700">场景②：内核→用户（响应 / 通知）</text>
+          <text x="330" y="72" fill="#94a3b8" font-size="9">内核是消息发送方</text>
+          <rect x="330" y="78" width="288" height="20" rx="3" fill="rgba(245,158,11,0.1)" stroke="#f59e0b" stroke-width="0.6"/>
+          <text x="338" y="92" fill="#2dd4bf" font-size="10" font-family="monospace">nlmsg_pid = 0（内核固定填 0）</text>
+          <rect x="330" y="102" width="288" height="20" rx="3" fill="rgba(245,158,11,0.1)" stroke="#f59e0b" stroke-width="0.6"/>
+          <text x="338" y="116" fill="#2dd4bf" font-size="10" font-family="monospace">响应头中：nlmsg_pid = 目标进程PID</text>
+          <text x="330" y="138" fill="#64748b" font-size="9">内核响应会 echo 请求方 PID，用户通过对比</text>
+          <text x="330" y="150" fill="#64748b" font-size="9">nlmsg_pid 识别消息属于哪个 socket</text>
+
+          <!-- Scene 3 -->
+          <rect x="10" y="166" width="290" height="130" rx="8" fill="rgba(79,158,248,0.06)" stroke="rgba(79,158,248,0.3)" stroke-width="1"/>
+          <text x="20" y="186" fill="#4f9ef8" font-size="10" font-weight="700">场景③：为什么填 0 也能工作？</text>
+          <text x="20" y="204" fill="#64748b" font-size="9">官方原文：nlmsg_pid and nlmsg_seq are used by</text>
+          <text x="20" y="216" fill="#64748b" font-size="9">applications to track messages, and they are</text>
+          <text x="20" y="228" fill="#f59e0b" font-size="9">opaque to netlink core as well.</text>
+          <text x="20" y="246" fill="#94a3b8" font-size="9">内核 Netlink 核心不解析 nlmsg_pid</text>
+          <text x="20" y="260" fill="#94a3b8" font-size="9">路由靠 socket fd 本身（内核内部用 portid）</text>
+          <text x="20" y="274" fill="#94a3b8" font-size="9">填 0 = 用户态自己放弃追踪，对内核无影响</text>
+          <text x="20" y="288" fill="#22c55e" font-size="9">✓ Generic Netlink 官方示例 nlmsg_pid = 0</text>
+
+          <!-- Scene 4 -->
+          <rect x="320" y="166" width="308" height="130" rx="8" fill="rgba(124,106,247,0.06)" stroke="rgba(124,106,247,0.3)" stroke-width="1"/>
+          <text x="330" y="186" fill="#7c6af7" font-size="10" font-weight="700">场景④：unicast 通知（少见）</text>
+          <text x="330" y="204" fill="#94a3b8" font-size="9">内核需要向特定用户进程发单播通知时</text>
+          <text x="330" y="220" fill="#94a3b8" font-size="9">（如 UMH User Mode Helper 场景）</text>
+          <rect x="330" y="228" width="288" height="20" rx="3" fill="rgba(124,106,247,0.1)" stroke="#7c6af7" stroke-width="0.6"/>
+          <text x="338" y="242" fill="#2dd4bf" font-size="10" font-family="monospace">用户先 bind() 绑定特定 Port ID</text>
+          <rect x="330" y="252" width="288" height="20" rx="3" fill="rgba(124,106,247,0.1)" stroke="#7c6af7" stroke-width="0.6"/>
+          <text x="338" y="266" fill="#2dd4bf" font-size="10" font-family="monospace">再将 Port ID 告知内核</text>
+          <text x="330" y="284" fill="#64748b" font-size="9">内核用此 Port ID 发 unicast 到指定 socket</text>
+          <text x="330" y="296" fill="#64748b" font-size="9">这时 nlmsg_pid 才真正作为"地址"使用</text>
+        </svg>
+      </div>
+
+      <h3>两个 pid 字段的区别</h3>
+      <table>
+        <tr>
+          <th>字段</th>
+          <th>位置</th>
+          <th>作用</th>
+          <th>用法</th>
+        </tr>
+        <tr>
+          <td class="td-code">sockaddr_nl.nl_pid</td>
+          <td>地址结构</td>
+          <td><strong>socket 的本地地址</strong>（Port ID）</td>
+          <td>bind() 时指定，0 = 自动分配为 getpid()</td>
+        </tr>
+        <tr>
+          <td class="td-code">nlmsghdr.nlmsg_pid</td>
+          <td>消息头</td>
+          <td><strong>消息级别的"发送者标识"</strong></td>
+          <td>对内核核心透明，应用层自行解释；向内核发送可设 0</td>
+        </tr>
+      </table>
+
+      <h3>为什么不设置 nlmsg_pid 也可以？</h3>
+      <div class="callout callout-key">
+        <span class="callout-icon">🔑</span>
+        <div class="callout-body">
+          <strong>根本原因：内核路由 Netlink 消息不靠 nlmsg_pid，靠的是 socket fd 本身。</strong><br><br>
+          当用户调用 <code>sendmsg(fd, ...)</code> 时，内核通过 <code>fd</code> 找到对应的 <code>struct sock</code>，从中获取已绑定的 Port ID（即 <code>nl_pid</code>），据此路由响应。<code>nlmsg_pid</code> 是消息载荷的一部分，内核核心层完全不解析它。各子系统（如 rtnetlink）可能从中读取 pid 用于构造回复地址，但这是子系统层面的约定，不是协议核心要求。<br><br>
+          <strong>结论：</strong>在 Generic Netlink 和绝大多数 Classic Netlink 场景下，向内核发送请求时 <code>nlmsg_pid = 0</code> 完全合法且推荐。
+        </div>
+      </div>
+
+      <pre><code><span class="cm">/* 内核实际如何处理"回复到哪里"——靠 portid，不靠 nlmsg_pid */</span>
+<span class="cm">/* net/netlink/af_netlink.c 中内核核心路由逻辑 */</span>
+
+<span class="cm">/* 用户 sendmsg 时，内核从 socket 取出 portid */</span>
+<span class="ty">u32</span> portid = nlk_sk(sk)->portid; <span class="cm">/* 即 bind() 设定的 nl_pid */</span>
+
+<span class="cm">/* 子系统（如 rtnetlink）构造回复时使用 portid，而非 nlmsg_pid */</span>
+<span class="fn">nlmsg_unicast</span>(nl_sk, skb_out, portid);</code></pre>
+
+      <div class="fp-box">
+        <div class="fp-box-title">⚡ 第一性原理</div>
+        <p><code>nlmsg_pid</code> 的混乱根源是<strong>命名历史包袱与语义层次混淆</strong>。在 socket 层面，进程 PID 被借用为 Port ID（bind 时自动分配），造成"PID = Port ID"的巧合；在消息头层面，<code>nlmsg_pid</code> 被设计为"发送者标识"（用于应用层追踪），但内核核心从不解析它。两件不同的事共享了"pid"这个词，而大多数单 socket 单进程的场景中二者数值相同，掩盖了本质差异。<strong>本质：Netlink 路由靠连接标识（socket fd → portid），消息头中的 pid 只是应用层辅助信息。</strong></p>
+      </div>
+
+      <a class="source-link" href="https://docs.kernel.org/userspace-api/netlink/intro.html#nlmsg-pid" target="_blank">📄 kernel.org nlmsg_pid 官方说明</a>
+    </section>
+
+    <!-- ─────────────── S6: 收发流程 ─────────────── -->
+    <section class="section" id="s6">
+      <div class="section-header">
+        <span class="section-num">6</span>
+        <h2 class="section-title">消息收发完整流程</h2>
+      </div>
+
+      <h3>用户空间→内核（发送请求）</h3>
+      <pre><code><span class="cm">/* 完整发送流程示例（向内核查询路由表） */</span>
+<span class="ty">int</span> fd = <span class="fn">socket</span>(AF_NETLINK, SOCK_RAW, NETLINK_ROUTE);
+
+<span class="cm">/* 1. 绑定本地地址 */</span>
+<span class="kw">struct</span> <span class="ty">sockaddr_nl</span> src = { .nl_family = AF_NETLINK, .nl_pid = <span class="fn">getpid</span>() };
+<span class="fn">bind</span>(fd, (<span class="kw">struct</span> <span class="ty">sockaddr</span> *)&amp;src, <span class="kw">sizeof</span>(src));
+
+<span class="cm">/* 2. 构造目标地址（内核：pid=0, groups=0） */</span>
+<span class="kw">struct</span> <span class="ty">sockaddr_nl</span> dst = { .nl_family = AF_NETLINK, .nl_pid = <span class="nu">0</span> };
+
+<span class="cm">/* 3. 填写消息头 */</span>
+<span class="kw">struct</span> <span class="ty">nlmsghdr</span> *nlh = <span class="fn">malloc</span>(<span class="fn">NLMSG_SPACE</span>(payload_len));
+nlh->nlmsg_len   = <span class="fn">NLMSG_SPACE</span>(payload_len); <span class="cm">/* 必须正确 */</span>
+nlh->nlmsg_type  = RTM_GETROUTE;               <span class="cm">/* 操作类型 */</span>
+nlh->nlmsg_flags = NLM_F_REQUEST | NLM_F_DUMP; <span class="cm">/* 全量查询 */</span>
+nlh->nlmsg_seq   = ++seq_num;                  <span class="cm">/* 单调递增序列号 */</span>
+nlh->nlmsg_pid   = <span class="fn">getpid</span>();                  <span class="cm">/* 或 0，两者均可 */</span>
+
+<span class="cm">/* 4. 发送 */</span>
+<span class="kw">struct</span> <span class="ty">iovec</span> iov = { nlh, nlh->nlmsg_len };
+<span class="kw">struct</span> <span class="ty">msghdr</span> msg = { .msg_name = &amp;dst, .msg_namelen = <span class="kw">sizeof</span>(dst),
+                      .msg_iov = &amp;iov, .msg_iovlen = <span class="nu">1</span> };
+<span class="fn">sendmsg</span>(fd, &amp;msg, <span class="nu">0</span>);</code></pre>
+
+      <h3>接收内核响应</h3>
+      <pre><code><span class="cm">/* 接收 dump 响应（多条消息直至 NLMSG_DONE） */</span>
+<span class="ty">char</span> buf[<span class="nu">32768</span>]; <span class="cm">/* 官方建议 >= 8KB，dump 推荐 32KB */</span>
+<span class="kw">while</span> (<span class="nu">1</span>) {
+    <span class="ty">int</span> n = <span class="fn">recv</span>(fd, buf, <span class="kw">sizeof</span>(buf), <span class="nu">0</span>);
+    <span class="kw">struct</span> <span class="ty">nlmsghdr</span> *nlh = (<span class="kw">struct</span> <span class="ty">nlmsghdr</span> *)buf;
+
+    <span class="cm">/* 一次 recv 可能包含多个 Netlink 消息，逐个遍历 */</span>
+    <span class="kw">for</span> (; <span class="fn">NLMSG_OK</span>(nlh, n); nlh = <span class="fn">NLMSG_NEXT</span>(nlh, n)) {
+        <span class="kw">if</span> (nlh->nlmsg_type == NLMSG_DONE) <span class="kw">goto</span> done;
+        <span class="kw">if</span> (nlh->nlmsg_type == NLMSG_ERROR) {
+            <span class="kw">struct</span> <span class="ty">nlmsgerr</span> *err = <span class="fn">NLMSG_DATA</span>(nlh);
+            <span class="cm">/* err->error: 0 = ACK, 负数 = errno */</span>
+        }
+        <span class="cm">/* 处理 nlmsg_type = RTM_NEWROUTE 等 */</span>
+        <span class="fn">parse_route</span>(<span class="fn">NLMSG_DATA</span>(nlh));
+    }
+}
+done:;</code></pre>
+
+      <h3>内核处理流程图</h3>
+      <div class="diagram-wrap">
+        <svg viewBox="0 0 580 360" width="560" height="360" xmlns="http://www.w3.org/2000/svg">
+          <defs>
+            <marker id="flow" markerWidth="7" markerHeight="7" refX="3.5" refY="3.5" orient="auto">
+              <path d="M0,0 L7,3.5 L0,7 Z" fill="#4f9ef8"/>
+            </marker>
+          </defs>
+
+          <rect x="180" y="10" width="200" height="34" rx="6" fill="rgba(79,158,248,0.2)" stroke="#4f9ef8" stroke-width="1.2"/>
+          <text x="280" y="32" text-anchor="middle" fill="#e2e8f0" font-size="11">用户调用 sendmsg(fd,...)</text>
+
+          <line x1="280" y1="44" x2="280" y2="70" stroke="#4f9ef8" stroke-width="1.5" marker-end="url(#flow)"/>
+
+          <rect x="150" y="70" width="260" height="34" rx="6" fill="rgba(34,197,94,0.15)" stroke="#22c55e" stroke-width="1"/>
+          <text x="280" y="92" text-anchor="middle" fill="#e2e8f0" font-size="11">netlink_sendmsg()  [内核]</text>
+
+          <line x1="280" y1="104" x2="280" y2="130" stroke="#4f9ef8" stroke-width="1.5" marker-end="url(#flow)"/>
+
+          <rect x="130" y="130" width="300" height="34" rx="6" fill="rgba(34,197,94,0.15)" stroke="#22c55e" stroke-width="1"/>
+          <text x="280" y="152" text-anchor="middle" fill="#e2e8f0" font-size="11">根据 protocol 类型路由到子系统</text>
+
+          <line x1="280" y1="164" x2="280" y2="190" stroke="#4f9ef8" stroke-width="1.5" marker-end="url(#flow)"/>
+
+          <rect x="100" y="190" width="360" height="34" rx="6" fill="rgba(245,158,11,0.15)" stroke="#f59e0b" stroke-width="1"/>
+          <text x="280" y="212" text-anchor="middle" fill="#e2e8f0" font-size="11">子系统回调  input(skb)  处理消息</text>
+
+          <line x1="280" y1="224" x2="280" y2="250" stroke="#4f9ef8" stroke-width="1.5" marker-end="url(#flow)"/>
+
+          <!-- Decision -->
+          <polygon points="280,250 380,278 280,306 180,278" fill="rgba(124,106,247,0.1)" stroke="#7c6af7" stroke-width="1"/>
+          <text x="280" y="283" text-anchor="middle" fill="#7c6af7" font-size="10">需要回复？</text>
+
+          <!-- Yes -->
+          <line x1="380" y1="278" x2="460" y2="278" stroke="#22c55e" stroke-width="1.5" marker-end="url(#flow)"/>
+          <text x="416" y="270" fill="#22c55e" font-size="9">是</text>
+          <rect x="460" y="260" width="108" height="36" rx="6" fill="rgba(34,197,94,0.15)" stroke="#22c55e" stroke-width="1"/>
+          <text x="514" y="278" text-anchor="middle" fill="#e2e8f0" font-size="10">nlmsg_unicast(</text>
+          <text x="514" y="290" text-anchor="middle" fill="#e2e8f0" font-size="10">portid)</text>
+
+          <!-- No -->
+          <line x1="280" y1="306" x2="280" y2="340" stroke="#64748b" stroke-width="1.5" marker-end="url(#flow)"/>
+          <text x="294" y="330" fill="#64748b" font-size="9">否（通知类无需回复）</text>
+          <rect x="200" y="340" width="160" height="18" rx="4" fill="rgba(100,116,139,0.1)" stroke="#64748b" stroke-width="0.8"/>
+          <text x="280" y="353" text-anchor="middle" fill="#64748b" font-size="9">结束处理</text>
+
+          <!-- Note: portid source -->
+          <rect x="10" y="248" width="158" height="42" rx="6" fill="rgba(249,115,22,0.08)" stroke="#f97316" stroke-width="0.8"/>
+          <text x="89" y="263" text-anchor="middle" fill="#f97316" font-size="9" font-weight="600">回复目标来自：</text>
+          <text x="89" y="277" text-anchor="middle" fill="#94a3b8" font-size="9">nlk_sk(sk)->portid</text>
+          <text x="89" y="289" text-anchor="middle" fill="#94a3b8" font-size="9">（bind 时确定，非 nlmsg_pid）</text>
+        </svg>
+      </div>
+
+      <div class="fp-box">
+        <div class="fp-box-title">⚡ 第一性原理</div>
+        <p>消息收发的本质是<strong>生产-消费模型</strong>加上<strong>寻址</strong>。发送方通过 <code>sendmsg</code> 将消息放入内核队列（生产），内核通过 protocol 类型找到正确的消费者（子系统回调），子系统生成响应后通过 socket 的 <code>portid</code>（不是消息头中的 pid）找到原始请求者。整个链路上，<strong>socket fd 是唯一可信的标识符</strong>，消息头中的辅助字段都是可选的应用层约定。</p>
+      </div>
+    </section>
+
+    <!-- ─────────────── S7: 协议族 ─────────────── -->
+    <section class="section" id="s7">
+      <div class="section-header">
+        <span class="section-num">7</span>
+        <h2 class="section-title">协议族与类型（Netlink Families）</h2>
+      </div>
+
+      <p>每个 Netlink 协议类型（由 <code>socket(AF_NETLINK, ..., protocol)</code> 第三参数指定）对应一个内核子系统。定义于 <code>include/uapi/linux/netlink.h</code>，最多支持 32 个（<code>MAX_LINKS = 32</code>）。</p>
+
+      <table>
+        <tr><th>协议常量</th><th>值</th><th>用途</th><th>状态</th></tr>
+        <tr>
+          <td class="td-code">NETLINK_ROUTE</td><td class="td-code">0</td>
+          <td>路由表、IP地址、网络接口、ARP邻居、流量控制</td>
+          <td><span class="badge badge-green">核心</span></td>
+        </tr>
+        <tr>
+          <td class="td-code">NETLINK_USERSOCK</td><td class="td-code">2</td>
+          <td>保留给用户态 socket 协议使用</td>
+          <td><span class="badge badge-blue">保留</span></td>
+        </tr>
+        <tr>
+          <td class="td-code">NETLINK_SOCK_DIAG</td><td class="td-code">4</td>
+          <td>查询各协议族 socket 的状态信息（ss 命令使用）</td>
+          <td><span class="badge badge-green">活跃</span></td>
+        </tr>
+        <tr>
+          <td class="td-code">NETLINK_NFLOG</td><td class="td-code">5</td>
+          <td>Netfilter/iptables ULOG 日志</td>
+          <td><span class="badge badge-yellow">已废弃(≤3.16)</span></td>
+        </tr>
+        <tr>
+          <td class="td-code">NETLINK_XFRM</td><td class="td-code">6</td>
+          <td>IPsec/XFRM 密钥管理与 SA 管理</td>
+          <td><span class="badge badge-green">活跃</span></td>
+        </tr>
+        <tr>
+          <td class="td-code">NETLINK_SELINUX</td><td class="td-code">7</td>
+          <td>SELinux 事件通知</td>
+          <td><span class="badge badge-green">活跃</span></td>
+        </tr>
+        <tr>
+          <td class="td-code">NETLINK_AUDIT</td><td class="td-code">9</td>
+          <td>Linux 审计子系统</td>
+          <td><span class="badge badge-green">活跃</span></td>
+        </tr>
+        <tr>
+          <td class="td-code">NETLINK_NETFILTER</td><td class="td-code">12</td>
+          <td>Netfilter 子系统（nftables）</td>
+          <td><span class="badge badge-green">活跃</span></td>
+        </tr>
+        <tr>
+          <td class="td-code">NETLINK_KOBJECT_UEVENT</td><td class="td-code">15</td>
+          <td>内核 udev 事件通知（设备插拔等）</td>
+          <td><span class="badge badge-green">活跃</span></td>
+        </tr>
+        <tr>
+          <td class="td-code">NETLINK_GENERIC</td><td class="td-code">16</td>
+          <td>通用 Netlink，动态注册子系统（推荐新开发使用）</td>
+          <td><span class="badge badge-purple">推荐</span></td>
+        </tr>
+        <tr>
+          <td class="td-code">NETLINK_CRYPTO</td><td class="td-code">21</td>
+          <td>内核 Crypto API 信息查询与配置（Linux 3.2+）</td>
+          <td><span class="badge badge-green">活跃</span></td>
+        </tr>
+      </table>
+
+      <div class="callout callout-tip">
+        <span class="callout-icon">💡</span>
+        <div class="callout-body">
+          <strong>组播组（nl_groups）：</strong>每个协议类型最多定义 32 个组播组（位掩码 <code>1&lt;&lt;i</code>，i=0~31）。应用订阅某个组后，内核主动向其推送该类事件。例如订阅 <code>RTMGRP_IPV4_ROUTE</code> 可实时接收 IPv4 路由变化通知。
+        </div>
+      </div>
+
+      <div class="fp-box">
+        <div class="fp-box-title">⚡ 第一性原理</div>
+        <p>协议类型是 Netlink 的<strong>命名空间机制</strong>。32 个槽位对应 32 个独立的"通信总线"，每条总线只有知道正确协议号的参与者才能接入。这与网络端口号的设计本质相同——用数字标识符把共享的传输媒介划分为独立通道，实现<strong>多路复用</strong>而无需物理隔离。MAX_LINKS=32 这个硬性上限最终导致了 Generic Netlink 的诞生。</p>
+      </div>
+    </section>
+
+    <!-- ─────────────── S8: Generic Netlink ─────────────── -->
+    <section class="section" id="s8">
+      <div class="section-header">
+        <span class="section-num">8</span>
+        <h2 class="section-title">Generic Netlink（通用 Netlink）</h2>
+      </div>
+
+      <p>Generic Netlink（2005 年引入，Linux 2.6.15+）解决了 Classic Netlink 的根本缺陷：协议槽位固定只有 32 个，无法满足日益增长的内核子系统数量。Generic Netlink 本身占用一个槽位（<code>NETLINK_GENERIC = 16</code>），在其内部通过 <strong>动态 Family ID</strong> 支持无限多个子系统。</p>
+
+      <h3>消息结构对比</h3>
+      <div class="diagram-wrap">
+        <svg viewBox="0 0 620 200" width="600" height="200" xmlns="http://www.w3.org/2000/svg">
+          <text x="20" y="18" fill="#4f9ef8" font-size="11" font-weight="700">Classic Netlink 消息结构</text>
+          <rect x="10" y="24" width="180" height="30" rx="4" fill="rgba(79,158,248,0.2)" stroke="#4f9ef8" stroke-width="1"/>
+          <text x="100" y="44" text-anchor="middle" fill="#e2e8f0" font-size="10">struct nlmsghdr (16B)</text>
+          <rect x="192" y="24" width="160" height="30" rx="4" fill="rgba(245,158,11,0.15)" stroke="#f59e0b" stroke-width="1"/>
+          <text x="272" y="44" text-anchor="middle" fill="#e2e8f0" font-size="10">Protocol Header</text>
+          <rect x="354" y="24" width="246" height="30" rx="4" fill="rgba(124,106,247,0.12)" stroke="#7c6af7" stroke-width="1" stroke-dasharray="4,2"/>
+          <text x="477" y="44" text-anchor="middle" fill="#e2e8f0" font-size="10">Payload / Attributes</text>
+
+          <text x="20" y="88" fill="#2dd4bf" font-size="11" font-weight="700">Generic Netlink 消息结构</text>
+          <rect x="10" y="94" width="180" height="30" rx="4" fill="rgba(79,158,248,0.2)" stroke="#4f9ef8" stroke-width="1"/>
+          <text x="100" y="114" text-anchor="middle" fill="#e2e8f0" font-size="10">struct nlmsghdr (16B)</text>
+          <rect x="192" y="94" width="120" height="30" rx="4" fill="rgba(45,212,191,0.2)" stroke="#2dd4bf" stroke-width="1"/>
+          <text x="252" y="114" text-anchor="middle" fill="#e2e8f0" font-size="10">genlmsghdr (4B)</text>
+          <rect x="314" y="94" width="286" height="30" rx="4" fill="rgba(124,106,247,0.12)" stroke="#7c6af7" stroke-width="1" stroke-dasharray="4,2"/>
+          <text x="457" y="114" text-anchor="middle" fill="#e2e8f0" font-size="10">TLV Attributes</text>
+
+          <!-- Labels -->
+          <text x="100" y="144" text-anchor="middle" fill="#64748b" font-size="9">nlmsg_type=操作</text>
+          <text x="252" y="144" text-anchor="middle" fill="#2dd4bf" font-size="9">nlmsg_type=Family ID</text>
+          <text x="457" y="144" text-anchor="middle" fill="#7c6af7" font-size="9">cmd 在 genlmsghdr 中</text>
+
+          <text x="10" y="168" fill="#94a3b8" font-size="10">struct genlmsghdr { __u8 cmd; __u8 version; __u16 reserved; }</text>
+          <text x="10" y="184" fill="#64748b" font-size="10">Family ID 动态分配，通过 CTRL_CMD_GETFAMILY 查询</text>
+        </svg>
+      </div>
+
+      <h3>Family ID 动态解析示例（来自 kernel.org 官方）</h3>
+      <pre><code><span class="cm">/* 向 Generic Netlink 控制器查询 "test1" 子系统的 Family ID */</span>
+
+<span class="kw">struct</span> <span class="ty">nlmsghdr</span>:
+  nlmsg_len:   <span class="nu">32</span>
+  nlmsg_type:  GENL_ID_CTRL          <span class="cm">/* Generic Netlink 控制器，固定为 NLMSG_MIN_TYPE */</span>
+  nlmsg_flags: NLM_F_REQUEST | NLM_F_ACK
+  nlmsg_seq:   <span class="nu">1</span>
+  nlmsg_pid:   <span class="nu">0</span>                     <span class="cm">/* Generic Netlink 官方示例：填 0 */</span>
+
+<span class="kw">struct</span> <span class="ty">genlmsghdr</span>:
+  cmd:         CTRL_CMD_GETFAMILY    <span class="cm">/* 查询命令 */</span>
+  version:     <span class="nu">1</span>                     <span class="cm">/* 无实际意义，填 1 */</span>
+
+<span class="kw">struct</span> <span class="ty">nlattr</span>:
+  nla_type:    CTRL_ATTR_FAMILY_NAME
+  data:        <span class="st">"test1\0"</span>             <span class="cm">/* 要查询的 Family 名字 */</span>
+
+<span class="cm">/* 内核响应（nlmsg_pid 会被填为请求者的 PID）： */</span>
+  nlmsg_pid:   <span class="nu">5831</span>                  <span class="cm">/* 进程 PID，内核 echo 回来 */</span>
+  CTRL_ATTR_FAMILY_ID: <span class="nu">123</span>          <span class="cm">/* 动态分配的 Family ID */</span></code></pre>
+
+      <h3>Generic Netlink 的优势</h3>
+      <table>
+        <tr><th>特性</th><th>Classic Netlink</th><th>Generic Netlink</th></tr>
+        <tr><td>子系统数量</td><td>最多 32 个</td><td>无限制（动态分配）</td></tr>
+        <tr><td>ID 分配</td><td>静态，编译时确定</td><td>动态，运行时注册</td></tr>
+        <tr><td>内省能力</td><td>无</td><td>支持（可查询操作列表、属性策略）</td></tr>
+        <tr><td>属性验证</td><td>历史上宽松</td><td>强类型验证（netlink_policy）</td></tr>
+        <tr><td>新开发推荐</td><td>不推荐（不再新增）</td><td>推荐</td></tr>
+      </table>
+
+      <div class="fp-box">
+        <div class="fp-box-title">⚡ 第一性原理</div>
+        <p>Generic Netlink 是对 Classic Netlink "协议号固定 32 个"这一人为约束的突破。它将<strong>子系统标识</strong>从 socket 层（协议号）移到消息层（Family ID），用间接寻址替代直接寻址，把有限槽位变为无限动态注册。这是软件工程中"注册表模式"（Registry Pattern）的典型应用：用一个已知固定入口（GENL_ID_CTRL）查询所有动态注册者，解决命名空间耗尽问题。</p>
+      </div>
+
+      <a class="source-link" href="https://docs.kernel.org/userspace-api/netlink/intro.html#generic-netlink" target="_blank">📄 kernel.org Generic Netlink 文档</a>
+    </section>
+
+    <!-- ─────────────── S9: 适用场景 ─────────────── -->
+    <section class="section" id="s9">
+      <div class="section-header">
+        <span class="section-num">9</span>
+        <h2 class="section-title">适用场景</h2>
+      </div>
+
+      <p>根据 RFC 3549 和 Linux man7 netlink(7)，Netlink 适用于以下核心场景：</p>
+
+      <div class="diagram-wrap">
+        <svg viewBox="0 0 620 280" width="600" height="280" xmlns="http://www.w3.org/2000/svg">
+          <!-- Center -->
+          <circle cx="310" cy="140" r="48" fill="rgba(79,158,248,0.15)" stroke="#4f9ef8" stroke-width="1.5"/>
+          <text x="310" y="136" text-anchor="middle" fill="#4f9ef8" font-size="11" font-weight="700">Netlink</text>
+          <text x="310" y="150" text-anchor="middle" fill="#94a3b8" font-size="9">AF_NETLINK</text>
+
+          <!-- Use cases -->
+          <!-- 路由配置 -->
+          <rect x="10" y="10" width="148" height="52" rx="7" fill="rgba(34,197,94,0.1)" stroke="#22c55e" stroke-width="1"/>
+          <text x="84" y="30" text-anchor="middle" fill="#22c55e" font-size="10" font-weight="600">路由表管理</text>
+          <text x="84" y="45" text-anchor="middle" fill="#94a3b8" font-size="9">ip route / ospfd / bgpd</text>
+          <text x="84" y="57" text-anchor="middle" fill="#64748b" font-size="8">NETLINK_ROUTE</text>
+          <line x1="158" y1="36" x2="263" y2="110" stroke="#22c55e" stroke-width="0.8" stroke-dasharray="4,2"/>
+
+          <!-- 接口管理 -->
+          <rect x="462" y="10" width="148" height="52" rx="7" fill="rgba(45,212,191,0.1)" stroke="#2dd4bf" stroke-width="1"/>
+          <text x="536" y="30" text-anchor="middle" fill="#2dd4bf" font-size="10" font-weight="600">网络接口管理</text>
+          <text x="536" y="45" text-anchor="middle" fill="#94a3b8" font-size="9">ip link / ifconfig</text>
+          <text x="536" y="57" text-anchor="middle" fill="#64748b" font-size="8">RTM_NEWLINK/DELLINK</text>
+          <line x1="462" y1="36" x2="357" y2="110" stroke="#2dd4bf" stroke-width="0.8" stroke-dasharray="4,2"/>
+
+          <!-- 防火墙 -->
+          <rect x="10" y="114" width="148" height="52" rx="7" fill="rgba(239,68,68,0.1)" stroke="#ef4444" stroke-width="1"/>
+          <text x="84" y="134" text-anchor="middle" fill="#ef4444" font-size="10" font-weight="600">防火墙/Netfilter</text>
+          <text x="84" y="149" text-anchor="middle" fill="#94a3b8" font-size="9">iptables / nftables</text>
+          <text x="84" y="161" text-anchor="middle" fill="#64748b" font-size="8">NETLINK_NETFILTER</text>
+          <line x1="158" y1="140" x2="262" y2="140" stroke="#ef4444" stroke-width="0.8" stroke-dasharray="4,2"/>
+
+          <!-- 设备事件 -->
+          <rect x="462" y="114" width="148" height="52" rx="7" fill="rgba(245,158,11,0.1)" stroke="#f59e0b" stroke-width="1"/>
+          <text x="536" y="134" text-anchor="middle" fill="#f59e0b" font-size="10" font-weight="600">设备热插拔事件</text>
+          <text x="536" y="149" text-anchor="middle" fill="#94a3b8" font-size="9">udev / systemd</text>
+          <text x="536" y="161" text-anchor="middle" fill="#64748b" font-size="8">NETLINK_KOBJECT_UEVENT</text>
+          <line x1="462" y1="140" x2="358" y2="140" stroke="#f59e0b" stroke-width="0.8" stroke-dasharray="4,2"/>
+
+          <!-- IPsec -->
+          <rect x="10" y="218" width="148" height="52" rx="7" fill="rgba(124,106,247,0.1)" stroke="#7c6af7" stroke-width="1"/>
+          <text x="84" y="238" text-anchor="middle" fill="#7c6af7" font-size="10" font-weight="600">IPsec 管理</text>
+          <text x="84" y="253" text-anchor="middle" fill="#94a3b8" font-size="9">strongSwan / racoon</text>
+          <text x="84" y="265" text-anchor="middle" fill="#64748b" font-size="8">NETLINK_XFRM</text>
+          <line x1="158" y1="244" x2="270" y2="172" stroke="#7c6af7" stroke-width="0.8" stroke-dasharray="4,2"/>
+
+          <!-- 自定义 -->
+          <rect x="462" y="218" width="148" height="52" rx="7" fill="rgba(249,115,22,0.1)" stroke="#f97316" stroke-width="1"/>
+          <text x="536" y="238" text-anchor="middle" fill="#f97316" font-size="10" font-weight="600">自定义驱动通信</text>
+          <text x="536" y="253" text-anchor="middle" fill="#94a3b8" font-size="9">驱动 ↔ 用户态工具</text>
+          <text x="536" y="265" text-anchor="middle" fill="#64748b" font-size="8">NETLINK_GENERIC</text>
+          <line x1="462" y1="244" x2="350" y2="172" stroke="#f97316" stroke-width="0.8" stroke-dasharray="4,2"/>
+        </svg>
+      </div>
+
+      <h3>Netlink 的独特优势（vs 其它 IPC）</h3>
+      <div class="callout callout-info">
+        <span class="callout-icon">📌</span>
+        <div class="callout-body">原文（Kevin Kaichuan He, Linux Journal 2005，已得到 RFC 3549 印证）：<br>
+        "Netlink is <strong>asynchronous</strong>... supports <strong>multicast</strong>... allows <strong>kernel to initiate sessions</strong>... provides a <strong>BSD socket-style API</strong>..."
+        </div>
+      </div>
+
+      <table>
+        <tr><th>场景特征</th><th>是否适合 Netlink</th><th>说明</th></tr>
+        <tr><td>内核主动推送事件到用户空间</td><td><span class="badge badge-green">✓ 非常适合</span></td><td>Netlink 支持内核主动发起会话</td></tr>
+        <tr><td>多个用户进程订阅同一类事件</td><td><span class="badge badge-green">✓ 非常适合</span></td><td>组播机制，一对多推送</td></tr>
+        <tr><td>异步、高频事件通知</td><td><span class="badge badge-green">✓ 非常适合</span></td><td>socket 队列缓冲，不阻塞</td></tr>
+        <tr><td>内核模块动态加载时注册接口</td><td><span class="badge badge-green">✓ 适合</span></td><td>无需修改内核，只需注册 protocol</td></tr>
+        <tr><td>简单的单次同步调用</td><td><span class="badge badge-yellow">△ 可用但繁琐</span></td><td>ioctl 或 sysfs 更简单</td></tr>
+        <tr><td>跨主机通信</td><td><span class="badge badge-red">✗ 不适合</span></td><td>仅限单机，不支持网络传输</td></tr>
+        <tr><td>实时性要求极高（us 级）</td><td><span class="badge badge-red">✗ 谨慎</span></td><td>socket 队列有调度延迟</td></tr>
+      </table>
+
+      <div class="fp-box">
+        <div class="fp-box-title">⚡ 第一性原理</div>
+        <p>选择 IPC 机制的第一性原理是<strong>通信方向和发起方</strong>：如果总是用户发起、内核响应（单次同步），用 ioctl 够了；如果需要<strong>内核主动通知用户</strong>，或<strong>一对多广播</strong>，Netlink 是几乎唯一合适的标准机制。Netlink 存在的价值在于它填补了 POSIX 未定义的"内核→用户推送"这一通信方向的空白。</p>
+      </div>
+    </section>
+
+    <!-- ─────────────── S10: 对比 ─────────────── -->
+    <section class="section" id="s10">
+      <div class="section-header">
+        <span class="section-num">10</span>
+        <h2 class="section-title">与其它内核-用户 IPC 对比</h2>
+      </div>
+
+      <p>根据 RFC 3549 和 Kevin Kaichuan He 的权威论述，以下是 Netlink 与主要 IPC 机制的对比：</p>
+
+      <table>
+        <tr>
+          <th>特性</th>
+          <th>ioctl</th>
+          <th>procfs/sysfs</th>
+          <th>系统调用</th>
+          <th>Netlink</th>
+        </tr>
+        <tr>
+          <td><strong>通信方向</strong></td>
+          <td>用户→内核（单向）</td>
+          <td>读写文件（双向）</td>
+          <td>用户→内核（同步）</td>
+          <td>全双工，内核可主动发起</td>
+        </tr>
+        <tr>
+          <td><strong>异步支持</strong></td>
+          <td>❌</td>
+          <td>❌</td>
+          <td>❌</td>
+          <td>✅ 内置队列</td>
+        </tr>
+        <tr>
+          <td><strong>组播支持</strong></td>
+          <td>❌</td>
+          <td>❌</td>
+          <td>❌</td>
+          <td>✅ nl_groups</td>
+        </tr>
+        <tr>
+          <td><strong>内核主动推送</strong></td>
+          <td>❌ 需轮询</td>
+          <td>❌ 需轮询</td>
+          <td>❌</td>
+          <td>✅</td>
+        </tr>
+        <tr>
+          <td><strong>模块无需修改内核</strong></td>
+          <td>❌ 需编译进内核</td>
+          <td>⚠️ 需注册文件</td>
+          <td>❌ 需编译进内核</td>
+          <td>✅ 动态注册</td>
+        </tr>
+        <tr>
+          <td><strong>协议扩展性</strong></td>
+          <td>❌ 固定 C 结构体</td>
+          <td>⚠️ 文本格式</td>
+          <td>❌ 固定参数</td>
+          <td>✅ TLV 可扩展</td>
+        </tr>
+        <tr>
+          <td><strong>实现复杂度</strong></td>
+          <td>低</td>
+          <td>低</td>
+          <td>中</td>
+          <td>中~高</td>
+        </tr>
+        <tr>
+          <td><strong>典型用途</strong></td>
+          <td>设备控制、简单配置</td>
+          <td>系统参数读取</td>
+          <td>核心系统服务</td>
+          <td>网络配置、事件通知</td>
+        </tr>
+      </table>
+
+      <h3>安全考虑</h3>
+      <div class="callout callout-warn">
+        <span class="callout-icon">🔒</span>
+        <div class="callout-body">
+          <strong>原文（RFC 3549 § 5 安全考虑）：</strong>"Netlink lives in a trusted environment of a single host separated by kernel and user space. Linux capabilities ensure that only someone with <strong>CAP_NET_ADMIN</strong> capability (typically, the root user) is allowed to open sockets."
+          <br><br>
+          修改路由表、接口等特权操作需要 <code>CAP_NET_ADMIN</code>。部分只读操作（如接收 udev 事件）允许普通用户订阅。
+        </div>
+      </div>
+
+      <h3>实际工具中的 Netlink 使用</h3>
+      <div class="card">
+        <p><strong>iproute2 工具包</strong>（<code>ip</code>, <code>ss</code>, <code>tc</code> 等）是 Netlink 最广泛的用户，几乎所有网络配置操作都通过 <code>NETLINK_ROUTE</code> 实现。<strong>udev/systemd-udevd</strong> 订阅 <code>NETLINK_KOBJECT_UEVENT</code> 处理设备事件。<strong>wpa_supplicant</strong> 通过 Generic Netlink 的 cfg80211 family 管理无线网络。<strong>strongSwan</strong> 通过 <code>NETLINK_XFRM</code> 管理 IPsec SA。</p>
+      </div>
+
+      <div class="fp-box">
+        <div class="fp-box-title">⚡ 第一性原理（总结）</div>
+        <p>Linux Netlink 的设计哲学可以归结为一句话：<strong>用通用 socket 语义连接内核与用户空间的保护域边界，以最小固定元数据头 + 可扩展 TLV 载荷支持任意子系统的双向异步通信。</strong><br><br>
+        其存在的根本理由是操作系统的根本矛盾：内核和用户空间<em>必须</em>隔离（安全性），又<em>必须</em>通信（功能性）。所有设计细节——pid 字段的"多余"、序列号的"可选"、flags 的"组合"——都是在这个根本矛盾下做出的工程权衡，不是随意为之，而是有意识地将复杂性推到应用层，让核心层保持最简。</p>
+      </div>
+
+      <div style="margin-top:20px">
+        <a class="source-link" href="https://datatracker.ietf.org/doc/html/rfc3549" target="_blank">📄 RFC 3549 - Linux Netlink as an IP Services Protocol</a>
+        <a class="source-link" href="https://docs.kernel.org/userspace-api/netlink/intro.html" target="_blank">📄 Introduction to Netlink — kernel.org</a>
+        <a class="source-link" href="https://man7.org/linux/man-pages/man7/netlink.7.html" target="_blank">📄 netlink(7) — man7.org</a>
+        <a class="source-link" href="https://github.com/torvalds/linux/blob/master/include/uapi/linux/netlink.h" target="_blank">📄 include/uapi/linux/netlink.h — Torvalds/linux</a>
+        <a class="source-link" href="https://github.com/mwarning/netlink-examples/blob/master/articles/Why_and_How_to_Use_Netlink_Socket.md" target="_blank">📄 Why and How to Use Netlink Socket — Kevin Kaichuan He</a>
+      </div>
+    </section>
+
+  </main>
+</div>
+
+<script>
+// ── Progress bar ──
+const bar = document.getElementById('progress-bar');
+function updateProgress() {
+  const scrollTop = window.scrollY;
+  const docH = document.documentElement.scrollHeight - window.innerHeight;
+  bar.style.width = (docH > 0 ? Math.min(100, scrollTop / docH * 100) : 0) + '%';
+}
+window.addEventListener('scroll', updateProgress, { passive: true });
+updateProgress();
+
+// ── Sidebar nav highlight ──
+const navItems = document.querySelectorAll('.nav-item[data-idx]');
+const sections = document.querySelectorAll('.section');
+const HEADER_H = 72;
+
+function getActiveIdx() {
+  let active = 0;
+  sections.forEach((s, i) => {
+    const top = s.getBoundingClientRect().top;
+    if (top <= HEADER_H + 60) active = i;
+  });
+  return active;
+}
+
+function updateNav() {
+  const idx = getActiveIdx();
+  navItems.forEach(item => {
+    item.classList.toggle('active', parseInt(item.dataset.idx) === idx);
+  });
+}
+window.addEventListener('scroll', updateNav, { passive: true });
+updateNav();
+
+// Nav click
+navItems.forEach(item => {
+  item.addEventListener('click', e => {
+    e.preventDefault();
+    const href = item.getAttribute('href');
+    const target = document.querySelector(href);
+    if (target) target.scrollIntoView({ behavior: 'smooth' });
+    // Close sidebar on mobile
+    if (window.innerWidth <= 900) closeSidebar();
+  });
+});
+
+// ── Keyboard navigation ──
+document.addEventListener('keydown', e => {
+  if (e.target.tagName === 'INPUT' || e.target.tagName === 'TEXTAREA') return;
+  const current = getActiveIdx();
+  if (e.key === 'ArrowRight' && current < sections.length - 1) {
+    sections[current + 1].scrollIntoView({ behavior: 'smooth' });
+  } else if (e.key === 'ArrowLeft' && current > 0) {
+    sections[current - 1].scrollIntoView({ behavior: 'smooth' });
+  }
+});
+
+// ── Mobile hamburger ──
+const hamburger = document.getElementById('hamburger');
+const sidebar = document.getElementById('sidebar');
+const overlay = document.getElementById('sidebar-overlay');
+
+function openSidebar() {
+  sidebar.classList.add('open');
+  overlay.classList.add('show');
+}
+function closeSidebar() {
+  sidebar.classList.remove('open');
+  overlay.classList.remove('show');
+}
+hamburger.addEventListener('click', () => {
+  sidebar.classList.contains('open') ? closeSidebar() : openSidebar();
+});
+overlay.addEventListener('click', closeSidebar);
+</script>
+</body>
+</html>

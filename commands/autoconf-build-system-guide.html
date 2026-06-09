@@ -1,0 +1,1639 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Autoconf 编译系统详解 — 以 curl 为例</title>
+<style>
+  :root {
+    --bg: #0f1117;
+    --sidebar-bg: #161b27;
+    --card-bg: #1a2030;
+    --border: #2a3348;
+    --accent: #4f9eff;
+    --accent2: #7c5cfc;
+    --accent3: #36c890;
+    --text: #c9d1e0;
+    --text-dim: #7a8aa0;
+    --text-bright: #e8edf5;
+    --code-bg: #0d1420;
+    --sidebar-w: 280px;
+    --header-h: 56px;
+    --progress-h: 3px;
+  }
+
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+
+  html { scroll-behavior: smooth; }
+
+  body {
+    font-family: 'Segoe UI', 'PingFang SC', 'Microsoft YaHei', sans-serif;
+    background: var(--bg);
+    color: var(--text);
+    line-height: 1.75;
+    overflow-x: hidden;
+  }
+
+  /* ── Progress bar ── */
+  #progress-bar {
+    position: fixed;
+    top: 0; left: 0;
+    height: var(--progress-h);
+    width: 0%;
+    background: linear-gradient(90deg, var(--accent), var(--accent2));
+    z-index: 9999;
+    transition: width 0.1s linear;
+  }
+
+  /* ── Top header ── */
+  #top-header {
+    position: fixed;
+    top: var(--progress-h); left: 0; right: 0;
+    height: var(--header-h);
+    background: rgba(15,17,23,0.92);
+    backdrop-filter: blur(12px);
+    border-bottom: 1px solid var(--border);
+    display: flex;
+    align-items: center;
+    padding: 0 20px;
+    z-index: 1000;
+    gap: 14px;
+  }
+
+  #hamburger {
+    display: none;
+    flex-direction: column;
+    gap: 5px;
+    cursor: pointer;
+    padding: 6px;
+    border-radius: 6px;
+    background: transparent;
+    border: none;
+  }
+  #hamburger span {
+    display: block;
+    width: 22px; height: 2px;
+    background: var(--text);
+    border-radius: 2px;
+    transition: all 0.3s;
+  }
+  #hamburger.open span:nth-child(1) { transform: translateY(7px) rotate(45deg); }
+  #hamburger.open span:nth-child(2) { opacity: 0; }
+  #hamburger.open span:nth-child(3) { transform: translateY(-7px) rotate(-45deg); }
+
+  #top-header h1 {
+    font-size: 16px;
+    font-weight: 600;
+    color: var(--text-bright);
+    flex: 1;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+  }
+
+  #chapter-nav {
+    display: flex;
+    gap: 8px;
+    align-items: center;
+  }
+  #chapter-nav button {
+    background: var(--card-bg);
+    border: 1px solid var(--border);
+    color: var(--text);
+    border-radius: 6px;
+    padding: 4px 12px;
+    cursor: pointer;
+    font-size: 13px;
+    transition: all 0.2s;
+  }
+  #chapter-nav button:hover { background: var(--accent); color: #fff; border-color: var(--accent); }
+  #chapter-indicator {
+    font-size: 12px;
+    color: var(--text-dim);
+    white-space: nowrap;
+  }
+
+  /* ── Sidebar ── */
+  #sidebar {
+    position: fixed;
+    top: calc(var(--progress-h) + var(--header-h));
+    left: 0;
+    width: var(--sidebar-w);
+    height: calc(100vh - var(--progress-h) - var(--header-h));
+    background: var(--sidebar-bg);
+    border-right: 1px solid var(--border);
+    overflow-y: auto;
+    z-index: 900;
+    transition: transform 0.3s ease;
+    padding-bottom: 30px;
+  }
+  #sidebar::-webkit-scrollbar { width: 4px; }
+  #sidebar::-webkit-scrollbar-track { background: transparent; }
+  #sidebar::-webkit-scrollbar-thumb { background: var(--border); border-radius: 4px; }
+
+  .nav-group {
+    border-bottom: 1px solid var(--border);
+  }
+  .nav-group-title {
+    font-size: 10px;
+    font-weight: 700;
+    letter-spacing: 1.2px;
+    text-transform: uppercase;
+    color: var(--text-dim);
+    padding: 16px 18px 6px;
+  }
+  .nav-link {
+    display: block;
+    padding: 8px 18px 8px 28px;
+    font-size: 13px;
+    color: var(--text-dim);
+    text-decoration: none;
+    border-left: 3px solid transparent;
+    transition: all 0.18s;
+    cursor: pointer;
+    position: relative;
+  }
+  .nav-link:hover { color: var(--text-bright); background: rgba(79,158,255,0.06); }
+  .nav-link.active {
+    color: var(--accent);
+    border-left-color: var(--accent);
+    background: rgba(79,158,255,0.1);
+    font-weight: 500;
+  }
+
+  /* Sidebar overlay for mobile */
+  #sidebar-overlay {
+    display: none;
+    position: fixed;
+    inset: 0;
+    background: rgba(0,0,0,0.5);
+    z-index: 800;
+  }
+  #sidebar-overlay.visible { display: block; }
+
+  /* ── Main content ── */
+  #main {
+    margin-left: var(--sidebar-w);
+    padding-top: calc(var(--progress-h) + var(--header-h));
+    min-height: 100vh;
+  }
+
+  #content {
+    max-width: 860px;
+    padding: 40px 36px 80px;
+  }
+
+  /* ── Sections ── */
+  .chapter {
+    margin-bottom: 60px;
+    scroll-margin-top: calc(var(--header-h) + var(--progress-h) + 20px);
+  }
+
+  .chapter-badge {
+    display: inline-block;
+    font-size: 11px;
+    font-weight: 700;
+    letter-spacing: 0.8px;
+    text-transform: uppercase;
+    padding: 2px 10px;
+    border-radius: 4px;
+    background: linear-gradient(135deg, var(--accent), var(--accent2));
+    color: #fff;
+    margin-bottom: 10px;
+  }
+
+  h2.chapter-title {
+    font-size: 26px;
+    font-weight: 700;
+    color: var(--text-bright);
+    margin-bottom: 6px;
+    line-height: 1.3;
+  }
+  h3 {
+    font-size: 18px;
+    font-weight: 600;
+    color: var(--text-bright);
+    margin: 28px 0 12px;
+    padding-left: 12px;
+    border-left: 3px solid var(--accent2);
+  }
+  h4 {
+    font-size: 15px;
+    font-weight: 600;
+    color: var(--accent);
+    margin: 18px 0 8px;
+  }
+
+  .chapter-divider {
+    height: 1px;
+    background: linear-gradient(90deg, var(--border), transparent);
+    margin-bottom: 22px;
+  }
+
+  p { margin-bottom: 14px; }
+
+  a { color: var(--accent); text-decoration: none; }
+  a:hover { text-decoration: underline; }
+
+  /* ── Code ── */
+  pre, code {
+    font-family: 'Fira Code', 'Cascadia Code', 'Consolas', monospace;
+  }
+  code {
+    background: var(--code-bg);
+    border: 1px solid var(--border);
+    border-radius: 4px;
+    padding: 1px 6px;
+    font-size: 13px;
+    color: #7dd3fc;
+  }
+  pre {
+    background: var(--code-bg);
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    padding: 16px 18px;
+    overflow-x: auto;
+    margin: 14px 0 18px;
+    font-size: 13px;
+    line-height: 1.7;
+    color: #c9d1e0;
+  }
+  pre code {
+    background: none;
+    border: none;
+    padding: 0;
+    font-size: inherit;
+    color: inherit;
+  }
+  .cm  { color: #637182; } /* comment */
+  .kw  { color: #c084fc; } /* keyword */
+  .fn  { color: #4f9eff; } /* function/macro */
+  .str { color: #86efac; } /* string */
+  .var { color: #fbbf24; } /* variable */
+  .op  { color: #f87171; } /* operator/special */
+
+  /* ── Tables ── */
+  .table-wrap { overflow-x: auto; margin: 16px 0 22px; border-radius: 8px; border: 1px solid var(--border); }
+  table { border-collapse: collapse; width: 100%; min-width: 500px; font-size: 13.5px; }
+  thead tr { background: #1e2a3d; }
+  th { padding: 10px 14px; text-align: left; color: var(--accent); font-weight: 600; font-size: 12px; letter-spacing: 0.5px; border-bottom: 1px solid var(--border); white-space: nowrap; }
+  td { padding: 9px 14px; border-bottom: 1px solid rgba(42,51,72,0.6); vertical-align: top; }
+  tr:last-child td { border-bottom: none; }
+  tr:hover td { background: rgba(79,158,255,0.04); }
+  td code { font-size: 12px; }
+
+  /* ── Cards ── */
+  .card {
+    background: var(--card-bg);
+    border: 1px solid var(--border);
+    border-radius: 10px;
+    padding: 18px 22px;
+    margin: 14px 0;
+  }
+  .card-grid {
+    display: grid;
+    grid-template-columns: repeat(auto-fill, minmax(220px, 1fr));
+    gap: 14px;
+    margin: 14px 0;
+  }
+  .card-sm {
+    background: var(--card-bg);
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    padding: 14px 16px;
+  }
+  .card-sm h4 { margin-top: 0; }
+  .card-sm p { font-size: 13px; margin: 0; color: var(--text-dim); }
+
+  /* ── First-principle box ── */
+  .fp-box {
+    border: 1px solid var(--accent3);
+    border-radius: 10px;
+    background: rgba(54,200,144,0.06);
+    padding: 18px 22px;
+    margin-top: 28px;
+  }
+  .fp-box-title {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    font-size: 13px;
+    font-weight: 700;
+    color: var(--accent3);
+    text-transform: uppercase;
+    letter-spacing: 0.8px;
+    margin-bottom: 10px;
+  }
+  .fp-box p { font-size: 14px; margin-bottom: 8px; color: var(--text); }
+  .fp-box p:last-child { margin-bottom: 0; }
+
+  /* ── Info box ── */
+  .info-box {
+    border-left: 3px solid var(--accent);
+    background: rgba(79,158,255,0.07);
+    border-radius: 0 8px 8px 0;
+    padding: 12px 16px;
+    margin: 14px 0;
+    font-size: 13.5px;
+  }
+
+  /* ── Warning box ── */
+  .warn-box {
+    border-left: 3px solid #f59e0b;
+    background: rgba(245,158,11,0.07);
+    border-radius: 0 8px 8px 0;
+    padding: 12px 16px;
+    margin: 14px 0;
+    font-size: 13.5px;
+  }
+
+  /* ── Tag pills ── */
+  .tag { display: inline-block; font-size: 11px; padding: 2px 8px; border-radius: 4px; font-weight: 600; margin: 2px 3px 2px 0; }
+  .tag-blue { background: rgba(79,158,255,0.18); color: #4f9eff; }
+  .tag-purple { background: rgba(124,92,252,0.18); color: #a78bfa; }
+  .tag-green { background: rgba(54,200,144,0.18); color: #36c890; }
+  .tag-orange { background: rgba(251,146,60,0.2); color: #fb923c; }
+  .tag-red { background: rgba(248,113,113,0.18); color: #f87171; }
+
+  /* ── Source link ── */
+  .source-link {
+    display: inline-flex;
+    align-items: center;
+    gap: 4px;
+    font-size: 12px;
+    color: var(--text-dim);
+    border: 1px solid var(--border);
+    border-radius: 5px;
+    padding: 3px 8px;
+    margin-bottom: 16px;
+  }
+  .source-link:hover { color: var(--accent); border-color: var(--accent); text-decoration: none; }
+
+  /* ── SVG diagrams ── */
+  .svg-wrap {
+    background: var(--code-bg);
+    border: 1px solid var(--border);
+    border-radius: 10px;
+    padding: 24px;
+    margin: 18px 0;
+    overflow-x: auto;
+    text-align: center;
+  }
+  svg text { font-family: 'Fira Code', monospace; }
+
+  /* ── Phase steps ── */
+  .phase-list { display: flex; flex-direction: column; gap: 0; margin: 18px 0; }
+  .phase-step {
+    display: flex;
+    gap: 16px;
+    position: relative;
+  }
+  .phase-step:not(:last-child)::after {
+    content: '';
+    position: absolute;
+    left: 19px;
+    top: 42px;
+    bottom: 0;
+    width: 2px;
+    background: var(--border);
+  }
+  .phase-num {
+    width: 38px; height: 38px;
+    border-radius: 50%;
+    background: linear-gradient(135deg, var(--accent), var(--accent2));
+    display: flex; align-items: center; justify-content: center;
+    font-size: 15px; font-weight: 700; color: #fff;
+    flex-shrink: 0;
+    margin-top: 4px;
+    z-index: 1;
+  }
+  .phase-body { flex: 1; padding-bottom: 28px; }
+  .phase-body h4 { margin-top: 4px; }
+
+  /* ── File role list ── */
+  .file-role { display: flex; align-items: flex-start; gap: 14px; margin: 10px 0; padding: 12px 16px; background: var(--card-bg); border: 1px solid var(--border); border-radius: 8px; }
+  .file-role-icon { font-size: 22px; flex-shrink: 0; margin-top: 2px; }
+  .file-role-name { font-size: 13px; font-weight: 700; color: var(--accent); font-family: monospace; margin-bottom: 3px; }
+  .file-role-desc { font-size: 13px; color: var(--text-dim); }
+
+  /* ── Footer ── */
+  #footer {
+    margin-left: var(--sidebar-w);
+    border-top: 1px solid var(--border);
+    padding: 20px 36px;
+    font-size: 12px;
+    color: var(--text-dim);
+  }
+
+  /* ── Responsive ── */
+  @media (max-width: 768px) {
+    :root { --sidebar-w: 270px; }
+    #hamburger { display: flex; }
+    #sidebar { transform: translateX(-100%); }
+    #sidebar.open { transform: translateX(0); }
+    #main { margin-left: 0; }
+    #footer { margin-left: 0; }
+    #content { padding: 24px 18px 60px; }
+    h2.chapter-title { font-size: 21px; }
+    #chapter-indicator { display: none; }
+    .card-grid { grid-template-columns: 1fr; }
+  }
+</style>
+</head>
+<body>
+
+<!-- Progress Bar -->
+<div id="progress-bar"></div>
+
+<!-- Top Header -->
+<header id="top-header">
+  <button id="hamburger" aria-label="菜单">
+    <span></span><span></span><span></span>
+  </button>
+  <h1>Autoconf 编译系统详解 — 以 curl 为例</h1>
+  <div id="chapter-nav">
+    <button id="btn-prev">← 上一章</button>
+    <span id="chapter-indicator">1 / 7</span>
+    <button id="btn-next">下一章 →</button>
+  </div>
+</header>
+
+<!-- Sidebar Overlay -->
+<div id="sidebar-overlay"></div>
+
+<!-- Sidebar -->
+<nav id="sidebar">
+  <div class="nav-group">
+    <div class="nav-group-title">概述</div>
+    <a class="nav-link" data-target="ch0">0. 什么是 Autotools</a>
+  </div>
+  <div class="nav-group">
+    <div class="nav-group-title">核心文件</div>
+    <a class="nav-link" data-target="ch1">1. 配置文件全景</a>
+    <a class="nav-link" data-target="ch2">2. configure.ac 详解</a>
+    <a class="nav-link" data-target="ch3">3. Makefile.am 详解</a>
+    <a class="nav-link" data-target="ch4">4. 其他辅助文件</a>
+  </div>
+  <div class="nav-group">
+    <div class="nav-group-title">编译阶段</div>
+    <a class="nav-link" data-target="ch5">5. 编译的五个阶段</a>
+    <a class="nav-link" data-target="ch6">6. 文件流动全图</a>
+  </div>
+  <div class="nav-group">
+    <div class="nav-group-title">参考</div>
+    <a class="nav-link" data-target="ch7">7. 常用宏速查表</a>
+  </div>
+</nav>
+
+<!-- Main -->
+<main id="main">
+<div id="content">
+
+<!-- ══════════════════════════════════════════════════════════ -->
+<!-- Chapter 0 -->
+<!-- ══════════════════════════════════════════════════════════ -->
+<section class="chapter" id="ch0">
+  <div class="chapter-badge">Chapter 0</div>
+  <h2 class="chapter-title">什么是 Autotools（GNU 构建系统）</h2>
+  <div class="chapter-divider"></div>
+  <a class="source-link" href="https://www.gnu.org/software/autoconf/manual/autoconf.html" target="_blank">📖 GNU Autoconf Manual 2.73 (2026)</a>
+
+  <p>
+    <strong>Autotools</strong>（GNU Build System）是一套由 GNU 项目维护的工具链，用于使 C/C++ 等软件包能够在几乎所有类 POSIX 系统上自动化配置和编译。
+    它由三个核心工具组成：
+  </p>
+
+  <div class="card-grid">
+    <div class="card-sm">
+      <h4>⚙️ Autoconf</h4>
+      <p>将 <code>configure.ac</code> 转换成可移植的 <code>configure</code> shell 脚本，在用户系统上探测编译器、头文件、库的存在性。</p>
+    </div>
+    <div class="card-sm">
+      <h4>📝 Automake</h4>
+      <p>将 <code>Makefile.am</code> 转换为 <code>Makefile.in</code> 模板，由 configure 最终生成 <code>Makefile</code>。</p>
+    </div>
+    <div class="card-sm">
+      <h4>🔗 Libtool</h4>
+      <p>抽象不同平台的共享库差异（.so / .dylib / .dll），让库的构建和安装跨平台可移植。</p>
+    </div>
+  </div>
+
+  <p>
+    以 <strong>curl</strong> 为例：curl 源码仓库（<a href="https://github.com/curl/curl" target="_blank">github.com/curl/curl</a>）使用完整的 Autotools 体系。
+    从 Git 克隆后，开发者需要运行 <code>autoreconf -fi</code> 来生成 <code>configure</code>；而普通用户下载发行 tarball 时，<code>configure</code> 已经预生成，只需执行三步经典咒语：
+  </p>
+
+  <pre><code><span class="cm"># 来源：curl/GIT-INFO.md（官方仓库）</span>
+autoreconf -fi           <span class="cm"># 仅 Git 克隆需要，发行包不需要</span>
+./configure --with-openssl
+make
+make install</code></pre>
+
+  <p>
+    Autoconf 的核心设计哲学来自官方手册：
+    <em>"The primary goal of Autoconf is making the <strong>user's</strong> life easier;
+    making the <strong>maintainer's</strong> life easier is only a secondary goal."</em>
+    — GNU Autoconf Manual
+  </p>
+
+  <!-- SVG: Autotools 三角关系 -->
+  <div class="svg-wrap">
+    <svg width="520" height="160" viewBox="0 0 520 160" xmlns="http://www.w3.org/2000/svg">
+      <defs>
+        <marker id="arr" markerWidth="8" markerHeight="6" refX="7" refY="3" orient="auto">
+          <polygon points="0 0, 8 3, 0 6" fill="#4f9eff"/>
+        </marker>
+      </defs>
+      <!-- Autoconf box -->
+      <rect x="20" y="50" width="130" height="60" rx="8" fill="#1a2030" stroke="#4f9eff" stroke-width="1.5"/>
+      <text x="85" y="75" text-anchor="middle" font-size="13" fill="#4f9eff" font-weight="bold">Autoconf</text>
+      <text x="85" y="92" text-anchor="middle" font-size="10" fill="#7a8aa0">configure.ac → configure</text>
+
+      <!-- Automake box -->
+      <rect x="195" y="50" width="130" height="60" rx="8" fill="#1a2030" stroke="#7c5cfc" stroke-width="1.5"/>
+      <text x="260" y="75" text-anchor="middle" font-size="13" fill="#7c5cfc" font-weight="bold">Automake</text>
+      <text x="260" y="92" text-anchor="middle" font-size="10" fill="#7a8aa0">Makefile.am → Makefile.in</text>
+
+      <!-- Libtool box -->
+      <rect x="370" y="50" width="130" height="60" rx="8" fill="#1a2030" stroke="#36c890" stroke-width="1.5"/>
+      <text x="435" y="75" text-anchor="middle" font-size="13" fill="#36c890" font-weight="bold">Libtool</text>
+      <text x="435" y="92" text-anchor="middle" font-size="10" fill="#7a8aa0">共享库跨平台抽象</text>
+
+      <!-- Arrow: Autoconf → Automake (共用 configure.ac) -->
+      <line x1="150" y1="80" x2="193" y2="80" stroke="#4f9eff" stroke-width="1.5" marker-end="url(#arr)"/>
+      <!-- Arrow: Automake → Libtool -->
+      <line x1="325" y1="80" x2="368" y2="80" stroke="#7c5cfc" stroke-width="1.5" marker-end="url(#arr)"/>
+
+      <!-- Label -->
+      <text x="260" y="140" text-anchor="middle" font-size="11" fill="#637182">GNU Autotools 三大核心工具协作关系</text>
+    </svg>
+  </div>
+
+  <div class="fp-box">
+    <div class="fp-box-title">🔬 第一性原理</div>
+    <p>
+      <strong>核心问题：</strong>同一份 C 代码，如何在 Linux、macOS、BSD、Solaris 等数百种环境下都能编译？
+    </p>
+    <p>
+      <strong>根本矛盾：</strong>不同系统的头文件路径、库名称、编译器行为各不相同。写死路径必然失败。
+    </p>
+    <p>
+      <strong>最简解：</strong>在用户的机器上运行探测脚本，动态发现当前环境的特征，再据此生成 Makefile。Autotools 就是这套探测-生成机制的工业级实现。
+      <code>configure.ac</code> 声明"我需要什么"，<code>configure</code> 脚本在用户机器上回答"这里有没有"。
+    </p>
+  </div>
+</section>
+
+<!-- ══════════════════════════════════════════════════════════ -->
+<!-- Chapter 1 -->
+<!-- ══════════════════════════════════════════════════════════ -->
+<section class="chapter" id="ch1">
+  <div class="chapter-badge">Chapter 1</div>
+  <h2 class="chapter-title">配置文件全景：哪些由人维护，哪些自动生成</h2>
+  <div class="chapter-divider"></div>
+  <a class="source-link" href="https://www.gnu.org/software/autoconf/manual/autoconf-2.67/html_node/Making-configure-Scripts.html" target="_blank">📖 GNU Autoconf — Making configure Scripts</a>
+
+  <p>
+    Autotools 生态中的文件可以分为两大类：<strong>开发者手写维护</strong>的源文件，以及由工具链<strong>自动生成</strong>的中间/最终文件。
+    下表是 curl 项目中涉及的典型文件清单：
+  </p>
+
+  <div class="table-wrap">
+    <table>
+      <thead>
+        <tr>
+          <th>文件名</th>
+          <th>由谁生成</th>
+          <th>谁来维护</th>
+          <th>入版本控制</th>
+          <th>作用简述</th>
+        </tr>
+      </thead>
+      <tbody>
+        <tr><td><code>configure.ac</code></td><td>人工编写</td><td>✅ 开发者</td><td>✅ 是</td><td>Autoconf 主输入；声明检测需求</td></tr>
+        <tr><td><code>Makefile.am</code></td><td>人工编写</td><td>✅ 开发者</td><td>✅ 是</td><td>Automake 主输入；描述编译目标</td></tr>
+        <tr><td><code>m4/*.m4</code></td><td>人工/第三方</td><td>✅ 开发者</td><td>✅ 是</td><td>自定义 M4 宏库（curl 大量使用）</td></tr>
+        <tr><td><code>aclocal.m4</code></td><td><code>aclocal</code></td><td>❌ 自动</td><td>可选</td><td>汇总第三方宏供 autoconf 使用</td></tr>
+        <tr><td><code>configure</code></td><td><code>autoconf</code></td><td>❌ 自动</td><td>发行包含，Git不含</td><td>实际运行的配置脚本</td></tr>
+        <tr><td><code>config.h.in</code></td><td><code>autoheader</code></td><td>❌ 自动</td><td>发行包含</td><td>config.h 的模板文件</td></tr>
+        <tr><td><code>Makefile.in</code></td><td><code>automake</code></td><td>❌ 自动</td><td>发行包含</td><td>Makefile 的模板文件</td></tr>
+        <tr><td><code>config.h</code></td><td><code>configure</code></td><td>❌ 自动</td><td>❌ 否</td><td>编译时的 C 宏定义头文件</td></tr>
+        <tr><td><code>Makefile</code></td><td><code>configure</code></td><td>❌ 自动</td><td>❌ 否</td><td>实际的构建规则文件</td></tr>
+        <tr><td><code>config.status</code></td><td><code>configure</code></td><td>❌ 自动</td><td>❌ 否</td><td>重新生成配置文件的脚本</td></tr>
+        <tr><td><code>config.log</code></td><td><code>configure</code></td><td>❌ 自动</td><td>❌ 否</td><td>configure 运行日志（调试用）</td></tr>
+        <tr><td><code>autom4te.cache/</code></td><td><code>autom4te</code></td><td>❌ 自动</td><td>❌ 否</td><td>M4 处理缓存，加速重复运行</td></tr>
+        <tr><td><code>install-sh</code>, <code>depcomp</code></td><td><code>automake --add-missing</code></td><td>❌ 自动</td><td>发行包含</td><td>辅助安装/依赖追踪脚本</td></tr>
+        <tr><td><code>libcurl.pc</code></td><td><code>configure</code></td><td>模板由开发者维护</td><td>模板入库</td><td>pkg-config 描述文件</td></tr>
+      </tbody>
+    </table>
+  </div>
+
+  <div class="info-box">
+    💡 <strong>关键原则：</strong>开发者只需维护 <code>configure.ac</code>、<code>Makefile.am</code> 和自定义 <code>m4/*.m4</code> 宏文件，其余文件均由工具链自动生成。发行 tarball（<code>make dist</code> 生成）会包含预生成的 <code>configure</code>、<code>Makefile.in</code> 等，使终端用户无需安装 Autotools。
+  </div>
+
+  <!-- SVG 文件分类图 -->
+  <div class="svg-wrap">
+    <svg width="560" height="200" viewBox="0 0 560 200" xmlns="http://www.w3.org/2000/svg">
+      <!-- Developer zone -->
+      <rect x="10" y="20" width="230" height="160" rx="10" fill="none" stroke="#4f9eff" stroke-width="1.5" stroke-dasharray="6,3"/>
+      <text x="125" y="14" text-anchor="middle" font-size="11" fill="#4f9eff" font-weight="bold">开发者维护（入版本库）</text>
+      <rect x="25" y="38" width="195" height="28" rx="6" fill="#1e2a3d" stroke="#4f9eff" stroke-width="1"/>
+      <text x="122" y="57" text-anchor="middle" font-size="12" fill="#c9d1e0">configure.ac</text>
+      <rect x="25" y="74" width="195" height="28" rx="6" fill="#1e2a3d" stroke="#4f9eff" stroke-width="1"/>
+      <text x="122" y="93" text-anchor="middle" font-size="12" fill="#c9d1e0">Makefile.am (多个)</text>
+      <rect x="25" y="110" width="195" height="28" rx="6" fill="#1e2a3d" stroke="#4f9eff" stroke-width="1"/>
+      <text x="122" y="129" text-anchor="middle" font-size="12" fill="#c9d1e0">m4/*.m4 自定义宏</text>
+      <rect x="25" y="146" width="195" height="28" rx="6" fill="#1e2a3d" stroke="#4f9eff" stroke-width="1"/>
+      <text x="122" y="165" text-anchor="middle" font-size="12" fill="#c9d1e0">源代码 (.c / .h)</text>
+
+      <!-- Auto-generated zone -->
+      <rect x="270" y="20" width="270" height="160" rx="10" fill="none" stroke="#7c5cfc" stroke-width="1.5" stroke-dasharray="6,3"/>
+      <text x="405" y="14" text-anchor="middle" font-size="11" fill="#7c5cfc" font-weight="bold">工具自动生成</text>
+      <rect x="285" y="38" width="115" height="28" rx="6" fill="#1e2a3d" stroke="#7c5cfc" stroke-width="1"/>
+      <text x="342" y="57" text-anchor="middle" font-size="12" fill="#c9d1e0">configure</text>
+      <rect x="415" y="38" width="110" height="28" rx="6" fill="#1e2a3d" stroke="#7c5cfc" stroke-width="1"/>
+      <text x="470" y="57" text-anchor="middle" font-size="12" fill="#c9d1e0">Makefile.in</text>
+      <rect x="285" y="74" width="115" height="28" rx="6" fill="#1e2a3d" stroke="#36c890" stroke-width="1"/>
+      <text x="342" y="93" text-anchor="middle" font-size="12" fill="#c9d1e0">config.h</text>
+      <rect x="415" y="74" width="110" height="28" rx="6" fill="#1e2a3d" stroke="#36c890" stroke-width="1"/>
+      <text x="470" y="93" text-anchor="middle" font-size="12" fill="#c9d1e0">Makefile</text>
+      <rect x="285" y="110" width="115" height="28" rx="6" fill="#0d1420" stroke="#637182" stroke-width="1"/>
+      <text x="342" y="129" text-anchor="middle" font-size="11" fill="#637182">aclocal.m4</text>
+      <rect x="415" y="110" width="110" height="28" rx="6" fill="#0d1420" stroke="#637182" stroke-width="1"/>
+      <text x="470" y="129" text-anchor="middle" font-size="11" fill="#637182">config.status</text>
+      <rect x="285" y="146" width="240" height="28" rx="6" fill="#0d1420" stroke="#637182" stroke-width="1"/>
+      <text x="405" y="165" text-anchor="middle" font-size="11" fill="#637182">config.log / autom4te.cache/</text>
+    </svg>
+  </div>
+
+  <div class="fp-box">
+    <div class="fp-box-title">🔬 第一性原理</div>
+    <p>
+      版本控制系统的基本原则：<strong>只追踪无法从其他文件重新生成的文件</strong>。
+      <code>configure</code> 完全可以由 <code>configure.ac</code> 重新生成，因此 Git 仓库不提交 <code>configure</code>。
+      但发行 tarball 需要包含 <code>configure</code>，因为用户机器上没有 Autotools。
+      这就是两套文件集合（Git vs tarball）存在差异的根本原因。
+    </p>
+  </div>
+</section>
+
+<!-- ══════════════════════════════════════════════════════════ -->
+<!-- Chapter 2 -->
+<!-- ══════════════════════════════════════════════════════════ -->
+<section class="chapter" id="ch2">
+  <div class="chapter-badge">Chapter 2</div>
+  <h2 class="chapter-title">configure.ac 详解</h2>
+  <div class="chapter-divider"></div>
+  <a class="source-link" href="https://www.gnu.org/software/automake/manual/html_node/amhello_0027s-configure_002eac-Setup-Explained.html" target="_blank">📖 GNU Automake — configure.ac Explained</a>
+  <a class="source-link" href="https://opensource.apple.com/source/curl/curl-78.90.1/curl/configure.ac.auto.html" target="_blank">📖 curl configure.ac 实际源码</a>
+
+  <p>
+    <code>configure.ac</code> 是 Autotools 体系中<strong>最核心的手写文件</strong>。它用 M4 宏语言编写，描述了软件包的编译需求：需要什么编译器、哪些库、哪些头文件，以及最终要生成哪些输出文件。
+    <code>autoconf</code> 工具读取它，展开所有宏，输出一个可移植的 shell 脚本 <code>configure</code>。
+  </p>
+
+  <h3>标准结构布局</h3>
+  <p>
+    根据 GNU Autoconf 手册，<code>configure.ac</code> 的标准结构从上到下依次为：
+  </p>
+
+  <pre><code><span class="cm">dnl  Process this file with autoconf to produce a configure script.
+dnl  curl/configure.ac — 简化演示版本</span>
+
+<span class="cm"># ① 初始化 Autoconf</span>
+<span class="fn">AC_PREREQ</span>([2.59])
+<span class="fn">AC_INIT</span>([curl], [-], [a suitable curl mailing list: https://curl.se/mail/])
+<span class="fn">AC_CONFIG_SRCDIR</span>([lib/urldata.h])   <span class="cm"># 验证源码目录合法性</span>
+<span class="fn">AC_CONFIG_HEADERS</span>([lib/curl_config.h])  <span class="cm"># 声明 C 头文件输出</span>
+<span class="fn">AC_CONFIG_MACRO_DIR</span>([m4])            <span class="cm"># 自定义宏所在目录</span>
+
+<span class="cm"># ② 初始化 Automake</span>
+<span class="fn">AM_INIT_AUTOMAKE</span>
+<span class="fn">AM_MAINTAINER_MODE</span>
+
+<span class="cm"># ③ curl 自定义选项检测</span>
+<span class="fn">CURL_CHECK_OPTION_DEBUG</span>
+<span class="fn">CURL_CHECK_OPTION_OPTIMIZE</span>
+<span class="fn">CURL_CHECK_OPTION_WARNINGS</span>
+
+<span class="cm"># ④ 检测编译器</span>
+<span class="fn">AC_PROG_CC</span>
+<span class="fn">AC_PROG_CPP</span>
+
+<span class="cm"># ⑤ 检测库和头文件</span>
+<span class="fn">AC_CHECK_LIB</span>([z], [gzopen])
+<span class="fn">AC_CHECK_HEADERS</span>([sys/socket.h])
+<span class="fn">CURL_CHECK_LIB_OPENSSL</span>             <span class="cm"># curl 自定义宏</span>
+
+<span class="cm"># ⑥ 类型/结构检测</span>
+<span class="fn">AC_TYPE_SIZE_T</span>
+<span class="fn">AC_TYPE_SSIZE_T</span>
+
+<span class="cm"># ⑦ 声明输出文件</span>
+<span class="fn">AC_CONFIG_FILES</span>([
+  Makefile
+  src/Makefile
+  lib/Makefile
+  libcurl.pc
+])
+<span class="fn">AC_CONFIG_FILES</span>([curl-config], [chmod +x curl-config])
+
+<span class="cm"># ⑧ 生成所有输出</span>
+<span class="fn">AC_OUTPUT</span></code></pre>
+
+  <h3>核心宏分类</h3>
+  <div class="table-wrap">
+    <table>
+      <thead>
+        <tr><th>宏名</th><th>类别</th><th>作用</th><th>curl 中示例</th></tr>
+      </thead>
+      <tbody>
+        <tr><td><code>AC_INIT</code></td><td><span class="tag tag-blue">初始化</span></td><td>声明包名、版本、Bug 报告地址</td><td><code>AC_INIT([curl], [-], [...])</code></td></tr>
+        <tr><td><code>AC_PREREQ</code></td><td><span class="tag tag-blue">初始化</span></td><td>要求最低 Autoconf 版本</td><td><code>AC_PREREQ([2.59])</code></td></tr>
+        <tr><td><code>AC_CONFIG_SRCDIR</code></td><td><span class="tag tag-blue">初始化</span></td><td>验证源码目录正确性（防止 --srcdir 误用）</td><td><code>AC_CONFIG_SRCDIR([lib/urldata.h])</code></td></tr>
+        <tr><td><code>AC_CONFIG_HEADERS</code></td><td><span class="tag tag-purple">输出</span></td><td>生成 C 头文件（config.h）</td><td><code>AC_CONFIG_HEADERS([lib/curl_config.h])</code></td></tr>
+        <tr><td><code>AM_INIT_AUTOMAKE</code></td><td><span class="tag tag-blue">初始化</span></td><td>初始化 Automake 集成</td><td><code>AM_INIT_AUTOMAKE</code></td></tr>
+        <tr><td><code>AC_PROG_CC</code></td><td><span class="tag tag-orange">检测</span></td><td>寻找 C 编译器，设置 <code>CC</code> 变量</td><td>✅</td></tr>
+        <tr><td><code>AC_CHECK_LIB</code></td><td><span class="tag tag-orange">检测</span></td><td>检测库是否存在（尝试链接）</td><td><code>AC_CHECK_LIB([z], [gzopen])</code></td></tr>
+        <tr><td><code>AC_CHECK_HEADERS</code></td><td><span class="tag tag-orange">检测</span></td><td>检测头文件是否可用</td><td><code>AC_CHECK_HEADERS([sys/socket.h])</code></td></tr>
+        <tr><td><code>AC_TYPE_SIZE_T</code></td><td><span class="tag tag-orange">检测</span></td><td>检测 <code>size_t</code> 类型</td><td>✅</td></tr>
+        <tr><td><code>AC_SUBST</code></td><td><span class="tag tag-green">替换</span></td><td>将变量值替换进 Makefile.in 的 <code>@VAR@</code></td><td><code>AC_SUBST([SUPPORT_PROTOCOLS])</code></td></tr>
+        <tr><td><code>AC_DEFINE</code></td><td><span class="tag tag-green">替换</span></td><td>在 config.h 中定义 C 预处理器宏</td><td><code>AC_DEFINE([HAVE_OPENSSL], [1], [...])</code></td></tr>
+        <tr><td><code>AC_CONFIG_FILES</code></td><td><span class="tag tag-purple">输出</span></td><td>声明需要从 .in 模板生成的文件列表</td><td>Makefile, libcurl.pc 等</td></tr>
+        <tr><td><code>AC_OUTPUT</code></td><td><span class="tag tag-purple">输出</span></td><td>触发所有输出文件的实际生成</td><td>最后一行</td></tr>
+        <tr><td><code>AC_CONFIG_MACRO_DIR</code></td><td><span class="tag tag-blue">初始化</span></td><td>声明自定义 m4 宏目录</td><td><code>AC_CONFIG_MACRO_DIR([m4])</code></td></tr>
+      </tbody>
+    </table>
+  </div>
+
+  <h3>curl 特有的自定义 M4 宏</h3>
+  <p>
+    curl 项目在 <code>m4/</code> 目录下维护了大量自定义宏（如 <code>CURL_CHECK_LIB_OPENSSL</code>、<code>CURL_CHECK_OPTION_DEBUG</code> 等），
+    这些宏定义在 <code>m4/*.m4</code> 文件中，由 <code>aclocal</code> 收集后生成 <code>aclocal.m4</code>，再供 <code>autoconf</code> 使用。
+  </p>
+
+  <pre><code><span class="cm"># curl configure.ac 末尾的 AC_CONFIG_FILES（来自官方仓库）</span>
+<span class="fn">AC_CONFIG_FILES</span>([
+  Makefile
+  docs/Makefile
+  docs/examples/Makefile
+  src/Makefile
+  lib/Makefile
+  tests/Makefile
+  tests/libtest/Makefile
+  tests/unit/Makefile
+  include/curl/Makefile
+  libcurl.pc
+])
+<span class="fn">AC_CONFIG_FILES</span>([curl-config], [chmod +x curl-config])
+<span class="fn">AC_OUTPUT</span></code></pre>
+
+  <div class="fp-box">
+    <div class="fp-box-title">🔬 第一性原理</div>
+    <p>
+      <strong>configure.ac 的本质：</strong>一份用 M4 宏语言写的"需求声明"。
+      它回答的问题是：<em>"我这个软件需要哪些外部条件，以及当这些条件满足/不满足时，该设置什么变量？"</em>
+    </p>
+    <p>
+      M4 宏展开后得到 shell 代码，运行这段 shell 代码就是在用户机器上做探测。
+      <code>AC_CHECK_LIB([openssl], [SSL_connect])</code> 展开后的 shell 代码会尝试编译并链接一个使用 <code>SSL_connect</code> 的小程序——成功则记录 HAVE_OPENSSL，失败则不记录。这就是可移植性的底层机制。
+    </p>
+  </div>
+</section>
+
+<!-- ══════════════════════════════════════════════════════════ -->
+<!-- Chapter 3 -->
+<!-- ══════════════════════════════════════════════════════════ -->
+<section class="chapter" id="ch3">
+  <div class="chapter-badge">Chapter 3</div>
+  <h2 class="chapter-title">Makefile.am 详解</h2>
+  <div class="chapter-divider"></div>
+  <a class="source-link" href="https://www.gnu.org/software/automake/manual/html_node/amhello_0027s-Makefile_002eam-Setup-Explained.html" target="_blank">📖 GNU Automake — Makefile.am Explained</a>
+
+  <p>
+    <code>Makefile.am</code> 是 Automake 的输入文件，语法与 Makefile 相同，但特殊变量会被 Automake 解析、展开成完整的 <code>Makefile.in</code>。
+    它解决的问题是：<em>"需要编译什么，生成什么目标，安装到哪里？"</em>
+  </p>
+
+  <h3>变量命名规则：目录前缀 + 主类型</h3>
+
+  <div class="card">
+    <p>Automake 变量遵循 <strong><code>[目录前缀]_[主类型]</code></strong> 的模式：</p>
+    <pre><code><span class="var">bin_PROGRAMS</span>     = curl        <span class="cm"># 安装到 $bindir 的可执行程序</span>
+<span class="var">lib_LTLIBRARIES</span>  = libcurl.la  <span class="cm"># 安装到 $libdir 的 Libtool 库</span>
+<span class="var">include_HEADERS</span>  = curl.h      <span class="cm"># 安装到 $includedir 的头文件</span>
+<span class="var">noinst_LIBRARIES</span> = libfoo.a    <span class="cm"># 仅内部使用，不安装</span>
+<span class="var">pkgconfig_DATA</span>   = libcurl.pc  <span class="cm"># 安装到 $pkgconfigdir 的数据文件</span>
+<span class="var">SUBDIRS</span>          = lib src docs <span class="cm"># 递归构建的子目录（顺序有意义！）</span></code></pre>
+  </div>
+
+  <div class="table-wrap">
+    <table>
+      <thead>
+        <tr><th>目录前缀</th><th>安装路径变量</th><th>含义</th></tr>
+      </thead>
+      <tbody>
+        <tr><td><code>bin</code></td><td><code>$bindir</code></td><td>用户可执行文件 (默认 /usr/local/bin)</td></tr>
+        <tr><td><code>sbin</code></td><td><code>$sbindir</code></td><td>系统管理员可执行文件</td></tr>
+        <tr><td><code>lib</code></td><td><code>$libdir</code></td><td>库文件 (默认 /usr/local/lib)</td></tr>
+        <tr><td><code>include</code></td><td><code>$includedir</code></td><td>头文件 (默认 /usr/local/include)</td></tr>
+        <tr><td><code>pkgconfig</code></td><td><code>$pkgconfigdir</code></td><td>pkg-config .pc 文件</td></tr>
+        <tr><td><code>noinst</code></td><td>不安装</td><td>仅在构建过程中使用</td></tr>
+        <tr><td><code>check</code></td><td>不安装</td><td>仅在 make check 时构建</td></tr>
+      </tbody>
+    </table>
+  </div>
+
+  <h3>主类型（Primaries）</h3>
+  <div class="table-wrap">
+    <table>
+      <thead>
+        <tr><th>主类型</th><th>含义</th><th>示例</th></tr>
+      </thead>
+      <tbody>
+        <tr><td><code>_PROGRAMS</code></td><td>可执行程序（需编译链接）</td><td><code>bin_PROGRAMS = curl</code></td></tr>
+        <tr><td><code>_LTLIBRARIES</code></td><td>Libtool 共享/静态库</td><td><code>lib_LTLIBRARIES = libcurl.la</code></td></tr>
+        <tr><td><code>_LIBRARIES</code></td><td>静态库（ar 打包）</td><td><code>noinst_LIBRARIES = libinternal.a</code></td></tr>
+        <tr><td><code>_HEADERS</code></td><td>头文件</td><td><code>include_HEADERS = curl.h</code></td></tr>
+        <tr><td><code>_DATA</code></td><td>任意数据文件</td><td><code>pkgconfig_DATA = libcurl.pc</code></td></tr>
+        <tr><td><code>_SCRIPTS</code></td><td>可执行脚本</td><td><code>bin_SCRIPTS = curl-config</code></td></tr>
+      </tbody>
+    </table>
+  </div>
+
+  <h3>目标特定变量</h3>
+  <p>每个构建目标可以配套一组变量，以目标的规范化名称为前缀：</p>
+  <pre><code><span class="cm"># 以 libcurl 为例（lib/Makefile.am 中的简化示意）</span>
+
+<span class="var">lib_LTLIBRARIES</span> = libcurl.la
+
+<span class="var">libcurl_la_SOURCES</span> = \       <span class="cm"># 构成该库的源文件</span>
+  url.c transfer.c connect.c \
+  http.c ftp.c ssl.c
+
+<span class="var">libcurl_la_CFLAGS</span>  = @CURL_CFLAG_EXTRAS@  <span class="cm"># 编译标志</span>
+<span class="var">libcurl_la_LDFLAGS</span> = -version-info \       <span class="cm"># 链接标志（库版本信息）</span>
+  @CURL_LT_SHLIB_VERSIONED_FLAVOUR@
+
+<span class="var">libcurl_la_LIBADD</span>  = @LIBS@               <span class="cm"># 链接时追加的库</span>
+
+<span class="cm"># curl 可执行程序（src/Makefile.am 简化示意）</span>
+<span class="var">bin_PROGRAMS</span> = curl
+<span class="var">curl_SOURCES</span> = tool_main.c tool_operate.c tool_cb_hdr.c
+<span class="var">curl_LDADD</span>   = ../lib/libcurl.la @LIBS@    <span class="cm"># 链接 libcurl</span></code></pre>
+
+  <h3>SUBDIRS 与递归构建</h3>
+  <div class="info-box">
+    <strong>SUBDIRS</strong> 变量控制 make 递归进入哪些子目录，<strong>顺序决定编译顺序</strong>。
+    curl 的 <code>SUBDIRS = lib src docs tests</code> 确保先编译 <code>lib</code>（生成 libcurl.la），
+    再编译 <code>src</code>（链接 libcurl.la），顺序不能颠倒。
+  </div>
+
+  <h3>dist_ 和 nodist_ 前缀</h3>
+  <pre><code><span class="var">dist_doc_DATA</span>   = README CHANGES  <span class="cm"># 分发并安装</span>
+<span class="var">nodist_curl_SOURCES</span> = curl_config.h  <span class="cm"># 不分发（构建时生成）</span></code></pre>
+
+  <div class="fp-box">
+    <div class="fp-box-title">🔬 第一性原理</div>
+    <p>
+      <strong>Makefile.am 解决的核心问题：</strong>完整的 Makefile 有数百行规则（编译、链接、安装、清理、分发、测试……），手写极易出错且不可移植。
+    </p>
+    <p>
+      Automake 的方法是：开发者只声明<em>"我有哪些目标，源文件是什么"</em>（约 10 行），Automake 自动展开成完整的 Makefile.in（可能数百行）。
+      规范化目标名称的算法（把 <code>libcurl.la</code> → <code>libcurl_la_SOURCES</code>）保证了变量命名的唯一性和可预测性。
+    </p>
+  </div>
+</section>
+
+<!-- ══════════════════════════════════════════════════════════ -->
+<!-- Chapter 4 -->
+<!-- ══════════════════════════════════════════════════════════ -->
+<section class="chapter" id="ch4">
+  <div class="chapter-badge">Chapter 4</div>
+  <h2 class="chapter-title">其他辅助文件</h2>
+  <div class="chapter-divider"></div>
+
+  <h3>自定义 M4 宏文件（m4/*.m4）</h3>
+  <p>
+    curl 项目在 <code>m4/</code> 目录下维护了数十个 <code>.m4</code> 文件，如 <code>curl-openssl.m4</code>、<code>curl-bearssl.m4</code> 等，
+    这些宏封装了复杂的特定检测逻辑（如检测 OpenSSL 版本、BearSSL API 兼容性等），使 <code>configure.ac</code> 保持简洁。
+  </p>
+
+  <div class="file-role">
+    <div class="file-role-icon">📁</div>
+    <div>
+      <div class="file-role-name">m4/*.m4</div>
+      <div class="file-role-desc">自定义 Autoconf 宏定义。开发者维护，入版本库。<code>aclocal</code> 会扫描此目录，将其内容汇入 <code>aclocal.m4</code>。</div>
+    </div>
+  </div>
+
+  <h3>aclocal.m4</h3>
+  <div class="file-role">
+    <div class="file-role-icon">🤖</div>
+    <div>
+      <div class="file-role-name">aclocal.m4</div>
+      <div class="file-role-desc">由 <code>aclocal</code> 自动生成。汇总了系统安装的第三方宏（如 libtool 宏）和项目自己的 <code>m4/*.m4</code> 中的宏。<code>autoconf</code> 读取此文件以识别所有宏定义。</div>
+    </div>
+  </div>
+
+  <h3>config.h / config.h.in</h3>
+  <div class="file-role">
+    <div class="file-role-icon">🔧</div>
+    <div>
+      <div class="file-role-name">lib/curl_config.h（curl 中的 config.h）</div>
+      <div class="file-role-desc">
+        <code>config.h.in</code> 由 <code>autoheader</code> 从 <code>configure.ac</code> 生成，是模板。
+        <code>configure</code> 运行后填充实际值，生成 <code>config.h</code>（或 curl 中的 <code>lib/curl_config.h</code>）。
+        源代码通过 <code>#include "curl_config.h"</code> 利用这些宏，如 <code>HAVE_OPENSSL</code>、<code>HAVE_ZLIB</code>。
+      </div>
+    </div>
+  </div>
+
+  <pre><code><span class="cm">/* lib/curl_config.h 示例内容（configure 运行后生成）*/</span>
+<span class="kw">#define</span> <span class="var">HAVE_OPENSSL</span>  1
+<span class="kw">#define</span> <span class="var">HAVE_ZLIB</span>     1
+<span class="kw">#define</span> <span class="var">SIZEOF_INT</span>    4
+<span class="kw">#define</span> <span class="var">HAVE_SEND</span>     1
+<span class="cm">/* 如果 zstd 不存在则不定义 HAVE_ZSTD */</span></code></pre>
+
+  <h3>libcurl.pc（pkg-config 文件）</h3>
+  <div class="file-role">
+    <div class="file-role-icon">📦</div>
+    <div>
+      <div class="file-role-name">libcurl.pc</div>
+      <div class="file-role-desc">
+        由 configure 从 <code>libcurl.pc.in</code> 模板生成（<code>@VAR@</code> 被替换）。安装后，
+        其他项目可通过 <code>pkg-config --libs libcurl</code> 获取链接标志。
+        <code>libcurl.pc.in</code> 由开发者维护并入版本库。
+      </div>
+    </div>
+  </div>
+
+  <h3>config.status</h3>
+  <div class="file-role">
+    <div class="file-role-icon">🔄</div>
+    <div>
+      <div class="file-role-name">config.status</div>
+      <div class="file-role-desc">
+        由 <code>configure</code> 自动生成的 shell 脚本。功能是"记忆" configure 运行的参数和结果，
+        可在不重新运行 configure 的情况下重新生成 Makefile 和 config.h。
+        Makefile 中的某些规则会自动调用 config.status 来保持配置文件最新。
+      </div>
+    </div>
+  </div>
+
+  <h3>辅助脚本（install-sh、depcomp、compile 等）</h3>
+  <div class="file-role">
+    <div class="file-role-icon">🛠️</div>
+    <div>
+      <div class="file-role-name">install-sh / depcomp / compile / missing</div>
+      <div class="file-role-desc">
+        由 <code>automake --add-missing</code> 或 <code>autoreconf --install</code> 自动添加的辅助脚本。
+        这些脚本提供了在某些系统上缺失的工具的可移植替代实现（如 <code>install</code> 命令的兼容版本）。
+        一般放在项目根目录或 <code>build-aux/</code> 目录（由 <code>AC_CONFIG_AUX_DIR</code> 指定）。
+      </div>
+    </div>
+  </div>
+
+  <div class="fp-box">
+    <div class="fp-box-title">🔬 第一性原理</div>
+    <p>
+      <strong>为何有这么多"中间"文件？</strong>这是分层抽象的代价：
+      <code>configure.ac</code>（高层声明）→ M4展开 → <code>configure</code>（可执行 shell 脚本）→ 运行探测 → <code>config.h</code> + <code>Makefile</code>（最终制品）。
+    </p>
+    <p>
+      每一层的存在都有其合理性：M4 提供宏复用，shell 脚本确保无依赖运行，config.h 让 C 代码条件编译。
+      <code>config.status</code> 是"增量更新"的关键——只重新生成受影响的文件，而无需重跑整个 configure。
+    </p>
+  </div>
+</section>
+
+<!-- ══════════════════════════════════════════════════════════ -->
+<!-- Chapter 5 -->
+<!-- ══════════════════════════════════════════════════════════ -->
+<section class="chapter" id="ch5">
+  <div class="chapter-badge">Chapter 5</div>
+  <h2 class="chapter-title">编译的五个阶段</h2>
+  <div class="chapter-divider"></div>
+  <a class="source-link" href="https://vishalchovatiya.com/posts/gnu-build-system-automake-autoconf-libtool/" target="_blank">📖 GNU Build System: Automake, Autoconf, Libtool</a>
+  <a class="source-link" href="https://github.com/curl/curl/blob/master/GIT-INFO.md" target="_blank">📖 curl GIT-INFO.md 官方构建说明</a>
+
+  <p>
+    从 Git 克隆 curl 到最终安装，整个过程分为 <strong>5 个明确的阶段</strong>，每个阶段有清晰的输入和输出。
+    普通用户从发行 tarball 安装时，跳过阶段 1，直接从阶段 2 开始。
+  </p>
+
+  <div class="phase-list">
+
+    <!-- Phase 1 -->
+    <div class="phase-step">
+      <div class="phase-num">1</div>
+      <div class="phase-body">
+        <h4>Bootstrap 引导阶段 — <code>autoreconf -fi</code></h4>
+        <p><span class="tag tag-red">仅开发者/Git 克隆需要</span> <span class="tag tag-orange">需安装 Autotools</span></p>
+        <p>
+          <code>autoreconf</code> 是一个协调工具，按正确顺序调用以下所有工具：
+        </p>
+        <div class="table-wrap">
+          <table>
+            <thead><tr><th>工具</th><th>输入</th><th>输出</th><th>作用</th></tr></thead>
+            <tbody>
+              <tr><td><code>aclocal</code></td><td><code>configure.ac</code>, <code>m4/*.m4</code></td><td><code>aclocal.m4</code></td><td>收集第三方和自定义 M4 宏</td></tr>
+              <tr><td><code>libtoolize</code></td><td>—</td><td><code>ltmain.sh</code>, <code>m4/libtool.m4</code></td><td>添加 Libtool 支持文件</td></tr>
+              <tr><td><code>autoheader</code></td><td><code>configure.ac</code>, <code>aclocal.m4</code></td><td><code>config.h.in</code></td><td>生成 config.h 模板</td></tr>
+              <tr><td><code>automake --add-missing</code></td><td><code>Makefile.am</code>, <code>configure.ac</code></td><td><code>Makefile.in</code></td><td>生成 Makefile 模板</td></tr>
+              <tr><td><code>autoconf</code></td><td><code>configure.ac</code>, <code>aclocal.m4</code></td><td><code>configure</code></td><td>生成配置脚本</td></tr>
+            </tbody>
+          </table>
+        </div>
+        <pre><code><span class="cm"># curl 官方 GIT-INFO.md 指定的命令</span>
+autoreconf -fi
+<span class="cm"># -f: 强制重建所有文件（即使已存在）
+# -i: 安装缺失的辅助文件（install-sh 等）</span></code></pre>
+        <p><strong>输入：</strong><code>configure.ac</code>、<code>Makefile.am</code>（所有目录）、<code>m4/*.m4</code></p>
+        <p><strong>输出：</strong><code>configure</code>、<code>Makefile.in</code>（所有目录）、<code>config.h.in</code>、<code>aclocal.m4</code></p>
+      </div>
+    </div>
+
+    <!-- Phase 2 -->
+    <div class="phase-step">
+      <div class="phase-num">2</div>
+      <div class="phase-body">
+        <h4>配置阶段 — <code>./configure</code></h4>
+        <p><span class="tag tag-green">普通用户从此开始</span> <span class="tag tag-blue">无需 Autotools</span></p>
+        <p>
+          在用户机器上运行探测逻辑，检测编译器、库、头文件等环境特征，将结果填入模板文件中生成实际的构建文件。
+        </p>
+        <pre><code><span class="cm"># 基础配置</span>
+./configure --prefix=/usr/local --with-openssl
+
+<span class="cm"># curl 开发者常用配置（来自 GIT-INFO.md）</span>
+./configure --disable-shared --enable-debug --enable-maintainer-mode
+
+<span class="cm"># configure 完成时打印的摘要（简化示意）</span>
+<span class="cm"># curl version:    8.x.x
+# SSL:             OpenSSL
+# zlib:            enabled
+# Build libcurl:   Shared=yes, Static=no
+# Install prefix:  /usr/local</span></code></pre>
+        <p><strong>输入：</strong><code>configure</code>（脚本）、<code>Makefile.in</code>、<code>config.h.in</code>、用户参数（<code>--with-openssl</code> 等）、系统环境</p>
+        <p><strong>输出：</strong><code>Makefile</code>（所有目录）、<code>lib/curl_config.h</code>、<code>config.status</code>、<code>config.log</code>、<code>libcurl.pc</code>、<code>curl-config</code></p>
+
+        <div class="info-box">
+          configure 的工作原理：对每个检测项，编写一小段测试 C 代码，用探测到的编译器编译并链接，根据成败决定是否定义对应的宏（写入 config.h）或追加链接标志（写入 Makefile 的 LIBS 变量）。
+        </div>
+      </div>
+    </div>
+
+    <!-- Phase 3 -->
+    <div class="phase-step">
+      <div class="phase-num">3</div>
+      <div class="phase-body">
+        <h4>编译阶段 — <code>make</code></h4>
+        <p>读取 <code>Makefile</code>，调用编译器和链接器，将 C 源文件编译为目标文件（.o），再链接成库或可执行文件。</p>
+        <pre><code><span class="cm"># 单线程编译</span>
+make
+
+<span class="cm"># 并行编译（推荐，N 为 CPU 核数）</span>
+make -j$(nproc)
+
+<span class="cm"># 实际发生的事情（简化）：
+# [CC]  lib/url.o         ← 编译 lib/url.c
+# [CC]  lib/connect.o     ← 编译 lib/connect.c
+# [CCLD] lib/.libs/libcurl.so.4  ← 链接共享库
+# [CC]  src/tool_main.o   ← 编译 src/tool_main.c
+# [CCLD] src/curl         ← 链接可执行文件</span></code></pre>
+        <p><strong>输入：</strong><code>Makefile</code>、所有 <code>.c</code> 源文件、<code>lib/curl_config.h</code></p>
+        <p><strong>输出：</strong><code>lib/.libs/libcurl.so</code>（共享库）、<code>lib/.libs/libcurl.a</code>（静态库）、<code>src/curl</code>（可执行文件）</p>
+      </div>
+    </div>
+
+    <!-- Phase 4 -->
+    <div class="phase-step">
+      <div class="phase-num">4</div>
+      <div class="phase-body">
+        <h4>测试阶段 — <code>make check</code></h4>
+        <p>可选阶段。运行项目自带的测试套件，验证编译结果的正确性。</p>
+        <pre><code>make check
+<span class="cm"># 对于 curl：运行 tests/ 目录下的集成测试和单元测试</span></code></pre>
+        <p><strong>输入：</strong><code>Makefile</code>、编译好的二进制文件、测试脚本</p>
+        <p><strong>输出：</strong>测试通过/失败报告</p>
+      </div>
+    </div>
+
+    <!-- Phase 5 -->
+    <div class="phase-step">
+      <div class="phase-num">5</div>
+      <div class="phase-body">
+        <h4>安装阶段 — <code>make install</code></h4>
+        <p>将编译产物复制到 <code>--prefix</code> 指定的安装目录（默认 <code>/usr/local</code>）。</p>
+        <pre><code>sudo make install
+
+<span class="cm"># 安装内容：
+# /usr/local/bin/curl           ← 可执行文件
+# /usr/local/lib/libcurl.so.4   ← 共享库
+# /usr/local/include/curl/curl.h ← 头文件
+# /usr/local/lib/pkgconfig/libcurl.pc ← pkg-config 文件
+# /usr/local/bin/curl-config    ← 配置脚本</span>
+
+<span class="cm"># 也可以安装到临时目录（常用于打包）</span>
+make install DESTDIR=/tmp/staging</code></pre>
+        <p><strong>输入：</strong><code>Makefile</code>、编译产物、<code>--prefix</code> 配置</p>
+        <p><strong>输出：</strong>安装到目标系统上的文件</p>
+      </div>
+    </div>
+
+  </div>
+
+  <!-- 附加：make dist -->
+  <h3>附加：发行打包 — <code>make dist</code></h3>
+  <p>开发者使用此命令生成供用户下载的 tarball，其中包含预生成的 <code>configure</code> 和 <code>Makefile.in</code>，使用户无需安装 Autotools。</p>
+  <pre><code>make dist
+<span class="cm"># 生成 curl-8.x.x.tar.gz，包含：
+# configure（预生成）
+# Makefile.in（所有目录，预生成）
+# config.h.in（预生成）
+# 所有源码文件</span></code></pre>
+
+  <div class="fp-box">
+    <div class="fp-box-title">🔬 第一性原理</div>
+    <p>
+      <strong>为何分这五步？</strong>每一步都是"关注点分离"的体现：
+    </p>
+    <p>
+      1️⃣ Bootstrap = 生成探测工具；2️⃣ Configure = 探测当前环境；3️⃣ Make = 执行编译；4️⃣ Check = 验证正确性；5️⃣ Install = 部署到系统。
+    </p>
+    <p>
+      每步都是幂等的、可重复的。用户可以在任意步骤停下来检查中间产物，也可以用不同参数重新运行 configure 而无需重新 bootstrap。
+      这种"流水线"设计使得调试、打包、交叉编译等复杂场景都变得可控。
+    </p>
+  </div>
+</section>
+
+<!-- ══════════════════════════════════════════════════════════ -->
+<!-- Chapter 6 -->
+<!-- ══════════════════════════════════════════════════════════ -->
+<section class="chapter" id="ch6">
+  <div class="chapter-badge">Chapter 6</div>
+  <h2 class="chapter-title">文件流动全图</h2>
+  <div class="chapter-divider"></div>
+  <a class="source-link" href="https://www.gnu.org/software/autoconf/manual/autoconf-2.67/html_node/Making-configure-Scripts.html" target="_blank">📖 GNU Autoconf — 官方文件流图</a>
+
+  <p>
+    下图综合 GNU Autoconf 手册的官方流程图，展示了从源文件到最终安装的完整文件流动关系。
+    实线箭头表示"生成/输入→输出"，蓝色节点为开发者维护文件，紫色为工具生成文件，绿色为最终产物。
+  </p>
+
+  <!-- SVG: Full flow diagram -->
+  <div class="svg-wrap" style="overflow-x:auto">
+    <svg width="700" height="580" viewBox="0 0 700 580" xmlns="http://www.w3.org/2000/svg" style="min-width:560px">
+      <defs>
+        <marker id="arb" markerWidth="8" markerHeight="6" refX="7" refY="3" orient="auto">
+          <polygon points="0 0, 8 3, 0 6" fill="#4f9eff"/>
+        </marker>
+        <marker id="arp" markerWidth="8" markerHeight="6" refX="7" refY="3" orient="auto">
+          <polygon points="0 0, 8 3, 0 6" fill="#7c5cfc"/>
+        </marker>
+        <marker id="arg" markerWidth="8" markerHeight="6" refX="7" refY="3" orient="auto">
+          <polygon points="0 0, 8 3, 0 6" fill="#36c890"/>
+        </marker>
+        <marker id="aro" markerWidth="8" markerHeight="6" refX="7" refY="3" orient="auto">
+          <polygon points="0 0, 8 3, 0 6" fill="#fb923c"/>
+        </marker>
+      </defs>
+
+      <!-- ====== LEGEND ====== -->
+      <rect x="10" y="10" width="12" height="12" rx="2" fill="none" stroke="#4f9eff" stroke-width="1.5"/>
+      <text x="27" y="21" font-size="10" fill="#7a8aa0">开发者维护</text>
+      <rect x="110" y="10" width="12" height="12" rx="2" fill="none" stroke="#7c5cfc" stroke-width="1.5"/>
+      <text x="127" y="21" font-size="10" fill="#7a8aa0">工具生成（中间）</text>
+      <rect x="250" y="10" width="12" height="12" rx="2" fill="none" stroke="#36c890" stroke-width="1.5"/>
+      <text x="267" y="21" font-size="10" fill="#7a8aa0">最终产物</text>
+      <rect x="340" y="10" width="12" height="12" rx="2" fill="none" stroke="#fb923c" stroke-width="1.5" stroke-dasharray="4,2"/>
+      <text x="357" y="21" font-size="10" fill="#7a8aa0">工具程序</text>
+
+      <!-- ====== PHASE LABELS ====== -->
+      <text x="350" y="80" text-anchor="middle" font-size="9" fill="#637182">── BOOTSTRAP 阶段 ──</text>
+      <text x="350" y="260" text-anchor="middle" font-size="9" fill="#637182">── CONFIGURE 阶段 ──</text>
+      <text x="350" y="440" text-anchor="middle" font-size="9" fill="#637182">── BUILD / INSTALL 阶段 ──</text>
+
+      <!-- ====== ROW 1: Developer Sources ====== -->
+      <!-- configure.ac -->
+      <rect x="10" y="88" width="130" height="32" rx="6" fill="#1a2030" stroke="#4f9eff" stroke-width="1.5"/>
+      <text x="75" y="109" text-anchor="middle" font-size="12" fill="#4f9eff">configure.ac</text>
+
+      <!-- Makefile.am -->
+      <rect x="160" y="88" width="130" height="32" rx="6" fill="#1a2030" stroke="#4f9eff" stroke-width="1.5"/>
+      <text x="225" y="109" text-anchor="middle" font-size="12" fill="#4f9eff">Makefile.am</text>
+
+      <!-- m4/*.m4 -->
+      <rect x="310" y="88" width="110" height="32" rx="6" fill="#1a2030" stroke="#4f9eff" stroke-width="1.5"/>
+      <text x="365" y="109" text-anchor="middle" font-size="12" fill="#4f9eff">m4/*.m4</text>
+
+      <!-- Source .c/.h -->
+      <rect x="440" y="88" width="120" height="32" rx="6" fill="#1a2030" stroke="#4f9eff" stroke-width="1.5"/>
+      <text x="500" y="109" text-anchor="middle" font-size="12" fill="#4f9eff">*.c / *.h</text>
+
+      <!-- ====== ROW 2: Autotools ====== -->
+      <!-- aclocal -->
+      <rect x="10" y="155" width="90" height="28" rx="5" fill="#0d1420" stroke="#fb923c" stroke-width="1.5" stroke-dasharray="4,2"/>
+      <text x="55" y="174" text-anchor="middle" font-size="11" fill="#fb923c">aclocal</text>
+
+      <!-- autoheader -->
+      <rect x="115" y="155" width="100" height="28" rx="5" fill="#0d1420" stroke="#fb923c" stroke-width="1.5" stroke-dasharray="4,2"/>
+      <text x="165" y="174" text-anchor="middle" font-size="11" fill="#fb923c">autoheader</text>
+
+      <!-- automake -->
+      <rect x="232" y="155" width="96" height="28" rx="5" fill="#0d1420" stroke="#fb923c" stroke-width="1.5" stroke-dasharray="4,2"/>
+      <text x="280" y="174" text-anchor="middle" font-size="11" fill="#fb923c">automake</text>
+
+      <!-- autoconf -->
+      <rect x="344" y="155" width="96" height="28" rx="5" fill="#0d1420" stroke="#fb923c" stroke-width="1.5" stroke-dasharray="4,2"/>
+      <text x="392" y="174" text-anchor="middle" font-size="11" fill="#fb923c">autoconf</text>
+
+      <!-- autoreconf bracket -->
+      <rect x="5" y="148" width="445" height="42" rx="6" fill="none" stroke="#fb923c" stroke-width="0.8" stroke-dasharray="2,4" opacity="0.5"/>
+      <text x="454" y="172" font-size="9" fill="#fb923c">autoreconf -fi</text>
+
+      <!-- Arrows: configure.ac → aclocal/autoheader/autoconf -->
+      <line x1="75" y1="120" x2="55" y2="155" stroke="#4f9eff" stroke-width="1.2" marker-end="url(#arb)"/>
+      <line x1="75" y1="120" x2="165" y2="155" stroke="#4f9eff" stroke-width="1.2" marker-end="url(#arb)"/>
+      <line x1="75" y1="120" x2="392" y2="155" stroke="#4f9eff" stroke-width="1.2" marker-end="url(#arb)"/>
+      <!-- Makefile.am → automake -->
+      <line x1="225" y1="120" x2="280" y2="155" stroke="#4f9eff" stroke-width="1.2" marker-end="url(#arb)"/>
+      <!-- m4/*.m4 → aclocal -->
+      <line x1="365" y1="120" x2="90" y2="163" stroke="#4f9eff" stroke-width="1.2" marker-end="url(#arb)"/>
+
+      <!-- ====== ROW 3: Intermediate files (bootstrap output) ====== -->
+      <!-- aclocal.m4 -->
+      <rect x="10" y="215" width="95" height="28" rx="5" fill="#1a2030" stroke="#7c5cfc" stroke-width="1.5"/>
+      <text x="57" y="234" text-anchor="middle" font-size="11" fill="#7c5cfc">aclocal.m4</text>
+
+      <!-- config.h.in -->
+      <rect x="118" y="215" width="95" height="28" rx="5" fill="#1a2030" stroke="#7c5cfc" stroke-width="1.5"/>
+      <text x="165" y="234" text-anchor="middle" font-size="11" fill="#7c5cfc">config.h.in</text>
+
+      <!-- Makefile.in -->
+      <rect x="227" y="215" width="95" height="28" rx="5" fill="#1a2030" stroke="#7c5cfc" stroke-width="1.5"/>
+      <text x="274" y="234" text-anchor="middle" font-size="11" fill="#7c5cfc">Makefile.in</text>
+
+      <!-- configure -->
+      <rect x="336" y="215" width="95" height="28" rx="5" fill="#1a2030" stroke="#7c5cfc" stroke-width="1.5"/>
+      <text x="383" y="234" text-anchor="middle" font-size="11" fill="#7c5cfc">configure</text>
+
+      <!-- Arrows: tools → outputs -->
+      <line x1="55" y1="183" x2="57" y2="215" stroke="#7c5cfc" stroke-width="1.2" marker-end="url(#arp)"/>
+      <line x1="165" y1="183" x2="165" y2="215" stroke="#7c5cfc" stroke-width="1.2" marker-end="url(#arp)"/>
+      <line x1="280" y1="183" x2="274" y2="215" stroke="#7c5cfc" stroke-width="1.2" marker-end="url(#arp)"/>
+      <line x1="392" y1="183" x2="383" y2="215" stroke="#7c5cfc" stroke-width="1.2" marker-end="url(#arp)"/>
+
+      <!-- ====== ROW 4: configure tool ====== -->
+      <!-- configure (tool box) -->
+      <rect x="270" y="295" width="160" height="36" rx="7" fill="#0d1420" stroke="#fb923c" stroke-width="1.5" stroke-dasharray="4,2"/>
+      <text x="350" y="318" text-anchor="middle" font-size="12" fill="#fb923c">./configure [--options]</text>
+
+      <!-- Input arrows to configure -->
+      <line x1="383" y1="243" x2="383" y2="280" stroke="#7c5cfc" stroke-width="1.5"/>
+      <line x1="383" y1="280" x2="380" y2="295" stroke="#7c5cfc" stroke-width="1.5" marker-end="url(#arp)"/>
+      <line x1="274" y1="243" x2="310" y2="295" stroke="#7c5cfc" stroke-width="1.2" marker-end="url(#arp)"/>
+      <line x1="165" y1="243" x2="300" y2="295" stroke="#7c5cfc" stroke-width="1.2" marker-end="url(#arp)"/>
+
+      <!-- User env input -->
+      <text x="500" y="312" font-size="10" fill="#637182">系统环境探测</text>
+      <line x1="497" y1="313" x2="432" y2="313" stroke="#637182" stroke-width="1" stroke-dasharray="3,2" marker-end="url(#aro)"/>
+
+      <!-- ====== ROW 5: configure outputs ====== -->
+      <!-- Makefile -->
+      <rect x="30" y="368" width="100" height="28" rx="5" fill="#1a2030" stroke="#36c890" stroke-width="1.5"/>
+      <text x="80" y="387" text-anchor="middle" font-size="11" fill="#36c890">Makefile</text>
+
+      <!-- config.h -->
+      <rect x="148" y="368" width="100" height="28" rx="5" fill="#1a2030" stroke="#36c890" stroke-width="1.5"/>
+      <text x="198" y="387" text-anchor="middle" font-size="11" fill="#36c890">curl_config.h</text>
+
+      <!-- config.status -->
+      <rect x="266" y="368" width="108" height="28" rx="5" fill="#1a2030" stroke="#7c5cfc" stroke-width="1"/>
+      <text x="320" y="387" text-anchor="middle" font-size="11" fill="#7c5cfc">config.status</text>
+
+      <!-- libcurl.pc -->
+      <rect x="390" y="368" width="100" height="28" rx="5" fill="#1a2030" stroke="#36c890" stroke-width="1.5"/>
+      <text x="440" y="387" text-anchor="middle" font-size="11" fill="#36c890">libcurl.pc</text>
+
+      <!-- config.log -->
+      <rect x="504" y="368" width="90" height="28" rx="5" fill="#0d1420" stroke="#637182" stroke-width="1"/>
+      <text x="549" y="387" text-anchor="middle" font-size="11" fill="#637182">config.log</text>
+
+      <!-- Arrows: configure → outputs -->
+      <line x1="320" y1="331" x2="80" y2="368" stroke="#36c890" stroke-width="1.2" marker-end="url(#arg)"/>
+      <line x1="330" y1="331" x2="198" y2="368" stroke="#36c890" stroke-width="1.2" marker-end="url(#arg)"/>
+      <line x1="340" y1="331" x2="320" y2="368" stroke="#7c5cfc" stroke-width="1.2" marker-end="url(#arp)"/>
+      <line x1="360" y1="331" x2="440" y2="368" stroke="#36c890" stroke-width="1.2" marker-end="url(#arg)"/>
+      <line x1="380" y1="331" x2="549" y2="368" stroke="#637182" stroke-width="1" stroke-dasharray="3,2" marker-end="url(#aro)"/>
+
+      <!-- ====== ROW 6: make ====== -->
+      <rect x="270" y="435" width="100" height="28" rx="5" fill="#0d1420" stroke="#fb923c" stroke-width="1.5" stroke-dasharray="4,2"/>
+      <text x="320" y="454" text-anchor="middle" font-size="11" fill="#fb923c">make</text>
+
+      <!-- *.c → make -->
+      <line x1="500" y1="120" x2="500" y2="430" stroke="#4f9eff" stroke-width="1" stroke-dasharray="4,3"/>
+      <line x1="500" y1="430" x2="372" y2="435" stroke="#4f9eff" stroke-width="1" stroke-dasharray="4,3" marker-end="url(#arb)"/>
+      <!-- Makefile → make -->
+      <line x1="80" y1="396" x2="80" y2="449" stroke="#36c890" stroke-width="1.2"/>
+      <line x1="80" y1="449" x2="270" y2="449" stroke="#36c890" stroke-width="1.2" marker-end="url(#arg)"/>
+      <!-- config.h → make -->
+      <line x1="198" y1="396" x2="198" y2="449" stroke="#36c890" stroke-width="1.2"/>
+      <line x1="198" y1="449" x2="270" y2="449" stroke="#36c890" stroke-width="1.2"/>
+
+      <!-- ====== ROW 7: Final outputs ====== -->
+      <!-- libcurl.so -->
+      <rect x="80" y="498" width="120" height="28" rx="5" fill="#1a2030" stroke="#36c890" stroke-width="2"/>
+      <text x="140" y="517" text-anchor="middle" font-size="11" fill="#36c890" font-weight="bold">libcurl.so / .a</text>
+
+      <!-- curl binary -->
+      <rect x="230" y="498" width="80" height="28" rx="5" fill="#1a2030" stroke="#36c890" stroke-width="2"/>
+      <text x="270" y="517" text-anchor="middle" font-size="11" fill="#36c890" font-weight="bold">curl</text>
+
+      <!-- make install -->
+      <rect x="360" y="498" width="100" height="28" rx="5" fill="#0d1420" stroke="#fb923c" stroke-width="1.5" stroke-dasharray="4,2"/>
+      <text x="410" y="517" text-anchor="middle" font-size="11" fill="#fb923c">make install</text>
+
+      <!-- Installed -->
+      <rect x="490" y="498" width="120" height="28" rx="5" fill="#1a2030" stroke="#36c890" stroke-width="2"/>
+      <text x="550" y="517" text-anchor="middle" font-size="11" fill="#36c890" font-weight="bold">/usr/local/...</text>
+
+      <!-- Arrows -->
+      <line x1="320" y1="463" x2="140" y2="498" stroke="#36c890" stroke-width="1.5" marker-end="url(#arg)"/>
+      <line x1="320" y1="463" x2="270" y2="498" stroke="#36c890" stroke-width="1.5" marker-end="url(#arg)"/>
+      <line x1="270" y1="526" x2="358" y2="512" stroke="#36c890" stroke-width="1.2" marker-end="url(#arg)"/>
+      <line x1="140" y1="526" x2="358" y2="512" stroke="#36c890" stroke-width="1.2" marker-end="url(#arg)"/>
+      <line x1="460" y1="512" x2="490" y2="512" stroke="#36c890" stroke-width="1.5" marker-end="url(#arg)"/>
+
+    </svg>
+  </div>
+
+  <h3>两种视角的文件集合对比</h3>
+  <div class="table-wrap">
+    <table>
+      <thead>
+        <tr><th>文件</th><th>Git 仓库</th><th>发行 tarball</th><th>构建目录</th></tr>
+      </thead>
+      <tbody>
+        <tr><td><code>configure.ac</code></td><td>✅</td><td>✅</td><td>✅（源）</td></tr>
+        <tr><td><code>Makefile.am</code></td><td>✅</td><td>✅</td><td>✅（源）</td></tr>
+        <tr><td><code>m4/*.m4</code></td><td>✅</td><td>✅</td><td>✅（源）</td></tr>
+        <tr><td><code>configure</code></td><td>❌</td><td>✅</td><td>✅（来自 tarball）</td></tr>
+        <tr><td><code>Makefile.in</code></td><td>❌</td><td>✅</td><td>✅（来自 tarball）</td></tr>
+        <tr><td><code>config.h.in</code></td><td>❌</td><td>✅</td><td>✅（来自 tarball）</td></tr>
+        <tr><td><code>aclocal.m4</code></td><td>❌</td><td>✅</td><td>✅（来自 tarball）</td></tr>
+        <tr><td><code>Makefile</code></td><td>❌</td><td>❌</td><td>✅（configure 生成）</td></tr>
+        <tr><td><code>config.h</code></td><td>❌</td><td>❌</td><td>✅（configure 生成）</td></tr>
+        <tr><td><code>config.log</code></td><td>❌</td><td>❌</td><td>✅（configure 生成）</td></tr>
+        <tr><td><code>libcurl.so</code></td><td>❌</td><td>❌</td><td>✅（make 生成）</td></tr>
+      </tbody>
+    </table>
+  </div>
+
+  <div class="fp-box">
+    <div class="fp-box-title">🔬 第一性原理</div>
+    <p>
+      整个 Autotools 流程可以用<strong>"声明 → 编译 → 运行"三层模型</strong>来理解：
+    </p>
+    <p>
+      <strong>第一层（声明）：</strong><code>configure.ac</code> + <code>Makefile.am</code> 是开发者对构建需求的<em>声明式描述</em>。
+    </p>
+    <p>
+      <strong>第二层（编译）：</strong>Autotools 工具链将这些声明"编译"成可执行的探测脚本（<code>configure</code>）和 Makefile 模板（<code>Makefile.in</code>）。
+    </p>
+    <p>
+      <strong>第三层（运行）：</strong>在用户机器上"运行"这些脚本（<code>./configure && make</code>），探测环境并构建最终产物。
+    </p>
+    <p>
+      这与高级语言→字节码→执行的三层结构同构。分层的好处是：用户只需要运行第三层，不需要安装第二层工具（Autotools）。
+    </p>
+  </div>
+</section>
+
+<!-- ══════════════════════════════════════════════════════════ -->
+<!-- Chapter 7 -->
+<!-- ══════════════════════════════════════════════════════════ -->
+<section class="chapter" id="ch7">
+  <div class="chapter-badge">Chapter 7</div>
+  <h2 class="chapter-title">常用宏速查表</h2>
+  <div class="chapter-divider"></div>
+  <a class="source-link" href="https://www.gnu.org/software/autoconf/manual/autoconf.html" target="_blank">📖 GNU Autoconf Manual 2.73 — Macro Index</a>
+  <a class="source-link" href="https://www.gnu.org/software/automake/manual/html_node/Default-_005fSOURCES.html" target="_blank">📖 GNU Automake — Variables Reference</a>
+
+  <h3>Autoconf 核心宏（configure.ac 中使用）</h3>
+  <div class="table-wrap">
+    <table>
+      <thead>
+        <tr><th>宏</th><th>类型</th><th>功能</th><th>典型用法</th></tr>
+      </thead>
+      <tbody>
+        <tr><td><code>AC_INIT</code></td><td><span class="tag tag-blue">初始化</span></td><td>初始化 Autoconf，设置包名、版本</td><td><code>AC_INIT([curl], [8.0])</code></td></tr>
+        <tr><td><code>AC_PREREQ</code></td><td><span class="tag tag-blue">初始化</span></td><td>要求最低 Autoconf 版本</td><td><code>AC_PREREQ([2.69])</code></td></tr>
+        <tr><td><code>AC_CONFIG_SRCDIR</code></td><td><span class="tag tag-blue">初始化</span></td><td>验证源码目录</td><td><code>AC_CONFIG_SRCDIR([src/main.c])</code></td></tr>
+        <tr><td><code>AC_CONFIG_HEADERS</code></td><td><span class="tag tag-purple">输出</span></td><td>声明要生成的 config.h</td><td><code>AC_CONFIG_HEADERS([config.h])</code></td></tr>
+        <tr><td><code>AC_CONFIG_MACRO_DIR</code></td><td><span class="tag tag-blue">初始化</span></td><td>指定自定义 M4 宏目录</td><td><code>AC_CONFIG_MACRO_DIR([m4])</code></td></tr>
+        <tr><td><code>AC_PROG_CC</code></td><td><span class="tag tag-orange">检测</span></td><td>检测 C 编译器，设置 CC</td><td><code>AC_PROG_CC</code></td></tr>
+        <tr><td><code>AC_PROG_CXX</code></td><td><span class="tag tag-orange">检测</span></td><td>检测 C++ 编译器，设置 CXX</td><td><code>AC_PROG_CXX</code></td></tr>
+        <tr><td><code>AC_CHECK_LIB</code></td><td><span class="tag tag-orange">检测</span></td><td>尝试链接库，检测函数是否存在</td><td><code>AC_CHECK_LIB([z], [gzopen])</code></td></tr>
+        <tr><td><code>AC_CHECK_HEADERS</code></td><td><span class="tag tag-orange">检测</span></td><td>检测头文件是否存在</td><td><code>AC_CHECK_HEADERS([openssl/ssl.h])</code></td></tr>
+        <tr><td><code>AC_CHECK_FUNC</code></td><td><span class="tag tag-orange">检测</span></td><td>检测函数是否存在</td><td><code>AC_CHECK_FUNC([getaddrinfo])</code></td></tr>
+        <tr><td><code>AC_TYPE_SIZE_T</code></td><td><span class="tag tag-orange">检测</span></td><td>检测 size_t 类型</td><td><code>AC_TYPE_SIZE_T</code></td></tr>
+        <tr><td><code>AC_SUBST</code></td><td><span class="tag tag-green">替换</span></td><td>将变量导出到 Makefile.in</td><td><code>AC_SUBST([LIBS])</code></td></tr>
+        <tr><td><code>AC_DEFINE</code></td><td><span class="tag tag-green">替换</span></td><td>在 config.h 中定义宏</td><td><code>AC_DEFINE([HAVE_SSL], [1], [...])</code></td></tr>
+        <tr><td><code>AC_CONFIG_FILES</code></td><td><span class="tag tag-purple">输出</span></td><td>声明输出文件列表</td><td><code>AC_CONFIG_FILES([Makefile src/Makefile])</code></td></tr>
+        <tr><td><code>AC_OUTPUT</code></td><td><span class="tag tag-purple">输出</span></td><td>触发输出，必须是最后调用</td><td><code>AC_OUTPUT</code></td></tr>
+        <tr><td><code>AC_MSG_NOTICE</code></td><td><span class="tag tag-blue">消息</span></td><td>打印消息（不终止）</td><td><code>AC_MSG_NOTICE([SSL enabled])</code></td></tr>
+        <tr><td><code>AC_MSG_ERROR</code></td><td><span class="tag tag-red">消息</span></td><td>打印错误并终止 configure</td><td><code>AC_MSG_ERROR([OpenSSL not found])</code></td></tr>
+      </tbody>
+    </table>
+  </div>
+
+  <h3>Automake 关键变量（Makefile.am 中使用）</h3>
+  <div class="table-wrap">
+    <table>
+      <thead>
+        <tr><th>变量</th><th>含义</th><th>示例</th></tr>
+      </thead>
+      <tbody>
+        <tr><td><code>SUBDIRS</code></td><td>递归构建子目录（按序）</td><td><code>SUBDIRS = lib src tests</code></td></tr>
+        <tr><td><code>bin_PROGRAMS</code></td><td>安装到 bindir 的程序</td><td><code>bin_PROGRAMS = curl</code></td></tr>
+        <tr><td><code>lib_LTLIBRARIES</code></td><td>安装到 libdir 的 Libtool 库</td><td><code>lib_LTLIBRARIES = libcurl.la</code></td></tr>
+        <tr><td><code>noinst_LIBRARIES</code></td><td>仅内部使用的静态库</td><td><code>noinst_LIBRARIES = libinternal.a</code></td></tr>
+        <tr><td><code>include_HEADERS</code></td><td>安装到 includedir 的头文件</td><td><code>include_HEADERS = curl.h</code></td></tr>
+        <tr><td><code>pkgconfig_DATA</code></td><td>pkg-config 数据文件</td><td><code>pkgconfig_DATA = libcurl.pc</code></td></tr>
+        <tr><td><code>prog_SOURCES</code></td><td>程序/库的源文件列表</td><td><code>curl_SOURCES = main.c tool.c</code></td></tr>
+        <tr><td><code>prog_LDADD</code></td><td>程序额外链接的库</td><td><code>curl_LDADD = ../lib/libcurl.la</code></td></tr>
+        <tr><td><code>prog_CFLAGS</code></td><td>程序特定编译标志</td><td><code>curl_CFLAGS = -Wall</code></td></tr>
+        <tr><td><code>prog_LDFLAGS</code></td><td>链接标志</td><td><code>libcurl_la_LDFLAGS = -version-info 4:0:0</code></td></tr>
+        <tr><td><code>EXTRA_DIST</code></td><td>额外分发的文件</td><td><code>EXTRA_DIST = README COPYING</code></td></tr>
+        <tr><td><code>CLEANFILES</code></td><td>make clean 时额外删除的文件</td><td><code>CLEANFILES = *.log</code></td></tr>
+        <tr><td><code>AM_CFLAGS</code></td><td>所有目标的全局编译标志</td><td><code>AM_CFLAGS = -g -O2</code></td></tr>
+        <tr><td><code>dist_doc_DATA</code></td><td>分发并安装到 docdir 的文档</td><td><code>dist_doc_DATA = README</code></td></tr>
+        <tr><td><code>ACLOCAL_AMFLAGS</code></td><td>传给 aclocal 的额外标志</td><td><code>ACLOCAL_AMFLAGS = -I m4</code></td></tr>
+      </tbody>
+    </table>
+  </div>
+
+  <h3>常用 configure 选项</h3>
+  <div class="table-wrap">
+    <table>
+      <thead>
+        <tr><th>选项</th><th>含义</th></tr>
+      </thead>
+      <tbody>
+        <tr><td><code>--prefix=DIR</code></td><td>安装根目录（默认 /usr/local）</td></tr>
+        <tr><td><code>--enable-FEATURE</code></td><td>启用某个可选特性</td></tr>
+        <tr><td><code>--disable-FEATURE</code></td><td>禁用某个可选特性</td></tr>
+        <tr><td><code>--with-PACKAGE</code></td><td>指定使用某个外部包/库</td></tr>
+        <tr><td><code>--without-PACKAGE</code></td><td>不使用某个外部包/库</td></tr>
+        <tr><td><code>--host=TRIPLET</code></td><td>交叉编译目标平台三元组</td></tr>
+        <tr><td><code>CC=clang</code></td><td>指定 C 编译器</td></tr>
+        <tr><td><code>CFLAGS="-O0 -g"</code></td><td>指定编译标志</td></tr>
+        <tr><td><code>--config-cache (-C)</code></td><td>缓存检测结果（加速重复运行）</td></tr>
+        <tr><td><code>--srcdir=DIR</code></td><td>源码在不同目录（VPATH build）</td></tr>
+      </tbody>
+    </table>
+  </div>
+
+  <div class="fp-box">
+    <div class="fp-box-title">🔬 第一性原理</div>
+    <p>
+      <strong>宏命名约定的本质：</strong>Autoconf 宏用前缀区分来源（<code>AC_</code>=Autoconf、<code>AM_</code>=Automake、<code>LT_</code>=Libtool）；Automake 变量用"目录前缀+下划线+主类型"的组合实现了一套<em>声明式的安装路径语言</em>。
+    </p>
+    <p>
+      这种命名约定使得构建系统自文档化：看到 <code>bin_PROGRAMS = curl</code>，就能立刻知道"curl 这个程序编译后安装到 $bindir"，无需查阅额外的安装脚本。
+      规范化命名（特殊字符→下划线）则保证了变量名的唯一性和可预测性，是整个系统自动化的基础。
+    </p>
+  </div>
+
+  <!-- 参考资料 -->
+  <h3 style="margin-top:36px">原文参考来源</h3>
+  <div class="card">
+    <ul style="list-style:none;line-height:2.2">
+      <li>📖 <a href="https://www.gnu.org/software/autoconf/manual/autoconf.html" target="_blank">GNU Autoconf Manual 2.73 (2026)</a></li>
+      <li>📖 <a href="https://www.gnu.org/software/automake/manual/html_node/amhello_0027s-Makefile_002eam-Setup-Explained.html" target="_blank">GNU Automake — Makefile.am Setup Explained</a></li>
+      <li>📖 <a href="https://www.gnu.org/software/autoconf/manual/autoconf-2.67/html_node/Making-configure-Scripts.html" target="_blank">GNU Autoconf — Making configure Scripts（文件流程图原版）</a></li>
+      <li>📖 <a href="https://github.com/curl/curl/blob/master/GIT-INFO.md" target="_blank">curl 官方仓库 GIT-INFO.md（构建指南）</a></li>
+      <li>📖 <a href="https://opensource.apple.com/source/curl/curl-78.90.1/curl/configure.ac.auto.html" target="_blank">curl configure.ac 实际源码（Apple OpenSource）</a></li>
+      <li>📖 <a href="https://opensource.com/article/19/7/introduction-gnu-autotools" target="_blank">Introduction to GNU Autotools (Red Hat / opensource.com)</a></li>
+      <li>📖 <a href="https://www.gnu.org/software/automake/manual/html_node/Default-_005fSOURCES.html" target="_blank">GNU Automake — Default _SOURCES Variables</a></li>
+    </ul>
+  </div>
+</section>
+
+</div><!-- #content -->
+</main>
+
+<footer id="footer">
+  <p>基于 GNU Autoconf Manual 2.73 (2026)、GNU Automake Manual、curl 官方仓库文档整理 · 内容严格来源于官方权威文档</p>
+</footer>
+
+<script>
+(function() {
+  /* ── Progress bar ── */
+  const progressBar = document.getElementById('progress-bar');
+  function updateProgress() {
+    const scrollTop = window.scrollY || document.documentElement.scrollTop;
+    const docHeight = document.documentElement.scrollHeight - window.innerHeight;
+    const pct = docHeight > 0 ? (scrollTop / docHeight) * 100 : 0;
+    progressBar.style.width = pct + '%';
+  }
+  window.addEventListener('scroll', updateProgress, { passive: true });
+
+  /* ── Sidebar nav + active tracking ── */
+  const navLinks = document.querySelectorAll('.nav-link[data-target]');
+  const chapters = document.querySelectorAll('.chapter');
+  const chapterIds = Array.from(chapters).map(c => c.id);
+
+  function scrollToChapter(id) {
+    const el = document.getElementById(id);
+    if (el) el.scrollIntoView({ behavior: 'smooth' });
+  }
+
+  navLinks.forEach(link => {
+    link.addEventListener('click', () => {
+      scrollToChapter(link.dataset.target);
+      if (window.innerWidth <= 768) closeSidebar();
+    });
+  });
+
+  function updateActiveNav() {
+    let current = chapterIds[0];
+    const offset = 80;
+    chapters.forEach(ch => {
+      const rect = ch.getBoundingClientRect();
+      if (rect.top <= offset) current = ch.id;
+    });
+    navLinks.forEach(link => {
+      link.classList.toggle('active', link.dataset.target === current);
+    });
+    const idx = chapterIds.indexOf(current);
+    document.getElementById('chapter-indicator').textContent = `${idx + 1} / ${chapterIds.length}`;
+  }
+
+  window.addEventListener('scroll', updateActiveNav, { passive: true });
+  updateActiveNav();
+
+  /* ── Keyboard chapter nav ── */
+  function getCurrentIdx() {
+    const indicator = document.getElementById('chapter-indicator');
+    const parts = indicator.textContent.split('/');
+    return parseInt(parts[0].trim(), 10) - 1;
+  }
+
+  document.getElementById('btn-prev').addEventListener('click', () => {
+    const idx = getCurrentIdx();
+    if (idx > 0) scrollToChapter(chapterIds[idx - 1]);
+  });
+
+  document.getElementById('btn-next').addEventListener('click', () => {
+    const idx = getCurrentIdx();
+    if (idx < chapterIds.length - 1) scrollToChapter(chapterIds[idx + 1]);
+  });
+
+  document.addEventListener('keydown', e => {
+    if (e.target.tagName === 'INPUT' || e.target.tagName === 'TEXTAREA') return;
+    if (e.key === 'ArrowRight' || e.key === 'ArrowDown') {
+      e.preventDefault();
+      const idx = getCurrentIdx();
+      if (idx < chapterIds.length - 1) scrollToChapter(chapterIds[idx + 1]);
+    } else if (e.key === 'ArrowLeft' || e.key === 'ArrowUp') {
+      e.preventDefault();
+      const idx = getCurrentIdx();
+      if (idx > 0) scrollToChapter(chapterIds[idx - 1]);
+    }
+  });
+
+  /* ── Mobile hamburger ── */
+  const hamburger = document.getElementById('hamburger');
+  const sidebar = document.getElementById('sidebar');
+  const overlay = document.getElementById('sidebar-overlay');
+
+  function openSidebar() {
+    sidebar.classList.add('open');
+    hamburger.classList.add('open');
+    overlay.classList.add('visible');
+    document.body.style.overflow = 'hidden';
+  }
+  function closeSidebar() {
+    sidebar.classList.remove('open');
+    hamburger.classList.remove('open');
+    overlay.classList.remove('visible');
+    document.body.style.overflow = '';
+  }
+
+  hamburger.addEventListener('click', () => {
+    sidebar.classList.contains('open') ? closeSidebar() : openSidebar();
+  });
+  overlay.addEventListener('click', closeSidebar);
+
+  /* ── Initial progress ── */
+  updateProgress();
+})();
+</script>
+</body>
+</html>

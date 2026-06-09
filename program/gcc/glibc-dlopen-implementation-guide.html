@@ -1,0 +1,2084 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>glibc dlopen 接口实现原理与使用场景</title>
+<style>
+  :root {
+    --bg: #0f1117;
+    --sidebar-bg: #161b22;
+    --sidebar-w: 280px;
+    --accent: #58a6ff;
+    --accent2: #3fb950;
+    --accent3: #f78166;
+    --accent4: #d2a8ff;
+    --text: #c9d1d9;
+    --text-dim: #8b949e;
+    --border: #30363d;
+    --code-bg: #161b22;
+    --card-bg: #161b22;
+    --heading: #e6edf3;
+    --highlight: #1f6feb;
+    --tag-bg: #1f2937;
+    --progress-h: 3px;
+    --top-bar-h: 48px;
+  }
+
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+
+  html { scroll-behavior: smooth; }
+
+  body {
+    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
+    background: var(--bg);
+    color: var(--text);
+    line-height: 1.75;
+    overflow-x: hidden;
+  }
+
+  /* ===== PROGRESS BAR ===== */
+  #progress-bar {
+    position: fixed;
+    top: 0; left: 0;
+    height: var(--progress-h);
+    background: linear-gradient(90deg, var(--accent), var(--accent2));
+    width: 0%;
+    z-index: 1000;
+    transition: width 0.1s ease;
+  }
+
+  /* ===== TOP BAR ===== */
+  #topbar {
+    position: fixed;
+    top: var(--progress-h);
+    left: 0; right: 0;
+    height: var(--top-bar-h);
+    background: rgba(15,17,23,0.92);
+    backdrop-filter: blur(12px);
+    border-bottom: 1px solid var(--border);
+    display: flex;
+    align-items: center;
+    padding: 0 16px;
+    z-index: 900;
+    gap: 12px;
+  }
+
+  #hamburger {
+    display: none;
+    flex-direction: column;
+    gap: 5px;
+    cursor: pointer;
+    padding: 6px;
+    border-radius: 6px;
+    background: transparent;
+    border: none;
+  }
+  #hamburger span {
+    display: block;
+    width: 22px;
+    height: 2px;
+    background: var(--text);
+    border-radius: 2px;
+    transition: all 0.3s;
+  }
+  #hamburger.open span:nth-child(1) { transform: rotate(45deg) translate(5px,5px); }
+  #hamburger.open span:nth-child(2) { opacity: 0; }
+  #hamburger.open span:nth-child(3) { transform: rotate(-45deg) translate(5px,-5px); }
+
+  #topbar-title {
+    font-size: 14px;
+    font-weight: 600;
+    color: var(--heading);
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+  }
+
+  .topbar-chapter {
+    font-size: 12px;
+    color: var(--text-dim);
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+  }
+
+  #nav-arrows {
+    margin-left: auto;
+    display: flex;
+    gap: 8px;
+  }
+
+  .nav-btn {
+    background: var(--card-bg);
+    border: 1px solid var(--border);
+    color: var(--text);
+    padding: 4px 12px;
+    border-radius: 6px;
+    cursor: pointer;
+    font-size: 13px;
+    transition: background 0.2s, border-color 0.2s;
+  }
+  .nav-btn:hover { background: var(--highlight); border-color: var(--accent); color: #fff; }
+  .nav-btn:disabled { opacity: 0.35; cursor: not-allowed; }
+
+  /* ===== LAYOUT ===== */
+  #layout {
+    display: flex;
+    padding-top: calc(var(--progress-h) + var(--top-bar-h));
+    min-height: 100vh;
+  }
+
+  /* ===== SIDEBAR ===== */
+  #sidebar {
+    width: var(--sidebar-w);
+    min-width: var(--sidebar-w);
+    background: var(--sidebar-bg);
+    border-right: 1px solid var(--border);
+    position: fixed;
+    top: calc(var(--progress-h) + var(--top-bar-h));
+    left: 0;
+    bottom: 0;
+    overflow-y: auto;
+    overflow-x: hidden;
+    z-index: 800;
+    transition: transform 0.3s ease;
+  }
+
+  #sidebar::-webkit-scrollbar { width: 4px; }
+  #sidebar::-webkit-scrollbar-track { background: transparent; }
+  #sidebar::-webkit-scrollbar-thumb { background: var(--border); border-radius: 4px; }
+
+  .sidebar-section {
+    padding: 12px 12px 4px;
+    font-size: 10px;
+    font-weight: 700;
+    text-transform: uppercase;
+    letter-spacing: 0.1em;
+    color: var(--text-dim);
+  }
+
+  .sidebar-item {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    padding: 7px 16px;
+    font-size: 13px;
+    color: var(--text-dim);
+    cursor: pointer;
+    border-left: 2px solid transparent;
+    transition: all 0.2s;
+    text-decoration: none;
+    line-height: 1.4;
+  }
+  .sidebar-item:hover {
+    background: rgba(88,166,255,0.08);
+    color: var(--text);
+  }
+  .sidebar-item.active {
+    background: rgba(88,166,255,0.12);
+    color: var(--accent);
+    border-left-color: var(--accent);
+    font-weight: 600;
+  }
+  .sidebar-item .ch-num {
+    font-size: 11px;
+    color: var(--text-dim);
+    min-width: 20px;
+    font-family: monospace;
+  }
+  .sidebar-item.active .ch-num { color: var(--accent); }
+
+  /* ===== MAIN CONTENT ===== */
+  #main {
+    flex: 1;
+    margin-left: var(--sidebar-w);
+    min-width: 0;
+    padding: 40px 48px;
+    max-width: 960px;
+  }
+
+  /* ===== SECTIONS ===== */
+  .section {
+    padding-top: 24px;
+    padding-bottom: 60px;
+    border-bottom: 1px solid var(--border);
+    scroll-margin-top: calc(var(--progress-h) + var(--top-bar-h) + 16px);
+  }
+  .section:last-child { border-bottom: none; }
+
+  h1.page-title {
+    font-size: clamp(22px, 4vw, 36px);
+    font-weight: 800;
+    color: var(--heading);
+    line-height: 1.2;
+    margin-bottom: 12px;
+  }
+  .page-subtitle {
+    font-size: 15px;
+    color: var(--text-dim);
+    margin-bottom: 32px;
+    padding-bottom: 24px;
+    border-bottom: 1px solid var(--border);
+  }
+
+  h2.sec-title {
+    font-size: clamp(18px, 3vw, 26px);
+    font-weight: 700;
+    color: var(--heading);
+    margin-bottom: 20px;
+    display: flex;
+    align-items: center;
+    gap: 12px;
+  }
+  h2.sec-title .ch-badge {
+    font-size: 12px;
+    background: var(--highlight);
+    color: #fff;
+    padding: 2px 8px;
+    border-radius: 20px;
+    font-weight: 600;
+  }
+
+  h3 {
+    font-size: 16px;
+    font-weight: 600;
+    color: var(--heading);
+    margin: 28px 0 10px;
+  }
+
+  p { margin-bottom: 14px; }
+
+  a { color: var(--accent); text-decoration: none; }
+  a:hover { text-decoration: underline; }
+
+  code {
+    font-family: "SFMono-Regular", Consolas, "Liberation Mono", Menlo, monospace;
+    font-size: 0.85em;
+    background: var(--code-bg);
+    border: 1px solid var(--border);
+    padding: 1px 6px;
+    border-radius: 4px;
+    color: #f0883e;
+  }
+
+  pre {
+    background: var(--code-bg);
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    padding: 18px 20px;
+    overflow-x: auto;
+    margin: 16px 0;
+    font-family: "SFMono-Regular", Consolas, "Liberation Mono", Menlo, monospace;
+    font-size: 13px;
+    line-height: 1.6;
+  }
+  pre code {
+    background: none;
+    border: none;
+    padding: 0;
+    color: #e6edf3;
+    font-size: inherit;
+  }
+
+  /* keyword colors */
+  .kw { color: #ff7b72; }
+  .ty { color: #79c0ff; }
+  .fn { color: #d2a8ff; }
+  .str { color: #a5d6ff; }
+  .cm { color: #8b949e; font-style: italic; }
+  .num { color: #f2cc60; }
+  .mac { color: #3fb950; }
+
+  table {
+    width: 100%;
+    border-collapse: collapse;
+    margin: 16px 0;
+    font-size: 13.5px;
+  }
+  th {
+    background: #1c2128;
+    color: var(--heading);
+    padding: 10px 14px;
+    text-align: left;
+    border: 1px solid var(--border);
+    font-weight: 600;
+  }
+  td {
+    padding: 9px 14px;
+    border: 1px solid var(--border);
+    vertical-align: top;
+  }
+  tr:nth-child(even) td { background: rgba(255,255,255,0.02); }
+
+  /* ===== CALLOUTS ===== */
+  .callout {
+    border-radius: 8px;
+    padding: 14px 18px;
+    margin: 18px 0;
+    border-left: 4px solid;
+    font-size: 14px;
+  }
+  .callout.info { border-color: var(--accent); background: rgba(88,166,255,0.07); }
+  .callout.warn { border-color: #f0883e; background: rgba(240,136,62,0.07); }
+  .callout.tip  { border-color: var(--accent2); background: rgba(63,185,80,0.07); }
+  .callout.danger { border-color: var(--accent3); background: rgba(247,129,102,0.07); }
+  .callout-title { font-weight: 700; margin-bottom: 6px; font-size: 13px; text-transform: uppercase; letter-spacing: 0.05em; }
+  .callout.info .callout-title { color: var(--accent); }
+  .callout.warn .callout-title { color: #f0883e; }
+  .callout.tip .callout-title { color: var(--accent2); }
+  .callout.danger .callout-title { color: var(--accent3); }
+
+  /* ===== PRINCIPLE BOX ===== */
+  .principle {
+    background: linear-gradient(135deg, rgba(88,166,255,0.08), rgba(63,185,80,0.06));
+    border: 1px solid rgba(88,166,255,0.25);
+    border-radius: 10px;
+    padding: 18px 22px;
+    margin-top: 32px;
+  }
+  .principle-title {
+    font-size: 13px;
+    font-weight: 700;
+    color: var(--accent);
+    text-transform: uppercase;
+    letter-spacing: 0.08em;
+    margin-bottom: 10px;
+    display: flex;
+    align-items: center;
+    gap: 8px;
+  }
+  .principle-title::before { content: "⚛"; font-size: 16px; }
+
+  /* ===== TAGS ===== */
+  .tag {
+    display: inline-block;
+    font-size: 11px;
+    padding: 2px 8px;
+    border-radius: 12px;
+    margin: 2px;
+    font-weight: 600;
+  }
+  .tag-blue { background: rgba(88,166,255,0.15); color: var(--accent); }
+  .tag-green { background: rgba(63,185,80,0.15); color: var(--accent2); }
+  .tag-orange { background: rgba(240,136,62,0.15); color: #f0883e; }
+  .tag-purple { background: rgba(210,168,255,0.15); color: var(--accent4); }
+
+  /* ===== SOURCE LINK ===== */
+  .source-link {
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+    font-size: 12px;
+    color: var(--text-dim);
+    border: 1px solid var(--border);
+    padding: 4px 10px;
+    border-radius: 6px;
+    margin-bottom: 16px;
+    background: var(--card-bg);
+  }
+  .source-link::before { content: "📎"; }
+
+  /* ===== OVERLAY ===== */
+  #overlay {
+    display: none;
+    position: fixed;
+    inset: 0;
+    background: rgba(0,0,0,0.5);
+    z-index: 799;
+  }
+  #overlay.show { display: block; }
+
+  /* ===== RESPONSIVE ===== */
+  @media (max-width: 768px) {
+    #hamburger { display: flex; }
+    #sidebar {
+      transform: translateX(-100%);
+      width: min(var(--sidebar-w), 80vw);
+    }
+    #sidebar.open { transform: translateX(0); }
+    #main {
+      margin-left: 0;
+      padding: 24px 18px;
+    }
+    .topbar-chapter { display: none; }
+  }
+
+  /* ===== SVG Diagrams ===== */
+  .svg-wrap {
+    margin: 20px 0;
+    overflow-x: auto;
+    background: var(--code-bg);
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    padding: 16px;
+  }
+  .svg-wrap svg {
+    display: block;
+    max-width: 100%;
+    height: auto;
+  }
+
+  /* ===== Scenario Cards ===== */
+  .scenario-grid {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(260px, 1fr));
+    gap: 16px;
+    margin: 20px 0;
+  }
+  .scenario-card {
+    background: var(--card-bg);
+    border: 1px solid var(--border);
+    border-radius: 10px;
+    padding: 18px;
+    transition: border-color 0.2s;
+  }
+  .scenario-card:hover { border-color: var(--accent); }
+  .scenario-card .sc-icon { font-size: 28px; margin-bottom: 10px; }
+  .scenario-card h4 { color: var(--heading); font-size: 15px; margin-bottom: 8px; }
+  .scenario-card p { font-size: 13px; color: var(--text-dim); margin: 0; }
+
+  ul, ol { padding-left: 22px; margin-bottom: 14px; }
+  li { margin-bottom: 6px; }
+</style>
+</head>
+<body>
+
+<div id="progress-bar"></div>
+
+<!-- Top Bar -->
+<div id="topbar">
+  <button id="hamburger" aria-label="菜单" onclick="toggleSidebar()">
+    <span></span><span></span><span></span>
+  </button>
+  <div>
+    <div id="topbar-title">glibc dlopen 实现原理与使用场景</div>
+    <div class="topbar-chapter" id="topbar-chapter">概览</div>
+  </div>
+  <div id="nav-arrows">
+    <button class="nav-btn" id="btn-prev" onclick="navigateChapter(-1)" disabled>← 上一章</button>
+    <button class="nav-btn" id="btn-next" onclick="navigateChapter(1)">下一章 →</button>
+  </div>
+</div>
+
+<!-- Overlay for mobile -->
+<div id="overlay" onclick="closeSidebar()"></div>
+
+<!-- Layout -->
+<div id="layout">
+
+  <!-- Sidebar -->
+  <nav id="sidebar">
+    <div class="sidebar-section">概览</div>
+    <a class="sidebar-item" href="#sec-intro" data-ch="0">
+      <span class="ch-num">00</span>引言与背景
+    </a>
+
+    <div class="sidebar-section">核心接口</div>
+    <a class="sidebar-item" href="#sec-api" data-ch="1">
+      <span class="ch-num">01</span>API 总览
+    </a>
+    <a class="sidebar-item" href="#sec-dlopen" data-ch="2">
+      <span class="ch-num">02</span>dlopen() 详解
+    </a>
+    <a class="sidebar-item" href="#sec-dlsym" data-ch="3">
+      <span class="ch-num">03</span>dlsym() 详解
+    </a>
+    <a class="sidebar-item" href="#sec-dlclose" data-ch="4">
+      <span class="ch-num">04</span>dlclose() 详解
+    </a>
+    <a class="sidebar-item" href="#sec-dlerror" data-ch="5">
+      <span class="ch-num">05</span>dlerror() 详解
+    </a>
+
+    <div class="sidebar-section">实现原理</div>
+    <a class="sidebar-item" href="#sec-elf" data-ch="6">
+      <span class="ch-num">06</span>ELF 文件结构基础
+    </a>
+    <a class="sidebar-item" href="#sec-linker" data-ch="7">
+      <span class="ch-num">07</span>动态链接器架构
+    </a>
+    <a class="sidebar-item" href="#sec-linkmap" data-ch="8">
+      <span class="ch-num">08</span>link_map 与命名空间
+    </a>
+    <a class="sidebar-item" href="#sec-reloc" data-ch="9">
+      <span class="ch-num">09</span>重定位与符号解析
+    </a>
+    <a class="sidebar-item" href="#sec-plt-got" data-ch="10">
+      <span class="ch-num">10</span>PLT / GOT 惰性绑定
+    </a>
+
+    <div class="sidebar-section">高级特性</div>
+    <a class="sidebar-item" href="#sec-dlmopen" data-ch="11">
+      <span class="ch-num">11</span>dlmopen() 命名空间隔离
+    </a>
+    <a class="sidebar-item" href="#sec-flags" data-ch="12">
+      <span class="ch-num">12</span>标志位深度解析
+    </a>
+    <a class="sidebar-item" href="#sec-ctor" data-ch="13">
+      <span class="ch-num">13</span>构造/析构函数机制
+    </a>
+
+    <div class="sidebar-section">使用场景</div>
+    <a class="sidebar-item" href="#sec-scenes" data-ch="14">
+      <span class="ch-num">14</span>典型使用场景
+    </a>
+    <a class="sidebar-item" href="#sec-pitfalls" data-ch="15">
+      <span class="ch-num">15</span>常见陷阱与最佳实践
+    </a>
+
+    <div class="sidebar-section">参考</div>
+    <a class="sidebar-item" href="#sec-ref" data-ch="16">
+      <span class="ch-num">16</span>参考资料
+    </a>
+  </nav>
+
+  <!-- Main -->
+  <main id="main">
+
+    <!-- ==================== SECTION 0: INTRO ==================== -->
+    <section class="section" id="sec-intro">
+      <h1 class="page-title">glibc dlopen 接口实现原理与使用场景</h1>
+      <p class="page-subtitle">基于 Linux man-pages 6.18 及 glibc 源码的权威解析 · 2026</p>
+
+      <p>动态链接（Dynamic Linking）是现代操作系统的核心能力之一。在 Linux 系统中，<strong>glibc 的 dlopen API</strong> 提供了一套在程序运行时手动加载、查找、和卸载共享对象（Shared Object, .so 文件）的编程接口。</p>
+      <p>这套接口源自 SunOS，被 POSIX.1-2008 标准化（<code>dlopen</code>、<code>dlclose</code>、<code>dlsym</code>、<code>dlerror</code>），并由 glibc 提供了若干 GNU 扩展（<code>dlmopen</code>、<code>dlvsym</code>、<code>dladdr</code> 等）。</p>
+
+      <div class="callout info">
+        <div class="callout-title">文档说明</div>
+        本文内容严格基于：<br>
+        · <a href="https://man7.org/linux/man-pages/man3/dlopen.3.html" target="_blank">man3/dlopen(3)</a> — Linux man-pages 6.18 (2026-02-08)<br>
+        · <a href="https://man7.org/linux/man-pages/man3/dlsym.3.html" target="_blank">man3/dlsym(3)</a> — Linux man-pages 6.18<br>
+        · <a href="https://man7.org/linux/man-pages/man3/dlerror.3.html" target="_blank">man3/dlerror(3)</a> — Linux man-pages 6.18<br>
+        · <a href="https://man7.org/linux/man-pages/man8/ld.so.8.html" target="_blank">man8/ld.so(8)</a> — Linux man-pages 6.18<br>
+        · glibc 源码 elf/dl-open.c, elf/dl-libc.c (bminor/glibc)
+      </div>
+
+      <!-- Overview flow diagram -->
+      <div class="svg-wrap">
+        <svg viewBox="0 0 780 200" xmlns="http://www.w3.org/2000/svg" width="780" height="200">
+          <defs>
+            <marker id="arr" markerWidth="8" markerHeight="8" refX="6" refY="3" orient="auto">
+              <path d="M0,0 L0,6 L8,3 z" fill="#58a6ff"/>
+            </marker>
+          </defs>
+          <!-- Application -->
+          <rect x="10" y="70" width="130" height="60" rx="8" fill="#1f2937" stroke="#58a6ff" stroke-width="1.5"/>
+          <text x="75" y="96" fill="#e6edf3" text-anchor="middle" font-size="13" font-weight="bold">应用程序</text>
+          <text x="75" y="114" fill="#8b949e" text-anchor="middle" font-size="11">main()</text>
+
+          <!-- arrow -->
+          <line x1="140" y1="100" x2="185" y2="100" stroke="#58a6ff" stroke-width="1.5" marker-end="url(#arr)"/>
+          <text x="162" y="92" fill="#8b949e" text-anchor="middle" font-size="10">调用</text>
+
+          <!-- libdl -->
+          <rect x="186" y="70" width="130" height="60" rx="8" fill="#1f2937" stroke="#3fb950" stroke-width="1.5"/>
+          <text x="251" y="96" fill="#e6edf3" text-anchor="middle" font-size="13" font-weight="bold">libdl.so</text>
+          <text x="251" y="114" fill="#3fb950" text-anchor="middle" font-size="11">dlopen() API</text>
+
+          <!-- arrow -->
+          <line x1="316" y1="100" x2="361" y2="100" stroke="#58a6ff" stroke-width="1.5" marker-end="url(#arr)"/>
+          <text x="338" y="92" fill="#8b949e" text-anchor="middle" font-size="10">委托</text>
+
+          <!-- ld-linux.so -->
+          <rect x="362" y="60" width="160" height="80" rx="8" fill="#1f2937" stroke="#d2a8ff" stroke-width="1.5"/>
+          <text x="442" y="89" fill="#e6edf3" text-anchor="middle" font-size="13" font-weight="bold">ld-linux.so</text>
+          <text x="442" y="107" fill="#d2a8ff" text-anchor="middle" font-size="11">_dl_open() / RTLD</text>
+          <text x="442" y="123" fill="#8b949e" text-anchor="middle" font-size="10">动态链接器核心</text>
+
+          <!-- arrow -->
+          <line x1="522" y1="100" x2="567" y2="100" stroke="#58a6ff" stroke-width="1.5" marker-end="url(#arr)"/>
+          <text x="544" y="92" fill="#8b949e" text-anchor="middle" font-size="10">加载</text>
+
+          <!-- shared lib -->
+          <rect x="568" y="60" width="200" height="80" rx="8" fill="#1f2937" stroke="#f78166" stroke-width="1.5"/>
+          <text x="668" y="89" fill="#e6edf3" text-anchor="middle" font-size="13" font-weight="bold">目标 .so 文件</text>
+          <text x="668" y="107" fill="#f0883e" text-anchor="middle" font-size="11">mmap → 重定位 → 初始化</text>
+          <text x="668" y="123" fill="#8b949e" text-anchor="middle" font-size="10">返回 link_map 句柄</text>
+
+          <!-- bottom labels -->
+          <text x="390" y="175" fill="#8b949e" text-anchor="middle" font-size="12">整个流程在用户空间完成，无需系统调用介入链接逻辑（仅 mmap/open 需内核）</text>
+        </svg>
+      </div>
+
+      <div class="principle">
+        <div class="principle-title">第一性原理：为什么需要运行时动态加载？</div>
+        <p>程序是一组指令序列，指令中的"函数调用"本质上是跳转到某个内存地址。静态链接时，所有地址在编译期确定——这意味着所有依赖必须事先已知。<strong>dlopen 解决的核心矛盾是：程序在运行时才能确定需要哪些功能模块</strong>。其第一性原理是：将"代码发现"从编译时延迟到运行时，代价是需要一套运行时地址解析机制（即动态链接器）。</p>
+      </div>
+    </section>
+
+    <!-- ==================== SECTION 1: API OVERVIEW ==================== -->
+    <section class="section" id="sec-api">
+      <h2 class="sec-title"><span class="ch-badge">01</span>API 总览</h2>
+      <div class="source-link">来源：man3/dlopen(3), man3/dlsym(3), man3/dlerror(3) · Linux man-pages 6.18</div>
+
+      <p>所有接口定义在头文件 <code>&lt;dlfcn.h&gt;</code> 中，链接时需要 <code>-ldl</code>（Dynamic linking library, libdl）。</p>
+
+      <pre><code><span class="kw">#include</span> <span class="str">&lt;dlfcn.h&gt;</span>
+
+<span class="cm">/* 标准 POSIX 接口 */</span>
+<span class="ty">void</span> *<span class="fn">dlopen</span>(<span class="kw">const</span> <span class="ty">char</span> *path, <span class="ty">int</span> flags);
+<span class="ty">void</span> *<span class="fn">dlsym</span>(<span class="ty">void</span> *restrict handle, <span class="kw">const</span> <span class="ty">char</span> *restrict symbol);
+<span class="ty">int</span>   <span class="fn">dlclose</span>(<span class="ty">void</span> *handle);
+<span class="ty">char</span> *<span class="fn">dlerror</span>(<span class="ty">void</span>);
+
+<span class="cm">/* GNU 扩展 — 需要 #define _GNU_SOURCE */</span>
+<span class="ty">void</span> *<span class="fn">dlmopen</span>(<span class="ty">Lmid_t</span> lmid, <span class="kw">const</span> <span class="ty">char</span> *path, <span class="ty">int</span> flags); <span class="cm">/* glibc 2.3.4 */</span>
+<span class="ty">void</span> *<span class="fn">dlvsym</span>(<span class="ty">void</span> *restrict handle, <span class="kw">const</span> <span class="ty">char</span> *restrict symbol,
+             <span class="kw">const</span> <span class="ty">char</span> *restrict version);               <span class="cm">/* glibc 2.1 */</span>
+<span class="ty">int</span>   <span class="fn">dladdr</span>(<span class="ty">void</span> *addr, <span class="ty">Dl_info</span> *info);               <span class="cm">/* GNU 扩展 */</span></code></pre>
+
+      <table>
+        <thead>
+          <tr><th>函数</th><th>POSIX 标准</th><th>glibc 版本</th><th>线程安全</th><th>功能概述</th></tr>
+        </thead>
+        <tbody>
+          <tr><td><code>dlopen()</code></td><td>POSIX.1-2001/2008</td><td>2.0+</td><td>MT-Safe</td><td>加载共享对象，返回不透明句柄</td></tr>
+          <tr><td><code>dlsym()</code></td><td>POSIX.1-2001/2008</td><td>2.0+</td><td>MT-Safe</td><td>查找符号地址</td></tr>
+          <tr><td><code>dlclose()</code></td><td>POSIX.1-2001/2008</td><td>2.0+</td><td>MT-Safe</td><td>减少引用计数，必要时卸载</td></tr>
+          <tr><td><code>dlerror()</code></td><td>POSIX.1-2001/2008</td><td>2.0+</td><td>MT-Safe</td><td>获取最近一次错误字符串</td></tr>
+          <tr><td><code>dlmopen()</code></td><td>GNU 扩展</td><td>2.3.4+</td><td>MT-Safe</td><td>在指定命名空间中加载</td></tr>
+          <tr><td><code>dlvsym()</code></td><td>GNU 扩展</td><td>2.1+</td><td>MT-Safe</td><td>按符号版本查找</td></tr>
+          <tr><td><code>dladdr()</code></td><td>GNU 扩展</td><td>2.0+</td><td>MT-Safe</td><td>根据地址反查符号名</td></tr>
+        </tbody>
+      </table>
+
+      <div class="callout info">
+        <div class="callout-title">历史背景</div>
+        dlopen API 源自 SunOS，SunOS 同时提供了 <code>dladdr()</code> 但没有 <code>dlvsym()</code>。POSIX.1-2001 标准化了 <code>dlclose()</code> 和 <code>dlopen()</code>，<code>dlmopen()</code> 是纯 GNU 扩展。
+      </div>
+
+      <div class="principle">
+        <div class="principle-title">第一性原理：句柄的本质</div>
+        <p><code>dlopen()</code> 返回的"不透明句柄（opaque handle）"本质上是 glibc 内部 <code>struct link_map</code> 结构体的指针——它描述了一个已加载的共享对象在内存中的完整映射信息。将其设计为 <code>void *</code> 类型，是为了向应用程序隐藏内部实现细节，形成抽象屏障，未来可以在不破坏 ABI 的前提下修改内部结构。</p>
+      </div>
+    </section>
+
+    <!-- ==================== SECTION 2: DLOPEN ==================== -->
+    <section class="section" id="sec-dlopen">
+      <h2 class="sec-title"><span class="ch-badge">02</span>dlopen() 详解</h2>
+      <div class="source-link">来源：man3/dlopen(3) · Linux man-pages 6.18 · 2026-02-08</div>
+
+      <h3>函数签名与语义</h3>
+      <pre><code><span class="ty">void</span> *<span class="fn">dlopen</span>(<span class="kw">const</span> <span class="ty">char</span> *path, <span class="ty">int</span> flags);</code></pre>
+
+      <p>函数 <code>dlopen()</code> 加载由 <code>path</code> 指定的动态共享对象（共享库）文件，并返回该对象的不透明句柄，该句柄可用于 <code>dlsym(3)</code>、<code>dladdr(3)</code>、<code>dlinfo(3)</code> 及 <code>dlclose()</code> 等函数。</p>
+
+      <h3>path 参数处理规则</h3>
+      <ul>
+        <li>若 <code>path</code> 为 <strong>NULL</strong>：返回的句柄代表主程序本身</li>
+        <li>若 <code>path</code> 包含斜杠 <strong>"/"</strong>：按相对或绝对路径名解释</li>
+        <li>否则：动态链接器按以下顺序搜索（详见 <a href="https://man7.org/linux/man-pages/man8/ld.so.8.html" target="_blank">ld.so(8)</a>）：</li>
+      </ul>
+
+      <!-- Search order diagram -->
+      <div class="svg-wrap">
+        <svg viewBox="0 0 700 320" xmlns="http://www.w3.org/2000/svg" width="700" height="320">
+          <defs>
+            <marker id="arr2" markerWidth="8" markerHeight="8" refX="6" refY="3" orient="auto">
+              <path d="M0,0 L0,6 L8,3 z" fill="#58a6ff"/>
+            </marker>
+          </defs>
+          <!-- Steps -->
+          <g>
+            <!-- Step 1 -->
+            <rect x="30" y="20" width="640" height="44" rx="6" fill="#1c2128" stroke="#58a6ff" stroke-width="1"/>
+            <text x="52" y="38" fill="#58a6ff" font-size="12" font-weight="bold">① DT_RPATH</text>
+            <text x="52" y="55" fill="#8b949e" font-size="11">调用对象含 DT_RPATH 且不含 DT_RUNPATH 时，搜索其中列出的目录</text>
+
+            <!-- Step 2 -->
+            <rect x="30" y="74" width="640" height="44" rx="6" fill="#1c2128" stroke="#3fb950" stroke-width="1"/>
+            <text x="52" y="92" fill="#3fb950" font-size="12" font-weight="bold">② LD_LIBRARY_PATH 环境变量</text>
+            <text x="52" y="109" fill="#8b949e" font-size="11">搜索该变量中冒号分隔的目录列表（suid/sgid 程序忽略此变量）</text>
+
+            <!-- Step 3 -->
+            <rect x="30" y="128" width="640" height="44" rx="6" fill="#1c2128" stroke="#d2a8ff" stroke-width="1"/>
+            <text x="52" y="146" fill="#d2a8ff" font-size="12" font-weight="bold">③ DT_RUNPATH</text>
+            <text x="52" y="163" fill="#8b949e" font-size="11">调用对象含 DT_RUNPATH 时，搜索该标记中列出的目录</text>
+
+            <!-- Step 4 -->
+            <rect x="30" y="182" width="640" height="44" rx="6" fill="#1c2128" stroke="#f0883e" stroke-width="1"/>
+            <text x="52" y="200" fill="#f0883e" font-size="12" font-weight="bold">④ /etc/ld.so.cache</text>
+            <text x="52" y="217" fill="#8b949e" font-size="11">检查由 ldconfig(8) 维护的缓存文件，查找 path 对应条目</text>
+
+            <!-- Step 5 -->
+            <rect x="30" y="236" width="640" height="44" rx="6" fill="#1c2128" stroke="#f78166" stroke-width="1"/>
+            <text x="52" y="254" fill="#f78166" font-size="12" font-weight="bold">⑤ 默认路径 /lib 和 /usr/lib</text>
+            <text x="52" y="271" fill="#8b949e" font-size="11">按顺序搜索（64位系统通常为 /lib64 和 /usr/lib64）</text>
+
+            <!-- Arrows -->
+            <line x1="350" y1="64" x2="350" y2="74" stroke="#58a6ff" stroke-width="1.2" marker-end="url(#arr2)"/>
+            <line x1="350" y1="118" x2="350" y2="128" stroke="#58a6ff" stroke-width="1.2" marker-end="url(#arr2)"/>
+            <line x1="350" y1="172" x2="350" y2="182" stroke="#58a6ff" stroke-width="1.2" marker-end="url(#arr2)"/>
+            <line x1="350" y1="226" x2="350" y2="236" stroke="#58a6ff" stroke-width="1.2" marker-end="url(#arr2)"/>
+          </g>
+          <text x="350" y="298" fill="#8b949e" text-anchor="middle" font-size="11">依赖对象递归按相同规则加载 | 若任一步骤找到则立即返回</text>
+        </svg>
+      </div>
+
+      <h3>flags 标志位</h3>
+      <p>以下两个值必须选其一包含在 <code>flags</code> 中：</p>
+
+      <table>
+        <thead>
+          <tr><th>标志位</th><th>含义</th><th>glibc 版本</th></tr>
+        </thead>
+        <tbody>
+          <tr>
+            <td><code>RTLD_LAZY</code></td>
+            <td>惰性绑定。仅在代码实际引用符号时才解析。惰性绑定只适用于函数引用；变量引用在加载时立即绑定。自 glibc 2.1.1 起，可被 <code>LD_BIND_NOW</code> 环境变量覆盖。</td>
+            <td>2.0+</td>
+          </tr>
+          <tr>
+            <td><code>RTLD_NOW</code></td>
+            <td>若指定此值，或 <code>LD_BIND_NOW</code> 设为非空字符串，则在 <code>dlopen()</code> 返回前解析共享对象中所有未定义符号。若无法完成则返回错误。</td>
+            <td>2.0+</td>
+          </tr>
+        </tbody>
+      </table>
+
+      <p>此外，以下值可用 OR 运算附加到 <code>flags</code>：</p>
+
+      <table>
+        <thead>
+          <tr><th>标志位</th><th>含义</th><th>glibc 版本</th><th>来源</th></tr>
+        </thead>
+        <tbody>
+          <tr>
+            <td><code>RTLD_GLOBAL</code></td>
+            <td>该共享对象定义的符号将对后续加载的共享对象的符号解析开放可见</td>
+            <td>2.0+</td>
+            <td>POSIX</td>
+          </tr>
+          <tr>
+            <td><code>RTLD_LOCAL</code></td>
+            <td><code>RTLD_GLOBAL</code> 的反义，是默认值。该对象的符号不对后续加载的共享对象可见</td>
+            <td>2.0+</td>
+            <td>POSIX</td>
+          </tr>
+          <tr>
+            <td><code>RTLD_NODELETE</code></td>
+            <td><code>dlclose()</code> 时不卸载共享对象；后续再 <code>dlopen()</code> 时静态和全局变量不会重新初始化</td>
+            <td>2.2+</td>
+            <td>GNU/Solaris</td>
+          </tr>
+          <tr>
+            <td><code>RTLD_NOLOAD</code></td>
+            <td>不加载共享对象，用于测试对象是否已驻留内存，或提升已加载对象的标志（如将 RTLD_LOCAL 提升为 RTLD_GLOBAL）</td>
+            <td>2.2+</td>
+            <td>GNU/Solaris</td>
+          </tr>
+          <tr>
+            <td><code>RTLD_DEEPBIND</code></td>
+            <td>将该对象的符号查找范围置于全局范围之前，使自包含对象优先使用自身符号</td>
+            <td>2.3.4+</td>
+            <td>GNU</td>
+          </tr>
+        </tbody>
+      </table>
+
+      <h3>引用计数机制</h3>
+      <p>若同一共享对象被再次 <code>dlopen()</code>，则返回相同的对象句柄。动态链接器为对象句柄维护引用计数，只有当 <code>dlclose()</code> 的调用次数等于成功的 <code>dlopen()</code> 次数时，该对象才会被释放。<strong>构造函数仅在对象实际被加载到内存时（即引用计数升为 1 时）执行一次</strong>。</p>
+
+      <div class="callout warn">
+        <div class="callout-title">注意</div>
+        后续使用 <code>RTLD_NOW</code> 调用 <code>dlopen()</code> 可以强制解析一个之前用 <code>RTLD_LAZY</code> 加载的对象中的符号。同样，之前用 <code>RTLD_LOCAL</code> 加载的对象可在后续 <code>dlopen()</code> 中被提升为 <code>RTLD_GLOBAL</code>。
+      </div>
+
+      <h3>符号解析顺序</h3>
+      <p>共享对象中的符号引用按如下顺序解析：</p>
+      <ol>
+        <li>主程序链接映射中的符号及其依赖</li>
+        <li>之前使用 <code>RTLD_GLOBAL</code> 标志 <code>dlopen()</code> 加载的共享对象（及其依赖）中的符号</li>
+        <li>共享对象自身（及其依赖）中的定义</li>
+      </ol>
+
+      <div class="principle">
+        <div class="principle-title">第一性原理：dlopen 的加载本质</div>
+        <p><code>dlopen()</code> 的根本操作是三步：<strong>① 定位文件</strong>（路径解析）→ <strong>② 映射内存</strong>（mmap 将 ELF 段映射到进程地址空间）→ <strong>③ 建立连接</strong>（执行重定位，使新代码与已有符号相互链接）。所有的"标志位"、"引用计数"等机制，都是在这三个原子操作之上建立的策略层。</p>
+      </div>
+    </section>
+
+    <!-- ==================== SECTION 3: DLSYM ==================== -->
+    <section class="section" id="sec-dlsym">
+      <h2 class="sec-title"><span class="ch-badge">03</span>dlsym() 详解</h2>
+      <div class="source-link">来源：man3/dlsym(3) · Linux man-pages 6.18 · 2026-02-08</div>
+
+      <pre><code><span class="ty">void</span> *<span class="fn">dlsym</span>(<span class="ty">void</span> *restrict handle, <span class="kw">const</span> <span class="ty">char</span> *restrict symbol);</code></pre>
+
+      <p><code>dlsym()</code> 接受 <code>dlopen()</code> 返回的动态加载共享对象的句柄，以及一个以 null 结尾的符号名，返回该符号被加载到内存中的地址。若在指定对象或由 <code>dlopen()</code> 自动加载的共享对象中未找到该符号，则返回 NULL。</p>
+
+      <p><code>dlsym()</code> 的搜索是对这些共享对象依赖树的<strong>广度优先遍历</strong>。</p>
+
+      <h3>特殊伪句柄</h3>
+      <p><code>handle</code> 参数可以指定两种特殊伪句柄（需要 <code>_GNU_SOURCE</code>）：</p>
+
+      <table>
+        <thead>
+          <tr><th>伪句柄</th><th>搜索范围</th></tr>
+        </thead>
+        <tbody>
+          <tr>
+            <td><code>RTLD_DEFAULT</code></td>
+            <td>使用默认共享对象搜索顺序查找符号的第一次出现。包括：可执行文件及其依赖中的全局符号，以及用 <code>RTLD_GLOBAL</code> 动态加载的共享对象中的符号。</td>
+          </tr>
+          <tr>
+            <td><code>RTLD_NEXT</code></td>
+            <td>在当前对象之后的搜索顺序中查找符号的下一次出现。允许为另一个共享对象中的函数提供包装器。例如，预加载共享对象（<code>LD_PRELOAD</code>）中的函数定义可以通过此方式找到并调用另一共享对象提供的"真实"函数。</td>
+          </tr>
+        </tbody>
+      </table>
+
+      <h3>正确的错误检测模式</h3>
+      <p>在不寻常的情况下，符号的值实际上可能为 NULL（例如符号通过链接器脚本或 <code>--defsym</code> 被放置在零地址，或为未定义弱符号）。因此，<code>dlsym()</code> 返回 NULL 并不一定意味着错误。</p>
+
+      <pre><code><span class="cm">/* 正确的错误检测模式（来自 man page 示例）*/</span>
+<span class="fn">dlerror</span>();                          <span class="cm">/* 清除已有错误状态 */</span>
+<span class="ty">void</span> *sym = <span class="fn">dlsym</span>(handle, <span class="str">"func"</span>);
+<span class="ty">char</span> *error = <span class="fn">dlerror</span>();
+<span class="kw">if</span> (error != <span class="num">NULL</span>) {
+    <span class="fn">fprintf</span>(stderr, <span class="str">"%s\n"</span>, error);
+    <span class="cm">/* 真正发生了错误 */</span>
+}</code></pre>
+
+      <h3>函数指针转换（类型安全问题）</h3>
+      <p>根据 ISO C 标准，在函数指针和 <code>void *</code> 之间进行强制类型转换会产生未定义结果。POSIX.1-2001 和 POSIX.1-2008 接受了这一现状，并提出了如下变通方案：</p>
+      <pre><code><span class="cm">/* POSIX 推荐的类型转换方式 */</span>
+<span class="ty">double</span> (*cosine)(<span class="ty">double</span>);
+*(<span class="ty">void</span> **)(&cosine) = <span class="fn">dlsym</span>(handle, <span class="str">"cos"</span>);
+
+<span class="cm">/* 2013年 POSIX.1-2008 勘误 TC1 之后，允许直接转换 */</span>
+cosine = (<span class="ty">double</span> (*)(<span class="ty">double</span>)) <span class="fn">dlsym</span>(handle, <span class="str">"cos"</span>);</code></pre>
+
+      <h3>完整使用示例（来自官方 man page）</h3>
+      <pre><code><span class="kw">#include</span> <span class="str">&lt;dlfcn.h&gt;</span>
+<span class="kw">#include</span> <span class="str">&lt;stdio.h&gt;</span>
+<span class="kw">#include</span> <span class="str">&lt;stdlib.h&gt;</span>
+<span class="kw">#include</span> <span class="str">&lt;gnu/lib-names.h&gt;</span>  <span class="cm">/* 定义 LIBM_SO (如 "libm.so.6") */</span>
+
+<span class="ty">int</span> <span class="fn">main</span>(<span class="ty">void</span>)
+{
+    <span class="ty">void</span> *handle;
+    <span class="kw">typeof</span>(<span class="ty">double</span> (<span class="ty">double</span>)) *cosine;
+    <span class="ty">char</span> *error;
+
+    handle = <span class="fn">dlopen</span>(LIBM_SO, RTLD_LAZY);
+    <span class="kw">if</span> (!handle) {
+        <span class="fn">fprintf</span>(stderr, <span class="str">"%s\n"</span>, <span class="fn">dlerror</span>());
+        <span class="fn">exit</span>(EXIT_FAILURE);
+    }
+
+    <span class="fn">dlerror</span>();  <span class="cm">/* 清除已有错误 */</span>
+
+    cosine = (<span class="kw">typeof</span>(<span class="ty">double</span> (<span class="ty">double</span>)) *) <span class="fn">dlsym</span>(handle, <span class="str">"cos"</span>);
+
+    error = <span class="fn">dlerror</span>();
+    <span class="kw">if</span> (error != <span class="num">NULL</span>) {
+        <span class="fn">fprintf</span>(stderr, <span class="str">"%s\n"</span>, error);
+        <span class="fn">exit</span>(EXIT_FAILURE);
+    }
+
+    <span class="fn">printf</span>(<span class="str">"%f\n"</span>, (*cosine)(2.0));
+    <span class="fn">dlclose</span>(handle);
+    <span class="fn">exit</span>(EXIT_SUCCESS);
+}
+<span class="cm">/* 编译: cc dlopen_demo.c -ldl */</span></code></pre>
+
+      <div class="principle">
+        <div class="principle-title">第一性原理：符号查找的本质</div>
+        <p><code>dlsym()</code> 的本质是在 ELF 符号表（<code>.dynsym</code> 节）中做名字查找，返回对应的运行时虚拟地址。符号表是一个哈希加速的名称-地址映射表。"广度优先"搜索策略保证了符号解析的确定性——先搜索直接加载的对象，再搜索其依赖，避免依赖深度不同导致的歧义。</p>
+      </div>
+    </section>
+
+    <!-- ==================== SECTION 4: DLCLOSE ==================== -->
+    <section class="section" id="sec-dlclose">
+      <h2 class="sec-title"><span class="ch-badge">04</span>dlclose() 详解</h2>
+      <div class="source-link">来源：man3/dlopen(3) § dlclose() · Linux man-pages 6.18</div>
+
+      <pre><code><span class="ty">int</span> <span class="fn">dlclose</span>(<span class="ty">void</span> *handle);</code></pre>
+
+      <p><code>dlclose()</code> 将 <code>handle</code> 所指向的动态加载共享对象的引用计数减 1。</p>
+
+      <h3>卸载条件</h3>
+      <p>若对象的引用计数降至零，且<strong>该对象的符号不被其他对象依赖</strong>，则在调用为该对象定义的所有析构函数后卸载该对象。</p>
+
+      <div class="callout warn">
+        <div class="callout-title">重要说明</div>
+        <p><code>dlclose()</code> 成功返回<strong>不保证</strong>与 <code>handle</code> 相关联的符号已从调用者的地址空间移除。除显式 <code>dlopen()</code> 调用产生的引用外，共享对象还可能因其他共享对象的依赖而被隐式加载（并计数）。只有当所有引用都被释放后，共享对象才能从地址空间中移除。</p>
+      </div>
+
+      <h3>递归关闭</h3>
+      <p>当 <code>dlopen()</code> 调用目标对象时自动加载的所有共享对象，也以相同方式被递归关闭。</p>
+
+      <!-- Reference count diagram -->
+      <div class="svg-wrap">
+        <svg viewBox="0 0 680 200" xmlns="http://www.w3.org/2000/svg" width="680" height="200">
+          <defs>
+            <marker id="arr3" markerWidth="8" markerHeight="8" refX="6" refY="3" orient="auto">
+              <path d="M0,0 L0,6 L8,3 z" fill="#58a6ff"/>
+            </marker>
+          </defs>
+          <!-- Timeline boxes -->
+          <rect x="10" y="30" width="120" height="140" rx="6" fill="#1c2128" stroke="#30363d"/>
+          <text x="70" y="55" fill="#8b949e" text-anchor="middle" font-size="11">初始</text>
+          <text x="70" y="90" fill="#e6edf3" text-anchor="middle" font-size="22" font-weight="bold">0</text>
+          <text x="70" y="115" fill="#8b949e" text-anchor="middle" font-size="10">未加载</text>
+
+          <line x1="130" y1="100" x2="178" y2="100" stroke="#3fb950" stroke-width="1.5" marker-end="url(#arr3)"/>
+          <text x="154" y="90" fill="#3fb950" text-anchor="middle" font-size="10">dlopen()</text>
+
+          <rect x="180" y="30" width="120" height="140" rx="6" fill="#1c2128" stroke="#3fb950" stroke-width="1.5"/>
+          <text x="240" y="55" fill="#8b949e" text-anchor="middle" font-size="11">第1次打开</text>
+          <text x="240" y="90" fill="#3fb950" text-anchor="middle" font-size="22" font-weight="bold">1</text>
+          <text x="240" y="115" fill="#3fb950" text-anchor="middle" font-size="10">已加载+构造函数</text>
+
+          <line x1="300" y1="100" x2="348" y2="100" stroke="#3fb950" stroke-width="1.5" marker-end="url(#arr3)"/>
+          <text x="324" y="90" fill="#3fb950" text-anchor="middle" font-size="10">dlopen()</text>
+
+          <rect x="350" y="30" width="120" height="140" rx="6" fill="#1c2128" stroke="#d2a8ff" stroke-width="1.5"/>
+          <text x="410" y="55" fill="#8b949e" text-anchor="middle" font-size="11">第2次打开</text>
+          <text x="410" y="90" fill="#d2a8ff" text-anchor="middle" font-size="22" font-weight="bold">2</text>
+          <text x="410" y="115" fill="#8b949e" text-anchor="middle" font-size="10">返回同一句柄</text>
+
+          <line x1="470" y1="100" x2="518" y2="100" stroke="#f78166" stroke-width="1.5" marker-end="url(#arr3)"/>
+          <text x="494" y="90" fill="#f78166" text-anchor="middle" font-size="10">dlclose()×2</text>
+
+          <rect x="520" y="30" width="140" height="140" rx="6" fill="#1c2128" stroke="#f78166" stroke-width="1.5"/>
+          <text x="590" y="55" fill="#8b949e" text-anchor="middle" font-size="11">全部关闭</text>
+          <text x="590" y="90" fill="#f78166" text-anchor="middle" font-size="22" font-weight="bold">0</text>
+          <text x="590" y="115" fill="#f78166" text-anchor="middle" font-size="10">析构函数+卸载</text>
+          <text x="590" y="158" fill="#8b949e" text-anchor="middle" font-size="10">（若无其他引用）</text>
+        </svg>
+      </div>
+
+      <div class="principle">
+        <div class="principle-title">第一性原理：引用计数的必然性</div>
+        <p>多个模块可能独立依赖同一个共享库（如 libpthread.so）。如果没有引用计数，第一个调用 <code>dlclose()</code> 的模块就会卸载其他模块仍在使用的代码，导致野指针。引用计数是解决"共享资源生命周期"问题的最简单正确方案——资源存活当且仅当至少一个使用者存在。</p>
+      </div>
+    </section>
+
+    <!-- ==================== SECTION 5: DLERROR ==================== -->
+    <section class="section" id="sec-dlerror">
+      <h2 class="sec-title"><span class="ch-badge">05</span>dlerror() 详解</h2>
+      <div class="source-link">来源：man3/dlerror(3) · Linux man-pages 6.18 · 2026-02-08</div>
+
+      <pre><code><span class="ty">char</span> *<span class="fn">dlerror</span>(<span class="ty">void</span>);</code></pre>
+
+      <p><code>dlerror()</code> 函数返回一个人类可读的、以 null 结尾的字符串，描述自上次调用 <code>dlerror()</code> 以来，dlopen API 中的函数调用所发生的最近一次错误。返回字符串不包含尾部换行符。</p>
+
+      <p>若自初始化或上次调用以来未发生错误，则返回 NULL。</p>
+
+      <div class="callout info">
+        <div class="callout-title">实现细节</div>
+        <code>dlerror()</code> 返回的消息可能驻留在静态分配的缓冲区中，该缓冲区会被后续的 <code>dlerror()</code> 调用覆盖。调用方应在使用前将字符串复制到自己的缓冲区中（如有需要）。
+      </div>
+
+      <h3>正确的使用模式</h3>
+      <pre><code><span class="cm">/* 使用 dlerror() 的惯用模式 */</span>
+<span class="fn">dlerror</span>();                      <span class="cm">/* Step1: 清除历史错误 */</span>
+<span class="ty">void</span> *p = <span class="fn">dlsym</span>(h, <span class="str">"sym"</span>);  <span class="cm">/* Step2: 执行操作 */</span>
+<span class="ty">char</span> *e = <span class="fn">dlerror</span>();          <span class="cm">/* Step3: 立即捕获错误 */</span>
+<span class="kw">if</span> (e) { <span class="cm">/* 处理错误 */</span> }</code></pre>
+
+      <div class="principle">
+        <div class="principle-title">第一性原理：无异常语言的错误传递</div>
+        <p>C 语言没有异常机制。<code>dlerror()</code> 的设计遵循 UNIX 的 <code>errno</code> 传统——用一个线程局部的"最近错误"状态来传递错误信息。其关键约束是：<strong>调用 dlerror() 会同时消费并清除错误状态</strong>，因此必须在操作后立即调用，不能在中间穿插其他可能设置错误的调用。</p>
+      </div>
+    </section>
+
+    <!-- ==================== SECTION 6: ELF ==================== -->
+    <section class="section" id="sec-elf">
+      <h2 class="sec-title"><span class="ch-badge">06</span>ELF 文件结构基础</h2>
+      <div class="source-link">来源：man5/elf(5), glibc 源码 elf/ 目录</div>
+
+      <p>理解 <code>dlopen</code> 的实现原理，必须先了解 ELF（Executable and Linkable Format）文件的关键结构。</p>
+
+      <!-- ELF structure SVG -->
+      <div class="svg-wrap">
+        <svg viewBox="0 0 680 380" xmlns="http://www.w3.org/2000/svg" width="680" height="380">
+          <!-- ELF file column -->
+          <text x="120" y="20" fill="#8b949e" text-anchor="middle" font-size="12" font-weight="bold">ELF 文件布局</text>
+
+          <rect x="20" y="30" width="200" height="44" rx="4" fill="#1f6feb" stroke="#58a6ff" stroke-width="1"/>
+          <text x="120" y="48" fill="#fff" text-anchor="middle" font-size="12" font-weight="bold">ELF Header</text>
+          <text x="120" y="64" fill="#a5d6ff" text-anchor="middle" font-size="10">魔数 | 类型 | 机器架构 | 入口点</text>
+
+          <rect x="20" y="78" width="200" height="44" rx="4" fill="#1c2128" stroke="#3fb950" stroke-width="1"/>
+          <text x="120" y="96" fill="#3fb950" text-anchor="middle" font-size="12" font-weight="bold">Program Header Table</text>
+          <text x="120" y="112" fill="#8b949e" text-anchor="middle" font-size="10">PT_LOAD, PT_DYNAMIC, PT_INTERP</text>
+
+          <rect x="20" y="126" width="200" height="36" rx="4" fill="#1c2128" stroke="#d2a8ff" stroke-width="1"/>
+          <text x="120" y="149" fill="#d2a8ff" text-anchor="middle" font-size="12">.text (代码段)</text>
+
+          <rect x="20" y="166" width="200" height="36" rx="4" fill="#1c2128" stroke="#f0883e" stroke-width="1"/>
+          <text x="120" y="189" fill="#f0883e" text-anchor="middle" font-size="12">.data / .bss (数据段)</text>
+
+          <rect x="20" y="206" width="200" height="36" rx="4" fill="#1c2128" stroke="#58a6ff" stroke-width="1.5"/>
+          <text x="120" y="229" fill="#58a6ff" text-anchor="middle" font-size="12">.dynamic (动态链接信息)</text>
+
+          <rect x="20" y="246" width="200" height="36" rx="4" fill="#1c2128" stroke="#f78166" stroke-width="1.5"/>
+          <text x="120" y="269" fill="#f78166" text-anchor="middle" font-size="12">.dynsym (动态符号表)</text>
+
+          <rect x="20" y="286" width="200" height="36" rx="4" fill="#1c2128" stroke="#f0883e" stroke-width="1"/>
+          <text x="120" y="309" fill="#f0883e" text-anchor="middle" font-size="12">.rel.plt / .rela (重定位表)</text>
+
+          <rect x="20" y="326" width="200" height="36" rx="4" fill="#1c2128" stroke="#3fb950" stroke-width="1"/>
+          <text x="120" y="349" fill="#3fb950" text-anchor="middle" font-size="12">.plt + .got.plt</text>
+
+          <!-- Dynamic section detail -->
+          <text x="430" y="20" fill="#8b949e" text-anchor="middle" font-size="12" font-weight="bold">.dynamic 节关键条目</text>
+
+          <g transform="translate(280,30)">
+            <rect x="0" y="0" width="360" height="340" rx="6" fill="#1c2128" stroke="#30363d"/>
+            <!-- rows -->
+            <rect x="1" y="1" width="358" height="34" rx="4" fill="#1f2937"/>
+            <text x="12" y="16" fill="#d2a8ff" font-size="11" font-weight="bold">标记</text>
+            <text x="140" y="16" fill="#d2a8ff" font-size="11" font-weight="bold">含义</text>
+            <line x1="0" y1="34" x2="360" y2="34" stroke="#30363d"/>
+
+            <text x="12" y="57" fill="#58a6ff" font-size="11">DT_NEEDED</text>
+            <text x="140" y="57" fill="#8b949e" font-size="10">依赖的共享库名称</text>
+            <line x1="0" y1="70" x2="360" y2="70" stroke="#30363d"/>
+
+            <text x="12" y="90" fill="#58a6ff" font-size="11">DT_SYMTAB</text>
+            <text x="140" y="90" fill="#8b949e" font-size="10">动态符号表地址</text>
+            <line x1="0" y1="103" x2="360" y2="103" stroke="#30363d"/>
+
+            <text x="12" y="123" fill="#58a6ff" font-size="11">DT_STRTAB</text>
+            <text x="140" y="123" fill="#8b949e" font-size="10">符号字符串表地址</text>
+            <line x1="0" y1="136" x2="360" y2="136" stroke="#30363d"/>
+
+            <text x="12" y="156" fill="#58a6ff" font-size="11">DT_RPATH</text>
+            <text x="140" y="156" fill="#8b949e" font-size="10">运行时库搜索路径（旧式）</text>
+            <line x1="0" y1="169" x2="360" y2="169" stroke="#30363d"/>
+
+            <text x="12" y="189" fill="#58a6ff" font-size="11">DT_RUNPATH</text>
+            <text x="140" y="189" fill="#8b949e" font-size="10">运行时库搜索路径（新式）</text>
+            <line x1="0" y1="202" x2="360" y2="202" stroke="#30363d"/>
+
+            <text x="12" y="222" fill="#58a6ff" font-size="11">DT_INIT / DT_FINI</text>
+            <text x="140" y="222" fill="#8b949e" font-size="10">初始化/终止化函数地址</text>
+            <line x1="0" y1="235" x2="360" y2="235" stroke="#30363d"/>
+
+            <text x="12" y="255" fill="#58a6ff" font-size="11">DT_INIT_ARRAY</text>
+            <text x="140" y="255" fill="#8b949e" font-size="10">构造函数指针数组</text>
+            <line x1="0" y1="268" x2="360" y2="268" stroke="#30363d"/>
+
+            <text x="12" y="288" fill="#58a6ff" font-size="11">DT_HASH / DT_GNU_HASH</text>
+            <text x="140" y="288" fill="#8b949e" font-size="10">符号哈希表（加速查找）</text>
+            <line x1="0" y1="301" x2="360" y2="301" stroke="#30363d"/>
+
+            <text x="12" y="321" fill="#58a6ff" font-size="11">DT_JMPREL</text>
+            <text x="140" y="321" fill="#8b949e" font-size="10">PLT 重定位表地址</text>
+          </g>
+        </svg>
+      </div>
+
+      <h3>关键节（Section）说明</h3>
+      <table>
+        <thead>
+          <tr><th>节名</th><th>作用</th></tr>
+        </thead>
+        <tbody>
+          <tr><td><code>.dynamic</code></td><td>包含动态链接器所需的所有元数据，是动态链接的核心数据结构</td></tr>
+          <tr><td><code>.dynsym</code></td><td>动态符号表：记录导出/导入符号的名称、绑定类型、地址等</td></tr>
+          <tr><td><code>.dynstr</code></td><td>动态符号字符串表：存储符号名称字符串</td></tr>
+          <tr><td><code>.rel.plt / .rela.plt</code></td><td>PLT 重定位表：记录需要在运行时填入真实地址的 GOT 条目</td></tr>
+          <tr><td><code>.plt</code></td><td>过程链接表：函数调用跳转桩（thunk），实现惰性绑定</td></tr>
+          <tr><td><code>.got.plt</code></td><td>全局偏移表（PLT 部分）：存储外部函数的实际地址，初始指向 PLT 解析代码</td></tr>
+          <tr><td><code>.interp</code></td><td>指定动态链接器路径（PT_INTERP 段），如 <code>/lib64/ld-linux-x86-64.so.2</code></td></tr>
+        </tbody>
+      </table>
+
+      <div class="principle">
+        <div class="principle-title">第一性原理：ELF 的核心设计哲学</div>
+        <p>ELF 将"我是什么"（Header）、"如何加载我"（Program Header，面向加载器）、"我包含什么"（Section Header，面向链接器）分离为三个正交视图。<code>.dynamic</code> 节是其中的"自描述"机制——它让一个二进制文件携带了描述自身依赖和接口的元数据，使动态链接器无需外部注册表即可理解一个未知的 .so 文件。</p>
+      </div>
+    </section>
+
+    <!-- ==================== SECTION 7: LINKER ARCH ==================== -->
+    <section class="section" id="sec-linker">
+      <h2 class="sec-title"><span class="ch-badge">07</span>动态链接器架构</h2>
+      <div class="source-link">来源：man8/ld.so(8) · glibc elf/dl-open.c, elf/dl-libc.c</div>
+
+      <p>在 glibc 实现中，<code>dlopen()</code> 的实际工作由动态链接器（<code>ld-linux.so</code>，即 RTLD）完成，而非 <code>libdl.so</code> 本身。</p>
+
+      <div class="callout info">
+        <div class="callout-title">关键说明（来自 Stack Exchange 权威回答）</div>
+        <p>dlopen 由 libdl 提供，但在 GNU C Library 实现中，后者依赖 ld-linux.so 提供的符号来执行动态链接。若 dlopen 从动态链接程序调用，ld-linux.so 已加载，直接使用其符号；若从静态链接程序调用，则尝试加载 ld-linux.so。dlopen 不"调用" ld-linux.so——而是直接调用已存在于进程内存中的代码。</p>
+      </div>
+
+      <h3>调用链路（glibc 源码视角）</h3>
+      <pre><code><span class="cm">/* elf/dl-libc.c - libdl 的包装层 */</span>
+<span class="kw">static void</span>
+<span class="fn">do_dlopen</span> (<span class="ty">void</span> *ptr)
+{
+  <span class="kw">struct</span> do_dlopen_args *args = (<span class="kw">struct</span> do_dlopen_args *) ptr;
+  <span class="cm">/* 调用动态链接器核心函数 GLRO(dl_open) */</span>
+  args->map = <span class="fn">GLRO</span>(dl_open) (args->name, args->mode,
+                              args->caller_dlopen,
+                              __LM_ID_CALLER,
+                              __libc_argc, __libc_argv,
+                              __environ);
+}
+<span class="cm">/* GLRO(dl_open) 展开为 dl_open，即 ld-linux.so 中的 _dl_open() */</span></code></pre>
+
+      <div class="svg-wrap">
+        <svg viewBox="0 0 720 340" xmlns="http://www.w3.org/2000/svg" width="720" height="340">
+          <defs>
+            <marker id="arr4" markerWidth="8" markerHeight="8" refX="6" refY="3" orient="auto">
+              <path d="M0,0 L0,6 L8,3 z" fill="#58a6ff"/>
+            </marker>
+            <marker id="arr5" markerWidth="8" markerHeight="8" refX="6" refY="3" orient="auto">
+              <path d="M0,0 L0,6 L8,3 z" fill="#3fb950"/>
+            </marker>
+          </defs>
+
+          <!-- App -->
+          <rect x="10" y="10" width="140" height="60" rx="6" fill="#1f2937" stroke="#58a6ff" stroke-width="1.5"/>
+          <text x="80" y="36" fill="#e6edf3" text-anchor="middle" font-size="13" font-weight="bold">应用程序</text>
+          <text x="80" y="54" fill="#58a6ff" text-anchor="middle" font-size="11">dlopen("foo.so")</text>
+
+          <!-- libdl.so -->
+          <rect x="200" y="10" width="150" height="60" rx="6" fill="#1f2937" stroke="#3fb950" stroke-width="1.5"/>
+          <text x="275" y="36" fill="#e6edf3" text-anchor="middle" font-size="13" font-weight="bold">libdl.so</text>
+          <text x="275" y="54" fill="#3fb950" text-anchor="middle" font-size="11">do_dlopen() 包装</text>
+
+          <!-- ld-linux.so -->
+          <rect x="400" y="10" width="170" height="60" rx="6" fill="#1f2937" stroke="#d2a8ff" stroke-width="1.5"/>
+          <text x="485" y="36" fill="#e6edf3" text-anchor="middle" font-size="13" font-weight="bold">ld-linux.so (RTLD)</text>
+          <text x="485" y="54" fill="#d2a8ff" text-anchor="middle" font-size="11">_dl_open()</text>
+
+          <line x1="150" y1="40" x2="198" y2="40" stroke="#58a6ff" stroke-width="1.5" marker-end="url(#arr4)"/>
+          <line x1="350" y1="40" x2="398" y2="40" stroke="#58a6ff" stroke-width="1.5" marker-end="url(#arr4)"/>
+
+          <!-- RTLD Internal steps -->
+          <g transform="translate(0, 100)">
+            <text x="360" y="0" fill="#8b949e" text-anchor="middle" font-size="12" font-weight="bold">_dl_open() 内部步骤</text>
+
+            <rect x="10" y="14" width="680" height="44" rx="6" fill="#1c2128" stroke="#58a6ff" stroke-width="1"/>
+            <text x="350" y="34" fill="#58a6ff" text-anchor="middle" font-size="12" font-weight="bold">① _dl_map_object()</text>
+            <text x="350" y="50" fill="#8b949e" text-anchor="middle" font-size="11">open() + mmap() 将 ELF segments 映射到进程地址空间，创建 link_map 节点</text>
+
+            <rect x="10" y="64" width="680" height="44" rx="6" fill="#1c2128" stroke="#3fb950" stroke-width="1"/>
+            <text x="350" y="84" fill="#3fb950" text-anchor="middle" font-size="12" font-weight="bold">② _dl_map_object_deps()</text>
+            <text x="350" y="100" fill="#8b949e" text-anchor="middle" font-size="11">递归处理 DT_NEEDED 依赖，构建完整的依赖加载链</text>
+
+            <rect x="10" y="114" width="680" height="44" rx="6" fill="#1c2128" stroke="#d2a8ff" stroke-width="1"/>
+            <text x="350" y="134" fill="#d2a8ff" text-anchor="middle" font-size="12" font-weight="bold">③ _dl_relocate_object()</text>
+            <text x="350" y="150" fill="#8b949e" text-anchor="middle" font-size="11">处理重定位表：填写 GOT 条目，解析符号引用（RTLD_NOW 时立即解析全部）</text>
+
+            <rect x="10" y="164" width="680" height="44" rx="6" fill="#1c2128" stroke="#f0883e" stroke-width="1"/>
+            <text x="350" y="184" fill="#f0883e" text-anchor="middle" font-size="12" font-weight="bold">④ _dl_init() — 执行构造函数</text>
+            <text x="350" y="200" fill="#8b949e" text-anchor="middle" font-size="11">调用 DT_INIT_ARRAY 中注册的 __attribute__((constructor)) 函数</text>
+
+            <line x1="350" y1="58" x2="350" y2="64" stroke="#58a6ff" stroke-width="1.2" marker-end="url(#arr4)"/>
+            <line x1="350" y1="108" x2="350" y2="114" stroke="#58a6ff" stroke-width="1.2" marker-end="url(#arr4)"/>
+            <line x1="350" y1="158" x2="350" y2="164" stroke="#58a6ff" stroke-width="1.2" marker-end="url(#arr4)"/>
+          </g>
+        </svg>
+      </div>
+
+      <div class="principle">
+        <div class="principle-title">第一性原理：动态链接器的本质</div>
+        <p>动态链接器（ld-linux.so）本身也是一个共享对象，但它是自举的（self-contained）——它必须在无任何外部依赖的情况下完成自身重定位，才能去加载其他库。它是操作系统用户空间的"元加载器"：内核只负责将程序和解释器（ld-linux.so）映射进内存，此后的一切库加载、符号解析工作全部由 ld-linux.so 在用户空间完成，无需内核介入。</p>
+      </div>
+    </section>
+
+    <!-- ==================== SECTION 8: LINK_MAP ==================== -->
+    <section class="section" id="sec-linkmap">
+      <h2 class="sec-title"><span class="ch-badge">08</span>link_map 与命名空间</h2>
+      <div class="source-link">来源：glibc elf/dl-open.c · struct dl_open_args · struct link_namespaces</div>
+
+      <p><code>struct link_map</code> 是 glibc 动态链接器管理已加载共享对象的核心数据结构。每一个加载的共享对象（包括主程序）都对应一个 <code>link_map</code> 节点。</p>
+
+      <pre><code><span class="cm">/* glibc 源码 elf/dl-open.c 中的参数结构 */</span>
+<span class="kw">struct</span> dl_open_args {
+    <span class="kw">const</span> <span class="ty">char</span>       *file;           <span class="cm">/* 文件名 */</span>
+    <span class="ty">int</span>               mode;           <span class="cm">/* flags 参数 */</span>
+    <span class="kw">const void</span>       *caller_dlopen;  <span class="cm">/* dlopen() 的调用者 */</span>
+    <span class="kw">struct</span> link_map  *map;            <span class="cm">/* 输出：link_map 节点 */</span>
+    <span class="ty">Lmid_t</span>            nsid;           <span class="cm">/* 命名空间 ID */</span>
+    <span class="ty">int</span>               argc;
+    <span class="ty">char</span>            **argv;
+    <span class="ty">char</span>            **env;
+};
+
+<span class="cm">/* link_map 关键字段（简化） */</span>
+<span class="kw">struct</span> link_map {
+    <span class="ty">ElfW</span>(Addr)    l_addr;        <span class="cm">/* 加载基地址（相对 ELF 文件基地址的偏移）*/</span>
+    <span class="ty">char</span>         *l_name;        <span class="cm">/* 绝对路径名 */</span>
+    <span class="ty">ElfW</span>(Dyn)    *l_ld;          <span class="cm">/* .dynamic 节指针 */</span>
+    <span class="kw">struct</span> link_map *l_next;    <span class="cm">/* 链表：下一个 link_map */</span>
+    <span class="kw">struct</span> link_map *l_prev;    <span class="cm">/* 链表：上一个 link_map */</span>
+    <span class="ty">unsigned int</span>  l_global;     <span class="cm">/* 非零表示在全局符号表中 */</span>
+    <span class="ty">Lmid_t</span>        l_ns;         <span class="cm">/* 所属命名空间 ID */</span>
+    <span class="cm">/* ... 更多字段 ... */</span>
+    <span class="ty">dev_t</span>         l_dev;        <span class="cm">/* 用于检测已加载对象（device+inode 唯一标识）*/</span>
+    <span class="ty">ino64_t</span>       l_ino;
+};</code></pre>
+
+      <!-- Link map chain diagram -->
+      <div class="svg-wrap">
+        <svg viewBox="0 0 700 160" xmlns="http://www.w3.org/2000/svg" width="700" height="160">
+          <defs>
+            <marker id="arr6" markerWidth="8" markerHeight="8" refX="6" refY="3" orient="auto">
+              <path d="M0,0 L0,6 L8,3 z" fill="#8b949e"/>
+            </marker>
+            <marker id="arr7" markerWidth="8" markerHeight="8" refX="6" refY="3" orient="auto">
+              <path d="M0,0 L0,6 L8,3 z" fill="#58a6ff"/>
+            </marker>
+          </defs>
+          <!-- Nodes -->
+          <rect x="10" y="40" width="130" height="80" rx="6" fill="#1f6feb" stroke="#58a6ff" stroke-width="1.5"/>
+          <text x="75" y="65" fill="#fff" text-anchor="middle" font-size="11" font-weight="bold">main program</text>
+          <text x="75" y="83" fill="#a5d6ff" text-anchor="middle" font-size="10">l_addr = 0x400000</text>
+          <text x="75" y="99" fill="#a5d6ff" text-anchor="middle" font-size="10">l_ns = LM_ID_BASE</text>
+          <text x="75" y="113" fill="#a5d6ff" text-anchor="middle" font-size="10">l_global = 1</text>
+
+          <line x1="140" y1="80" x2="178" y2="80" stroke="#8b949e" stroke-width="1.2" marker-end="url(#arr6)"/>
+
+          <rect x="180" y="40" width="130" height="80" rx="6" fill="#1c2128" stroke="#3fb950" stroke-width="1.5"/>
+          <text x="245" y="65" fill="#e6edf3" text-anchor="middle" font-size="11" font-weight="bold">libc.so.6</text>
+          <text x="245" y="83" fill="#8b949e" text-anchor="middle" font-size="10">l_addr = 0x7f...</text>
+          <text x="245" y="99" fill="#8b949e" text-anchor="middle" font-size="10">l_ns = LM_ID_BASE</text>
+          <text x="245" y="113" fill="#8b949e" text-anchor="middle" font-size="10">l_global = 1</text>
+
+          <line x1="310" y1="80" x2="348" y2="80" stroke="#8b949e" stroke-width="1.2" marker-end="url(#arr6)"/>
+
+          <rect x="350" y="40" width="130" height="80" rx="6" fill="#1c2128" stroke="#d2a8ff" stroke-width="1.5"/>
+          <text x="415" y="65" fill="#e6edf3" text-anchor="middle" font-size="11" font-weight="bold">libpthread.so</text>
+          <text x="415" y="83" fill="#8b949e" text-anchor="middle" font-size="10">l_addr = 0x7f...</text>
+          <text x="415" y="99" fill="#8b949e" text-anchor="middle" font-size="10">l_ns = LM_ID_BASE</text>
+          <text x="415" y="113" fill="#8b949e" text-anchor="middle" font-size="10">l_global = 1</text>
+
+          <line x1="480" y1="80" x2="518" y2="80" stroke="#8b949e" stroke-width="1.2" marker-end="url(#arr6)"/>
+
+          <rect x="520" y="40" width="140" height="80" rx="6" fill="#1c2128" stroke="#f78166" stroke-width="1.5"/>
+          <text x="590" y="65" fill="#e6edf3" text-anchor="middle" font-size="11" font-weight="bold">plugin.so (dlopen)</text>
+          <text x="590" y="83" fill="#8b949e" text-anchor="middle" font-size="10">l_addr = 0x7f...</text>
+          <text x="590" y="99" fill="#8b949e" text-anchor="middle" font-size="10">l_ns = LM_ID_BASE</text>
+          <text x="590" y="113" fill="#f78166" text-anchor="middle" font-size="10">l_global = 0 (LOCAL)</text>
+
+          <text x="350" y="145" fill="#8b949e" text-anchor="middle" font-size="11">link_map 双向链表 — 所有已加载对象按命名空间组织</text>
+        </svg>
+      </div>
+
+      <h3>命名空间（Namespace）机制</h3>
+      <p>glibc 支持最多 <strong>16 个</strong>独立的链接映射命名空间（link-map list namespace）。命名空间为动态链接器的符号解析提供隔离环境。</p>
+
+      <table>
+        <thead>
+          <tr><th>命名空间 ID</th><th>含义</th></tr>
+        </thead>
+        <tbody>
+          <tr><td><code>LM_ID_BASE</code></td><td>初始命名空间（应用程序所在命名空间），值为 0</td></tr>
+          <tr><td><code>LM_ID_NEWLM</code></td><td>创建新命名空间并在其中加载（<code>dlmopen()</code> 专用）</td></tr>
+          <tr><td>自定义 ID</td><td>通过 <code>dlinfo()</code> 的 <code>RTLD_DI_LMID</code> 请求获取</td></tr>
+        </tbody>
+      </table>
+
+      <div class="principle">
+        <div class="principle-title">第一性原理：link_map 是动态链接的基础</div>
+        <p><code>link_map</code> 链表是动态链接器的"世界观"——它记录了当前进程中所有已知代码片段的位置。符号解析、重定位、作用域控制，一切操作都基于遍历这个链表。当 <code>dlopen()</code> 返回句柄时，本质上返回的就是新插入链表中的节点指针，句柄的有效性与链表节点的生命周期绑定。</p>
+      </div>
+    </section>
+
+    <!-- ==================== SECTION 9: RELOCATION ==================== -->
+    <section class="section" id="sec-reloc">
+      <h2 class="sec-title"><span class="ch-badge">09</span>重定位与符号解析</h2>
+      <div class="source-link">来源：glibc elf/dl-lookup.c · ELF 规范 · ld.so(8)</div>
+
+      <p>重定位（Relocation）是动态链接的核心操作：将代码和数据中对外部符号的引用，替换为运行时的实际内存地址。</p>
+
+      <h3>重定位条目结构</h3>
+      <pre><code><span class="cm">/* ELF 重定位条目（64位，带加数）*/</span>
+<span class="kw">typedef struct</span> {
+    <span class="ty">Elf64_Addr</span>   r_offset;  <span class="cm">/* 需要修改的内存地址（通常是 GOT 条目地址）*/</span>
+    <span class="ty">Elf64_Xword</span>  r_info;    <span class="cm">/* 高32位：符号表索引; 低32位：重定位类型 */</span>
+    <span class="ty">Elf64_Sxword</span> r_addend;  <span class="cm">/* 加数 */</span>
+} <span class="ty">Elf64_Rela</span>;
+
+<span class="cm">/* 从 r_info 提取字段 */</span>
+<span class="kw">#define</span> ELF64_R_SYM(info)  ((info) >> 32)     <span class="cm">/* 符号表索引 */</span>
+<span class="kw">#define</span> ELF64_R_TYPE(info) ((info) & 0xffffffff) <span class="cm">/* 重定位类型 */</span></code></pre>
+
+      <h3>符号解析过程（dl-lookup.c）</h3>
+
+      <div class="svg-wrap">
+        <svg viewBox="0 0 680 280" xmlns="http://www.w3.org/2000/svg" width="680" height="280">
+          <defs>
+            <marker id="arr8" markerWidth="8" markerHeight="8" refX="6" refY="3" orient="auto">
+              <path d="M0,0 L0,6 L8,3 z" fill="#58a6ff"/>
+            </marker>
+          </defs>
+
+          <text x="340" y="20" fill="#8b949e" text-anchor="middle" font-size="12">符号解析：_dl_lookup_symbol_x() 流程</text>
+
+          <rect x="240" y="30" width="200" height="36" rx="6" fill="#1f6feb" stroke="#58a6ff"/>
+          <text x="340" y="54" fill="#fff" text-anchor="middle" font-size="12">获取符号名 (undef_name)</text>
+
+          <line x1="340" y1="66" x2="340" y2="84" stroke="#58a6ff" stroke-width="1.5" marker-end="url(#arr8)"/>
+
+          <rect x="200" y="84" width="280" height="36" rx="6" fill="#1c2128" stroke="#3fb950"/>
+          <text x="340" y="108" fill="#3fb950" text-anchor="middle" font-size="12">计算符号哈希值（ELF hash 或 GNU hash）</text>
+
+          <line x1="340" y1="120" x2="340" y2="138" stroke="#58a6ff" stroke-width="1.5" marker-end="url(#arr8)"/>
+
+          <rect x="160" y="138" width="360" height="44" rx="6" fill="#1c2128" stroke="#d2a8ff"/>
+          <text x="340" y="157" fill="#d2a8ff" text-anchor="middle" font-size="12">按作用域（scope）广度优先遍历 link_map</text>
+          <text x="340" y="175" fill="#8b949e" text-anchor="middle" font-size="10">主程序 → RTLD_GLOBAL 对象 → 当前对象依赖树</text>
+
+          <line x1="340" y1="182" x2="340" y2="200" stroke="#58a6ff" stroke-width="1.5" marker-end="url(#arr8)"/>
+
+          <rect x="180" y="200" width="320" height="36" rx="6" fill="#1c2128" stroke="#f0883e"/>
+          <text x="340" y="218" fill="#f0883e" text-anchor="middle" font-size="12">在每个对象的 .dynsym 哈希表中查找</text>
+          <text x="340" y="233" fill="#8b949e" text-anchor="middle" font-size="10">比对名称哈希 → 字符串比对 → 确认版本</text>
+
+          <line x1="340" y1="236" x2="340" y2="254" stroke="#58a6ff" stroke-width="1.5" marker-end="url(#arr8)"/>
+
+          <rect x="220" y="254" width="240" height="22" rx="6" fill="#1f2937" stroke="#f78166"/>
+          <text x="340" y="269" fill="#f78166" text-anchor="middle" font-size="12">返回 l_addr + st_value（运行时地址）</text>
+        </svg>
+      </div>
+
+      <h3>常见重定位类型（x86-64）</h3>
+      <table>
+        <thead>
+          <tr><th>类型</th><th>名称</th><th>含义</th><th>使用场景</th></tr>
+        </thead>
+        <tbody>
+          <tr><td><code>R_X86_64_GLOB_DAT</code></td><td>全局数据</td><td>填入符号的绝对地址</td><td>GOT 条目（变量）</td></tr>
+          <tr><td><code>R_X86_64_JUMP_SLOT</code></td><td>跳转槽</td><td>填入函数的绝对地址</td><td>PLT/GOT 条目（函数惰性绑定）</td></tr>
+          <tr><td><code>R_X86_64_RELATIVE</code></td><td>相对地址</td><td>Base + Addend</td><td>PIE 代码中的内部引用</td></tr>
+          <tr><td><code>R_X86_64_COPY</code></td><td>符号拷贝</td><td>将共享库数据复制到可执行文件的 BSS</td><td>可执行文件访问共享库变量</td></tr>
+        </tbody>
+      </table>
+
+      <div class="principle">
+        <div class="principle-title">第一性原理：重定位的本质</div>
+        <p>代码在编译时不知道自己或其依赖会被加载到内存的哪个位置（ASLR 使其随机化）。重定位的本质是<strong>在已知加载基地址后，将所有"地址占位符"替换为真实内存地址</strong>。这是将"代码生产"（编译期）与"代码部署"（运行期）解耦的必然代价——你不能在不知道目标的情况下写出正确的跳转地址。</p>
+      </div>
+    </section>
+
+    <!-- ==================== SECTION 10: PLT/GOT ==================== -->
+    <section class="section" id="sec-plt-got">
+      <h2 class="sec-title"><span class="ch-badge">10</span>PLT / GOT 惰性绑定机制</h2>
+      <div class="source-link">来源：glibc elf/dl-runtime.c · ELF 规范 · ld.so(8) LD_BIND_NOW</div>
+
+      <p>惰性绑定（Lazy Binding，<code>RTLD_LAZY</code>）是 glibc 动态链接的默认策略：函数地址只在第一次调用时才被解析，之后直接通过 GOT 跳转。</p>
+
+      <h3>PLT / GOT 交互流程</h3>
+      <div class="svg-wrap">
+        <svg viewBox="0 0 720 400" xmlns="http://www.w3.org/2000/svg" width="720" height="400">
+          <defs>
+            <marker id="arr9" markerWidth="8" markerHeight="8" refX="6" refY="3" orient="auto">
+              <path d="M0,0 L0,6 L8,3 z" fill="#58a6ff"/>
+            </marker>
+            <marker id="arr10" markerWidth="8" markerHeight="8" refX="6" refY="3" orient="auto">
+              <path d="M0,0 L0,6 L8,3 z" fill="#3fb950"/>
+            </marker>
+            <marker id="arr11" markerWidth="8" markerHeight="8" refX="6" refY="3" orient="auto">
+              <path d="M0,0 L0,6 L8,3 z" fill="#f78166"/>
+            </marker>
+          </defs>
+
+          <!-- Caller code -->
+          <rect x="10" y="10" width="160" height="60" rx="6" fill="#1f2937" stroke="#58a6ff" stroke-width="1.5"/>
+          <text x="90" y="35" fill="#e6edf3" text-anchor="middle" font-size="12" font-weight="bold">调用方代码</text>
+          <text x="90" y="55" fill="#58a6ff" text-anchor="middle" font-family="monospace" font-size="11">call printf@PLT</text>
+
+          <!-- PLT -->
+          <rect x="220" y="10" width="200" height="100" rx="6" fill="#1c2128" stroke="#d2a8ff" stroke-width="1.5"/>
+          <text x="320" y="30" fill="#d2a8ff" text-anchor="middle" font-size="12" font-weight="bold">PLT[printf]</text>
+          <text x="320" y="50" fill="#8b949e" text-anchor="middle" font-family="monospace" font-size="10">jmp *GOT[printf]  ← 第1次</text>
+          <text x="320" y="68" fill="#8b949e" text-anchor="middle" font-family="monospace" font-size="10">push reloc_index</text>
+          <text x="320" y="86" fill="#8b949e" text-anchor="middle" font-family="monospace" font-size="10">jmp PLT[0] (resolver)</text>
+
+          <!-- GOT -->
+          <rect x="480" y="10" width="220" height="60" rx="6" fill="#1c2128" stroke="#f0883e" stroke-width="1.5"/>
+          <text x="590" y="30" fill="#f0883e" text-anchor="middle" font-size="12" font-weight="bold">GOT.plt[printf]</text>
+          <text x="590" y="52" fill="#8b949e" text-anchor="middle" font-size="10">初始值 = PLT[printf]+6 (回PLT)</text>
+
+          <!-- dl_runtime_resolve -->
+          <rect x="220" y="150" width="480" height="60" rx="6" fill="#1c2128" stroke="#3fb950" stroke-width="1.5"/>
+          <text x="460" y="176" fill="#3fb950" text-anchor="middle" font-size="12" font-weight="bold">_dl_runtime_resolve(link_map, reloc_offset)</text>
+          <text x="460" y="198" fill="#8b949e" text-anchor="middle" font-size="10">调用 _dl_fixup() → 查找符号真实地址 → 写入 GOT → 跳转真实函数</text>
+
+          <!-- Real function -->
+          <rect x="480" y="250" width="220" height="60" rx="6" fill="#1f2937" stroke="#f78166" stroke-width="1.5"/>
+          <text x="590" y="276" fill="#f78166" text-anchor="middle" font-size="12" font-weight="bold">printf() 真实实现</text>
+          <text x="590" y="296" fill="#8b949e" text-anchor="middle" font-size="10">libc.so 内的实际代码</text>
+
+          <!-- GOT after resolve -->
+          <rect x="480" y="330" width="220" height="50" rx="6" fill="#1c2128" stroke="#3fb950" stroke-width="1.5"/>
+          <text x="590" y="352" fill="#3fb950" text-anchor="middle" font-size="11" font-weight="bold">GOT.plt[printf] 更新后</text>
+          <text x="590" y="370" fill="#8b949e" text-anchor="middle" font-size="10">值 = printf 真实地址（永久缓存）</text>
+
+          <!-- Arrows -->
+          <line x1="170" y1="40" x2="218" y2="40" stroke="#58a6ff" stroke-width="1.5" marker-end="url(#arr9)"/>
+          <text x="194" y="32" fill="#58a6ff" text-anchor="middle" font-size="10">①call</text>
+
+          <line x1="420" y1="40" x2="478" y2="40" stroke="#58a6ff" stroke-width="1.5" marker-end="url(#arr9)"/>
+          <text x="449" y="32" fill="#8b949e" text-anchor="middle" font-size="10">②jmp→GOT</text>
+
+          <path d="M 590 70 L 590 110 L 460 110 L 460 148" stroke="#f0883e" stroke-width="1.5" fill="none" marker-end="url(#arr9)"/>
+          <text x="530" y="107" fill="#f0883e" text-anchor="middle" font-size="10">③GOT→PLT→resolver</text>
+
+          <line x1="460" y1="210" x2="590" y2="248" stroke="#3fb950" stroke-width="1.5" marker-end="url(#arr10)"/>
+          <text x="560" y="238" fill="#3fb950" text-anchor="middle" font-size="10">④执行</text>
+
+          <line x1="590" y1="310" x2="590" y2="328" stroke="#3fb950" stroke-width="1.5" marker-end="url(#arr10)"/>
+          <text x="630" y="323" fill="#3fb950" text-anchor="middle" font-size="10">⑤写GOT</text>
+
+          <text x="200" y="380" fill="#8b949e" text-anchor="middle" font-size="11">第2次调用：call→PLT→jmp *GOT → 直接跳转真实地址（无需再次解析）</text>
+        </svg>
+      </div>
+
+      <h3>PLT[0] — 解析器（Resolver）入口</h3>
+      <p>每个 ELF 的 PLT 第 0 项是特殊的"公共 resolver"，其汇编等价于：</p>
+      <pre><code><span class="cm">; PLT[0] - 调用动态链接器的运行时解析器</span>
+<span class="fn">push</span>  QWORD PTR [rip+GOT[1]]   <span class="cm">; push link_map 指针</span>
+<span class="fn">jmp</span>   QWORD PTR [rip+GOT[2]]   <span class="cm">; jmp _dl_runtime_resolve</span>
+<span class="cm">; GOT[2] 在 ld-linux.so 初始化时被填入 _dl_runtime_resolve 的地址</span></code></pre>
+
+      <div class="callout tip">
+        <div class="callout-title">RTLD_NOW vs RTLD_LAZY</div>
+        <p>使用 <code>RTLD_NOW</code>（或设置 <code>LD_BIND_NOW</code>）时，<code>_dl_relocate_object()</code> 在加载时立即解析所有 <code>R_X86_64_JUMP_SLOT</code> 类型的重定位，直接将真实地址写入 GOT，跳过惰性绑定路径。<strong>代价是启动时间增加，收益是运行时无解析开销且能提前发现符号缺失错误。</strong></p>
+      </div>
+
+      <div class="principle">
+        <div class="principle-title">第一性原理：惰性绑定的权衡</div>
+        <p>PLT/GOT 的惰性绑定是典型的"时间换时间"优化：将解析成本从启动时刻分散到各函数首次调用时刻。对于包含大量外部函数但实际只调用其中少数的程序（如按需激活插件），惰性绑定显著降低启动延迟。代价是首次调用有额外的一次解析开销和一次 GOT 写操作，以及需要 GOT 所在页面可写（潜在的安全风险，可用 RELRO 缓解）。</p>
+      </div>
+    </section>
+
+    <!-- ==================== SECTION 11: DLMOPEN ==================== -->
+    <section class="section" id="sec-dlmopen">
+      <h2 class="sec-title"><span class="ch-badge">11</span>dlmopen() 命名空间隔离</h2>
+      <div class="source-link">来源：man3/dlopen(3) § dlmopen() · Linux man-pages 6.18</div>
+
+      <pre><code><span class="kw">#define</span> _GNU_SOURCE
+<span class="kw">#include</span> <span class="str">&lt;dlfcn.h&gt;</span>
+
+<span class="ty">void</span> *<span class="fn">dlmopen</span>(<span class="ty">Lmid_t</span> lmid, <span class="kw">const</span> <span class="ty">char</span> *path, <span class="ty">int</span> flags);</code></pre>
+
+      <p><code>dlmopen()</code> 与 <code>dlopen()</code> 的功能相同，区别在于它接受一个额外的参数 <code>lmid</code>，用于指定应在哪个链接映射列表（命名空间）中加载共享对象。</p>
+
+      <h3>为何需要 dlmopen？</h3>
+      <p><code>dlopen()</code> 使用 <code>RTLD_LOCAL</code> 不足以完全隔离，原因在于：</p>
+      <ul>
+        <li>用 <code>RTLD_LOCAL</code> 加载的对象，若其依赖用 <code>RTLD_GLOBAL</code> 加载，则会被"晋升"为 <code>RTLD_GLOBAL</code>。</li>
+        <li>因此，只有在明确控制所有依赖的罕见情况下，<code>RTLD_LOCAL</code> 才能提供充分的隔离。</li>
+      </ul>
+
+      <div class="svg-wrap">
+        <svg viewBox="0 0 680 260" xmlns="http://www.w3.org/2000/svg" width="680" height="260">
+          <!-- Namespace 1 -->
+          <rect x="10" y="30" width="310" height="210" rx="8" fill="rgba(88,166,255,0.04)" stroke="#58a6ff" stroke-width="1.5" stroke-dasharray="6,3"/>
+          <text x="165" y="52" fill="#58a6ff" text-anchor="middle" font-size="12" font-weight="bold">命名空间 LM_ID_BASE (0)</text>
+
+          <rect x="30" y="65" width="120" height="44" rx="6" fill="#1c2128" stroke="#3fb950"/>
+          <text x="90" y="85" fill="#3fb950" text-anchor="middle" font-size="11">main program</text>
+          <text x="90" y="101" fill="#8b949e" text-anchor="middle" font-size="10">+ libc.so</text>
+
+          <rect x="180" y="65" width="120" height="44" rx="6" fill="#1c2128" stroke="#d2a8ff"/>
+          <text x="240" y="85" fill="#d2a8ff" text-anchor="middle" font-size="11">plugin-A.so</text>
+          <text x="240" y="101" fill="#8b949e" text-anchor="middle" font-size="10">RTLD_GLOBAL</text>
+
+          <text x="165" y="140" fill="#8b949e" text-anchor="middle" font-size="11">符号可相互解析</text>
+
+          <rect x="30" y="160" width="260" height="60" rx="6" fill="#1c2128" stroke="#58a6ff"/>
+          <text x="160" y="183" fill="#58a6ff" text-anchor="middle" font-size="11">RTLD_LOCAL plugin：</text>
+          <text x="160" y="203" fill="#8b949e" text-anchor="middle" font-size="10">若依赖 RTLD_GLOBAL 对象 → 可能被晋升</text>
+
+          <!-- Namespace 2 (dlmopen) -->
+          <rect x="360" y="30" width="310" height="210" rx="8" fill="rgba(247,129,102,0.04)" stroke="#f78166" stroke-width="1.5" stroke-dasharray="6,3"/>
+          <text x="515" y="52" fill="#f78166" text-anchor="middle" font-size="12" font-weight="bold">新命名空间 (LM_ID_NEWLM)</text>
+
+          <rect x="380" y="65" width="130" height="44" rx="6" fill="#1c2128" stroke="#f78166"/>
+          <text x="445" y="85" fill="#f78166" text-anchor="middle" font-size="11">plugin-B.so</text>
+          <text x="445" y="101" fill="#8b949e" text-anchor="middle" font-size="10">dlmopen 加载</text>
+
+          <rect x="530" y="65" width="120" height="44" rx="6" fill="#1c2128" stroke="#f78166" stroke-dasharray="4,2"/>
+          <text x="590" y="85" fill="#f78166" text-anchor="middle" font-size="11">libc.so (副本)</text>
+          <text x="590" y="101" fill="#8b949e" text-anchor="middle" font-size="10">新命名空间内</text>
+
+          <text x="515" y="145" fill="#8b949e" text-anchor="middle" font-size="11">完全隔离，符号不相互干扰</text>
+          <text x="515" y="165" fill="#3fb950" text-anchor="middle" font-size="10">✓ 可加载同一 .so 的多个实例</text>
+          <text x="515" y="185" fill="#3fb950" text-anchor="middle" font-size="10">✓ 插件框架信任边界</text>
+          <text x="515" y="205" fill="#3fb950" text-anchor="middle" font-size="10">✓ 全局变量相互独立</text>
+
+          <!-- Barrier -->
+          <line x1="340" y1="30" x2="340" y2="240" stroke="#30363d" stroke-width="2" stroke-dasharray="8,4"/>
+          <text x="340" y="255" fill="#8b949e" text-anchor="middle" font-size="10">命名空间隔离边界</text>
+        </svg>
+      </div>
+
+      <h3>典型使用场景</h3>
+      <ul>
+        <li><strong>插件框架安全隔离</strong>：插件框架作者无法信任插件作者，不希望框架中的未定义符号被插件符号解析，使用独立命名空间可实现此目的</li>
+        <li><strong>同一对象多次加载</strong>：无需创建共享对象文件的不同副本，通过 <code>dlmopen()</code> 将同一共享对象文件加载到不同命名空间，即可实现多个互相独立的实例</li>
+      </ul>
+
+      <div class="callout danger">
+        <div class="callout-title">已知 Bug（glibc 2.24）</div>
+        在调用 <code>dlmopen()</code> 时指定 <code>RTLD_GLOBAL</code> 标志会产生错误。此外，在初始命名空间以外的命名空间中加载的任何对象调用 <code>dlopen()</code> 时指定 <code>RTLD_GLOBAL</code>，会导致程序崩溃（SIGSEGV）。
+      </div>
+
+      <div class="principle">
+        <div class="principle-title">第一性原理：命名空间隔离的必要性</div>
+        <p>符号名称是全局的、扁平的字符串，不同来源的代码可能使用相同的符号名但期望不同的实现（例如两个插件都定义了 <code>my_init</code>）。命名空间将"符号空间"从一维（全局唯一）扩展为二维（命名空间 × 符号名），使同名符号在不同命名空间中独立存在，这是解决符号冲突的根本手段。</p>
+      </div>
+    </section>
+
+    <!-- ==================== SECTION 12: FLAGS ==================== -->
+    <section class="section" id="sec-flags">
+      <h2 class="sec-title"><span class="ch-badge">12</span>标志位深度解析</h2>
+      <div class="source-link">来源：man3/dlopen(3) · man3/dlsym(3) · Linux man-pages 6.18</div>
+
+      <h3>RTLD_GLOBAL vs RTLD_LOCAL</h3>
+      <div class="svg-wrap">
+        <svg viewBox="0 0 680 200" xmlns="http://www.w3.org/2000/svg" width="680" height="200">
+          <!-- GLOBAL -->
+          <rect x="10" y="20" width="300" height="160" rx="8" fill="rgba(63,185,80,0.05)" stroke="#3fb950" stroke-width="1.5"/>
+          <text x="160" y="45" fill="#3fb950" text-anchor="middle" font-size="13" font-weight="bold">RTLD_GLOBAL</text>
+          <text x="160" y="68" fill="#8b949e" text-anchor="middle" font-size="11">符号对全局可见</text>
+          <rect x="40" y="80" width="80" height="30" rx="4" fill="#1c2128" stroke="#3fb950"/>
+          <text x="80" y="100" fill="#3fb950" text-anchor="middle" font-size="10">libA.so</text>
+          <rect x="150" y="80" width="100" height="30" rx="4" fill="#1c2128" stroke="#58a6ff"/>
+          <text x="200" y="100" fill="#58a6ff" text-anchor="middle" font-size="10">后续 libB.so</text>
+          <line x1="120" y1="95" x2="148" y2="95" stroke="#3fb950" stroke-width="1.5" marker-end="url(#arr9)"/>
+          <text x="160" y="140" fill="#8b949e" text-anchor="middle" font-size="10">libB 可直接解析 libA 的符号</text>
+          <text x="160" y="158" fill="#3fb950" text-anchor="middle" font-size="10">✓ 插件共享宿主符号</text>
+          <text x="160" y="175" fill="#f0883e" text-anchor="middle" font-size="10">⚠ 可能产生符号冲突</text>
+
+          <!-- LOCAL -->
+          <rect x="370" y="20" width="300" height="160" rx="8" fill="rgba(247,129,102,0.05)" stroke="#f78166" stroke-width="1.5"/>
+          <text x="520" y="45" fill="#f78166" text-anchor="middle" font-size="13" font-weight="bold">RTLD_LOCAL（默认）</text>
+          <text x="520" y="68" fill="#8b949e" text-anchor="middle" font-size="11">符号仅对自身及依赖可见</text>
+          <rect x="400" y="80" width="80" height="30" rx="4" fill="#1c2128" stroke="#f78166"/>
+          <text x="440" y="100" fill="#f78166" text-anchor="middle" font-size="10">libA.so</text>
+          <rect x="520" y="80" width="100" height="30" rx="4" fill="#1c2128" stroke="#30363d"/>
+          <text x="570" y="100" fill="#8b949e" text-anchor="middle" font-size="10">后续 libB.so</text>
+          <line x1="480" y1="95" x2="518" y2="95" stroke="#f78166" stroke-width="1.5" stroke-dasharray="4,3"/>
+          <text x="520" y="140" fill="#8b949e" text-anchor="middle" font-size="10">libB 无法解析 libA 的符号</text>
+          <text x="520" y="158" fill="#3fb950" text-anchor="middle" font-size="10">✓ 避免符号污染</text>
+          <text x="520" y="175" fill="#f0883e" text-anchor="middle" font-size="10">⚠ 需在内部自行解析全部依赖</text>
+        </svg>
+      </div>
+
+      <h3>RTLD_NODELETE 的应用</h3>
+      <pre><code><span class="cm">/* 使用 RTLD_NODELETE 防止静态变量被重置 */</span>
+<span class="ty">void</span> *handle = <span class="fn">dlopen</span>(<span class="str">"./mylib.so"</span>, RTLD_LAZY | RTLD_NODELETE);
+<span class="cm">/* 调用 dlclose() 后对象不从内存卸载，静态变量保持状态 */</span>
+<span class="fn">dlclose</span>(handle);
+<span class="cm">/* 再次 dlopen，得到已有对象，静态变量状态未改变 */</span>
+handle = <span class="fn">dlopen</span>(<span class="str">"./mylib.so"</span>, RTLD_LAZY | RTLD_NODELETE);</code></pre>
+
+      <h3>RTLD_NOLOAD 的应用</h3>
+      <pre><code><span class="cm">/* 测试库是否已驻留内存 */</span>
+<span class="ty">void</span> *handle = <span class="fn">dlopen</span>(<span class="str">"libssl.so"</span>, RTLD_NOLOAD | RTLD_NOW);
+<span class="kw">if</span> (handle == <span class="num">NULL</span>) {
+    <span class="fn">printf</span>(<span class="str">"libssl 未加载\n"</span>);
+} <span class="kw">else</span> {
+    <span class="fn">printf</span>(<span class="str">"libssl 已驻留内存\n"</span>);
+    <span class="fn">dlclose</span>(handle); <span class="cm">/* 平衡引用计数 */</span>
+}
+
+<span class="cm">/* 提升已有对象的标志位 */</span>
+<span class="ty">void</span> *h = <span class="fn">dlopen</span>(<span class="str">"libfoo.so"</span>, RTLD_NOLOAD | RTLD_GLOBAL);
+<span class="cm">/* 将已加载的 libfoo.so 从 RTLD_LOCAL 提升为 RTLD_GLOBAL */</span></code></pre>
+
+      <h3>RTLD_DEEPBIND 的隔离作用</h3>
+      <div class="callout info">
+        <div class="callout-title">RTLD_DEEPBIND（glibc 2.3.4+）</div>
+        <p>将该共享对象的符号查找范围置于全局范围之前。这意味着一个自包含的对象在有同名全局符号的情况下，优先使用自身定义的符号。常用于加载与宿主环境存在符号名冲突的第三方插件。</p>
+      </div>
+
+      <div class="principle">
+        <div class="principle-title">第一性原理：标志位是策略而非机制</div>
+        <p>所有标志位本质上都是在回答同一个问题：<strong>"这段新加入的代码，和进程中已有的代码，应该如何相互"看见"？"</strong> RTLD_GLOBAL/LOCAL 控制可见性，RTLD_LAZY/NOW 控制解析时机，RTLD_NODELETE 控制生命周期，RTLD_DEEPBIND 控制优先级。它们构成了动态链接策略的正交维度集合。</p>
+      </div>
+    </section>
+
+    <!-- ==================== SECTION 13: CTOR/DTOR ==================== -->
+    <section class="section" id="sec-ctor">
+      <h2 class="sec-title"><span class="ch-badge">13</span>构造 / 析构函数机制</h2>
+      <div class="source-link">来源：man3/dlopen(3) § Initialization and finalization functions · Linux man-pages 6.18</div>
+
+      <p>共享对象可以使用 <code>__attribute__((constructor))</code> 和 <code>__attribute__((destructor))</code> 函数属性导出初始化和终止化函数。</p>
+
+      <div class="callout info">
+        <div class="callout-title">官方规范（来自 man page）</div>
+        <ul>
+          <li>构造函数在 <code>dlopen()</code> 返回之前执行</li>
+          <li>析构函数在 <code>dlclose()</code> 返回之前执行</li>
+          <li>共享对象可以导出多个构造函数和析构函数，每个函数可以关联优先级以决定执行顺序</li>
+          <li>自 glibc 2.2.3 起，<code>atexit(3)</code> 可用于注册一个在共享对象被卸载时自动调用的退出处理器</li>
+        </ul>
+      </div>
+
+      <pre><code><span class="cm">/* 共享库中的构造/析构函数 */</span>
+<span class="kw">__attribute__</span>((constructor))
+<span class="kw">static void</span> <span class="fn">my_init</span>(<span class="ty">void</span>)
+{
+    <span class="fn">printf</span>(<span class="str">"[%s] 构造函数执行，在 dlopen() 返回前\n"</span>, __FILE__);
+}
+
+<span class="kw">__attribute__</span>((destructor))
+<span class="kw">static void</span> <span class="fn">my_fini</span>(<span class="ty">void</span>)
+{
+    <span class="fn">printf</span>(<span class="str">"[%s] 析构函数执行，在 dlclose() 返回前\n"</span>, __FILE__);
+}
+
+<span class="cm">/* 带优先级的构造函数（数字越小越先执行，101-65535 用户可用）*/</span>
+<span class="kw">__attribute__</span>((constructor(200)))
+<span class="kw">static void</span> <span class="fn">my_init_priority</span>(<span class="ty">void</span>) { <span class="cm">/* ... */</span> }</code></pre>
+
+      <h3>历史：_init / _fini（已废弃）</h3>
+      <p>早期通过 <code>_init()</code> 和 <code>_fini()</code> 函数实现，动态加载后和卸载前分别被调用。现已废弃，推荐使用 <code>__attribute__((constructor/destructor))</code>，后者支持定义多个函数且可控执行顺序。</p>
+
+      <div class="svg-wrap">
+        <svg viewBox="0 0 680 180" xmlns="http://www.w3.org/2000/svg" width="680" height="180">
+          <defs>
+            <marker id="arr12" markerWidth="8" markerHeight="8" refX="6" refY="3" orient="auto">
+              <path d="M0,0 L0,6 L8,3 z" fill="#58a6ff"/>
+            </marker>
+          </defs>
+          <!-- Timeline -->
+          <line x1="30" y1="90" x2="650" y2="90" stroke="#30363d" stroke-width="2"/>
+
+          <circle cx="80" cy="90" r="6" fill="#1f6feb"/>
+          <text x="80" y="70" fill="#58a6ff" text-anchor="middle" font-size="11">dlopen()</text>
+          <text x="80" y="56" fill="#8b949e" text-anchor="middle" font-size="10">调用</text>
+
+          <circle cx="200" cy="90" r="6" fill="#3fb950"/>
+          <text x="200" y="115" fill="#3fb950" text-anchor="middle" font-size="11">mmap() 映射</text>
+          <text x="200" y="130" fill="#8b949e" text-anchor="middle" font-size="10">ELF segments</text>
+
+          <circle cx="330" cy="90" r="6" fill="#d2a8ff"/>
+          <text x="330" y="70" fill="#d2a8ff" text-anchor="middle" font-size="11">重定位</text>
+          <text x="330" y="56" fill="#8b949e" text-anchor="middle" font-size="10">符号解析</text>
+
+          <circle cx="460" cy="90" r="6" fill="#f0883e"/>
+          <text x="460" y="115" fill="#f0883e" text-anchor="middle" font-size="11">constructor()</text>
+          <text x="460" y="130" fill="#8b949e" text-anchor="middle" font-size="10">按优先级执行</text>
+
+          <circle cx="580" cy="90" r="6" fill="#1f6feb"/>
+          <text x="580" y="70" fill="#58a6ff" text-anchor="middle" font-size="11">dlopen() 返回</text>
+          <text x="580" y="56" fill="#8b949e" text-anchor="middle" font-size="10">句柄</text>
+
+          <!-- dlclose timeline -->
+          <line x1="30" y1="155" x2="650" y2="155" stroke="#30363d" stroke-width="2"/>
+
+          <circle cx="80" cy="155" r="6" fill="#1f6feb"/>
+          <text x="80" y="175" fill="#58a6ff" text-anchor="middle" font-size="11">dlclose()</text>
+
+          <circle cx="240" cy="155" r="6" fill="#f78166"/>
+          <text x="240" y="145" fill="#f78166" text-anchor="middle" font-size="11">destructor()</text>
+
+          <circle cx="430" cy="155" r="6" fill="#8b949e"/>
+          <text x="430" y="175" fill="#8b949e" text-anchor="middle" font-size="11">munmap()</text>
+
+          <circle cx="580" cy="155" r="6" fill="#1f6feb"/>
+          <text x="580" y="145" fill="#58a6ff" text-anchor="middle" font-size="11">dlclose() 返回</text>
+        </svg>
+      </div>
+
+      <div class="principle">
+        <div class="principle-title">第一性原理：RAII 在动态链接中的体现</div>
+        <p>构造/析构函数机制是 RAII（资源获取即初始化）原则在共享对象级别的体现。共享对象的"获取"（dlopen）和"释放"（dlclose）时刻，分别对应资源初始化和清理的时机。这使共享对象能够管理自身的内部资源（数据库连接、线程、内存池等），而无需调用者显式干预，实现了模块化的资源管理。</p>
+      </div>
+    </section>
+
+    <!-- ==================== SECTION 14: SCENES ==================== -->
+    <section class="section" id="sec-scenes">
+      <h2 class="sec-title"><span class="ch-badge">14</span>典型使用场景</h2>
+
+      <div class="scenario-grid">
+        <div class="scenario-card">
+          <div class="sc-icon">🔌</div>
+          <h4>插件系统</h4>
+          <p>应用程序在启动后根据配置文件或用户操作动态加载功能扩展（插件），实现功能的热插拔，无需重新编译主程序。<br><span class="tag tag-blue">RTLD_LAZY</span><span class="tag tag-green">RTLD_LOCAL</span></p>
+        </div>
+        <div class="scenario-card">
+          <div class="sc-icon">🎛️</div>
+          <h4>可选依赖加载</h4>
+          <p>程序支持可选特性（如 GPU 加速、加密库），仅在运行环境可用时加载对应库，优雅降级。<br><span class="tag tag-orange">RTLD_NOLOAD 探测</span></p>
+        </div>
+        <div class="scenario-card">
+          <div class="sc-icon">🪝</div>
+          <h4>函数拦截 / Hooking</h4>
+          <p>通过 <code>LD_PRELOAD</code> 或 <code>RTLD_NEXT</code>，在不修改原始代码的情况下拦截并包装库函数，用于调试、性能分析、故障注入。<br><span class="tag tag-purple">RTLD_NEXT</span></p>
+        </div>
+        <div class="scenario-card">
+          <div class="sc-icon">🔁</div>
+          <h4>热重载 / 动态更新</h4>
+          <p>开发环境中修改共享库后，使用 dlclose + dlopen 重新加载，无需重启进程即可应用代码更新。<br><span class="tag tag-blue">RTLD_NOW</span><span class="tag tag-orange">RTLD_NODELETE</span></p>
+        </div>
+        <div class="scenario-card">
+          <div class="sc-icon">🔒</div>
+          <h4>沙盒 / 安全隔离</h4>
+          <p>不信任的第三方代码在独立命名空间中加载，防止其符号污染主程序或其他插件的符号空间。<br><span class="tag tag-purple">dlmopen LM_ID_NEWLM</span></p>
+        </div>
+        <div class="scenario-card">
+          <div class="sc-icon">🌐</div>
+          <h4>多版本共存</h4>
+          <p>同一进程中同时使用同一库的不同版本（如 libssl 1.0 和 3.x），通过命名空间隔离各版本的全局状态。<br><span class="tag tag-purple">dlmopen</span></p>
+        </div>
+        <div class="scenario-card">
+          <div class="sc-icon">🔍</div>
+          <h4>运行时自省</h4>
+          <p>使用 <code>dladdr()</code> 根据函数指针反查其所在库和符号名，用于崩溃回溯、性能剖析、调试器实现。<br><span class="tag tag-green">dladdr()</span></p>
+        </div>
+        <div class="scenario-card">
+          <div class="sc-icon">⚙️</div>
+          <h4>驱动 / 后端切换</h4>
+          <p>渲染引擎、数据库驱动、编解码器等按运行时条件选择最优实现，通过统一接口（函数指针表）调用不同后端。<br><span class="tag tag-blue">dlsym + 接口表</span></p>
+        </div>
+      </div>
+
+      <h3>典型插件系统代码模式</h3>
+      <pre><code><span class="cm">/* 宿主程序：插件加载框架 */</span>
+<span class="kw">typedef struct</span> {
+    <span class="ty">int</span>   (*init)(<span class="ty">void</span>);
+    <span class="ty">void</span>  (*process)(<span class="ty">void</span> *data);
+    <span class="ty">void</span>  (*cleanup)(<span class="ty">void</span>);
+} <span class="ty">PluginAPI</span>;
+
+<span class="ty">void</span> *<span class="fn">load_plugin</span>(<span class="kw">const</span> <span class="ty">char</span> *path) {
+    <span class="ty">void</span> *handle = <span class="fn">dlopen</span>(path, RTLD_LAZY | RTLD_LOCAL);
+    <span class="kw">if</span> (!handle) {
+        <span class="fn">fprintf</span>(stderr, <span class="str">"加载插件失败: %s\n"</span>, <span class="fn">dlerror</span>());
+        <span class="kw">return</span> <span class="num">NULL</span>;
+    }
+
+    <span class="fn">dlerror</span>(); <span class="cm">/* 清除错误 */</span>
+
+    <span class="cm">/* 查找插件入口 */</span>
+    <span class="ty">PluginAPI</span> *api;
+    *((<span class="ty">void</span> **)&api) = <span class="fn">dlsym</span>(handle, <span class="str">"plugin_api"</span>);
+    <span class="ty">char</span> *err = <span class="fn">dlerror</span>();
+    <span class="kw">if</span> (err) {
+        <span class="fn">fprintf</span>(stderr, <span class="str">"未找到符号: %s\n"</span>, err);
+        <span class="fn">dlclose</span>(handle);
+        <span class="kw">return</span> <span class="num">NULL</span>;
+    }
+
+    <span class="kw">if</span> (api-><span class="fn">init</span>() != 0) {
+        <span class="fn">dlclose</span>(handle);
+        <span class="kw">return</span> <span class="num">NULL</span>;
+    }
+    <span class="kw">return</span> handle;
+}
+
+<span class="cm">/* 卸载插件 */</span>
+<span class="ty">void</span> <span class="fn">unload_plugin</span>(<span class="ty">void</span> *handle, <span class="ty">PluginAPI</span> *api) {
+    <span class="kw">if</span> (api) api-><span class="fn">cleanup</span>();
+    <span class="fn">dlclose</span>(handle);
+}</code></pre>
+
+      <h3>RTLD_NEXT 函数拦截模式</h3>
+      <pre><code><span class="cm">/* libintercept.c - 编译为: gcc -shared -fPIC -ldl -o libintercept.so libintercept.c */</span>
+<span class="kw">#define</span> _GNU_SOURCE
+<span class="kw">#include</span> <span class="str">&lt;dlfcn.h&gt;</span>
+<span class="kw">#include</span> <span class="str">&lt;stdio.h&gt;</span>
+
+<span class="cm">/* 拦截 malloc，记录分配信息 */</span>
+<span class="ty">void</span> *<span class="fn">malloc</span>(<span class="ty">size_t</span> size) {
+    <span class="kw">static</span> <span class="ty">void</span> *(*real_malloc)(<span class="ty">size_t</span>) = <span class="num">NULL</span>;
+    <span class="kw">if</span> (!real_malloc)
+        real_malloc = <span class="fn">dlsym</span>(RTLD_NEXT, <span class="str">"malloc"</span>);
+
+    <span class="ty">void</span> *ptr = real_malloc(size);
+    <span class="fn">fprintf</span>(stderr, <span class="str">"malloc(%zu) = %p\n"</span>, size, ptr);
+    <span class="kw">return</span> ptr;
+}
+<span class="cm">/* 使用: LD_PRELOAD=./libintercept.so ./your_program */</span></code></pre>
+
+      <div class="principle">
+        <div class="principle-title">第一性原理：dlopen 的本质价值</div>
+        <p>dlopen API 的核心价值是<strong>将软件的功能边界从编译时延伸到运行时</strong>。这解耦了"功能提供者"和"功能使用者"的生命周期，使得功能可以独立演进、独立部署、按需激活。代价是需要通过字符串名称（而非类型系统）进行接口契约，丧失了编译时类型安全——这要求开发者在设计插件接口时格外谨慎。</p>
+      </div>
+    </section>
+
+    <!-- ==================== SECTION 15: PITFALLS ==================== -->
+    <section class="section" id="sec-pitfalls">
+      <h2 class="sec-title"><span class="ch-badge">15</span>常见陷阱与最佳实践</h2>
+
+      <h3>陷阱一：句柄泄漏</h3>
+      <div class="callout danger">
+        <div class="callout-title">错误模式</div>
+        忘记调用 <code>dlclose()</code> 导致引用计数永远不降至零，共享对象无法卸载，造成内存泄漏和资源泄漏。
+      </div>
+      <pre><code><span class="cm">/* ❌ 错误：未配对 dlclose */</span>
+<span class="ty">void</span> *h = <span class="fn">dlopen</span>(<span class="str">"./lib.so"</span>, RTLD_LAZY);
+<span class="kw">if</span> (!h) <span class="kw">return</span> -1;
+<span class="cm">/* ... 使用库 ... */</span>
+<span class="kw">return</span> 0;  <span class="cm">/* 遗忘 dlclose! */</span>
+
+<span class="cm">/* ✓ 正确：使用 goto 确保清理 */</span>
+<span class="ty">void</span> *h = <span class="fn">dlopen</span>(<span class="str">"./lib.so"</span>, RTLD_LAZY);
+<span class="kw">if</span> (!h) <span class="kw">goto</span> err;
+<span class="cm">/* ... */</span>
+<span class="kw">out</span>:
+    <span class="fn">dlclose</span>(h);
+    <span class="kw">return</span> ret;
+<span class="kw">err</span>:
+    ret = -1; <span class="kw">goto</span> out;</code></pre>
+
+      <h3>陷阱二：卸载后使用悬空指针</h3>
+      <div class="callout danger">
+        <div class="callout-title">危险行为</div>
+        <code>dlclose()</code> 后继续使用 <code>dlsym()</code> 取到的函数指针或数据指针，导致访问已卸载内存（未定义行为）。
+      </div>
+      <pre><code><span class="cm">/* ❌ 错误：dlclose 后使用函数指针 */</span>
+<span class="ty">void</span> (*fn)() = <span class="fn">dlsym</span>(handle, <span class="str">"func"</span>);
+<span class="fn">dlclose</span>(handle); <span class="cm">/* lib 已卸载（若引用计数归零）*/</span>
+<span class="fn">fn</span>();            <span class="cm">/* 未定义行为！可能 SIGSEGV */</span></code></pre>
+
+      <h3>陷阱三：符号名称拼写错误</h3>
+      <pre><code><span class="cm">/* ❌ C++ 符号名需要 extern "C" 声明，否则符号被 mangle */</span>
+<span class="cm">// 库中：void myFunc() {} → 被 mangle 为 _Z6myFuncv</span>
+<span class="ty">void</span> *p = <span class="fn">dlsym</span>(h, <span class="str">"myFunc"</span>); <span class="cm">/* 返回 NULL！ */</span>
+
+<span class="cm">/* ✓ 正确：在库中使用 extern "C" */</span>
+<span class="kw">extern</span> <span class="str">"C"</span> <span class="ty">void</span> <span class="fn">myFunc</span>() {}
+<span class="cm">/* 或使用 nm -D ./lib.so 查看实际符号名 */</span></code></pre>
+
+      <h3>陷阱四：线程安全与错误状态</h3>
+      <div class="callout warn">
+        <div class="callout-title">dlerror() 线程安全注意事项</div>
+        <p>虽然 <code>dlerror()</code> 是 MT-Safe 的（使用线程局部存储），但在多线程程序中，清除-操作-检查这三步之间仍可能被其他线程的 dlopen 调用改变状态。应确保单个线程内的调用序列完整（clear → operate → check）。</p>
+      </div>
+
+      <h3>最佳实践总结</h3>
+      <table>
+        <thead>
+          <tr><th>实践</th><th>建议</th></tr>
+        </thead>
+        <tbody>
+          <tr><td>接口设计</td><td>使用 <code>extern "C"</code> 防止 C++ 符号 mangling；设计版本化接口（如版本号结构体）</td></tr>
+          <tr><td>错误处理</td><td>始终先 <code>dlerror()</code> 清除，操作后立即检查；永不忽略 <code>dlopen()</code> 返回 NULL</td></tr>
+          <tr><td>生命周期</td><td>将 dlopen/dlclose 配对封装；使用 <code>RTLD_NODELETE</code> 保护有状态的库</td></tr>
+          <tr><td>符号可见性</td><td>插件默认使用 <code>RTLD_LOCAL</code>；使用 <code>-fvisibility=hidden</code> 编译插件，仅导出必要符号</td></tr>
+          <tr><td>调试</td><td>设置 <code>LD_DEBUG=libs,symbols</code> 观察加载和符号解析；使用 <code>RTLD_NOW</code> 提前暴露符号缺失</td></tr>
+          <tr><td>安全</td><td>不信任的插件使用 <code>dlmopen()</code> 隔离；避免加载 suid 环境下用户可控路径的 .so 文件</td></tr>
+        </tbody>
+      </table>
+
+      <div class="principle">
+        <div class="principle-title">第一性原理：动态链接的代价与边界</div>
+        <p>动态链接的所有陷阱都源自同一个根本矛盾：<strong>编译器在编译时提供的类型系统保证，在 dlopen 的世界中被降级为运行时字符串匹配</strong>。类型安全、符号可见性、生命周期管理——这些原本由语言和链接器保证的属性，现在需要开发者通过规约和惯例来维护。理解这个代价，才能正确设计 dlopen 的使用边界。</p>
+      </div>
+    </section>
+
+    <!-- ==================== SECTION 16: REFERENCES ==================== -->
+    <section class="section" id="sec-ref">
+      <h2 class="sec-title"><span class="ch-badge">16</span>参考资料</h2>
+
+      <h3>官方权威来源（本文依据）</h3>
+      <table>
+        <thead>
+          <tr><th>文档</th><th>链接</th><th>版本</th></tr>
+        </thead>
+        <tbody>
+          <tr>
+            <td>dlopen(3) man page</td>
+            <td><a href="https://man7.org/linux/man-pages/man3/dlopen.3.html" target="_blank">man7.org/linux/man-pages/man3/dlopen.3.html</a></td>
+            <td>Linux man-pages 6.18, 2026-02-08</td>
+          </tr>
+          <tr>
+            <td>dlsym(3) man page</td>
+            <td><a href="https://man7.org/linux/man-pages/man3/dlsym.3.html" target="_blank">man7.org/linux/man-pages/man3/dlsym.3.html</a></td>
+            <td>Linux man-pages 6.18, 2026-02-08</td>
+          </tr>
+          <tr>
+            <td>dlerror(3) man page</td>
+            <td><a href="https://man7.org/linux/man-pages/man3/dlerror.3.html" target="_blank">man7.org/linux/man-pages/man3/dlerror.3.html</a></td>
+            <td>Linux man-pages 6.18, 2026-02-08</td>
+          </tr>
+          <tr>
+            <td>ld.so(8) man page</td>
+            <td><a href="https://man7.org/linux/man-pages/man8/ld.so.8.html" target="_blank">man7.org/linux/man-pages/man8/ld.so.8.html</a></td>
+            <td>Linux man-pages 6.18, 2026-02-08</td>
+          </tr>
+          <tr>
+            <td>glibc 源码 elf/dl-open.c</td>
+            <td><a href="https://github.com/bminor/glibc/blob/master/elf/dl-open.c" target="_blank">github.com/bminor/glibc/blob/master/elf/dl-open.c</a></td>
+            <td>bminor/glibc master</td>
+          </tr>
+          <tr>
+            <td>glibc 源码 elf/dl-libc.c</td>
+            <td><a href="https://github.com/bminor/glibc/blob/master/elf/dl-libc.c" target="_blank">github.com/bminor/glibc/blob/master/elf/dl-libc.c</a></td>
+            <td>bminor/glibc master</td>
+          </tr>
+        </tbody>
+      </table>
+
+      <h3>延伸阅读</h3>
+      <table>
+        <thead>
+          <tr><th>资源</th><th>链接</th></tr>
+        </thead>
+        <tbody>
+          <tr>
+            <td>dladdr(3) — 地址反查</td>
+            <td><a href="https://man7.org/linux/man-pages/man3/dladdr.3.html" target="_blank">man7.org/linux/man-pages/man3/dladdr.3.html</a></td>
+          </tr>
+          <tr>
+            <td>dlinfo(3) — 获取加载信息</td>
+            <td><a href="https://man7.org/linux/man-pages/man3/dlinfo.3.html" target="_blank">man7.org/linux/man-pages/man3/dlinfo.3.html</a></td>
+          </tr>
+          <tr>
+            <td>rtld-audit(7) — 动态链接审计接口</td>
+            <td><a href="https://man7.org/linux/man-pages/man7/rtld-audit.7.html" target="_blank">man7.org/linux/man-pages/man7/rtld-audit.7.html</a></td>
+          </tr>
+          <tr>
+            <td>dl_iterate_phdr(3) — 迭代已加载对象</td>
+            <td><a href="https://man7.org/linux/man-pages/man3/dl_iterate_phdr.3.html" target="_blank">man7.org/linux/man-pages/man3/dl_iterate_phdr.3.html</a></td>
+          </tr>
+          <tr>
+            <td>ELF 规范 (elf(5))</td>
+            <td><a href="https://man7.org/linux/man-pages/man5/elf.5.html" target="_blank">man7.org/linux/man-pages/man5/elf.5.html</a></td>
+          </tr>
+          <tr>
+            <td>ldconfig(8) — 缓存维护</td>
+            <td><a href="https://man7.org/linux/man-pages/man8/ldconfig.8.html" target="_blank">man7.org/linux/man-pages/man8/ldconfig.8.html</a></td>
+          </tr>
+        </tbody>
+      </table>
+
+      <div class="callout tip">
+        <div class="callout-title">调试工具</div>
+        <ul>
+          <li><code>ldd</code> — 列出程序的动态依赖</li>
+          <li><code>pldd</code> — 列出运行中进程已加载的共享库</li>
+          <li><code>nm -D ./lib.so</code> — 查看动态符号表</li>
+          <li><code>objdump -p ./lib.so</code> — 查看动态节信息</li>
+          <li><code>readelf -d ./lib.so</code> — 查看 ELF 动态段</li>
+          <li><code>LD_DEBUG=all ./program</code> — 动态链接器调试输出</li>
+          <li><code>LD_DEBUG=libs,symbols ./program</code> — 仅显示库搜索和符号解析</li>
+        </ul>
+      </div>
+    </section>
+
+  </main>
+</div>
+
+<script>
+  // ========== Chapter navigation data ==========
+  const chapters = [
+    { id: 'sec-intro',   title: '引言与背景' },
+    { id: 'sec-api',     title: 'API 总览' },
+    { id: 'sec-dlopen',  title: 'dlopen() 详解' },
+    { id: 'sec-dlsym',   title: 'dlsym() 详解' },
+    { id: 'sec-dlclose', title: 'dlclose() 详解' },
+    { id: 'sec-dlerror', title: 'dlerror() 详解' },
+    { id: 'sec-elf',     title: 'ELF 文件结构基础' },
+    { id: 'sec-linker',  title: '动态链接器架构' },
+    { id: 'sec-linkmap', title: 'link_map 与命名空间' },
+    { id: 'sec-reloc',   title: '重定位与符号解析' },
+    { id: 'sec-plt-got', title: 'PLT / GOT 惰性绑定' },
+    { id: 'sec-dlmopen', title: 'dlmopen() 命名空间隔离' },
+    { id: 'sec-flags',   title: '标志位深度解析' },
+    { id: 'sec-ctor',    title: '构造 / 析构函数机制' },
+    { id: 'sec-scenes',  title: '典型使用场景' },
+    { id: 'sec-pitfalls',title: '常见陷阱与最佳实践' },
+    { id: 'sec-ref',     title: '参考资料' },
+  ];
+
+  let currentChapter = 0;
+
+  // ========== Progress bar ==========
+  function updateProgress() {
+    const scrollTop = window.pageYOffset || document.documentElement.scrollTop;
+    const docHeight = document.documentElement.scrollHeight - window.innerHeight;
+    const pct = docHeight > 0 ? (scrollTop / docHeight) * 100 : 0;
+    document.getElementById('progress-bar').style.width = pct + '%';
+  }
+
+  // ========== Active sidebar highlight + topbar chapter ==========
+  const sidebarItems = document.querySelectorAll('.sidebar-item[data-ch]');
+  const sectionEls = chapters.map(c => document.getElementById(c.id));
+
+  function updateActiveChapter() {
+    const scrollY = window.pageYOffset + 80;
+    let active = 0;
+    for (let i = 0; i < sectionEls.length; i++) {
+      const el = sectionEls[i];
+      if (el && el.getBoundingClientRect().top + window.pageYOffset <= scrollY) {
+        active = i;
+      }
+    }
+    currentChapter = active;
+
+    sidebarItems.forEach((item, idx) => {
+      item.classList.toggle('active', idx === active);
+    });
+
+    document.getElementById('topbar-chapter').textContent = chapters[active].title;
+
+    document.getElementById('btn-prev').disabled = active === 0;
+    document.getElementById('btn-next').disabled = active === chapters.length - 1;
+  }
+
+  // ========== Navigate by chapter ==========
+  function navigateChapter(dir) {
+    const next = Math.max(0, Math.min(chapters.length - 1, currentChapter + dir));
+    const el = document.getElementById(chapters[next].id);
+    if (el) {
+      el.scrollIntoView({ behavior: 'smooth', block: 'start' });
+    }
+  }
+
+  // ========== Keyboard navigation ==========
+  document.addEventListener('keydown', e => {
+    if (e.target.tagName === 'INPUT' || e.target.tagName === 'TEXTAREA') return;
+    if (e.key === 'ArrowRight' || e.key === 'ArrowDown') navigateChapter(1);
+    if (e.key === 'ArrowLeft' || e.key === 'ArrowUp') navigateChapter(-1);
+  });
+
+  // ========== Mobile sidebar ==========
+  function toggleSidebar() {
+    const sidebar = document.getElementById('sidebar');
+    const overlay = document.getElementById('overlay');
+    const btn = document.getElementById('hamburger');
+    const open = sidebar.classList.toggle('open');
+    overlay.classList.toggle('show', open);
+    btn.classList.toggle('open', open);
+  }
+
+  function closeSidebar() {
+    document.getElementById('sidebar').classList.remove('open');
+    document.getElementById('overlay').classList.remove('show');
+    document.getElementById('hamburger').classList.remove('open');
+  }
+
+  // Sidebar item click: close on mobile
+  sidebarItems.forEach(item => {
+    item.addEventListener('click', () => {
+      if (window.innerWidth <= 768) closeSidebar();
+    });
+  });
+
+  // ========== Scroll listener ==========
+  let ticking = false;
+  window.addEventListener('scroll', () => {
+    if (!ticking) {
+      requestAnimationFrame(() => {
+        updateProgress();
+        updateActiveChapter();
+        ticking = false;
+      });
+      ticking = true;
+    }
+  }, { passive: true });
+
+  // Init
+  updateProgress();
+  updateActiveChapter();
+</script>
+</body>
+</html>

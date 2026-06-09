@@ -1,0 +1,1758 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Linux tmux 与 PTY 伪终端 — 工作原理与常用命令</title>
+<style>
+  :root {
+    --bg: #0f1117;
+    --bg2: #161b22;
+    --bg3: #1c2333;
+    --border: #30363d;
+    --accent: #58a6ff;
+    --accent2: #3fb950;
+    --accent3: #f78166;
+    --accent4: #d2a8ff;
+    --accent5: #ffa657;
+    --text: #e6edf3;
+    --text2: #8b949e;
+    --text3: #c9d1d9;
+    --code-bg: #161b22;
+    --nav-w: 270px;
+    --progress-h: 3px;
+  }
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  html { scroll-behavior: smooth; }
+  body {
+    font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', 'PingFang SC', 'Microsoft YaHei', sans-serif;
+    background: var(--bg);
+    color: var(--text);
+    line-height: 1.7;
+    overflow-x: hidden;
+  }
+
+  /* ── Progress Bar ── */
+  #progress-bar {
+    position: fixed;
+    top: 0; left: 0;
+    height: var(--progress-h);
+    width: 0%;
+    background: linear-gradient(90deg, var(--accent), var(--accent2));
+    z-index: 9999;
+    transition: width 0.1s;
+    border-radius: 0 2px 2px 0;
+  }
+
+  /* ── Hamburger ── */
+  #hamburger {
+    display: none;
+    position: fixed;
+    top: 14px; left: 14px;
+    z-index: 1100;
+    background: var(--bg3);
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    padding: 8px 10px;
+    cursor: pointer;
+    flex-direction: column;
+    gap: 5px;
+  }
+  #hamburger span {
+    display: block; width: 22px; height: 2px;
+    background: var(--text); border-radius: 2px;
+    transition: transform 0.3s, opacity 0.3s;
+  }
+  #hamburger.open span:nth-child(1) { transform: rotate(45deg) translate(5px,5px); }
+  #hamburger.open span:nth-child(2) { opacity: 0; }
+  #hamburger.open span:nth-child(3) { transform: rotate(-45deg) translate(5px,-5px); }
+
+  /* ── NAV overlay ── */
+  #nav-overlay {
+    display: none;
+    position: fixed; inset: 0;
+    background: rgba(0,0,0,0.55);
+    z-index: 1050;
+  }
+
+  /* ── Sidebar ── */
+  #sidebar {
+    position: fixed;
+    top: var(--progress-h);
+    left: 0;
+    width: var(--nav-w);
+    height: calc(100vh - var(--progress-h));
+    background: var(--bg2);
+    border-right: 1px solid var(--border);
+    overflow-y: auto;
+    z-index: 1060;
+    transition: transform 0.3s ease;
+    display: flex;
+    flex-direction: column;
+  }
+  #sidebar::-webkit-scrollbar { width: 4px; }
+  #sidebar::-webkit-scrollbar-thumb { background: var(--border); border-radius: 4px; }
+  .sidebar-header {
+    padding: 20px 16px 12px;
+    border-bottom: 1px solid var(--border);
+    flex-shrink: 0;
+  }
+  .sidebar-header h2 { font-size: 0.78rem; color: var(--text2); text-transform: uppercase; letter-spacing: 0.08em; }
+  .sidebar-header p { font-size: 0.85rem; color: var(--accent); font-weight: 600; margin-top: 4px; }
+
+  .nav-group { margin: 8px 0; }
+  .nav-group-title {
+    padding: 6px 16px 4px;
+    font-size: 0.7rem;
+    text-transform: uppercase;
+    letter-spacing: 0.1em;
+    color: var(--text2);
+    font-weight: 700;
+  }
+  .nav-link {
+    display: block;
+    padding: 7px 16px 7px 28px;
+    font-size: 0.84rem;
+    color: var(--text2);
+    text-decoration: none;
+    border-left: 3px solid transparent;
+    transition: all 0.18s;
+    cursor: pointer;
+  }
+  .nav-link:hover { color: var(--text); background: var(--bg3); }
+  .nav-link.active {
+    color: var(--accent);
+    border-left-color: var(--accent);
+    background: rgba(88,166,255,0.08);
+    font-weight: 600;
+  }
+
+  /* ── Main Content ── */
+  #main {
+    margin-left: var(--nav-w);
+    min-height: 100vh;
+    transition: margin-left 0.3s;
+  }
+  .content-wrap {
+    max-width: 860px;
+    margin: 0 auto;
+    padding: 48px 32px 80px;
+  }
+
+  /* ── Section ── */
+  .section { padding-top: 20px; margin-bottom: 60px; }
+  .section-hero {
+    background: linear-gradient(135deg, #0d1117 0%, #161b22 100%);
+    border: 1px solid var(--border);
+    border-radius: 16px;
+    padding: 48px 40px;
+    margin-bottom: 60px;
+    position: relative;
+    overflow: hidden;
+  }
+  .section-hero::before {
+    content: '';
+    position: absolute;
+    top: -60px; right: -60px;
+    width: 220px; height: 220px;
+    background: radial-gradient(circle, rgba(88,166,255,0.12) 0%, transparent 70%);
+    border-radius: 50%;
+  }
+  .hero-tag {
+    display: inline-block;
+    background: rgba(88,166,255,0.15);
+    color: var(--accent);
+    font-size: 0.75rem;
+    font-weight: 700;
+    text-transform: uppercase;
+    letter-spacing: 0.1em;
+    padding: 4px 10px;
+    border-radius: 20px;
+    border: 1px solid rgba(88,166,255,0.3);
+    margin-bottom: 16px;
+  }
+  .section-hero h1 { font-size: 2rem; font-weight: 800; line-height: 1.25; margin-bottom: 14px; }
+  .section-hero p { font-size: 1rem; color: var(--text2); max-width: 600px; }
+  .hero-sources {
+    margin-top: 20px;
+    padding-top: 16px;
+    border-top: 1px solid var(--border);
+    font-size: 0.78rem;
+    color: var(--text2);
+  }
+  .hero-sources a { color: var(--accent); text-decoration: none; }
+  .hero-sources a:hover { text-decoration: underline; }
+
+  h2.sec-title {
+    font-size: 1.45rem;
+    font-weight: 700;
+    margin-bottom: 20px;
+    padding-bottom: 10px;
+    border-bottom: 2px solid var(--border);
+    display: flex;
+    align-items: center;
+    gap: 10px;
+  }
+  h2.sec-title .icon { font-size: 1.2rem; }
+  h3.sub-title {
+    font-size: 1.1rem;
+    font-weight: 600;
+    color: var(--accent4);
+    margin: 28px 0 12px;
+  }
+
+  p { margin-bottom: 14px; color: var(--text3); }
+  strong { color: var(--text); }
+
+  /* ── Callout ── */
+  .callout {
+    border-left: 4px solid var(--accent);
+    background: rgba(88,166,255,0.07);
+    border-radius: 0 8px 8px 0;
+    padding: 14px 18px;
+    margin: 18px 0;
+    font-size: 0.92rem;
+    color: var(--text3);
+  }
+  .callout.green { border-color: var(--accent2); background: rgba(63,185,80,0.07); }
+  .callout.orange { border-color: var(--accent5); background: rgba(255,166,87,0.07); }
+  .callout.red { border-color: var(--accent3); background: rgba(247,129,102,0.07); }
+  .callout.purple { border-color: var(--accent4); background: rgba(210,168,255,0.07); }
+  .callout b { color: var(--text); }
+
+  /* ── Code ── */
+  pre, code {
+    font-family: 'JetBrains Mono', 'Fira Code', 'Cascadia Code', 'Source Code Pro', Consolas, monospace;
+  }
+  code {
+    background: var(--code-bg);
+    border: 1px solid var(--border);
+    border-radius: 4px;
+    padding: 1px 6px;
+    font-size: 0.88em;
+    color: #79c0ff;
+  }
+  pre {
+    background: var(--code-bg);
+    border: 1px solid var(--border);
+    border-radius: 10px;
+    padding: 18px 20px;
+    overflow-x: auto;
+    margin: 14px 0;
+    font-size: 0.88rem;
+    line-height: 1.7;
+    position: relative;
+  }
+  pre code {
+    background: none; border: none; padding: 0;
+    font-size: inherit; color: #e6edf3;
+  }
+  .code-comment { color: #8b949e; }
+  .code-key { color: #ff7b72; }
+  .code-str { color: #a5d6ff; }
+  .code-cmd { color: #79c0ff; }
+  .code-opt { color: #ffa657; }
+  .code-var { color: #d2a8ff; }
+
+  /* ── Table ── */
+  .table-wrap { overflow-x: auto; margin: 16px 0; border-radius: 10px; border: 1px solid var(--border); }
+  table { width: 100%; border-collapse: collapse; font-size: 0.88rem; }
+  thead tr { background: var(--bg3); }
+  th { padding: 11px 14px; text-align: left; color: var(--text2); font-weight: 600; font-size: 0.8rem; text-transform: uppercase; letter-spacing: 0.05em; white-space: nowrap; }
+  td { padding: 10px 14px; border-top: 1px solid var(--border); vertical-align: top; color: var(--text3); }
+  tr:hover td { background: rgba(255,255,255,0.02); }
+  td code { font-size: 0.84rem; }
+  td strong { color: var(--text); }
+
+  /* ── SVG containers ── */
+  .svg-wrap {
+    background: var(--bg2);
+    border: 1px solid var(--border);
+    border-radius: 12px;
+    padding: 20px;
+    margin: 20px 0;
+    overflow-x: auto;
+    text-align: center;
+  }
+  .svg-caption {
+    text-align: center;
+    font-size: 0.8rem;
+    color: var(--text2);
+    margin-top: 8px;
+    font-style: italic;
+  }
+
+  /* ── First Principle Box ── */
+  .first-principle {
+    background: linear-gradient(135deg, rgba(210,168,255,0.08), rgba(88,166,255,0.08));
+    border: 1px solid rgba(210,168,255,0.3);
+    border-radius: 12px;
+    padding: 20px 22px;
+    margin: 32px 0 0;
+  }
+  .first-principle-title {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    font-size: 0.78rem;
+    text-transform: uppercase;
+    letter-spacing: 0.1em;
+    color: var(--accent4);
+    font-weight: 700;
+    margin-bottom: 10px;
+  }
+  .first-principle p { color: var(--text3); font-size: 0.92rem; margin-bottom: 0; }
+
+  /* ── kbd ── */
+  kbd {
+    display: inline-block;
+    background: var(--bg3);
+    border: 1px solid var(--border);
+    border-bottom: 2px solid var(--border);
+    border-radius: 5px;
+    padding: 1px 7px;
+    font-family: inherit;
+    font-size: 0.82rem;
+    color: var(--text);
+    white-space: nowrap;
+  }
+
+  /* ── Badge ── */
+  .badge {
+    display: inline-block;
+    font-size: 0.72rem;
+    font-weight: 700;
+    padding: 2px 8px;
+    border-radius: 20px;
+    margin-left: 6px;
+    vertical-align: middle;
+  }
+  .badge-blue { background: rgba(88,166,255,0.2); color: var(--accent); border: 1px solid rgba(88,166,255,0.4); }
+  .badge-green { background: rgba(63,185,80,0.2); color: var(--accent2); border: 1px solid rgba(63,185,80,0.4); }
+  .badge-orange { background: rgba(255,166,87,0.2); color: var(--accent5); border: 1px solid rgba(255,166,87,0.4); }
+
+  /* ── Grid ── */
+  .grid2 { display: grid; grid-template-columns: 1fr 1fr; gap: 16px; margin: 16px 0; }
+  .grid3 { display: grid; grid-template-columns: repeat(3,1fr); gap: 14px; margin: 16px 0; }
+  .card {
+    background: var(--bg3);
+    border: 1px solid var(--border);
+    border-radius: 10px;
+    padding: 16px;
+  }
+  .card h4 { font-size: 0.9rem; color: var(--accent); margin-bottom: 8px; }
+  .card p { font-size: 0.85rem; color: var(--text2); margin: 0; }
+
+  /* ── Scroll top ── */
+  #scroll-top {
+    position: fixed;
+    bottom: 28px; right: 24px;
+    background: var(--bg3);
+    border: 1px solid var(--border);
+    color: var(--text2);
+    width: 40px; height: 40px;
+    border-radius: 50%;
+    display: none;
+    align-items: center;
+    justify-content: center;
+    cursor: pointer;
+    font-size: 1.1rem;
+    transition: all 0.2s;
+    z-index: 900;
+  }
+  #scroll-top:hover { background: var(--accent); color: #fff; border-color: var(--accent); }
+
+  /* ── Responsive ── */
+  @media (max-width: 900px) {
+    :root { --nav-w: 260px; }
+    #hamburger { display: flex; }
+    #sidebar { transform: translateX(-100%); }
+    #sidebar.open { transform: translateX(0); }
+    #nav-overlay.open { display: block; }
+    #main { margin-left: 0; }
+    .content-wrap { padding: 48px 16px 80px; }
+    .grid2, .grid3 { grid-template-columns: 1fr; }
+    .section-hero { padding: 32px 20px; }
+    .section-hero h1 { font-size: 1.5rem; }
+  }
+  @media (max-width: 480px) {
+    pre { font-size: 0.78rem; padding: 14px; }
+    h2.sec-title { font-size: 1.2rem; }
+  }
+</style>
+</head>
+<body>
+
+<!-- Progress Bar -->
+<div id="progress-bar"></div>
+
+<!-- Hamburger -->
+<button id="hamburger" aria-label="菜单">
+  <span></span><span></span><span></span>
+</button>
+
+<!-- Nav Overlay -->
+<div id="nav-overlay"></div>
+
+<!-- Sidebar -->
+<nav id="sidebar">
+  <div class="sidebar-header">
+    <h2>技术文档</h2>
+    <p>tmux · PTY 伪终端</p>
+  </div>
+
+  <div class="nav-group">
+    <div class="nav-group-title">📖 概述</div>
+    <a class="nav-link" data-sec="s0">引言与参考来源</a>
+  </div>
+
+  <div class="nav-group">
+    <div class="nav-group-title">🖥 TTY / PTY 基础</div>
+    <a class="nav-link" data-sec="s1">TTY 的历史与演变</a>
+    <a class="nav-link" data-sec="s2">PTY 工作原理</a>
+    <a class="nav-link" data-sec="s3">内核 TTY 子系统架构</a>
+    <a class="nav-link" data-sec="s4">PTY 设备文件与 API</a>
+  </div>
+
+  <div class="nav-group">
+    <div class="nav-group-title">🔧 tmux 深度解析</div>
+    <a class="nav-link" data-sec="s5">tmux 架构：Client-Server</a>
+    <a class="nav-link" data-sec="s6">Session / Window / Pane</a>
+    <a class="nav-link" data-sec="s7">tmux 与 PTY 的关系</a>
+  </div>
+
+  <div class="nav-group">
+    <div class="nav-group-title">⌨️ 常用命令</div>
+    <a class="nav-link" data-sec="s8">Session 管理命令</a>
+    <a class="nav-link" data-sec="s9">Window 管理命令</a>
+    <a class="nav-link" data-sec="s10">Pane 管理命令</a>
+    <a class="nav-link" data-sec="s11">快捷键速查</a>
+    <a class="nav-link" data-sec="s12">配置与定制</a>
+  </div>
+
+  <div class="nav-group">
+    <div class="nav-group-title">🎯 使用场景</div>
+    <a class="nav-link" data-sec="s13">典型使用场景</a>
+    <a class="nav-link" data-sec="s14">第一性原理总结</a>
+  </div>
+</nav>
+
+<!-- Main -->
+<div id="main">
+<div class="content-wrap">
+
+<!-- Hero -->
+<div class="section-hero" id="s0">
+  <div class="hero-tag">Linux 内核 · 终端技术</div>
+  <h1>Linux tmux 与 PTY 伪终端<br>工作原理、常用命令及使用场景</h1>
+  <p>基于 Linux man-pages、Linux Kernel 官方文档与 tmux 官方手册，系统讲解伪终端（PTY）内核机制与 tmux 终端复用器的架构原理。</p>
+  <div class="hero-sources">
+    📚 参考来源：
+    <a href="https://man7.org/linux/man-pages/man7/pty.7.html" target="_blank">pty(7) — Linux man-pages</a> ·
+    <a href="https://www.man7.org/linux/man-pages/man1/tmux.1.html" target="_blank">tmux(1) — Linux man-pages</a> ·
+    <a href="https://www.kernel.org/doc/html/latest/driver-api/tty/index.html" target="_blank">TTY — Linux Kernel Documentation</a> ·
+    <a href="https://tmux.github.io/" target="_blank">tmux.github.io</a>
+  </div>
+</div>
+
+<!-- S1: TTY 历史 -->
+<section class="section" id="s1">
+  <h2 class="sec-title"><span class="icon">🕰</span> TTY 的历史与演变</h2>
+
+  <p>TTY 是 <strong>Teletypewriter（电传打字机）</strong> 的缩写。最初的终端是真实的物理硬件设备，通过串行线路连接到大型主机，用户在终端上输入字符，主机回显并处理。Linux 继承了 UNIX 对这一硬件抽象的完整支持。</p>
+
+  <div class="svg-wrap">
+    <svg viewBox="0 0 720 200" width="100%" style="max-width:720px;font-family:inherit">
+      <!-- Timeline -->
+      <line x1="40" y1="100" x2="680" y2="100" stroke="#30363d" stroke-width="2"/>
+      <!-- Nodes -->
+      <g>
+        <circle cx="80" cy="100" r="18" fill="#1c2333" stroke="#58a6ff" stroke-width="2"/>
+        <text x="80" y="104" text-anchor="middle" fill="#58a6ff" font-size="9" font-weight="bold">1960s</text>
+        <text x="80" y="135" text-anchor="middle" fill="#8b949e" font-size="9">物理电传机</text>
+        <text x="80" y="147" text-anchor="middle" fill="#8b949e" font-size="9">Teletype</text>
+      </g>
+      <g>
+        <circle cx="200" cy="100" r="18" fill="#1c2333" stroke="#3fb950" stroke-width="2"/>
+        <text x="200" y="104" text-anchor="middle" fill="#3fb950" font-size="9" font-weight="bold">1970s</text>
+        <text x="200" y="135" text-anchor="middle" fill="#8b949e" font-size="9">串行终端</text>
+        <text x="200" y="147" text-anchor="middle" fill="#8b949e" font-size="9">VT100等</text>
+      </g>
+      <g>
+        <circle cx="330" cy="100" r="18" fill="#1c2333" stroke="#ffa657" stroke-width="2"/>
+        <text x="330" y="104" text-anchor="middle" fill="#ffa657" font-size="9" font-weight="bold">1980s</text>
+        <text x="330" y="135" text-anchor="middle" fill="#8b949e" font-size="9">虚拟控制台</text>
+        <text x="330" y="147" text-anchor="middle" fill="#8b949e" font-size="9">/dev/tty1~6</text>
+      </g>
+      <g>
+        <circle cx="460" cy="100" r="18" fill="#1c2333" stroke="#d2a8ff" stroke-width="2"/>
+        <text x="460" y="104" text-anchor="middle" fill="#d2a8ff" font-size="9" font-weight="bold">1990s</text>
+        <text x="460" y="135" text-anchor="middle" fill="#8b949e" font-size="9">伪终端 PTY</text>
+        <text x="460" y="147" text-anchor="middle" fill="#8b949e" font-size="9">SSH/xterm</text>
+      </g>
+      <g>
+        <circle cx="590" cy="100" r="18" fill="#1c2333" stroke="#f78166" stroke-width="2"/>
+        <text x="590" y="104" text-anchor="middle" fill="#f78166" font-size="9" font-weight="bold">2007+</text>
+        <text x="590" y="135" text-anchor="middle" fill="#8b949e" font-size="9">终端复用器</text>
+        <text x="590" y="147" text-anchor="middle" fill="#8b949e" font-size="9">tmux/screen</text>
+      </g>
+      <!-- Labels top -->
+      <text x="80" y="60" text-anchor="middle" fill="#c9d1d9" font-size="8">真实硬件</text>
+      <text x="200" y="60" text-anchor="middle" fill="#c9d1d9" font-size="8">CRT显示器</text>
+      <text x="330" y="60" text-anchor="middle" fill="#c9d1d9" font-size="8">内核虚拟化</text>
+      <text x="460" y="60" text-anchor="middle" fill="#c9d1d9" font-size="8">软件仿真</text>
+      <text x="590" y="60" text-anchor="middle" fill="#c9d1d9" font-size="8">会话持久化</text>
+      <!-- connecting lines top -->
+      <line x1="80" y1="65" x2="80" y2="82" stroke="#30363d" stroke-width="1" stroke-dasharray="3"/>
+      <line x1="200" y1="65" x2="200" y2="82" stroke="#30363d" stroke-width="1" stroke-dasharray="3"/>
+      <line x1="330" y1="65" x2="330" y2="82" stroke="#30363d" stroke-width="1" stroke-dasharray="3"/>
+      <line x1="460" y1="65" x2="460" y2="82" stroke="#30363d" stroke-width="1" stroke-dasharray="3"/>
+      <line x1="590" y1="65" x2="590" y2="82" stroke="#30363d" stroke-width="1" stroke-dasharray="3"/>
+    </svg>
+    <div class="svg-caption">图1：TTY 技术的历史演进时间线</div>
+  </div>
+
+  <h3 class="sub-title">终端设备类型对比</h3>
+  <div class="table-wrap">
+    <table>
+      <thead><tr><th>类型</th><th>设备文件</th><th>描述</th><th>典型场景</th></tr></thead>
+      <tbody>
+        <tr>
+          <td><strong>物理 TTY</strong></td>
+          <td><code>/dev/tty1</code>~<code>/dev/tty6</code></td>
+          <td>Linux 虚拟控制台，<kbd>Ctrl+Alt+F1</kbd> 等切换</td>
+          <td>服务器本地登录</td>
+        </tr>
+        <tr>
+          <td><strong>串口 TTY</strong></td>
+          <td><code>/dev/ttyS0</code>, <code>/dev/ttyUSB0</code></td>
+          <td>串行端口设备，用于硬件通信</td>
+          <td>嵌入式调试、COM口</td>
+        </tr>
+        <tr>
+          <td><strong>当前 TTY</strong></td>
+          <td><code>/dev/tty</code></td>
+          <td>进程当前控制终端的符号引用</td>
+          <td>脚本中读取密码</td>
+        </tr>
+        <tr>
+          <td><strong>伪终端 PTY</strong></td>
+          <td><code>/dev/pts/0</code>, <code>/dev/pts/1</code>…</td>
+          <td>软件仿真终端，UNIX 98 标准</td>
+          <td>SSH、tmux、xterm</td>
+        </tr>
+        <tr>
+          <td><strong>PTY 主设备</strong></td>
+          <td><code>/dev/ptmx</code></td>
+          <td>PTY 主克隆设备，用于创建新 PTY 对</td>
+          <td>终端应用程序内部</td>
+        </tr>
+      </tbody>
+    </table>
+  </div>
+
+  <div class="callout">
+    <b>💡 查看当前终端：</b> 在终端中执行 <code>tty</code> 命令可以查看当前进程连接到哪个终端设备，如 <code>/dev/pts/0</code>。执行 <code>cat /proc/sys/kernel/pty/nr</code> 可查看当前系统已使用的 PTY 数量。
+  </div>
+
+  <div class="first-principle">
+    <div class="first-principle-title">🔭 第一性原理</div>
+    <p>TTY 的本质是<strong>进程与输入输出设备之间的抽象接口</strong>。操作系统需要一个统一的"终端"抽象，使得无论底层是物理串口、虚拟控制台还是网络连接，进程都可以用同一套 POSIX 接口（read/write/ioctl）进行交互。PTY 正是将这个抽象彻底软件化——两端都是进程，而非硬件。</p>
+  </div>
+</section>
+
+<!-- S2: PTY 工作原理 -->
+<section class="section" id="s2">
+  <h2 class="sec-title"><span class="icon">⚙️</span> PTY 工作原理</h2>
+
+  <p>根据 <strong>Linux man-pages pty(7)</strong> 的权威定义：<em>「伪终端（PTY）是一对虚拟字符设备，提供双向通信信道。信道的一端称为主端（master），另一端称为从端（slave）。从端提供与经典终端完全一样的接口。」</em></p>
+
+  <div class="svg-wrap">
+    <svg viewBox="0 0 740 380" width="100%" style="max-width:740px;font-family:inherit">
+      <defs>
+        <marker id="arrow" markerWidth="8" markerHeight="8" refX="6" refY="3" orient="auto">
+          <path d="M0,0 L0,6 L8,3 z" fill="#58a6ff"/>
+        </marker>
+        <marker id="arrow2" markerWidth="8" markerHeight="8" refX="6" refY="3" orient="auto">
+          <path d="M0,0 L0,6 L8,3 z" fill="#3fb950"/>
+        </marker>
+        <marker id="arrow3" markerWidth="8" markerHeight="8" refX="6" refY="3" orient="auto">
+          <path d="M0,0 L0,6 L8,3 z" fill="#ffa657"/>
+        </marker>
+      </defs>
+
+      <!-- User Space label -->
+      <rect x="10" y="10" width="720" height="360" rx="12" fill="#0d1117" stroke="#30363d" stroke-width="1"/>
+      <text x="370" y="30" text-anchor="middle" fill="#30363d" font-size="11" font-weight="bold">LINUX 内核边界</text>
+
+      <!-- Kernel box -->
+      <rect x="240" y="55" width="260" height="290" rx="10" fill="#1c2333" stroke="#58a6ff" stroke-width="1.5" stroke-dasharray="5,3"/>
+      <text x="370" y="75" text-anchor="middle" fill="#58a6ff" font-size="11" font-weight="bold">内核空间</text>
+
+      <!-- PTY Master -->
+      <rect x="260" y="90" width="100" height="50" rx="8" fill="#0d419d" stroke="#58a6ff" stroke-width="1.5"/>
+      <text x="310" y="111" text-anchor="middle" fill="#79c0ff" font-size="10" font-weight="bold">PTY Master</text>
+      <text x="310" y="127" text-anchor="middle" fill="#8b949e" font-size="9">/dev/ptmx</text>
+
+      <!-- PTY Slave -->
+      <rect x="380" y="90" width="100" height="50" rx="8" fill="#0d4429" stroke="#3fb950" stroke-width="1.5"/>
+      <text x="430" y="111" text-anchor="middle" fill="#56d364" font-size="10" font-weight="bold">PTY Slave</text>
+      <text x="430" y="127" text-anchor="middle" fill="#8b949e" font-size="9">/dev/pts/N</text>
+
+      <!-- Line Discipline -->
+      <rect x="270" y="170" width="200" height="50" rx="8" fill="#272d3b" stroke="#ffa657" stroke-width="1.5"/>
+      <text x="370" y="191" text-anchor="middle" fill="#ffa657" font-size="10" font-weight="bold">行规程 (Line Discipline)</text>
+      <text x="370" y="207" text-anchor="middle" fill="#8b949e" font-size="9">N_TTY：回显·信号·行缓冲·特殊字符</text>
+
+      <!-- Buffer -->
+      <rect x="300" y="255" width="140" height="40" rx="6" fill="#1c2333" stroke="#d2a8ff" stroke-width="1"/>
+      <text x="370" y="272" text-anchor="middle" fill="#d2a8ff" font-size="9" font-weight="bold">双向环形缓冲区</text>
+      <text x="370" y="285" text-anchor="middle" fill="#8b949e" font-size="8">异步数据流</text>
+
+      <!-- Terminal App (left) -->
+      <rect x="30" y="120" width="160" height="65" rx="10" fill="#1c2333" stroke="#58a6ff" stroke-width="1.5"/>
+      <text x="110" y="141" text-anchor="middle" fill="#58a6ff" font-size="10" font-weight="bold">终端应用程序</text>
+      <text x="110" y="157" text-anchor="middle" fill="#8b949e" font-size="9">xterm / SSH / tmux</text>
+      <text x="110" y="172" text-anchor="middle" fill="#8b949e" font-size="9">持有 Master fd</text>
+
+      <!-- Shell process (right) -->
+      <rect x="550" y="120" width="150" height="65" rx="10" fill="#1c2333" stroke="#3fb950" stroke-width="1.5"/>
+      <text x="625" y="141" text-anchor="middle" fill="#3fb950" font-size="10" font-weight="bold">Shell / 子进程</text>
+      <text x="625" y="157" text-anchor="middle" fill="#8b949e" font-size="9">bash / zsh / vim</text>
+      <text x="625" y="172" text-anchor="middle" fill="#8b949e" font-size="9">Slave 作为 stdin/stdout</text>
+
+      <!-- Arrows: App → Master -->
+      <line x1="190" y1="145" x2="258" y2="112" stroke="#58a6ff" stroke-width="1.5" marker-end="url(#arrow)"/>
+      <text x="216" y="120" fill="#58a6ff" font-size="8">write()</text>
+
+      <!-- Arrow: Master → App -->
+      <line x1="258" y1="128" x2="190" y2="163" stroke="#3fb950" stroke-width="1.5" marker-end="url(#arrow2)"/>
+      <text x="194" y="158" fill="#3fb950" font-size="8">read()</text>
+
+      <!-- Arrows: Slave → Shell -->
+      <line x1="480" y1="112" x2="548" y2="142" stroke="#58a6ff" stroke-width="1.5" marker-end="url(#arrow)"/>
+      <text x="488" y="122" fill="#58a6ff" font-size="8">输入→进程</text>
+
+      <!-- Arrow: Shell → Slave -->
+      <line x1="548" y1="158" x2="480" y2="128" stroke="#3fb950" stroke-width="1.5" marker-end="url(#arrow2)"/>
+      <text x="490" y="155" fill="#3fb950" font-size="8">输出→显示</text>
+
+      <!-- Master ↔ Slave internal -->
+      <path d="M310,140 Q310,170 310,170" stroke="#30363d" stroke-width="1" fill="none"/>
+      <path d="M430,140 Q430,170 430,170" stroke="#30363d" stroke-width="1" fill="none"/>
+      <line x1="310" y1="170" x2="270" y2="170" stroke="#30363d" stroke-width="1"/>
+      <line x1="430" y1="170" x2="470" y2="170" stroke="#30363d" stroke-width="1"/>
+
+      <!-- Line disc ↔ buffer -->
+      <line x1="370" y1="220" x2="370" y2="255" stroke="#d2a8ff" stroke-width="1" stroke-dasharray="4"/>
+
+      <!-- Signal label -->
+      <rect x="30" y="255" width="180" height="60" rx="8" fill="#1c2333" stroke="#f78166" stroke-width="1"/>
+      <text x="120" y="275" text-anchor="middle" fill="#f78166" font-size="9" font-weight="bold">信号处理</text>
+      <text x="120" y="290" text-anchor="middle" fill="#8b949e" font-size="8">Ctrl+C → SIGINT</text>
+      <text x="120" y="303" text-anchor="middle" fill="#8b949e" font-size="8">Ctrl+Z → SIGTSTP</text>
+
+      <line x1="120" y1="255" x2="300" y2="280" stroke="#f78166" stroke-width="1" stroke-dasharray="3" marker-end="url(#arrow3)"/>
+
+      <!-- TIOCSWINSZ -->
+      <rect x="550" y="255" width="160" height="55" rx="8" fill="#1c2333" stroke="#d2a8ff" stroke-width="1"/>
+      <text x="630" y="274" text-anchor="middle" fill="#d2a8ff" font-size="9" font-weight="bold">窗口大小 ioctl</text>
+      <text x="630" y="289" text-anchor="middle" fill="#8b949e" font-size="8">TIOCSWINSZ</text>
+      <text x="630" y="302" text-anchor="middle" fill="#8b949e" font-size="8">→ SIGWINCH</text>
+      <line x1="550" y1="277" x2="440" y2="277" stroke="#d2a8ff" stroke-width="1" stroke-dasharray="3" marker-end="url(#arrow)"/>
+    </svg>
+    <div class="svg-caption">图2：PTY 主从架构与内核行规程数据流（基于 man7.org pty(7)）</div>
+  </div>
+
+  <h3 class="sub-title">核心机制详解</h3>
+
+  <div class="grid2">
+    <div class="card">
+      <h4>🔄 双向数据流</h4>
+      <p>写入 Master 端的数据，经过行规程处理后对 Slave 端可读（模拟键盘输入）；写入 Slave 端的数据，可从 Master 端读取（模拟终端输出）。数据流为<strong>异步</strong>处理。</p>
+    </div>
+    <div class="card">
+      <h4>📏 行规程（Line Discipline）</h4>
+      <p>内核中的 <code>N_TTY</code> 行规程负责：字符回显、行缓冲、特殊字符处理（<kbd>Ctrl+C</kbd>→SIGINT）、流控制（XON/XOFF）等，对两端透明。</p>
+    </div>
+    <div class="card">
+      <h4>📐 窗口大小同步</h4>
+      <p>通过 <code>TIOCSWINSZ</code> ioctl 设置终端窗口大小，内核随后向前台进程组发送 <code>SIGWINCH</code> 信号，通知其调整显示布局。</p>
+    </div>
+    <div class="card">
+      <h4>🎛 信号投递</h4>
+      <p>向 Master 端写入中断字符（如 <code>0x03</code>），行规程会对 Slave 端连接的<strong>前台进程组</strong>发送 SIGINT，模拟真实终端的信号行为。</p>
+    </div>
+  </div>
+
+  <h3 class="sub-title">PTY 创建流程（UNIX 98 标准）</h3>
+  <pre><code><span class="code-comment">// 1. 打开 Master 克隆设备（/dev/ptmx）</span>
+<span class="code-var">int</span> fdm = <span class="code-cmd">posix_openpt</span>(O_RDWR);
+
+<span class="code-comment">// 2. 设置从端权限</span>
+<span class="code-cmd">grantpt</span>(fdm);
+
+<span class="code-comment">// 3. 解锁从端</span>
+<span class="code-cmd">unlockpt</span>(fdm);
+
+<span class="code-comment">// 4. 获取从端路径名（如 /dev/pts/3）并打开</span>
+<span class="code-var">char</span> *slave_name = <span class="code-cmd">ptsname</span>(fdm);
+<span class="code-var">int</span> fds = <span class="code-cmd">open</span>(slave_name, O_RDWR);
+
+<span class="code-comment">// 5. fork 子进程，子进程使用 fds 作为 stdin/stdout/stderr</span>
+<span class="code-comment">//    父进程通过 fdm 读写，驱动子进程中的交互程序</span></code></pre>
+
+  <div class="callout orange">
+    <b>⚠️ PTY 数量限制：</b> Linux 内核对 UNIX 98 PTY 数量有限制。自 Linux 2.6.4 起可通过 <code>/proc/sys/kernel/pty/max</code> 动态调整，<code>/proc/sys/kernel/pty/nr</code> 显示当前使用数量（来源：Linux man-pages pty(7)）。
+  </div>
+
+  <div class="first-principle">
+    <div class="first-principle-title">🔭 第一性原理</div>
+    <p>PTY 的本质是一个<strong>内核中的双向字节管道，附加了终端语义</strong>。与普通 pipe 不同，它经过行规程赋予了"终端行为"（信号、回显、行编辑）。主端是"终端模拟器"，从端是"被控进程"，两者通过内核缓冲区异步通信——这种设计使任意进程都能充当"终端"，实现了对 SSH、图形终端、终端复用器的统一支撑。</p>
+  </div>
+</section>
+
+<!-- S3: 内核 TTY 架构 -->
+<section class="section" id="s3">
+  <h2 class="sec-title"><span class="icon">🏗</span> 内核 TTY 子系统架构</h2>
+
+  <p>根据 <strong>Linux Kernel 官方文档（driver-api/tty）</strong>，TTY 子系统由以下核心结构组成：</p>
+
+  <div class="svg-wrap">
+    <svg viewBox="0 0 700 320" width="100%" style="max-width:700px;font-family:inherit">
+      <!-- layers -->
+      <!-- User space -->
+      <rect x="10" y="10" width="680" height="55" rx="8" fill="#0d1117" stroke="#30363d"/>
+      <text x="350" y="30" text-anchor="middle" fill="#8b949e" font-size="10" font-weight="bold">用户空间 (User Space)</text>
+      <rect x="30" y="35" width="130" height="22" rx="5" fill="#1c2333" stroke="#58a6ff"/>
+      <text x="95" y="50" text-anchor="middle" fill="#79c0ff" font-size="9">终端应用 (xterm/tmux)</text>
+      <rect x="175" y="35" width="130" height="22" rx="5" fill="#1c2333" stroke="#3fb950"/>
+      <text x="240" y="50" text-anchor="middle" fill="#56d364" font-size="9">Shell 进程 (bash)</text>
+      <rect x="320" y="35" width="130" height="22" rx="5" fill="#1c2333" stroke="#d2a8ff"/>
+      <text x="385" y="50" text-anchor="middle" fill="#d2a8ff" font-size="9">系统调用接口</text>
+      <rect x="465" y="35" width="200" height="22" rx="5" fill="#1c2333" stroke="#ffa657"/>
+      <text x="565" y="50" text-anchor="middle" fill="#ffa657" font-size="9">read() / write() / ioctl()</text>
+
+      <!-- Arrow down -->
+      <line x1="350" y1="65" x2="350" y2="82" stroke="#30363d" stroke-width="1.5" marker-end="url(#arrow)"/>
+
+      <!-- TTY Core -->
+      <rect x="10" y="85" width="680" height="50" rx="8" fill="#1c2333" stroke="#58a6ff" stroke-width="2"/>
+      <text x="350" y="108" text-anchor="middle" fill="#58a6ff" font-size="11" font-weight="bold">TTY 核心层 (tty_struct)</text>
+      <text x="350" y="124" text-anchor="middle" fill="#8b949e" font-size="9">统一 I/O 调度 · 会话管理 · 进程组控制 · TIOCGWINSZ/TIOCSWINSZ</text>
+
+      <!-- Arrow down -->
+      <line x1="350" y1="135" x2="350" y2="152" stroke="#30363d" stroke-width="1.5" marker-end="url(#arrow)"/>
+
+      <!-- Line Discipline -->
+      <rect x="10" y="155" width="680" height="50" rx="8" fill="#272d3b" stroke="#ffa657" stroke-width="2"/>
+      <text x="350" y="178" text-anchor="middle" fill="#ffa657" font-size="11" font-weight="bold">行规程层 (tty_ldisc_ops / N_TTY 默认)</text>
+      <text x="350" y="194" text-anchor="middle" fill="#8b949e" font-size="9">字符回显 · 行缓冲 · 信号字符(^C→SIGINT, ^Z→SIGTSTP) · 流控(XON/XOFF)</text>
+
+      <!-- Arrow down -->
+      <line x1="350" y1="205" x2="350" y2="222" stroke="#30363d" stroke-width="1.5" marker-end="url(#arrow)"/>
+
+      <!-- Driver layer -->
+      <rect x="10" y="225" width="330" height="55" rx="8" fill="#0d1117" stroke="#d2a8ff" stroke-width="1.5"/>
+      <text x="175" y="246" text-anchor="middle" fill="#d2a8ff" font-size="10" font-weight="bold">PTY 驱动 (tty_driver)</text>
+      <text x="175" y="261" text-anchor="middle" fill="#8b949e" font-size="9">Master: /dev/ptmx</text>
+      <text x="175" y="274" text-anchor="middle" fill="#8b949e" font-size="9">Slave: /dev/pts/N (devpts 虚拟文件系统)</text>
+
+      <rect x="360" y="225" width="330" height="55" rx="8" fill="#0d1117" stroke="#3fb950" stroke-width="1.5"/>
+      <text x="525" y="246" text-anchor="middle" fill="#3fb950" font-size="10" font-weight="bold">其他 TTY 驱动</text>
+      <text x="525" y="261" text-anchor="middle" fill="#8b949e" font-size="9">串口驱动 (ttyS) · 虚拟控制台 (tty1~6)</text>
+      <text x="525" y="274" text-anchor="middle" fill="#8b949e" font-size="9">USB 串口 (ttyUSB) 等</text>
+
+      <!-- devpts label -->
+      <rect x="30" y="288" width="180" height="22" rx="5" fill="#1c2333" stroke="#58a6ff"/>
+      <text x="120" y="303" text-anchor="middle" fill="#79c0ff" font-size="8">devpts 文件系统（内存虚拟FS）</text>
+    </svg>
+    <div class="svg-caption">图3：Linux 内核 TTY 子系统分层架构（来源：Linux Kernel Documentation driver-api/tty）</div>
+  </div>
+
+  <h3 class="sub-title">关键内核结构体</h3>
+  <div class="table-wrap">
+    <table>
+      <thead><tr><th>结构体</th><th>作用</th></tr></thead>
+      <tbody>
+        <tr>
+          <td><code>struct tty_struct</code></td>
+          <td>每个打开的 TTY 设备实例，包含缓冲区、状态、关联的 ldisc 等，从 open() 到最后一次 close() 一直存在</td>
+        </tr>
+        <tr>
+          <td><code>struct tty_driver</code></td>
+          <td>描述一类 TTY 驱动（如 PTY 驱动、串口驱动），包含对该类设备可进行的操作引用（tty_operations）</td>
+        </tr>
+        <tr>
+          <td><code>struct tty_ldisc_ops</code></td>
+          <td>行规程操作集，定义 read/write/ioctl/receive_buf 等回调，默认 N_TTY 实现回显、信号、行缓冲</td>
+        </tr>
+        <tr>
+          <td><code>struct tty_port</code></td>
+          <td>每个 TTY 设备在系统中的固定端口信息，由 TTY 驱动维护</td>
+        </tr>
+        <tr>
+          <td><code>struct winsize</code></td>
+          <td>终端窗口大小（行列数），通过 TIOCGWINSZ/TIOCSWINSZ ioctl 读写</td>
+        </tr>
+      </tbody>
+    </table>
+  </div>
+
+  <div class="callout green">
+    <b>📌 devpts 虚拟文件系统：</b> PTY 从端设备文件（<code>/dev/pts/N</code>）由内核的 <strong>devpts</strong> 虚拟文件系统动态创建和管理，完全存在于内存中，无需磁盘 I/O。每次打开 <code>/dev/ptmx</code> 创建新 PTY 对时，内核自动在 <code>/dev/pts/</code> 下分配一个编号。
+  </div>
+
+  <div class="first-principle">
+    <div class="first-principle-title">🔭 第一性原理</div>
+    <p>内核 TTY 子系统的核心设计思想是<strong>分层解耦</strong>：应用层只关心 POSIX I/O 接口，行规程层提供终端语义，驱动层屏蔽硬件差异。这使得同一套用户程序可以不加修改地运行在物理串口、虚拟控制台或 PTY 上——抽象层次的清晰划分，是 UNIX "一切皆文件"哲学的精髓体现。</p>
+  </div>
+</section>
+
+<!-- S4: PTY 设备文件与 API -->
+<section class="section" id="s4">
+  <h2 class="sec-title"><span class="icon">📁</span> PTY 设备文件与 API</h2>
+
+  <h3 class="sub-title">重要设备文件（来源：pty(7) FILES 节）</h3>
+  <div class="table-wrap">
+    <table>
+      <thead><tr><th>路径</th><th>类型</th><th>说明</th></tr></thead>
+      <tbody>
+        <tr><td><code>/dev/ptmx</code></td><td>Master 克隆设备</td><td>UNIX 98 标准，每次 open() 分配一个新的 PTY 对</td></tr>
+        <tr><td><code>/dev/pts/0~N</code></td><td>Slave 设备</td><td>动态创建，对应每个活跃 PTY 的从端</td></tr>
+        <tr><td><code>/dev/pty[p-z][0-9a-f]</code></td><td>BSD Master（已废弃）</td><td>自 Linux 2.6.4 起废弃，2.6.30 起内核默认禁用</td></tr>
+        <tr><td><code>/dev/tty[p-z][0-9a-f]</code></td><td>BSD Slave（已废弃）</td><td>与上对应的 BSD 从端，已废弃</td></tr>
+        <tr><td><code>/proc/sys/kernel/pty/max</code></td><td>内核参数</td><td>最大 PTY 数量，Linux 2.6.4+ 可动态调整</td></tr>
+        <tr><td><code>/proc/sys/kernel/pty/nr</code></td><td>内核参数</td><td>当前已使用的 PTY 数量</td></tr>
+      </tbody>
+    </table>
+  </div>
+
+  <h3 class="sub-title">POSIX PTY API</h3>
+  <pre><code><span class="code-comment">/* 打开 PTY Master */</span>
+<span class="code-var">int</span> <span class="code-cmd">posix_openpt</span>(<span class="code-var">int</span> flags);     <span class="code-comment">// 返回 master fd</span>
+
+<span class="code-comment">/* 设置 Slave 端权限 */</span>
+<span class="code-var">int</span> <span class="code-cmd">grantpt</span>(<span class="code-var">int</span> fd);
+
+<span class="code-comment">/* 解锁 Slave 端 */</span>
+<span class="code-var">int</span> <span class="code-cmd">unlockpt</span>(<span class="code-var">int</span> fd);
+
+<span class="code-comment">/* 获取 Slave 设备路径名（如 "/dev/pts/3"）*/</span>
+<span class="code-var">char</span>* <span class="code-cmd">ptsname</span>(<span class="code-var">int</span> fd);
+
+<span class="code-comment">/* 高级封装：一次调用获得 master/slave fd 对 */</span>
+<span class="code-var">int</span> <span class="code-cmd">openpty</span>(<span class="code-var">int</span> *amaster, <span class="code-var">int</span> *aslave, <span class="code-var">char</span> *name,
+            <span class="code-var">const struct</span> termios *termp,
+            <span class="code-var">const struct</span> winsize *winp);
+
+<span class="code-comment">/* 结合 openpty + fork + login_tty */</span>
+<span class="code-var">pid_t</span> <span class="code-cmd">forkpty</span>(<span class="code-var">int</span> *amaster, <span class="code-var">char</span> *name,
+               <span class="code-var">const struct</span> termios *termp,
+               <span class="code-var">const struct</span> winsize *winp);
+
+<span class="code-comment">/* 窗口大小 ioctl */</span>
+<span class="code-cmd">ioctl</span>(fd, TIOCGWINSZ, &amp;ws);   <span class="code-comment">// 获取窗口大小</span>
+<span class="code-cmd">ioctl</span>(fd, TIOCSWINSZ, &amp;ws);   <span class="code-comment">// 设置窗口大小 → 触发 SIGWINCH</span></code></pre>
+
+  <div class="callout">
+    <b>📖 来源：</b> 以上 API 定义来自 <a href="https://man7.org/linux/man-pages/man3/openpty.3.html" style="color:var(--accent)">openpty(3)</a>、<a href="https://man7.org/linux/man-pages/man3/posix_openpt.3.html" style="color:var(--accent)">posix_openpt(3)</a>、<a href="https://man7.org/linux/man-pages/man7/pty.7.html" style="color:var(--accent)">pty(7)</a> Linux man-pages。
+  </div>
+
+  <div class="first-principle">
+    <div class="first-principle-title">🔭 第一性原理</div>
+    <p>PTY API 的设计遵循<strong>最小特权原则</strong>：Master 端持有者才能控制从端，<code>grantpt</code>/<code>unlockpt</code> 的存在确保只有授权进程才能访问特定 PTY Slave，防止任意进程劫持他人终端。设备文件命名（<code>/dev/pts/N</code>）本质上是内核将"通信信道"暴露为文件描述符，从而纳入统一的 POSIX 权限与 I/O 管理体系。</p>
+  </div>
+</section>
+
+<!-- S5: tmux 架构 -->
+<section class="section" id="s5">
+  <h2 class="sec-title"><span class="icon">🏛</span> tmux 架构：Client-Server 模型</h2>
+
+  <p>根据 <strong>tmux(1) 官方手册</strong>：<em>「在 tmux 中，一个 session 由一个 client 在屏幕上显示，所有 session 由单一 server 管理。Server 和每个 client 是独立进程，通过 <code>/tmp</code> 中的 Unix domain socket 进行通信。」</em></p>
+
+  <div class="svg-wrap">
+    <svg viewBox="0 0 700 340" width="100%" style="max-width:700px;font-family:inherit">
+      <!-- tmux server -->
+      <rect x="220" y="20" width="260" height="200" rx="12" fill="#1c2333" stroke="#58a6ff" stroke-width="2"/>
+      <text x="350" y="44" text-anchor="middle" fill="#58a6ff" font-size="12" font-weight="bold">tmux Server 进程</text>
+      <text x="350" y="58" text-anchor="middle" fill="#8b949e" font-size="9">(后台守护，持有所有 PTY Master fd)</text>
+
+      <!-- Sessions in server -->
+      <rect x="232" y="68" width="236" height="140" rx="8" fill="#0d1117" stroke="#30363d"/>
+      <text x="350" y="82" text-anchor="middle" fill="#ffa657" font-size="9" font-weight="bold">Session 集合</text>
+
+      <!-- Window -->
+      <rect x="242" y="88" width="216" height="55" rx="6" fill="#161b22" stroke="#3fb950"/>
+      <text x="350" y="101" text-anchor="middle" fill="#3fb950" font-size="8" font-weight="bold">Window 0</text>
+      <!-- Panes -->
+      <rect x="252" y="107" width="88" height="28" rx="4" fill="#1c2333" stroke="#d2a8ff"/>
+      <text x="296" y="118" text-anchor="middle" fill="#d2a8ff" font-size="7">Pane 0</text>
+      <text x="296" y="129" text-anchor="middle" fill="#8b949e" font-size="6">/dev/pts/2</text>
+      <rect x="362" y="107" width="88" height="28" rx="4" fill="#1c2333" stroke="#d2a8ff"/>
+      <text x="406" y="118" text-anchor="middle" fill="#d2a8ff" font-size="7">Pane 1</text>
+      <text x="406" y="129" text-anchor="middle" fill="#8b949e" font-size="6">/dev/pts/3</text>
+
+      <!-- Window 1 -->
+      <rect x="242" y="150" width="216" height="48" rx="6" fill="#161b22" stroke="#3fb950"/>
+      <text x="350" y="163" text-anchor="middle" fill="#3fb950" font-size="8" font-weight="bold">Window 1</text>
+      <rect x="252" y="170" width="196" height="20" rx="4" fill="#1c2333" stroke="#d2a8ff"/>
+      <text x="350" y="183" text-anchor="middle" fill="#d2a8ff" font-size="7">Pane 0  /dev/pts/4</text>
+
+      <!-- Socket -->
+      <rect x="282" y="228" width="136" height="32" rx="8" fill="#272d3b" stroke="#ffa657" stroke-width="1.5"/>
+      <text x="350" y="244" text-anchor="middle" fill="#ffa657" font-size="9" font-weight="bold">Unix Socket</text>
+      <text x="350" y="256" text-anchor="middle" fill="#8b949e" font-size="8">/tmp/tmux-UID/default</text>
+      <line x1="350" y1="220" x2="350" y2="228" stroke="#ffa657" stroke-width="1.5" stroke-dasharray="4"/>
+
+      <!-- Client 1 -->
+      <rect x="30" y="130" width="150" height="80" rx="10" fill="#1c2333" stroke="#79c0ff" stroke-width="1.5"/>
+      <text x="105" y="152" text-anchor="middle" fill="#79c0ff" font-size="10" font-weight="bold">tmux Client 1</text>
+      <text x="105" y="168" text-anchor="middle" fill="#8b949e" font-size="8">SSH 终端</text>
+      <text x="105" y="182" text-anchor="middle" fill="#8b949e" font-size="8">/dev/pts/0</text>
+      <text x="105" y="200" text-anchor="middle" fill="#8b949e" font-size="7">渲染画面 · 传递输入</text>
+
+      <!-- Client 2 -->
+      <rect x="520" y="130" width="150" height="80" rx="10" fill="#1c2333" stroke="#79c0ff" stroke-width="1.5"/>
+      <text x="595" y="152" text-anchor="middle" fill="#79c0ff" font-size="10" font-weight="bold">tmux Client 2</text>
+      <text x="595" y="168" text-anchor="middle" fill="#8b949e" font-size="8">另一 SSH 终端</text>
+      <text x="595" y="182" text-anchor="middle" fill="#8b949e" font-size="8">/dev/pts/1</text>
+      <text x="595" y="200" text-anchor="middle" fill="#8b949e" font-size="7">共享同一 Session</text>
+
+      <!-- Arrows client1 ↔ socket -->
+      <path d="M180,170 Q220,244 282,244" stroke="#79c0ff" stroke-width="1.5" fill="none" stroke-dasharray="5"/>
+      <path d="M180,185 Q220,256 282,252" stroke="#3fb950" stroke-width="1.5" fill="none" stroke-dasharray="5"/>
+
+      <!-- Arrows client2 ↔ socket -->
+      <path d="M520,170 Q480,244 418,244" stroke="#79c0ff" stroke-width="1.5" fill="none" stroke-dasharray="5"/>
+      <path d="M520,185 Q480,256 418,252" stroke="#3fb950" stroke-width="1.5" fill="none" stroke-dasharray="5"/>
+
+      <!-- Shell processes below -->
+      <rect x="30" y="290" width="120" height="38" rx="8" fill="#0d1117" stroke="#3fb950"/>
+      <text x="90" y="308" text-anchor="middle" fill="#3fb950" font-size="8">bash (pts/2)</text>
+      <text x="90" y="322" text-anchor="middle" fill="#8b949e" font-size="7">子进程</text>
+
+      <rect x="165" y="290" width="120" height="38" rx="8" fill="#0d1117" stroke="#3fb950"/>
+      <text x="225" y="308" text-anchor="middle" fill="#3fb950" font-size="8">vim (pts/3)</text>
+      <text x="225" y="322" text-anchor="middle" fill="#8b949e" font-size="7">子进程</text>
+
+      <rect x="300" y="290" width="120" height="38" rx="8" fill="#0d1117" stroke="#3fb950"/>
+      <text x="360" y="308" text-anchor="middle" fill="#3fb950" font-size="8">htop (pts/4)</text>
+      <text x="360" y="322" text-anchor="middle" fill="#8b949e" font-size="7">子进程</text>
+
+      <line x1="90" y1="290" x2="296" y2="135" stroke="#3fb950" stroke-width="1" stroke-dasharray="3" opacity="0.5"/>
+      <line x1="225" y1="290" x2="350" y2="135" stroke="#3fb950" stroke-width="1" stroke-dasharray="3" opacity="0.5"/>
+      <line x1="360" y1="290" x2="404" y2="175" stroke="#3fb950" stroke-width="1" stroke-dasharray="3" opacity="0.5"/>
+    </svg>
+    <div class="svg-caption">图4：tmux Client-Server 架构与 PTY 关联关系（来源：tmux(1) man-pages）</div>
+  </div>
+
+  <h3 class="sub-title">关键设计特性</h3>
+  <div class="grid2">
+    <div class="card">
+      <h4>🔌 进程分离</h4>
+      <p>tmux server 和 client 是<strong>独立进程</strong>。Client 通过 Unix domain socket 与 Server 通信，断开 client 不影响 server 继续运行。</p>
+    </div>
+    <div class="card">
+      <h4>📦 持久化会话</h4>
+      <p>Server 持有所有 PTY Master fd，即使 SSH 断开，子进程仍在运行。重连后 <code>tmux attach</code> 即可恢复会话（来源：tmux(1) 官方手册）。</p>
+    </div>
+    <div class="card">
+      <h4>👥 多客户端共享</h4>
+      <p>任意数量的 tmux 实例可连接到同一 session，实现结对编程或协作调试（来源：tmux(1) 官方手册）。</p>
+    </div>
+    <div class="card">
+      <h4>🎨 屏幕渲染</h4>
+      <p>tmux server 维护每个 pane 的<strong>虚拟屏幕缓冲区</strong>（scrollback buffer），client attach 时重新渲染全部内容。</p>
+    </div>
+  </div>
+
+  <div class="first-principle">
+    <div class="first-principle-title">🔭 第一性原理</div>
+    <p>tmux 的 Client-Server 架构源于一个根本问题：<strong>进程的生命周期不应与终端连接绑定</strong>。传统 shell 进程是控制终端的子进程，终端消失则进程消亡（SIGHUP）。tmux Server 通过将 PTY Master 集中管理并与显示 client 解耦，打破了这一限制——任何进程只要不主动退出，就能永久存活，不受网络波动或终端关闭影响。</p>
+  </div>
+</section>
+
+<!-- S6: Session Window Pane -->
+<section class="section" id="s6">
+  <h2 class="sec-title"><span class="icon">🗂</span> Session / Window / Pane 层级结构</h2>
+
+  <p>根据 <strong>tmux(1) DESCRIPTION</strong>：<em>「一个 session 是 tmux 管理下的一组伪终端（pseudo terminals）的集合。每个 session 有一或多个 window 与之关联。一个 window 占满整个屏幕，可以被分割成多个矩形 pane，每个 pane 是独立的伪终端。」</em></p>
+
+  <div class="svg-wrap">
+    <svg viewBox="0 0 680 260" width="100%" style="max-width:680px;font-family:inherit">
+      <!-- Server -->
+      <rect x="10" y="10" width="660" height="240" rx="12" fill="#0d1117" stroke="#30363d"/>
+      <text x="340" y="30" text-anchor="middle" fill="#30363d" font-size="10">tmux Server</text>
+
+      <!-- Session A -->
+      <rect x="25" y="38" width="300" height="200" rx="10" fill="#0d1117" stroke="#58a6ff" stroke-width="1.5"/>
+      <text x="175" y="56" text-anchor="middle" fill="#58a6ff" font-size="10" font-weight="bold">Session: work  ($0)</text>
+
+      <!-- Window 0 -->
+      <rect x="38" y="62" width="270" height="80" rx="7" fill="#1c2333" stroke="#3fb950"/>
+      <text x="173" y="76" text-anchor="middle" fill="#3fb950" font-size="9" font-weight="bold">Window 0: editor  (@0)  ★</text>
+      <rect x="48" y="82" width="120" height="50" rx="5" fill="#161b22" stroke="#d2a8ff"/>
+      <text x="108" y="100" text-anchor="middle" fill="#d2a8ff" font-size="8">Pane %0</text>
+      <text x="108" y="113" text-anchor="middle" fill="#8b949e" font-size="7">vim · pts/2</text>
+      <text x="108" y="124" text-anchor="middle" fill="#8b949e" font-size="7">80×24</text>
+      <rect x="180" y="82" width="120" height="50" rx="5" fill="#161b22" stroke="#d2a8ff"/>
+      <text x="240" y="100" text-anchor="middle" fill="#d2a8ff" font-size="8">Pane %1</text>
+      <text x="240" y="113" text-anchor="middle" fill="#8b949e" font-size="7">bash · pts/3</text>
+      <text x="240" y="124" text-anchor="middle" fill="#8b949e" font-size="7">80×24</text>
+
+      <!-- Window 1 -->
+      <rect x="38" y="152" width="270" height="75" rx="7" fill="#1c2333" stroke="#30363d"/>
+      <text x="173" y="167" text-anchor="middle" fill="#8b949e" font-size="9" font-weight="bold">Window 1: server  (@1)</text>
+      <rect x="48" y="175" width="252" height="42" rx="5" fill="#161b22" stroke="#d2a8ff"/>
+      <text x="174" y="193" text-anchor="middle" fill="#d2a8ff" font-size="8">Pane %2  · htop · pts/4</text>
+      <text x="174" y="207" text-anchor="middle" fill="#8b949e" font-size="7">160×48</text>
+
+      <!-- Session B -->
+      <rect x="345" y="38" width="310" height="200" rx="10" fill="#0d1117" stroke="#ffa657" stroke-width="1.5"/>
+      <text x="500" y="56" text-anchor="middle" fill="#ffa657" font-size="10" font-weight="bold">Session: deploy  ($1)</text>
+
+      <rect x="358" y="62" width="282" height="80" rx="7" fill="#1c2333" stroke="#3fb950"/>
+      <text x="499" y="76" text-anchor="middle" fill="#3fb950" font-size="9" font-weight="bold">Window 0: deploy  (@2)  ★</text>
+      <rect x="368" y="82" width="252" height="50" rx="5" fill="#161b22" stroke="#d2a8ff"/>
+      <text x="494" y="100" text-anchor="middle" fill="#d2a8ff" font-size="8">Pane %3</text>
+      <text x="494" y="113" text-anchor="middle" fill="#8b949e" font-size="7">ansible-playbook · pts/5</text>
+      <text x="494" y="124" text-anchor="middle" fill="#8b949e" font-size="7">220×60</text>
+
+      <rect x="358" y="152" width="282" height="75" rx="7" fill="#1c2333" stroke="#30363d"/>
+      <text x="499" y="167" text-anchor="middle" fill="#8b949e" font-size="9" font-weight="bold">Window 1: logs  (@3)</text>
+      <rect x="368" y="175" width="262" height="42" rx="5" fill="#161b22" stroke="#d2a8ff"/>
+      <text x="499" y="197" text-anchor="middle" fill="#d2a8ff" font-size="8">Pane %4  · tail -f app.log · pts/6</text>
+    </svg>
+    <div class="svg-caption">图5：tmux 三层层级结构（Session → Window → Pane）及 PTY 分配</div>
+  </div>
+
+  <h3 class="sub-title">层级概念对比</h3>
+  <div class="table-wrap">
+    <table>
+      <thead><tr><th>层级</th><th>ID 前缀</th><th>类比</th><th>说明</th></tr></thead>
+      <tbody>
+        <tr>
+          <td><strong>Server</strong></td>
+          <td>—</td>
+          <td>操作系统</td>
+          <td>单一后台进程，管理所有 sessions，通过 socket 通信</td>
+        </tr>
+        <tr>
+          <td><strong>Session</strong></td>
+          <td><code>$0</code>, <code>$1</code>…</td>
+          <td>工作区</td>
+          <td>持久的 PTY 集合，可命名，支持 detach/attach</td>
+        </tr>
+        <tr>
+          <td><strong>Window</strong></td>
+          <td><code>@0</code>, <code>@1</code>…</td>
+          <td>浏览器标签页</td>
+          <td>占满整个屏幕，可在 session 内切换</td>
+        </tr>
+        <tr>
+          <td><strong>Pane</strong></td>
+          <td><code>%0</code>, <code>%1</code>…</td>
+          <td>分屏视图</td>
+          <td>每个 pane 对应一个独立 PTY（<code>/dev/pts/N</code>）</td>
+        </tr>
+      </tbody>
+    </table>
+  </div>
+
+  <div class="callout purple">
+    <b>🔑 ID 唯一性：</b> Session、Window、Pane 的 ID（$、@、%前缀）在 tmux server 生命周期内全局唯一且不变。Pane ID 通过 <code>TMUX_PANE</code> 环境变量传递给子进程（来源：Ubuntu manpages tmux(1)）。
+  </div>
+
+  <div class="first-principle">
+    <div class="first-principle-title">🔭 第一性原理</div>
+    <p>三层结构（Session/Window/Pane）是<strong>对人类工作流的精确建模</strong>：一个项目对应一个 Session，一类任务对应一个 Window，一个具体操作对应一个 Pane。每个 Pane 独占一个 PTY，保证进程间 I/O 完全隔离。这种设计让终端从"单一命令行"进化为"可结构化的工作台"，是效率提升的关键所在。</p>
+  </div>
+</section>
+
+<!-- S7: tmux 与 PTY 关系 -->
+<section class="section" id="s7">
+  <h2 class="sec-title"><span class="icon">🔗</span> tmux 与 PTY 的关系</h2>
+
+  <p>根据 <strong>pty(7) NOTES</strong>：<em>「伪终端被 tmux(1)、screen(1)、ssh(1)、xterm(1) 等应用使用。」</em> tmux 在以下层面深度使用 PTY：</p>
+
+  <div class="svg-wrap">
+    <svg viewBox="0 0 700 280" width="100%" style="max-width:700px;font-family:inherit">
+      <!-- User connects via SSH -->
+      <rect x="10" y="20" width="130" height="50" rx="8" fill="#1c2333" stroke="#8b949e"/>
+      <text x="75" y="41" text-anchor="middle" fill="#8b949e" font-size="9" font-weight="bold">用户终端</text>
+      <text x="75" y="56" text-anchor="middle" fill="#8b949e" font-size="8">SSH Client</text>
+
+      <!-- SSH Server -->
+      <rect x="180" y="20" width="130" height="50" rx="8" fill="#1c2333" stroke="#58a6ff"/>
+      <text x="245" y="41" text-anchor="middle" fill="#79c0ff" font-size="9" font-weight="bold">SSH Server</text>
+      <text x="245" y="56" text-anchor="middle" fill="#8b949e" font-size="8">pts/0 (外层PTY)</text>
+
+      <line x1="140" y1="45" x2="178" y2="45" stroke="#58a6ff" stroke-width="1.5" marker-end="url(#arrow)"/>
+
+      <!-- tmux client -->
+      <rect x="360" y="20" width="130" height="50" rx="8" fill="#1c2333" stroke="#3fb950"/>
+      <text x="425" y="41" text-anchor="middle" fill="#56d364" font-size="9" font-weight="bold">tmux Client</text>
+      <text x="425" y="56" text-anchor="middle" fill="#8b949e" font-size="8">读写 pts/0</text>
+
+      <line x1="310" y1="45" x2="358" y2="45" stroke="#3fb950" stroke-width="1.5" marker-end="url(#arrow2)"/>
+      <text x="335" y="38" fill="#8b949e" font-size="7">Unix Socket</text>
+
+      <!-- tmux server -->
+      <rect x="540" y="10" width="150" height="260" rx="10" fill="#0d1117" stroke="#ffa657" stroke-width="1.5"/>
+      <text x="615" y="32" text-anchor="middle" fill="#ffa657" font-size="10" font-weight="bold">tmux Server</text>
+
+      <!-- Server arrow from client -->
+      <line x1="490" y1="45" x2="538" y2="45" stroke="#ffa657" stroke-width="1.5" marker-end="url(#arrow3)"/>
+
+      <!-- PTYs managed by server -->
+      <rect x="556" y="45" width="120" height="35" rx="6" fill="#1c2333" stroke="#d2a8ff"/>
+      <text x="616" y="60" text-anchor="middle" fill="#d2a8ff" font-size="8" font-weight="bold">PTY Master 1</text>
+      <text x="616" y="73" text-anchor="middle" fill="#8b949e" font-size="7">内部 Pane</text>
+
+      <rect x="556" y="90" width="120" height="35" rx="6" fill="#1c2333" stroke="#d2a8ff"/>
+      <text x="616" y="105" text-anchor="middle" fill="#d2a8ff" font-size="8" font-weight="bold">PTY Master 2</text>
+      <text x="616" y="118" text-anchor="middle" fill="#8b949e" font-size="7">内部 Pane</text>
+
+      <rect x="556" y="135" width="120" height="35" rx="6" fill="#1c2333" stroke="#d2a8ff"/>
+      <text x="616" y="150" text-anchor="middle" fill="#d2a8ff" font-size="8" font-weight="bold">PTY Master 3</text>
+      <text x="616" y="163" text-anchor="middle" fill="#8b949e" font-size="7">内部 Pane</text>
+
+      <!-- Scrollback -->
+      <rect x="556" y="182" width="120" height="70" rx="6" fill="#1c2333" stroke="#3fb950"/>
+      <text x="616" y="198" text-anchor="middle" fill="#3fb950" font-size="8" font-weight="bold">虚拟屏幕缓冲</text>
+      <text x="616" y="212" text-anchor="middle" fill="#8b949e" font-size="7">Scrollback Buffer</text>
+      <text x="616" y="226" text-anchor="middle" fill="#8b949e" font-size="7">保存历史输出</text>
+      <text x="616" y="240" text-anchor="middle" fill="#8b949e" font-size="7">供 attach 时恢复</text>
+
+      <!-- Shell procs left side -->
+      <rect x="10" y="120" width="480" height="50" rx="8" fill="#1c2333" stroke="#30363d"/>
+      <text x="20" y="140" fill="#8b949e" font-size="9" font-weight="bold">  PTY Slave 端（子进程）</text>
+      <rect x="30" y="147" width="100" height="18" rx="4" fill="#161b22" stroke="#d2a8ff"/>
+      <text x="80" y="160" text-anchor="middle" fill="#d2a8ff" font-size="7">bash (pts/1)</text>
+      <rect x="145" y="147" width="100" height="18" rx="4" fill="#161b22" stroke="#d2a8ff"/>
+      <text x="195" y="160" text-anchor="middle" fill="#d2a8ff" font-size="7">vim (pts/2)</text>
+      <rect x="260" y="147" width="100" height="18" rx="4" fill="#161b22" stroke="#d2a8ff"/>
+      <text x="310" y="160" text-anchor="middle" fill="#d2a8ff" font-size="7">python (pts/3)</text>
+      <line x1="400" y1="155" x2="538" y2="100" stroke="#d2a8ff" stroke-width="1" stroke-dasharray="3" opacity="0.6"/>
+
+      <!-- Detach label -->
+      <rect x="10" y="195" width="480" height="60" rx="8" fill="#0d1117" stroke="#f78166" stroke-width="1"/>
+      <text x="20" y="215" fill="#f78166" font-size="9" font-weight="bold">  SSH 断开 / Client Detach</text>
+      <text x="20" y="232" fill="#8b949e" font-size="8">  ★ Server 继续运行，PTY Master 保持打开，子进程不受影响</text>
+      <text x="20" y="247" fill="#8b949e" font-size="8">  ★ 重新 attach 后，从 Scrollback Buffer 恢复全部显示内容</text>
+    </svg>
+    <div class="svg-caption">图6：SSH → tmux Client → Server 数据流与 PTY 生命周期管理</div>
+  </div>
+
+  <div class="callout green">
+    <b>✅ 关键事实（来源：tmux(1) 官方手册）：</b> tmux 并不创建新的 SSH 连接。它重用当前终端（TTY 或 PTY），在其上多路复用多个 PTY。每个 pane 对应一个独立 PTY 对，Server 持有全部 Master fd，Client 仅负责渲染和输入转发。
+  </div>
+
+  <div class="first-principle">
+    <div class="first-principle-title">🔭 第一性原理</div>
+    <p>tmux 解决的核心问题是：<strong>如何让进程的 I/O 生命周期独立于显示连接的生命周期？</strong> 答案是引入中间层（Server）持有 PTY Master，让 Client 只是 Server 的"视图"。这与数据库的"连接池"、网络的"代理"思想同构——解耦"资源持有者"与"资源使用者"，实现弹性和持久化。</p>
+  </div>
+</section>
+
+<!-- S8: Session 命令 -->
+<section class="section" id="s8">
+  <h2 class="sec-title"><span class="icon">🖥</span> Session 管理命令</h2>
+
+  <div class="table-wrap">
+    <table>
+      <thead><tr><th>命令</th><th>别名</th><th>说明</th><th>示例</th></tr></thead>
+      <tbody>
+        <tr>
+          <td><code>tmux new-session</code></td>
+          <td><code>new</code></td>
+          <td>创建新 session</td>
+          <td><code>tmux new -s work</code></td>
+        </tr>
+        <tr>
+          <td><code>tmux attach-session</code></td>
+          <td><code>attach</code>, <code>a</code></td>
+          <td>附加到已有 session</td>
+          <td><code>tmux a -t work</code></td>
+        </tr>
+        <tr>
+          <td><code>tmux detach-client</code></td>
+          <td><code>detach</code></td>
+          <td>从 session 分离（session 继续运行）</td>
+          <td><kbd>Ctrl+b</kbd> <kbd>d</kbd></td>
+        </tr>
+        <tr>
+          <td><code>tmux list-sessions</code></td>
+          <td><code>ls</code></td>
+          <td>列出所有 sessions</td>
+          <td><code>tmux ls</code></td>
+        </tr>
+        <tr>
+          <td><code>tmux kill-session</code></td>
+          <td>—</td>
+          <td>终止 session</td>
+          <td><code>tmux kill-session -t work</code></td>
+        </tr>
+        <tr>
+          <td><code>tmux rename-session</code></td>
+          <td><code>rename</code></td>
+          <td>重命名 session</td>
+          <td><kbd>Ctrl+b</kbd> <kbd>$</kbd></td>
+        </tr>
+        <tr>
+          <td><code>tmux switch-client</code></td>
+          <td><code>switch</code></td>
+          <td>切换到另一 session</td>
+          <td><kbd>Ctrl+b</kbd> <kbd>s</kbd></td>
+        </tr>
+        <tr>
+          <td><code>tmux new-session -d</code></td>
+          <td>—</td>
+          <td>在后台创建 session（不附加）</td>
+          <td><code>tmux new -d -s bg</code></td>
+        </tr>
+      </tbody>
+    </table>
+  </div>
+
+  <pre><code><span class="code-comment"># 创建并命名 session</span>
+<span class="code-cmd">tmux</span> new-session -s myproject
+
+<span class="code-comment"># 在后台启动 session 并执行命令</span>
+<span class="code-cmd">tmux</span> new-session -d -s build -x 220 -y 50
+
+<span class="code-comment"># 列出所有 session</span>
+<span class="code-cmd">tmux</span> list-sessions
+
+<span class="code-comment"># 附加到最近 session（若只有一个）</span>
+<span class="code-cmd">tmux</span> attach
+
+<span class="code-comment"># 附加到指定 session，且让其他 client 同步显示</span>
+<span class="code-cmd">tmux</span> attach -t myproject
+
+<span class="code-comment"># 终止指定 session</span>
+<span class="code-cmd">tmux</span> kill-session -t myproject
+
+<span class="code-comment"># 终止全部 session（慎用）</span>
+<span class="code-cmd">tmux</span> kill-server</code></pre>
+
+  <div class="first-principle">
+    <div class="first-principle-title">🔭 第一性原理</div>
+    <p>Session 管理命令的本质是对 tmux Server 中 <strong>PTY 集合生命周期的控制</strong>。<code>new-session</code> = 分配 PTY + 启动 shell；<code>detach</code> = 断开 Client 渲染，保留 PTY；<code>attach</code> = 重建 Client 到 Server 的 socket 连接并重新渲染。<code>kill-session</code> = 释放所有关联 PTY，终止子进程。</p>
+  </div>
+</section>
+
+<!-- S9: Window 命令 -->
+<section class="section" id="s9">
+  <h2 class="sec-title"><span class="icon">🪟</span> Window 管理命令</h2>
+
+  <div class="table-wrap">
+    <table>
+      <thead><tr><th>快捷键</th><th>命令</th><th>说明</th></tr></thead>
+      <tbody>
+        <tr><td><kbd>Ctrl+b</kbd> <kbd>c</kbd></td><td><code>new-window</code></td><td>创建新 window</td></tr>
+        <tr><td><kbd>Ctrl+b</kbd> <kbd>,</kbd></td><td><code>rename-window</code></td><td>重命名当前 window</td></tr>
+        <tr><td><kbd>Ctrl+b</kbd> <kbd>n</kbd></td><td><code>next-window</code></td><td>切换到下一个 window</td></tr>
+        <tr><td><kbd>Ctrl+b</kbd> <kbd>p</kbd></td><td><code>previous-window</code></td><td>切换到上一个 window</td></tr>
+        <tr><td><kbd>Ctrl+b</kbd> <kbd>0-9</kbd></td><td><code>select-window -t :N</code></td><td>切换到第 N 个 window</td></tr>
+        <tr><td><kbd>Ctrl+b</kbd> <kbd>w</kbd></td><td><code>choose-window</code></td><td>可视化列表选择 window</td></tr>
+        <tr><td><kbd>Ctrl+b</kbd> <kbd>&amp;</kbd></td><td><code>kill-window</code></td><td>关闭当前 window（确认后）</td></tr>
+        <tr><td><kbd>Ctrl+b</kbd> <kbd>l</kbd></td><td><code>last-window</code></td><td>切换到上一次活跃的 window</td></tr>
+        <tr><td><kbd>Ctrl+b</kbd> <kbd>.</kbd></td><td><code>move-window</code></td><td>移动 window 到指定编号</td></tr>
+        <tr><td><kbd>Ctrl+b</kbd> <kbd>!</kbd></td><td><code>break-pane</code></td><td>将当前 pane 提升为独立 window</td></tr>
+      </tbody>
+    </table>
+  </div>
+
+  <pre><code><span class="code-comment"># 创建命名 window</span>
+<span class="code-cmd">tmux</span> new-window -n server
+
+<span class="code-comment"># 在特定 session 中切换到指定 window</span>
+<span class="code-cmd">tmux</span> select-window -t myproject:editor
+
+<span class="code-comment"># 移动 window 到编号 3</span>
+<span class="code-cmd">tmux</span> move-window -t 3
+
+<span class="code-comment"># 在 window 之间快速跳转（M-n/M-p 跳有活动的）</span>
+<span class="code-comment"># M-n = Alt+n（跳转到下一个有响铃或活动标记的 window）</span></code></pre>
+
+  <div class="first-principle">
+    <div class="first-principle-title">🔭 第一性原理</div>
+    <p>Window 是 tmux 的"视图单元"，本质上是一组 Pane（PTY）的<strong>有序集合加显示布局</strong>。切换 Window 实质是 tmux Server 告知 Client 切换渲染哪组 PTY 的输出——底层 PTY 和进程始终在运行，只是 Client 的"相机对准"了不同的 PTY 集合。</p>
+  </div>
+</section>
+
+<!-- S10: Pane 命令 -->
+<section class="section" id="s10">
+  <h2 class="sec-title"><span class="icon">⬛</span> Pane 管理命令</h2>
+
+  <div class="table-wrap">
+    <table>
+      <thead><tr><th>快捷键</th><th>命令</th><th>说明</th></tr></thead>
+      <tbody>
+        <tr><td><kbd>Ctrl+b</kbd> <kbd>"</kbd></td><td><code>split-window</code></td><td>水平分割（上下两个 pane）</td></tr>
+        <tr><td><kbd>Ctrl+b</kbd> <kbd>%</kbd></td><td><code>split-window -h</code></td><td>垂直分割（左右两个 pane）</td></tr>
+        <tr><td><kbd>Ctrl+b</kbd> <kbd>方向键</kbd></td><td><code>select-pane</code></td><td>切换到相邻 pane</td></tr>
+        <tr><td><kbd>Ctrl+b</kbd> <kbd>o</kbd></td><td><code>select-pane</code></td><td>轮流选择下一个 pane</td></tr>
+        <tr><td><kbd>Ctrl+b</kbd> <kbd>z</kbd></td><td><code>resize-pane -Z</code></td><td>最大化/还原当前 pane（zoom）</td></tr>
+        <tr><td><kbd>Ctrl+b</kbd> <kbd>x</kbd></td><td><code>kill-pane</code></td><td>关闭当前 pane</td></tr>
+        <tr><td><kbd>Ctrl+b</kbd> <kbd>q</kbd></td><td><code>display-panes</code></td><td>显示 pane 编号</td></tr>
+        <tr><td><kbd>Ctrl+b</kbd> <kbd>{</kbd></td><td><code>swap-pane -U</code></td><td>与上一个 pane 交换位置</td></tr>
+        <tr><td><kbd>Ctrl+b</kbd> <kbd>}</kbd></td><td><code>swap-pane -D</code></td><td>与下一个 pane 交换位置</td></tr>
+        <tr><td><kbd>Ctrl+b</kbd> <kbd>Space</kbd></td><td>—</td><td>在预设布局间循环切换</td></tr>
+        <tr><td><kbd>Ctrl+b</kbd> <kbd>M-1~7</kbd></td><td>—</td><td>切换到 7 种预设布局之一</td></tr>
+        <tr><td><kbd>Ctrl+b</kbd> <kbd>Ctrl+方向键</kbd></td><td><code>resize-pane</code></td><td>调整 pane 大小（每次 1 格）</td></tr>
+        <tr><td><kbd>Ctrl+b</kbd> <kbd>Alt+方向键</kbd></td><td><code>resize-pane</code></td><td>调整 pane 大小（每次 5 格）</td></tr>
+        <tr><td><kbd>Ctrl+b</kbd> <kbd>;</kbd></td><td><code>last-pane</code></td><td>切换到上一次活跃 pane</td></tr>
+        <tr><td><kbd>Ctrl+b</kbd> <kbd>m</kbd></td><td><code>select-pane -m</code></td><td>标记当前 pane</td></tr>
+      </tbody>
+    </table>
+  </div>
+
+  <pre><code><span class="code-comment"># 垂直分割，并在新 pane 中进入指定目录</span>
+<span class="code-cmd">tmux</span> split-window -h -c /var/log
+
+<span class="code-comment"># 调整 pane 大小（向右扩展20格）</span>
+<span class="code-cmd">tmux</span> resize-pane -R 20
+
+<span class="code-comment"># 向所有 pane 发送相同命令（同步模式）</span>
+<span class="code-cmd">tmux</span> set-window-option synchronize-panes on
+
+<span class="code-comment"># 将 pane 移动到另一个 window</span>
+<span class="code-cmd">tmux</span> join-pane -t myproject:server
+
+<span class="code-comment"># 在 pane 中发送命令（脚本自动化用）</span>
+<span class="code-cmd">tmux</span> send-keys -t myproject:0.1 'ls -la' Enter</code></pre>
+
+  <div class="callout">
+    <b>📐 预设布局类型（来源：tmux(1) M-1~M-7）：</b>
+    <code>even-horizontal</code>（等宽横排）、<code>even-vertical</code>（等高竖排）、<code>main-horizontal</code>（主上次下）、<code>main-horizontal-mirrored</code>、<code>main-vertical</code>（主左次右）、<code>main-vertical-mirrored</code>、<code>tiled</code>（网格铺满）。
+  </div>
+
+  <div class="first-principle">
+    <div class="first-principle-title">🔭 第一性原理</div>
+    <p>每个 Pane 本质上是一个独立 PTY 对（master + slave）加上一个矩形显示区域。<strong>分割操作 = 分配新 PTY + 重新计算布局几何</strong>。<code>SIGWINCH</code> 会发送给 slave 端的进程，通知其适应新尺寸。Zoom 操作则是 client 渲染层面的"假全屏"——底层 PTY 尺寸实际变化（重新 TIOCSWINSZ），其他 pane 不受影响。</p>
+  </div>
+</section>
+
+<!-- S11: 快捷键速查 -->
+<section class="section" id="s11">
+  <h2 class="sec-title"><span class="icon">⌨️</span> 快捷键速查表</h2>
+
+  <div class="callout">
+    <b>前缀键：</b> 默认前缀键为 <kbd>Ctrl+b</kbd>（简写 <code>C-b</code>）。所有 tmux 快捷键需先按前缀键，松开后再按命令键。可在配置中改为 <kbd>Ctrl+a</kbd>（来源：tmux(1) DEFAULT KEY BINDINGS）。
+  </div>
+
+  <div class="svg-wrap">
+    <svg viewBox="0 0 700 360" width="100%" style="max-width:700px;font-family:inherit">
+      <!-- Session group -->
+      <rect x="10" y="10" width="210" height="200" rx="10" fill="#1c2333" stroke="#58a6ff" stroke-width="1.5"/>
+      <text x="115" y="30" text-anchor="middle" fill="#58a6ff" font-size="10" font-weight="bold">📂 Session</text>
+      <text x="20" y="50" fill="#8b949e" font-size="8">d</text><text x="38" y="50" fill="#c9d1d9" font-size="8">分离当前 session</text>
+      <text x="20" y="66" fill="#8b949e" font-size="8">s</text><text x="38" y="66" fill="#c9d1d9" font-size="8">交互式选择 session</text>
+      <text x="20" y="82" fill="#8b949e" font-size="8">$</text><text x="38" y="82" fill="#c9d1d9" font-size="8">重命名当前 session</text>
+      <text x="20" y="98" fill="#8b949e" font-size="8">(</text><text x="38" y="98" fill="#c9d1d9" font-size="8">切换到上一个 session</text>
+      <text x="20" y="114" fill="#8b949e" font-size="8">)</text><text x="38" y="114" fill="#c9d1d9" font-size="8">切换到下一个 session</text>
+      <text x="20" y="130" fill="#8b949e" font-size="8">L</text><text x="38" y="130" fill="#c9d1d9" font-size="8">切换到最后一个 session</text>
+      <text x="20" y="146" fill="#8b949e" font-size="8">D</text><text x="38" y="146" fill="#c9d1d9" font-size="8">选择要分离的客户端</text>
+
+      <!-- Window group -->
+      <rect x="240" y="10" width="210" height="200" rx="10" fill="#1c2333" stroke="#3fb950" stroke-width="1.5"/>
+      <text x="345" y="30" text-anchor="middle" fill="#3fb950" font-size="10" font-weight="bold">🪟 Window</text>
+      <text x="250" y="50" fill="#8b949e" font-size="8">c</text><text x="268" y="50" fill="#c9d1d9" font-size="8">创建新 window</text>
+      <text x="250" y="66" fill="#8b949e" font-size="8">,</text><text x="268" y="66" fill="#c9d1d9" font-size="8">重命名 window</text>
+      <text x="250" y="82" fill="#8b949e" font-size="8">n</text><text x="268" y="82" fill="#c9d1d9" font-size="8">下一个 window</text>
+      <text x="250" y="98" fill="#8b949e" font-size="8">p</text><text x="268" y="98" fill="#c9d1d9" font-size="8">上一个 window</text>
+      <text x="250" y="114" fill="#8b949e" font-size="8">0~9</text><text x="280" y="114" fill="#c9d1d9" font-size="8">切换到第 N 个 window</text>
+      <text x="250" y="130" fill="#8b949e" font-size="8">w</text><text x="268" y="130" fill="#c9d1d9" font-size="8">可视化选择 window</text>
+      <text x="250" y="146" fill="#8b949e" font-size="8">l</text><text x="268" y="146" fill="#c9d1d9" font-size="8">上一次活跃的 window</text>
+      <text x="250" y="162" fill="#8b949e" font-size="8">&amp;</text><text x="268" y="162" fill="#c9d1d9" font-size="8">关闭当前 window</text>
+      <text x="250" y="178" fill="#8b949e" font-size="8">!</text><text x="268" y="178" fill="#c9d1d9" font-size="8">pane 提升为 window</text>
+
+      <!-- Pane group -->
+      <rect x="470" y="10" width="220" height="200" rx="10" fill="#1c2333" stroke="#d2a8ff" stroke-width="1.5"/>
+      <text x="580" y="30" text-anchor="middle" fill="#d2a8ff" font-size="10" font-weight="bold">⬛ Pane</text>
+      <text x="480" y="50" fill="#8b949e" font-size="8">&quot;</text><text x="498" y="50" fill="#c9d1d9" font-size="8">水平分割（上下）</text>
+      <text x="480" y="66" fill="#8b949e" font-size="8">%</text><text x="498" y="66" fill="#c9d1d9" font-size="8">垂直分割（左右）</text>
+      <text x="480" y="82" fill="#8b949e" font-size="8">方向键</text><text x="525" y="82" fill="#c9d1d9" font-size="8">切换相邻 pane</text>
+      <text x="480" y="98" fill="#8b949e" font-size="8">z</text><text x="498" y="98" fill="#c9d1d9" font-size="8">最大化/还原 pane</text>
+      <text x="480" y="114" fill="#8b949e" font-size="8">x</text><text x="498" y="114" fill="#c9d1d9" font-size="8">关闭当前 pane</text>
+      <text x="480" y="130" fill="#8b949e" font-size="8">q</text><text x="498" y="130" fill="#c9d1d9" font-size="8">显示 pane 编号</text>
+      <text x="480" y="146" fill="#8b949e" font-size="8">{ / }</text><text x="515" y="146" fill="#c9d1d9" font-size="8">与前/后 pane 交换</text>
+      <text x="480" y="162" fill="#8b949e" font-size="8">Space</text><text x="520" y="162" fill="#c9d1d9" font-size="8">切换预设布局</text>
+      <text x="480" y="178" fill="#8b949e" font-size="8">C-方向键</text><text x="530" y="178" fill="#c9d1d9" font-size="8">调整大小(1格)</text>
+
+      <!-- Copy / Misc group -->
+      <rect x="10" y="225" width="320" height="125" rx="10" fill="#1c2333" stroke="#ffa657" stroke-width="1.5"/>
+      <text x="170" y="244" text-anchor="middle" fill="#ffa657" font-size="10" font-weight="bold">📋 复制模式 &amp; 其他</text>
+      <text x="20" y="262" fill="#8b949e" font-size="8">[</text><text x="38" y="262" fill="#c9d1d9" font-size="8">进入复制模式（copy mode）</text>
+      <text x="20" y="278" fill="#8b949e" font-size="8">]</text><text x="38" y="278" fill="#c9d1d9" font-size="8">粘贴最近复制的内容</text>
+      <text x="20" y="294" fill="#8b949e" font-size="8">Page Up</text><text x="72" y="294" fill="#c9d1d9" font-size="8">进入复制模式并上翻一页</text>
+      <text x="20" y="310" fill="#8b949e" font-size="8">#</text><text x="38" y="310" fill="#c9d1d9" font-size="8">列出所有粘贴缓冲区</text>
+      <text x="20" y="326" fill="#8b949e" font-size="8">=</text><text x="38" y="326" fill="#c9d1d9" font-size="8">交互选择粘贴缓冲区</text>
+      <text x="20" y="342" fill="#8b949e" font-size="8">-</text><text x="38" y="342" fill="#c9d1d9" font-size="8">删除最近的粘贴缓冲区</text>
+
+      <!-- System group -->
+      <rect x="350" y="225" width="340" height="125" rx="10" fill="#1c2333" stroke="#f78166" stroke-width="1.5"/>
+      <text x="520" y="244" text-anchor="middle" fill="#f78166" font-size="10" font-weight="bold">🔧 系统 &amp; 信息</text>
+      <text x="360" y="262" fill="#8b949e" font-size="8">?</text><text x="378" y="262" fill="#c9d1d9" font-size="8">列出所有快捷键绑定</text>
+      <text x="360" y="278" fill="#8b949e" font-size="8">:</text><text x="378" y="278" fill="#c9d1d9" font-size="8">进入 tmux 命令提示符</text>
+      <text x="360" y="294" fill="#8b949e" font-size="8">r</text><text x="378" y="294" fill="#c9d1d9" font-size="8">强制重绘客户端</text>
+      <text x="360" y="310" fill="#8b949e" font-size="8">i</text><text x="378" y="310" fill="#c9d1d9" font-size="8">显示当前 window 信息</text>
+      <text x="360" y="326" fill="#8b949e" font-size="8">t</text><text x="378" y="326" fill="#c9d1d9" font-size="8">显示时钟</text>
+      <text x="360" y="342" fill="#8b949e" font-size="8">~</text><text x="378" y="342" fill="#c9d1d9" font-size="8">显示 tmux 历史消息</text>
+    </svg>
+    <div class="svg-caption">图7：tmux 快捷键速查图（来源：tmux(1) DEFAULT KEY BINDINGS）</div>
+  </div>
+
+  <div class="first-principle">
+    <div class="first-principle-title">🔭 第一性原理</div>
+    <p>快捷键系统的核心是<strong>前缀键命名空间隔离</strong>：前缀键（默认 <kbd>Ctrl+b</kbd>）充当"模式切换器"，使 tmux 的控制指令与终端程序自身的键入不冲突。这是 tmux 作为"终端中的终端"必须解决的基础问题——如何区分"给 tmux 的指令"和"给 shell 的输入"。</p>
+  </div>
+</section>
+
+<!-- S12: 配置 -->
+<section class="section" id="s12">
+  <h2 class="sec-title"><span class="icon">⚙️</span> 配置与定制</h2>
+
+  <p>tmux 在启动时按顺序加载配置文件（来源：tmux(1) -f 选项说明）：</p>
+  <div class="table-wrap">
+    <table>
+      <thead><tr><th>路径</th><th>类型</th></tr></thead>
+      <tbody>
+        <tr><td><code>@SYSCONFDIR@/tmux.conf</code>（通常为 /etc/tmux.conf）</td><td>系统级配置（可选）</td></tr>
+        <tr><td><code>~/.tmux.conf</code></td><td>用户级配置（最常用）</td></tr>
+        <tr><td><code>$XDG_CONFIG_HOME/tmux/tmux.conf</code></td><td>XDG 标准路径</td></tr>
+      </tbody>
+    </table>
+  </div>
+
+  <pre><code><span class="code-comment"># ~/.tmux.conf 常用配置示例</span>
+<span class="code-comment"># 来源：tmux(1) EXAMPLES 节</span>
+
+<span class="code-comment"># 修改前缀键为 Ctrl+a（类似 GNU Screen）</span>
+<span class="code-key">set-option</span> -g prefix C-a
+<span class="code-key">unbind-key</span> C-b
+<span class="code-key">bind-key</span> C-a send-prefix
+
+<span class="code-comment"># 启用鼠标支持</span>
+<span class="code-key">set-option</span> -g mouse on
+
+<span class="code-comment"># 状态栏设置</span>
+<span class="code-key">set-option</span> -g status off              <span class="code-comment"># 关闭状态栏</span>
+<span class="code-key">set-option</span> -g status-style bg=blue    <span class="code-comment"># 状态栏背景色</span>
+
+<span class="code-comment"># 默认 shell 与命令</span>
+<span class="code-key">set-option</span> -g default-command <span class="code-str">"exec /bin/zsh"</span>
+
+<span class="code-comment"># 30分钟无操作后锁屏</span>
+<span class="code-key">set-option</span> -g lock-after-time 1800
+
+<span class="code-comment"># 增大历史滚动行数</span>
+<span class="code-key">set-option</span> -g history-limit 50000
+
+<span class="code-comment"># 自定义快捷键绑定</span>
+<span class="code-key">bind-key</span> b set-option status
+<span class="code-key">bind-key</span> / command-prompt <span class="code-str">"split-window 'exec man %%'"</span>
+<span class="code-key">bind-key</span> S command-prompt <span class="code-str">"new-window -n %1 'ssh %1'"</span>
+
+<span class="code-comment"># 快速分割（保持当前路径）</span>
+<span class="code-key">bind-key</span> <span class="code-str">'"'</span> split-window -v -c <span class="code-str">"#{pane_current_path}"</span>
+<span class="code-key">bind-key</span> <span class="code-str">'%'</span> split-window -h -c <span class="code-str">"#{pane_current_path}"</span>
+
+<span class="code-comment"># 256 色支持</span>
+<span class="code-key">set-option</span> -g default-terminal <span class="code-str">"screen-256color"</span></code></pre>
+
+  <div class="callout green">
+    <b>🔄 热重载配置：</b> 修改 <code>~/.tmux.conf</code> 后，无需重启 tmux。在 tmux 中执行 <kbd>Ctrl+b</kbd> <kbd>:</kbd> 然后输入 <code>source-file ~/.tmux.conf</code> 即可热加载。
+  </div>
+
+  <div class="first-principle">
+    <div class="first-principle-title">🔭 第一性原理</div>
+    <p>配置文件本质上是<strong>在 server 启动时执行的 tmux 命令序列</strong>。tmux 没有独立的配置语言——一切配置都是 tmux 命令（set-option、bind-key 等）。这意味着配置与命令行操作完全等价，极大降低了学习成本：所有能在命令提示符中输入的命令，都可以放入配置文件。</p>
+  </div>
+</section>
+
+<!-- S13: 使用场景 -->
+<section class="section" id="s13">
+  <h2 class="sec-title"><span class="icon">🎯</span> 典型使用场景</h2>
+
+  <div class="grid2">
+    <div class="card">
+      <h4>🌐 远程服务器管理</h4>
+      <p>SSH 登录服务器后启动 tmux，在多个 pane 中同时运行不同任务（日志监控、代码编辑、服务管理）。SSH 断连后任务不中断，重连后 <code>tmux attach</code> 恢复全部工作状态。</p>
+    </div>
+    <div class="card">
+      <h4>⚙️ 长时间后台任务</h4>
+      <p>数据处理、模型训练、批量部署等耗时任务，在 tmux session 中运行，无需依赖终端保持连接。关闭笔记本、网络中断均不影响任务执行。</p>
+    </div>
+    <div class="card">
+      <h4>👥 协作调试（结对编程）</h4>
+      <p>多名开发者通过 SSH 连接同一服务器并 <code>tmux attach</code> 同一 session，实现实时共享终端视图，用于协作排查问题或代码 review。</p>
+    </div>
+    <div class="card">
+      <h4>🔨 开发环境布局</h4>
+      <p>固定分屏布局：左侧代码编辑器（vim/nvim）、右上日志输出、右下测试运行。通过配置文件自动化启动，形成一键恢复的标准开发环境。</p>
+    </div>
+    <div class="card">
+      <h4>🤖 自动化脚本控制</h4>
+      <p>使用 <code>tmux send-keys</code> 向 pane 发送命令，实现终端自动化。结合 <code>tmux new-session -d</code> 在后台无头模式运行多个并发任务。</p>
+    </div>
+    <div class="card">
+      <h4>📊 监控仪表板</h4>
+      <p>使用 <code>synchronize-panes</code> 向多台服务器同时发送命令。或将多个监控工具（htop、iostat、netstat）并排显示在不同 pane，实现单屏多指标监控。</p>
+    </div>
+  </div>
+
+  <h3 class="sub-title">场景示例：标准开发环境一键启动脚本</h3>
+  <pre><code><span class="code-comment">#!/bin/bash</span>
+<span class="code-comment"># 一键启动开发环境 tmux session</span>
+
+SESSION=<span class="code-str">"dev"</span>
+PROJECT=<span class="code-str">"~/projects/myapp"</span>
+
+<span class="code-comment"># 如果 session 不存在则创建</span>
+<span class="code-cmd">tmux</span> has-session -t <span class="code-var">$SESSION</span> 2>/dev/null
+
+<span class="code-key">if</span> [ $? != 0 ]; then
+  <span class="code-comment"># 创建 session 并打开 window 0: editor</span>
+  <span class="code-cmd">tmux</span> new-session -d -s <span class="code-var">$SESSION</span> -n editor -c <span class="code-var">$PROJECT</span>
+
+  <span class="code-comment"># 分割：左 vim，右 shell</span>
+  <span class="code-cmd">tmux</span> split-window -h -t <span class="code-var">$SESSION</span>:editor -c <span class="code-var">$PROJECT</span>
+  <span class="code-cmd">tmux</span> send-keys -t <span class="code-var">$SESSION</span>:editor.0 'nvim .' Enter
+
+  <span class="code-comment"># 创建 window 1: logs</span>
+  <span class="code-cmd">tmux</span> new-window -t <span class="code-var">$SESSION</span> -n logs -c <span class="code-var">$PROJECT</span>
+  <span class="code-cmd">tmux</span> send-keys -t <span class="code-var">$SESSION</span>:logs 'tail -f /var/log/app.log' Enter
+
+  <span class="code-comment"># 默认聚焦到 editor window</span>
+  <span class="code-cmd">tmux</span> select-window -t <span class="code-var">$SESSION</span>:editor
+<span class="code-key">fi</span>
+
+<span class="code-comment"># 附加到 session</span>
+<span class="code-cmd">tmux</span> attach -t <span class="code-var">$SESSION</span></code></pre>
+
+  <div class="first-principle">
+    <div class="first-principle-title">🔭 第一性原理</div>
+    <p>tmux 的所有使用场景都指向同一个根本需求：<strong>将"终端会话"从"物理连接"中解放出来</strong>。本质上，这是把"进程 I/O 上下文"变成一个可持久化、可迁移、可共享的"一等公民"资源。PTY 提供了底层机制，tmux 提供了管理框架，两者合力将终端从临时性的交互工具升级为持久的工作台。</p>
+  </div>
+</section>
+
+<!-- S14: 总结 -->
+<section class="section" id="s14">
+  <h2 class="sec-title"><span class="icon">🔭</span> 第一性原理总结</h2>
+
+  <p>从最基础的物理规律出发，重新审视 PTY 和 tmux 的存在意义：</p>
+
+  <div class="svg-wrap">
+    <svg viewBox="0 0 700 300" width="100%" style="max-width:700px;font-family:inherit">
+      <!-- Center: Core Problem -->
+      <circle cx="350" cy="150" r="65" fill="#1c2333" stroke="#58a6ff" stroke-width="2"/>
+      <text x="350" y="140" text-anchor="middle" fill="#58a6ff" font-size="10" font-weight="bold">核心问题</text>
+      <text x="350" y="156" text-anchor="middle" fill="#c9d1d9" font-size="9">进程 I/O 如何</text>
+      <text x="350" y="170" text-anchor="middle" fill="#c9d1d9" font-size="9">独立于连接？</text>
+
+      <!-- Surrounding solutions -->
+      <rect x="10" y="10" width="155" height="80" rx="10" fill="#1c2333" stroke="#3fb950"/>
+      <text x="88" y="30" text-anchor="middle" fill="#3fb950" font-size="9" font-weight="bold">PTY 抽象</text>
+      <text x="88" y="46" text-anchor="middle" fill="#8b949e" font-size="8">软件模拟终端硬件</text>
+      <text x="88" y="60" text-anchor="middle" fill="#8b949e" font-size="8">任意进程充当终端端点</text>
+      <text x="88" y="74" text-anchor="middle" fill="#8b949e" font-size="8">双向异步字节流+终端语义</text>
+
+      <rect x="535" y="10" width="155" height="80" rx="10" fill="#1c2333" stroke="#ffa657"/>
+      <text x="613" y="30" text-anchor="middle" fill="#ffa657" font-size="9" font-weight="bold">Client-Server 解耦</text>
+      <text x="613" y="46" text-anchor="middle" fill="#8b949e" font-size="8">Server 持有 PTY Master</text>
+      <text x="613" y="60" text-anchor="middle" fill="#8b949e" font-size="8">Client 仅负责渲染+输入</text>
+      <text x="613" y="74" text-anchor="middle" fill="#8b949e" font-size="8">网络断开→进程存活</text>
+
+      <rect x="10" y="210" width="155" height="80" rx="10" fill="#1c2333" stroke="#d2a8ff"/>
+      <text x="88" y="230" text-anchor="middle" fill="#d2a8ff" font-size="9" font-weight="bold">层级复用</text>
+      <text x="88" y="246" text-anchor="middle" fill="#8b949e" font-size="8">Session/Window/Pane</text>
+      <text x="88" y="260" text-anchor="middle" fill="#8b949e" font-size="8">一个连接→多个工作台</text>
+      <text x="88" y="274" text-anchor="middle" fill="#8b949e" font-size="8">工作流结构化管理</text>
+
+      <rect x="535" y="210" width="155" height="80" rx="10" fill="#1c2333" stroke="#f78166"/>
+      <text x="613" y="230" text-anchor="middle" fill="#f78166" font-size="9" font-weight="bold">持久化 + 可恢复</text>
+      <text x="613" y="246" text-anchor="middle" fill="#8b949e" font-size="8">Scrollback Buffer</text>
+      <text x="613" y="260" text-anchor="middle" fill="#8b949e" font-size="8">attach 恢复完整状态</text>
+      <text x="613" y="274" text-anchor="middle" fill="#8b949e" font-size="8">进程生命周期独立</text>
+
+      <!-- Connecting lines -->
+      <line x1="165" y1="50" x2="286" y2="110" stroke="#3fb950" stroke-width="1" stroke-dasharray="4" opacity="0.7"/>
+      <line x1="535" y1="50" x2="414" y2="110" stroke="#ffa657" stroke-width="1" stroke-dasharray="4" opacity="0.7"/>
+      <line x1="165" y1="250" x2="286" y2="190" stroke="#d2a8ff" stroke-width="1" stroke-dasharray="4" opacity="0.7"/>
+      <line x1="535" y1="250" x2="414" y2="190" stroke="#f78166" stroke-width="1" stroke-dasharray="4" opacity="0.7"/>
+    </svg>
+    <div class="svg-caption">图8：PTY + tmux 解决"进程 I/O 独立于连接"核心问题的四个维度</div>
+  </div>
+
+  <div class="first-principle">
+    <div class="first-principle-title">🔭 最终第一性原理</div>
+    <p><strong>PTY 是"终端"概念的彻底软件化</strong>：它把原本由硬件（串口、键盘、显示器）承担的 I/O 边界，转化为内核中的两个文件描述符（master/slave），附加行规程语义，使任意进程对可充当"终端的另一端"。</p>
+    <br>
+    <p><strong>tmux 是"工作会话"概念的彻底持久化</strong>：它以 PTY 为原材料，通过 Client-Server 架构将"I/O 持有者"（Server）与"I/O 显示者"（Client）分离，使进程的存活不再依赖任何物理或网络连接——这是终端技术在现代分布式环境下的必然进化。</p>
+  </div>
+
+  <h3 class="sub-title" style="margin-top:32px">核心技术对照速查</h3>
+  <div class="table-wrap">
+    <table>
+      <thead><tr><th>概念</th><th>内核机制</th><th>tmux 对应</th><th>本质</th></tr></thead>
+      <tbody>
+        <tr>
+          <td><strong>终端抽象</strong></td>
+          <td>TTY subsystem</td>
+          <td>PTY slave → shell</td>
+          <td>进程 I/O 的统一接口</td>
+        </tr>
+        <tr>
+          <td><strong>双向通信</strong></td>
+          <td>PTY master/slave</td>
+          <td>Server 读写 master fd</td>
+          <td>内核缓冲区+行规程</td>
+        </tr>
+        <tr>
+          <td><strong>信号传递</strong></td>
+          <td>Line Discipline N_TTY</td>
+          <td>Ctrl+C → 前台进程组</td>
+          <td>字符→信号的内核转换</td>
+        </tr>
+        <tr>
+          <td><strong>窗口大小</strong></td>
+          <td>TIOCSWINSZ ioctl</td>
+          <td>resize-pane → SIGWINCH</td>
+          <td>几何信息同步给进程</td>
+        </tr>
+        <tr>
+          <td><strong>会话持久化</strong></td>
+          <td>PTY master 保持打开</td>
+          <td>Server 不退出</td>
+          <td>文件描述符生命周期</td>
+        </tr>
+        <tr>
+          <td><strong>多路复用</strong></td>
+          <td>多个 PTY 对</td>
+          <td>多 Window/Pane</td>
+          <td>一连接→多终端</td>
+        </tr>
+        <tr>
+          <td><strong>进程间通信</strong></td>
+          <td>Unix domain socket</td>
+          <td>Client ↔ Server</td>
+          <td>/tmp/tmux-UID/default</td>
+        </tr>
+      </tbody>
+    </table>
+  </div>
+
+  <div class="callout green" style="margin-top:28px">
+    <b>📖 官方参考文献：</b><br>
+    • <a href="https://man7.org/linux/man-pages/man7/pty.7.html" style="color:var(--accent)">pty(7) — Linux man-pages 6.18</a>（主要 PTY 参考）<br>
+    • <a href="https://www.man7.org/linux/man-pages/man1/tmux.1.html" style="color:var(--accent)">tmux(1) — Linux man-pages / tmux GitHub</a>（主要 tmux 参考）<br>
+    • <a href="https://www.kernel.org/doc/html/latest/driver-api/tty/index.html" style="color:var(--accent)">TTY — Linux Kernel Documentation (driver-api/tty)</a>（内核 TTY 子系统）<br>
+    • <a href="https://man7.org/linux/man-pages/man3/openpty.3.html" style="color:var(--accent)">openpty(3)、posix_openpt(3)</a>（PTY API 参考）<br>
+    • <a href="https://tmux.github.io/" style="color:var(--accent)">tmux.github.io</a>（官方项目主页）
+  </div>
+</section>
+
+</div>
+</div>
+
+<!-- Scroll to top -->
+<button id="scroll-top" title="回到顶部">↑</button>
+
+<script>
+// ── Progress Bar ──
+const progressBar = document.getElementById('progress-bar');
+function updateProgress() {
+  const scrollTop = window.scrollY || document.documentElement.scrollTop;
+  const scrollHeight = document.documentElement.scrollHeight - window.innerHeight;
+  const progress = scrollHeight > 0 ? (scrollTop / scrollHeight) * 100 : 0;
+  progressBar.style.width = Math.min(progress, 100) + '%';
+}
+
+// ── Active nav tracking ──
+const sections = document.querySelectorAll('.section, .section-hero');
+const navLinks = document.querySelectorAll('.nav-link');
+
+function getActiveSec() {
+  const scrollY = window.scrollY + 120;
+  let active = null;
+  sections.forEach(sec => {
+    if (sec.offsetTop <= scrollY) active = sec.id;
+  });
+  return active;
+}
+
+function updateNav() {
+  const active = getActiveSec();
+  navLinks.forEach(link => {
+    link.classList.toggle('active', link.dataset.sec === active);
+  });
+}
+
+// ── Scroll events ──
+window.addEventListener('scroll', () => {
+  updateProgress();
+  updateNav();
+  document.getElementById('scroll-top').style.display =
+    window.scrollY > 300 ? 'flex' : 'none';
+}, { passive: true });
+
+// ── Nav link click ──
+navLinks.forEach(link => {
+  link.addEventListener('click', () => {
+    const target = document.getElementById(link.dataset.sec);
+    if (target) {
+      target.scrollIntoView({ behavior: 'smooth', block: 'start' });
+    }
+    // close mobile nav
+    if (window.innerWidth <= 900) {
+      sidebar.classList.remove('open');
+      hamburger.classList.remove('open');
+      navOverlay.classList.remove('open');
+    }
+  });
+});
+
+// ── Hamburger ──
+const hamburger = document.getElementById('hamburger');
+const sidebar = document.getElementById('sidebar');
+const navOverlay = document.getElementById('nav-overlay');
+
+hamburger.addEventListener('click', () => {
+  const open = sidebar.classList.toggle('open');
+  hamburger.classList.toggle('open', open);
+  navOverlay.classList.toggle('open', open);
+});
+
+navOverlay.addEventListener('click', () => {
+  sidebar.classList.remove('open');
+  hamburger.classList.remove('open');
+  navOverlay.classList.remove('open');
+});
+
+// ── Keyboard navigation ──
+const secIds = ['s0','s1','s2','s3','s4','s5','s6','s7','s8','s9','s10','s11','s12','s13','s14'];
+document.addEventListener('keydown', e => {
+  if (e.target.tagName === 'INPUT' || e.target.tagName === 'TEXTAREA') return;
+  const active = getActiveSec();
+  const idx = secIds.indexOf(active);
+  if (e.key === 'ArrowRight' && idx < secIds.length - 1) {
+    document.getElementById(secIds[idx + 1])?.scrollIntoView({ behavior: 'smooth' });
+  } else if (e.key === 'ArrowLeft' && idx > 0) {
+    document.getElementById(secIds[idx - 1])?.scrollIntoView({ behavior: 'smooth' });
+  }
+});
+
+// ── Scroll top ──
+document.getElementById('scroll-top').addEventListener('click', () => {
+  window.scrollTo({ top: 0, behavior: 'smooth' });
+});
+
+// ── Init ──
+updateProgress();
+updateNav();
+</script>
+</body>
+</html>

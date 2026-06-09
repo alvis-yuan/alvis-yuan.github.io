@@ -1,0 +1,316 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>libcurl 当前构建、设计模式与 OTA 落地分析</title>
+  <style>
+    :root{--bg:#0f1117;--panel:#161b22;--panel2:#1d2430;--line:#30363d;--text:#e6edf3;--muted:#8b949e;--blue:#2f81f7;--cyan:#64d2ff;--green:#30d158;--amber:#ffa657;--red:#ff7b72;--violet:#bf87ff;--code:#d2a8ff}
+    *{box-sizing:border-box}html{scroll-behavior:smooth}body{margin:0;background:var(--bg);color:var(--text);font-family:"Segoe UI","Noto Sans SC",sans-serif;line-height:1.72}a{color:var(--cyan);text-decoration:none}a:hover{text-decoration:underline}code{padding:1px 5px;border:1px solid var(--line);border-radius:4px;background:rgba(110,118,129,.16);color:var(--code);font-family:Consolas,"SFMono-Regular",monospace;font-size:.92em}pre{overflow:auto;padding:14px 16px;border:1px solid var(--line);border-radius:8px;background:#0b0f14;color:#c9d1d9;font-family:Consolas,"SFMono-Regular",monospace;font-size:12px;line-height:1.55}.topbar{position:fixed;top:0;left:0;right:0;z-index:20;min-height:54px;display:flex;align-items:center;gap:14px;padding:0 22px;background:rgba(15,17,23,.94);border-bottom:1px solid var(--line);backdrop-filter:blur(10px)}.brand{font-weight:800;white-space:nowrap}.toplinks{margin-left:auto;display:flex;gap:12px;font-size:13px}#menuButton{display:none;border:1px solid var(--line);border-radius:6px;background:var(--panel);color:var(--text);padding:6px 9px;cursor:pointer}#progressBar{position:fixed;top:54px;left:0;z-index:30;height:3px;width:0;background:linear-gradient(90deg,var(--blue),var(--green))}.layout{display:flex;padding-top:57px}nav{position:fixed;top:57px;bottom:0;width:318px;overflow:auto;padding:18px 16px 28px;background:var(--panel);border-right:1px solid var(--line)}nav details{margin-bottom:10px}nav summary{cursor:pointer;color:var(--text);font-weight:700;margin-bottom:8px}nav a{display:block;padding:7px 10px;margin:2px 0;border-radius:6px;color:var(--muted);font-size:13px}nav a.active,nav a:hover{background:var(--panel2);color:var(--text);text-decoration:none}main{width:calc(100% - 318px);max-width:1190px;margin-left:318px;padding:34px 42px 72px}section{margin:0 0 46px;scroll-margin-top:76px}h1{margin:0 0 12px;font-size:32px;line-height:1.25}h2{margin:0 0 14px;font-size:24px;border-bottom:1px solid var(--line);padding-bottom:8px}h3{margin:18px 0 8px;font-size:18px}.lead{font-size:17px;color:#c9d1d9}.note,.principle,.warn{margin:16px 0;padding:14px 16px;border:1px solid var(--line);border-left:4px solid var(--blue);border-radius:8px;background:rgba(47,129,247,.08)}.principle{border-left-color:var(--green);background:rgba(48,209,88,.08)}.warn{border-left-color:var(--amber);background:rgba(255,166,87,.08)}.grid{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:14px}.grid3{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:14px}.card{padding:16px;border:1px solid var(--line);border-radius:8px;background:var(--panel)}.card h3{margin-top:0}.metric{display:flex;align-items:center;justify-content:space-between;gap:12px}.pill{display:inline-flex;align-items:center;gap:6px;padding:3px 9px;border:1px solid var(--line);border-radius:999px;background:rgba(110,118,129,.12);color:#c9d1d9;font-size:12px;white-space:nowrap}table{width:100%;border-collapse:collapse;margin:14px 0 20px;background:var(--panel);border:1px solid var(--line);border-radius:8px;overflow:hidden}th,td{padding:11px 12px;border:1px solid var(--line);vertical-align:top;text-align:left}th{background:var(--panel2);color:#fff}td{color:#c9d1d9}.svg-wrap{margin:16px 0;padding:14px;border:1px solid var(--line);border-radius:8px;background:#0b0f14;overflow:auto}.svg-wrap svg{display:block;min-width:780px;width:100%;height:auto}.ok{color:var(--green)}.bad{color:var(--red)}.maybe{color:var(--amber)}@media(max-width:900px){#menuButton{display:block}.toplinks{display:none}.layout{display:block}nav{display:none;left:0;right:0;width:auto;z-index:25;top:57px;max-height:72vh}nav.open{display:block}main{width:100%;margin-left:0;padding:24px 18px 56px}.grid,.grid3{grid-template-columns:1fr}h1{font-size:26px}h2{font-size:21px}table{font-size:13px}}
+  </style>
+</head>
+<body>
+  <header class="topbar">
+    <button id="menuButton" aria-label="打开目录">目录</button>
+    <div class="brand">libcurl 7.36.0 build & OTA integration</div>
+    <div class="toplinks">
+      <a href="https://curl.se/libcurl/c/libcurl.html">API overview</a>
+      <a href="https://curl.se/libcurl/c/libcurl-easy.html">Easy</a>
+      <a href="https://curl.se/libcurl/c/libcurl-multi.html">Multi</a>
+      <a href="https://curl.se/libcurl/c/libcurl-share.html">Share</a>
+      <a href="https://curl.se/docs/features.html">Features</a>
+    </div>
+  </header>
+  <div id="progressBar"></div>
+  <div class="layout">
+    <nav id="sideNav">
+      <details open><summary>依据与边界</summary><a href="#intro">结论</a><a href="#official">官方依据</a><a href="#build">当前配置</a></details>
+      <details open><summary>构建事实</summary><a href="#artifacts">已编译产物</a><a href="#modules">模块组合</a><a href="#features">能力边界</a></details>
+      <details open><summary>设计原理</summary><a href="#model">抽象模型</a><a href="#easy-multi-share">Easy/Multi/Share</a><a href="#inside">内部落地</a></details>
+      <details open><summary>工程落地</summary><a href="#ota-flow">OTA 调用流</a><a href="#download">下载路径</a><a href="#risks">风险与改进</a><a href="#summary">总结</a></details>
+    </nav>
+    <main>
+      <section id="intro">
+        <h1>libcurl 当前配置、已编译文件、设计模式与 OTA 落地分析</h1>
+        <p class="lead">本文基于当前工程的 <code>third_party_app/libcurl-7.36.0</code> 配置产物、已编译对象、库文件，以及 <code>dmp/package/ota_sdk/src/http.c</code> 的实际调用路径，结合 curl 官方文档，解释 curl/libcurl 的设计原理、接口模式和在本产品 OTA HTTPS 通信中的落地方式。</p>
+        <div class="note">结论先行：当前工程使用的是 <code>libcurl 7.36.0</code>，交叉编译目标为 <code>mipsel-buildroot-linux-gnu</code>，启用 OpenSSL、zlib、IPv6，禁用 LDAP/LDAPS 和 verbose strings。OTA SDK 实际只使用 <code>easy interface</code>，通过同步 <code>curl_easy_perform()</code> 完成 HTTPS POST、OTA 查询、状态上报和断点续传下载。</div>
+        <div class="grid3">
+          <div class="card metric"><span>版本</span><span class="pill">7.36.0</span></div>
+          <div class="card metric"><span>目标平台</span><span class="pill">mipsel-buildroot-linux-gnu</span></div>
+          <div class="card metric"><span>当前调用模式</span><span class="pill">easy / blocking</span></div>
+        </div>
+        <div class="principle"><strong>第一性原理：</strong>curl 是命令行工具，libcurl 是可嵌入的传输库；本工程真正依赖的是 libcurl 的 C API，而不是 curl 命令行行为。</div>
+      </section>
+
+      <section id="official">
+        <h2>1. 官方依据</h2>
+        <table>
+          <tr><th>官方资料</th><th>原文要点</th><th>本文使用方式</th></tr>
+          <tr><td><a href="https://curl.se/libcurl/c/libcurl.html">libcurl API overview</a></td><td>libcurl 是 client-side URL transfers；一次传输围绕 easy handle 设置选项；easy 是同步接口，multi 是异步接口；持久连接会尽量复用；程序应调用 <code>curl_global_init()</code> / <code>curl_global_cleanup()</code>。</td><td>解释当前 OTA 为什么先 <code>http_init()</code>，每次请求创建 easy handle，设置 URL、header、回调、超时后执行。</td></tr>
+          <tr><td><a href="https://curl.se/libcurl/c/libcurl-easy.html">Easy interface overview</a></td><td>easy handle 由 <code>curl_easy_init()</code> 创建；通过 <code>curl_easy_setopt()</code> 设置 URL 和回调；<code>curl_easy_perform()</code> 执行完整传输并阻塞到成功或失败。</td><td>对应 <code>_set_curl_params()</code> 和多个 <code>curl_easy_perform()</code> 调用。</td></tr>
+          <tr><td><a href="https://curl.se/libcurl/c/libcurl-multi.html">Multi interface overview</a></td><td>multi 提供 pull interface、同线程多并发传输、与应用 fd 一起等待、event-based 扩展到大量连接。</td><td>说明当前工程没有直接使用 multi，但 easy 在源码内部封装在 multi 状态机之上。</td></tr>
+          <tr><td><a href="https://curl.se/libcurl/c/libcurl-share.html">Share interface overview</a></td><td>share interface 用于多个 easy handle 共享 cookie、DNS cache、TLS session cache、connection cache；多线程使用时应用必须提供锁。</td><td>解释当前每次 cleanup easy handle 的代价，以及可以如何优化共享状态。</td></tr>
+          <tr><td><a href="https://curl.se/libcurl/c/curl_easy_setopt.html">curl_easy_setopt</a></td><td>选项用于改变 libcurl 行为；选项是 sticky 的；每次调用只能设置一个选项；传输中修改选项可能产生未定义/不期望行为。</td><td>解释当前代码“构造阶段集中设置选项，然后 perform”的模式。</td></tr>
+          <tr><td><a href="https://curl.se/docs/features.html">curl features</a></td><td>libcurl 支持 URL RFC 3986、代理、持久连接、DNS cache、可选网络接口、IPv6、OpenSSL/TLS、HTTP/FTP/SMTP 等大量协议和能力。</td><td>和当前 <code>libcurl.pc</code> / <code>curl_config.h</code> 对照，区分上游能力与本构建能力。</td></tr>
+        </table>
+        <div class="principle"><strong>第一性原理：</strong>官方文档定义 API 语义；当前配置文件定义本工程启用哪些能力；业务源码定义实际使用了哪些能力。</div>
+      </section>
+
+      <section id="build">
+        <h2>2. 当前配置：交叉编译的 libcurl 7.36.0</h2>
+        <table>
+          <tr><th>配置项</th><th>当前值</th><th>来源与含义</th></tr>
+          <tr><td>版本</td><td><code>7.36.0</code></td><td><code>libcurl.pc</code> 标明 <code>Version: 7.36.0</code>。</td></tr>
+          <tr><td>build</td><td><code>x86_64-unknown-linux-gnu</code></td><td><code>config.status</code> 的构建机。</td></tr>
+          <tr><td>host</td><td><code>mipsel-buildroot-linux-gnu</code></td><td><code>config.status</code> 的目标运行平台。</td></tr>
+          <tr><td>编译器</td><td><code>mips-linux-gnu-gcc</code></td><td>来自 Buildroot toolchain 路径，说明这是嵌入式 MIPS 目标库。</td></tr>
+          <tr><td>CFLAGS</td><td><code>-Os</code>、large file 宏、<code>SUNMI_OS_PLATFORM_CLOUD_PRINTER_80</code></td><td>面向体积优化和产品平台宏。</td></tr>
+          <tr><td>链接依赖</td><td><code>-lssl -lcrypto -lz</code></td><td>当前 libcurl 依赖 OpenSSL 与 zlib。</td></tr>
+          <tr><td>安装库名</td><td><code>libcurl.so.4.3.0</code>、<code>libcurl.so.4</code>、<code>libcurl.so</code>、<code>libcurl.a</code></td><td><code>lib/.libs</code> 和 <code>libcurl.la</code> 中已生成动态库与静态库。</td></tr>
+          <tr><td>安装前缀</td><td><code>/usr</code></td><td><code>libcurl.pc</code> 中 <code>prefix=/usr</code>。</td></tr>
+        </table>
+        <div class="warn"><strong>版本边界：</strong>官方网页展示的是当前 curl 项目的最新文档，本文只借用稳定 API 原理。具体符号、选项是否可用，仍以本仓库 <code>7.36.0</code> 的头文件、配置和已编译对象为准。</div>
+        <div class="principle"><strong>第一性原理：</strong>嵌入式第三方库分析必须先锁定“版本、目标架构、启用依赖、禁用特性、最终产物”，否则容易把上游最新版能力误当成本产品能力。</div>
+      </section>
+
+      <section id="artifacts">
+        <h2>3. 已编译产物：100 个对象文件和 libcurl 库</h2>
+        <p>当前 <code>lib/.libs</code> 下存在 100 个 <code>libcurl_la-*.o</code> 对象文件，同时生成了动态库和静态库。这说明当前 libcurl 不是只编了 HTTP 小子集，而是保留了较完整的协议模块集合，最终是否可用还要受配置宏和依赖库影响。</p>
+        <div class="svg-wrap">
+          <svg viewBox="0 0 1120 430" role="img" aria-label="current libcurl build artifacts">
+            <defs><marker id="arrow" markerWidth="10" markerHeight="10" refX="8" refY="3" orient="auto"><path d="M0,0 L0,6 L9,3 z" fill="#8b949e"/></marker></defs>
+            <rect x="40" y="55" width="230" height="110" rx="8" fill="#161b22" stroke="#30363d"/><text x="155" y="95" text-anchor="middle" fill="#e6edf3" font-size="18" font-weight="700">CSOURCES + VSOURCES</text><text x="155" y="128" text-anchor="middle" fill="#8b949e" font-size="13">Makefile.inc</text>
+            <rect x="340" y="55" width="230" height="110" rx="8" fill="#161b22" stroke="#30363d"/><text x="455" y="95" text-anchor="middle" fill="#e6edf3" font-size="18" font-weight="700">100 个对象文件</text><text x="455" y="128" text-anchor="middle" fill="#8b949e" font-size="13">libcurl_la-*.o</text>
+            <rect x="640" y="55" width="230" height="110" rx="8" fill="#161b22" stroke="#30363d"/><text x="755" y="95" text-anchor="middle" fill="#e6edf3" font-size="18" font-weight="700">libcurl.so.4.3.0</text><text x="755" y="128" text-anchor="middle" fill="#8b949e" font-size="13">动态库 ABI soname</text>
+            <rect x="640" y="235" width="230" height="95" rx="8" fill="#161b22" stroke="#30363d"/><text x="755" y="274" text-anchor="middle" fill="#e6edf3" font-size="18" font-weight="700">libcurl.a</text><text x="755" y="304" text-anchor="middle" fill="#8b949e" font-size="13">静态库</text>
+            <rect x="920" y="145" width="160" height="95" rx="8" fill="#0f1722" stroke="#30363d"/><text x="1000" y="184" text-anchor="middle" fill="#e6edf3" font-size="17" font-weight="700">OTA SDK</text><text x="1000" y="214" text-anchor="middle" fill="#8b949e" font-size="13">#include &lt;curl/curl.h&gt;</text>
+            <line x1="270" y1="110" x2="340" y2="110" stroke="#8b949e" stroke-width="2" marker-end="url(#arrow)"/><line x1="570" y1="110" x2="640" y2="110" stroke="#8b949e" stroke-width="2" marker-end="url(#arrow)"/><line x1="570" y1="140" x2="640" y2="270" stroke="#8b949e" stroke-width="2" marker-end="url(#arrow)"/><line x1="870" y1="110" x2="920" y2="170" stroke="#8b949e" stroke-width="2" marker-end="url(#arrow)"/><line x1="870" y1="282" x2="920" y2="215" stroke="#8b949e" stroke-width="2" marker-end="url(#arrow)"/>
+          </svg>
+        </div>
+        <table>
+          <tr><th>产物</th><th>当前状态</th><th>说明</th></tr>
+          <tr><td><code>libcurl.so.4.3.0</code></td><td><span class="ok">已生成</span></td><td>动态库真实文件。</td></tr>
+          <tr><td><code>libcurl.so.4</code> / <code>libcurl.so</code></td><td><span class="ok">已生成</span></td><td>soname 与开发链接名。</td></tr>
+          <tr><td><code>libcurl.a</code></td><td><span class="ok">已生成</span></td><td>静态归档库。</td></tr>
+          <tr><td><code>libcurl.la</code></td><td><span class="ok">已生成</span></td><td>libtool 元数据，记录依赖 <code>-lssl -lcrypto -lz</code>。</td></tr>
+          <tr><td><code>libcurl.pc</code></td><td><span class="ok">已生成</span></td><td>pkg-config 元数据，列出协议和特性。</td></tr>
+        </table>
+        <div class="principle"><strong>第一性原理：</strong>“源码目录里有”不等于“当前产品用到”；“对象文件已编译”说明它进了库；“业务源码调用”才说明它进入当前功能路径。</div>
+      </section>
+
+      <section id="modules">
+        <h2>4. 模块组合：协议处理器 + 通用传输引擎</h2>
+        <p><code>lib/Makefile.inc</code> 中的源文件显示 libcurl 由协议模块、连接/传输模块、缓存/容器模块、TLS 后端和工具支撑模块组合而成。HTTP/HTTPS 在当前 OTA 中最重要，但库里还编译了 FTP、SMTP、POP3、IMAP、TFTP、RTSP、TELNET、FILE、DICT、Gopher 等模块。</p>
+        <table>
+          <tr><th>模块族</th><th>代表文件</th><th>职责</th></tr>
+          <tr><td>API 门面</td><td><code>easy.c</code>、<code>multi.c</code>、<code>share.c</code>、<code>getinfo.c</code></td><td>对应用暴露 easy/multi/share/getinfo 等公共接口。</td></tr>
+          <tr><td>URL 与连接</td><td><code>url.c</code>、<code>connect.c</code>、<code>conncache.c</code>、<code>hostip.c</code></td><td>解析 URL、创建连接、DNS 解析、连接缓存和复用。</td></tr>
+          <tr><td>传输循环</td><td><code>transfer.c</code>、<code>sendf.c</code>、<code>select.c</code>、<code>nonblock.c</code></td><td>读写 socket、处理 header/body、回调应用、非阻塞 I/O 支撑。</td></tr>
+          <tr><td>协议处理器</td><td><code>http.c</code>、<code>ftp.c</code>、<code>smtp.c</code>、<code>imap.c</code>、<code>pop3.c</code></td><td>不同 URL scheme 的协议状态、请求构造、响应解析。</td></tr>
+          <tr><td>TLS 后端</td><td><code>vtls/openssl.c</code>、<code>vtls/vtls.c</code></td><td>当前配置启用 OpenSSL，HTTPS 通过 TLS 后端完成握手和加密。</td></tr>
+          <tr><td>支撑能力</td><td><code>cookie.c</code>、<code>content_encoding.c</code>、<code>socks.c</code>、<code>progress.c</code></td><td>Cookie、压缩、代理、进度、限速等横切能力。</td></tr>
+        </table>
+        <div class="principle"><strong>第一性原理：</strong>libcurl 的核心不是“HTTP 库”，而是“URL scheme 分派 + 连接管理 + 传输状态机 + 回调交付”的通用传输框架。</div>
+      </section>
+
+      <section id="features">
+        <h2>5. 当前能力边界：支持什么，禁用了什么</h2>
+        <table>
+          <tr><th>类别</th><th>当前配置事实</th><th>影响</th></tr>
+          <tr><td>协议</td><td><code>libcurl.pc</code> 列出 <code>DICT FILE FTP FTPS GOPHER HTTP HTTPS IMAP IMAPS POP3 POP3S RTSP SMTP SMTPS TELNET TFTP</code>。</td><td>当前库声明支持这些协议；OTA 业务实际使用 HTTP/HTTPS。</td></tr>
+          <tr><td>SSL/TLS</td><td><code>SSL_ENABLED=1</code>，<code>USE_OPENSSL=1</code>，依赖 <code>-lssl -lcrypto</code>。</td><td>HTTPS 可用，TLS 实现来自 OpenSSL。</td></tr>
+          <tr><td>压缩</td><td><code>HAVE_LIBZ=1</code>，依赖 <code>-lz</code>。</td><td>具备 zlib 能力。</td></tr>
+          <tr><td>IPv6</td><td><code>ENABLE_IPV6=1</code>。</td><td>库层可处理 IPv6；实际请求是否走 IPv6 取决于 DNS、网络和选项。</td></tr>
+          <tr><td>LDAP/LDAPS</td><td><code>CURL_DISABLE_LDAP=1</code>，<code>CURL_DISABLE_LDAPS=1</code>。</td><td>虽然源码/对象里有 LDAP 相关文件，当前配置禁用 LDAP 协议能力。</td></tr>
+          <tr><td>verbose strings</td><td><code>CURL_DISABLE_VERBOSE_STRINGS=1</code>。</td><td>裁剪详细字符串，适合嵌入式体积；业务代码设置 <code>CURLOPT_VERBOSE</code> 时可观察性可能受限。</td></tr>
+          <tr><td>HTTP/2</td><td><code>http2.c</code> 已编译，但未看到 <code>USE_NGHTTP2</code> 配置命中。</td><td>不能仅凭对象文件断言 HTTP/2 完整可用，应以配置宏和依赖为准。</td></tr>
+        </table>
+        <div class="principle"><strong>第一性原理：</strong>能力判断要看三层：pkg-config 声明、配置宏、依赖库；对象文件只能说明“参与编译”，不能单独证明功能可用。</div>
+      </section>
+
+      <section id="model">
+        <h2>6. 设计原理：handle、option、callback、state machine</h2>
+        <p>libcurl 把网络传输拆成四个稳定抽象：handle 保存一次或一组传输的上下文；option 描述行为；callback 把数据和事件交给应用；内部状态机驱动 DNS、连接、TLS、协议、读写、完成和复用。</p>
+        <div class="svg-wrap">
+          <svg viewBox="0 0 1120 500" role="img" aria-label="libcurl design model">
+            <defs><marker id="arrow2" markerWidth="10" markerHeight="10" refX="8" refY="3" orient="auto"><path d="M0,0 L0,6 L9,3 z" fill="#8b949e"/></marker></defs>
+            <rect x="40" y="60" width="210" height="110" rx="8" fill="#161b22" stroke="#30363d"/><text x="145" y="103" text-anchor="middle" fill="#e6edf3" font-size="18" font-weight="700">应用代码</text><text x="145" y="134" text-anchor="middle" fill="#8b949e" font-size="13">URL / headers / body</text>
+            <rect x="320" y="60" width="210" height="110" rx="8" fill="#161b22" stroke="#30363d"/><text x="425" y="103" text-anchor="middle" fill="#e6edf3" font-size="18" font-weight="700">Easy Handle</text><text x="425" y="134" text-anchor="middle" fill="#8b949e" font-size="13">sticky options</text>
+            <rect x="600" y="60" width="210" height="110" rx="8" fill="#161b22" stroke="#30363d"/><text x="705" y="103" text-anchor="middle" fill="#e6edf3" font-size="18" font-weight="700">Multi 状态机</text><text x="705" y="134" text-anchor="middle" fill="#8b949e" font-size="13">connect / do / perform / done</text>
+            <rect x="880" y="60" width="210" height="110" rx="8" fill="#161b22" stroke="#30363d"/><text x="985" y="103" text-anchor="middle" fill="#e6edf3" font-size="18" font-weight="700">协议 Handler</text><text x="985" y="134" text-anchor="middle" fill="#8b949e" font-size="13">HTTP / FTP / SMTP ...</text>
+            <rect x="320" y="260" width="210" height="110" rx="8" fill="#0f1722" stroke="#30363d"/><text x="425" y="303" text-anchor="middle" fill="#e6edf3" font-size="18" font-weight="700">Callbacks</text><text x="425" y="334" text-anchor="middle" fill="#8b949e" font-size="13">write / header / progress</text>
+            <rect x="600" y="260" width="210" height="110" rx="8" fill="#0f1722" stroke="#30363d"/><text x="705" y="303" text-anchor="middle" fill="#e6edf3" font-size="18" font-weight="700">Connection cache</text><text x="705" y="334" text-anchor="middle" fill="#8b949e" font-size="13">persistent reuse</text>
+            <line x1="250" y1="115" x2="320" y2="115" stroke="#8b949e" stroke-width="2" marker-end="url(#arrow2)"/><line x1="530" y1="115" x2="600" y2="115" stroke="#8b949e" stroke-width="2" marker-end="url(#arrow2)"/><line x1="810" y1="115" x2="880" y2="115" stroke="#8b949e" stroke-width="2" marker-end="url(#arrow2)"/><line x1="705" y1="170" x2="705" y2="260" stroke="#8b949e" stroke-width="2" marker-end="url(#arrow2)"/><line x1="600" y1="315" x2="530" y2="315" stroke="#8b949e" stroke-width="2" marker-end="url(#arrow2)"/><line x1="425" y1="260" x2="425" y2="170" stroke="#8b949e" stroke-width="2" marker-end="url(#arrow2)"/>
+          </svg>
+        </div>
+        <table>
+          <tr><th>抽象</th><th>官方语义</th><th>当前工程体现</th></tr>
+          <tr><td>easy handle</td><td>单个传输上下文，设置 URL、回调、超时、SSL 等选项。</td><td>每次请求 <code>curl_easy_init()</code>，结束后 <code>curl_easy_cleanup()</code>。</td></tr>
+          <tr><td>option</td><td><code>curl_easy_setopt()</code> 设置行为，且选项 sticky。</td><td><code>_set_curl_params()</code> 集中设置 header、URL、POST、timeout、SSL verify、回调。</td></tr>
+          <tr><td>callback</td><td>数据可用时由库回调应用。</td><td><code>http_resp_callback()</code> 收 header/body；<code>_fwrite_callback()</code> 写 OTA 文件；进度回调监控下载。</td></tr>
+          <tr><td>state machine</td><td>multi 驱动异步状态；easy 是同步封装。</td><td><code>curl_easy_perform()</code> 阻塞到传输完成，内部进入连接、协议、读写、完成流程。</td></tr>
+          <tr><td>protocol handler</td><td>不同 scheme 用不同 handler。</td><td><code>http.c</code> 中 <code>Curl_handler_http</code> / <code>Curl_handler_https</code> 提供 setup、do、done、connect 等函数指针。</td></tr>
+        </table>
+        <div class="principle"><strong>第一性原理：</strong>libcurl 的 API 让应用描述“我要什么传输”，内部状态机负责“何时连接、如何协议交互、何时回调数据”。</div>
+      </section>
+
+      <section id="easy-multi-share">
+        <h2>7. 三种接口模式：Easy、Multi、Share</h2>
+        <table>
+          <tr><th>接口</th><th>设计目标</th><th>适合场景</th><th>当前工程状态</th></tr>
+          <tr><td>Easy</td><td>同步、简单、快速集成。一次 <code>curl_easy_perform()</code> 完成整个传输。</td><td>OTA 查询、状态上报、单文件下载这类串行任务。</td><td><span class="ok">正在使用</span>。</td></tr>
+          <tr><td>Multi</td><td>应用驱动的 pull interface；单线程多并发；可与应用自己的 fd 一起 poll/select；event-based 可扩展到大量连接。</td><td>多 URL 并发下载、事件循环集成、UI/主循环不能阻塞。</td><td><span class="maybe">未直接使用</span>，但 easy 内部依赖 multi 机制。</td></tr>
+          <tr><td>Share</td><td>多个 easy handle 共享 cookie、DNS cache、TLS session cache、connection cache。</td><td>高频短请求、希望减少 DNS/TLS/连接成本。</td><td><span class="maybe">未使用</span>。</td></tr>
+        </table>
+        <pre><code>// 当前 OTA SDK 的 easy 模式
+http_init(): curl_global_init(CURL_GLOBAL_ALL)
+
+for each request:
+    curl = curl_easy_init()
+    curl_easy_setopt(curl, CURLOPT_URL, url)
+    curl_easy_setopt(curl, CURLOPT_HTTPHEADER, headers)
+    curl_easy_setopt(curl, CURLOPT_WRITEFUNCTION, callback)
+    curl_easy_setopt(curl, CURLOPT_TIMEOUT, timeout)
+    ret = curl_easy_perform(curl)
+    curl_easy_cleanup(curl)
+
+http_exit(): curl_global_cleanup()</code></pre>
+        <div class="principle"><strong>第一性原理：</strong>Easy 把控制权交给 libcurl 直到完成；Multi 把调度权留给应用；Share 把跨传输状态抽出来复用。</div>
+      </section>
+
+      <section id="inside">
+        <h2>8. 内部落地：easy 封装 multi，协议由 handler 分派</h2>
+        <p>本版本源码中，<code>easy.c</code> 的 <code>curl_easy_perform()</code> 调用内部 <code>easy_perform()</code>，注释说明这是阻塞传输接口；<code>url.c</code> 的 <code>Curl_connect()</code> 负责创建连接并在 DNS 完成后调用 <code>Curl_setup_conn()</code>；<code>Curl_do()</code> 通过 <code>conn->handler->do_it</code> 调用协议处理器。</p>
+        <div class="svg-wrap">
+          <svg viewBox="0 0 1180 420" role="img" aria-label="libcurl internal flow">
+            <defs><marker id="arrow3" markerWidth="10" markerHeight="10" refX="8" refY="3" orient="auto"><path d="M0,0 L0,6 L9,3 z" fill="#8b949e"/></marker></defs>
+            <rect x="35" y="70" width="190" height="90" rx="8" fill="#161b22" stroke="#30363d"/><text x="130" y="106" text-anchor="middle" fill="#e6edf3" font-size="17" font-weight="700">curl_easy_perform</text><text x="130" y="134" text-anchor="middle" fill="#8b949e" font-size="13">easy.c</text>
+            <rect x="285" y="70" width="190" height="90" rx="8" fill="#161b22" stroke="#30363d"/><text x="380" y="106" text-anchor="middle" fill="#e6edf3" font-size="17" font-weight="700">multi state</text><text x="380" y="134" text-anchor="middle" fill="#8b949e" font-size="13">multi.c</text>
+            <rect x="535" y="70" width="190" height="90" rx="8" fill="#161b22" stroke="#30363d"/><text x="630" y="106" text-anchor="middle" fill="#e6edf3" font-size="17" font-weight="700">Curl_connect</text><text x="630" y="134" text-anchor="middle" fill="#8b949e" font-size="13">url.c / connect.c</text>
+            <rect x="785" y="70" width="190" height="90" rx="8" fill="#161b22" stroke="#30363d"/><text x="880" y="106" text-anchor="middle" fill="#e6edf3" font-size="17" font-weight="700">Handler do_it</text><text x="880" y="134" text-anchor="middle" fill="#8b949e" font-size="13">Curl_http</text>
+            <rect x="535" y="250" width="190" height="90" rx="8" fill="#0f1722" stroke="#30363d"/><text x="630" y="286" text-anchor="middle" fill="#e6edf3" font-size="17" font-weight="700">Curl_readwrite</text><text x="630" y="314" text-anchor="middle" fill="#8b949e" font-size="13">transfer.c</text>
+            <rect x="785" y="250" width="190" height="90" rx="8" fill="#0f1722" stroke="#30363d"/><text x="880" y="286" text-anchor="middle" fill="#e6edf3" font-size="17" font-weight="700">Curl_done</text><text x="880" y="314" text-anchor="middle" fill="#8b949e" font-size="13">reuse or close</text>
+            <line x1="225" y1="115" x2="285" y2="115" stroke="#8b949e" stroke-width="2" marker-end="url(#arrow3)"/><line x1="475" y1="115" x2="535" y2="115" stroke="#8b949e" stroke-width="2" marker-end="url(#arrow3)"/><line x1="725" y1="115" x2="785" y2="115" stroke="#8b949e" stroke-width="2" marker-end="url(#arrow3)"/><line x1="880" y1="160" x2="680" y2="250" stroke="#8b949e" stroke-width="2" marker-end="url(#arrow3)"/><line x1="725" y1="295" x2="785" y2="295" stroke="#8b949e" stroke-width="2" marker-end="url(#arrow3)"/>
+          </svg>
+        </div>
+        <table>
+          <tr><th>源码点</th><th>当前观察</th><th>设计含义</th></tr>
+          <tr><td><code>lib/easy.c</code></td><td><code>curl_easy_perform()</code> 是阻塞传输外部接口。</td><td>OTA 线程会在 HTTP 请求/下载期间阻塞在 libcurl 内部。</td></tr>
+          <tr><td><code>lib/http.c</code></td><td><code>Curl_handler_http</code> / <code>Curl_handler_https</code> 提供 scheme、默认端口、SSL flag、setup/do/done/connect 函数。</td><td>HTTP 与 HTTPS 共享 HTTP 协议逻辑，HTTPS 额外走 TLS 连接阶段。</td></tr>
+          <tr><td><code>lib/url.c</code></td><td><code>Curl_connect()</code> 创建连接；<code>Curl_do()</code> 调用协议 <code>do_it</code>；<code>Curl_done()</code> 决定连接复用或关闭。</td><td>连接生命周期由通用层统一管理，协议模块只实现差异行为。</td></tr>
+          <tr><td><code>lib/transfer.c</code></td><td><code>Curl_readwrite()</code> 是数据读写核心路径之一。</td><td>header/body 最终通过回调交付给应用。</td></tr>
+        </table>
+        <div class="principle"><strong>第一性原理：</strong>libcurl 用函数表隔离协议差异，用统一状态机管理连接与传输，这就是它能支持多协议且保持同一套 API 的原因。</div>
+      </section>
+
+      <section id="ota-flow">
+        <h2>9. OTA SDK 的 HTTPS POST 调用流</h2>
+        <p><code>dmp/package/ota_sdk/src/http.c</code> 将 libcurl 包装成四类云端交互：获取 device id/secret、获取 MQTT host/port、检查 OTA 更新、上报 OTA 状态。它们共享同一套基础 header、AES 加密 body、HMAC 签名和 libcurl easy 参数设置。</p>
+        <div class="svg-wrap">
+          <svg viewBox="0 0 1180 520" role="img" aria-label="ota http flow using libcurl">
+            <defs><marker id="arrow4" markerWidth="10" markerHeight="10" refX="8" refY="3" orient="auto"><path d="M0,0 L0,6 L9,3 z" fill="#8b949e"/></marker></defs>
+            <rect x="45" y="65" width="190" height="90" rx="8" fill="#161b22" stroke="#30363d"/><text x="140" y="102" text-anchor="middle" fill="#e6edf3" font-size="17" font-weight="700">业务入口</text><text x="140" y="130" text-anchor="middle" fill="#8b949e" font-size="13">MQTT / OTA / status</text>
+            <rect x="300" y="65" width="190" height="90" rx="8" fill="#161b22" stroke="#30363d"/><text x="395" y="102" text-anchor="middle" fill="#e6edf3" font-size="17" font-weight="700">构造 JSON</text><text x="395" y="130" text-anchor="middle" fill="#8b949e" font-size="13">cJSON</text>
+            <rect x="555" y="65" width="190" height="90" rx="8" fill="#161b22" stroke="#30363d"/><text x="650" y="102" text-anchor="middle" fill="#e6edf3" font-size="17" font-weight="700">加密 + 签名</text><text x="650" y="130" text-anchor="middle" fill="#8b949e" font-size="13">AES256 / HMAC</text>
+            <rect x="810" y="65" width="190" height="90" rx="8" fill="#161b22" stroke="#30363d"/><text x="905" y="102" text-anchor="middle" fill="#e6edf3" font-size="17" font-weight="700">设置 curl</text><text x="905" y="130" text-anchor="middle" fill="#8b949e" font-size="13">URL/header/callback</text>
+            <rect x="810" y="250" width="190" height="90" rx="8" fill="#0f1722" stroke="#30363d"/><text x="905" y="287" text-anchor="middle" fill="#e6edf3" font-size="17" font-weight="700">curl_easy_perform</text><text x="905" y="315" text-anchor="middle" fill="#8b949e" font-size="13">同步 HTTPS POST</text>
+            <rect x="555" y="250" width="190" height="90" rx="8" fill="#0f1722" stroke="#30363d"/><text x="650" y="287" text-anchor="middle" fill="#e6edf3" font-size="17" font-weight="700">回调收包</text><text x="650" y="315" text-anchor="middle" fill="#8b949e" font-size="13">header/body cache</text>
+            <rect x="300" y="250" width="190" height="90" rx="8" fill="#0f1722" stroke="#30363d"/><text x="395" y="287" text-anchor="middle" fill="#e6edf3" font-size="17" font-weight="700">解密 + 解析</text><text x="395" y="315" text-anchor="middle" fill="#8b949e" font-size="13">cJSON Parse</text>
+            <rect x="45" y="250" width="190" height="90" rx="8" fill="#0f1722" stroke="#30363d"/><text x="140" y="287" text-anchor="middle" fill="#e6edf3" font-size="17" font-weight="700">更新业务状态</text><text x="140" y="315" text-anchor="middle" fill="#8b949e" font-size="13">device/mqtt/ota result</text>
+            <line x1="235" y1="110" x2="300" y2="110" stroke="#8b949e" stroke-width="2" marker-end="url(#arrow4)"/><line x1="490" y1="110" x2="555" y2="110" stroke="#8b949e" stroke-width="2" marker-end="url(#arrow4)"/><line x1="745" y1="110" x2="810" y2="110" stroke="#8b949e" stroke-width="2" marker-end="url(#arrow4)"/><line x1="905" y1="155" x2="905" y2="250" stroke="#8b949e" stroke-width="2" marker-end="url(#arrow4)"/><line x1="810" y1="295" x2="745" y2="295" stroke="#8b949e" stroke-width="2" marker-end="url(#arrow4)"/><line x1="555" y1="295" x2="490" y2="295" stroke="#8b949e" stroke-width="2" marker-end="url(#arrow4)"/><line x1="300" y1="295" x2="235" y2="295" stroke="#8b949e" stroke-width="2" marker-end="url(#arrow4)"/>
+          </svg>
+        </div>
+        <table>
+          <tr><th>业务函数</th><th>libcurl 动作</th><th>业务动作</th></tr>
+          <tr><td><code>http_get_mqtt_info()</code></td><td>先后执行获取设备凭证、获取 MQTT 配置两个 HTTPS POST。</td><td>拿到 <code>device_id</code>、<code>device_secret</code> 后派生三类 key，再解析 MQTT host/port。</td></tr>
+          <tr><td><code>http_req_upgrade_info()</code></td><td>POST 到 OTA updateCheck URL。</td><td>上报 SN、型号、包类型、当前版本，获取升级信息响应。</td></tr>
+          <tr><td><code>http_report_status()</code></td><td>POST 到 OTA statusReport URL。</td><td>上报 OTA 包类型、状态和消息。</td></tr>
+          <tr><td><code>_set_curl_params()</code></td><td>统一设置 <code>CURLOPT_HTTPHEADER</code>、<code>CURLOPT_URL</code>、write/header 回调、连接/总超时、<code>CURLOPT_POST</code>、<code>CURLOPT_NOSIGNAL</code>。</td><td>把业务请求标准化成“加密 body + 签名 header + HTTPS POST”。</td></tr>
+          <tr><td><code>http_resp_callback()</code></td><td>作为 body/header 回调，<code>realloc</code> 累积响应。</td><td>后续按 <code>X-Response-Encrypt: true</code> 判断是否解密，再用 cJSON 解析。</td></tr>
+        </table>
+        <div class="principle"><strong>第一性原理：</strong>业务代码不直接处理 TLS、DNS、socket 和 HTTP 细节，而是把这些交给 libcurl；自身只负责业务报文、鉴权、加解密和结果解析。</div>
+      </section>
+
+      <section id="download">
+        <h2>10. OTA 下载路径：断点续传与进度回调</h2>
+        <p><code>http_download_file()</code> 使用 easy interface 下载文件到本地路径。它以追加方式打开文件，用当前文件长度构造 HTTP Range，从断点继续下载；使用写回调直接写文件，并启用进度回调、低速检测和较大的接收 buffer。</p>
+        <table>
+          <tr><th>选项</th><th>当前值/行为</th><th>作用</th></tr>
+          <tr><td><code>CURLOPT_URL</code></td><td>传入下载 URL。</td><td>确定远端资源。</td></tr>
+          <tr><td><code>CURLOPT_RANGE</code></td><td><code>current_size-</code></td><td>HTTP Range 断点续传。</td></tr>
+          <tr><td><code>CURLOPT_WRITEFUNCTION</code></td><td><code>_fwrite_callback()</code></td><td>把下载数据写入文件，并调用 <code>fsync()</code>。</td></tr>
+          <tr><td><code>CURLOPT_XFERINFOFUNCTION</code></td><td>下载进度回调。</td><td>让业务可观察下载进度。</td></tr>
+          <tr><td><code>CURLOPT_LOW_SPEED_TIME</code> / <code>CURLOPT_LOW_SPEED_LIMIT</code></td><td>120 秒、20 bytes/s。</td><td>低速超时保护。</td></tr>
+          <tr><td><code>CURLOPT_BUFFERSIZE</code></td><td>10 KiB。</td><td>调整 libcurl 接收 buffer。</td></tr>
+          <tr><td><code>CURLOPT_TIMEOUT</code></td><td>0。</td><td>下载总体不设固定总超时，依赖低速保护和外部控制。</td></tr>
+          <tr><td><code>CURLOPT_SSL_VERIFYPEER</code> / <code>CURLOPT_SSL_VERIFYHOST</code></td><td>均设置为 0。</td><td>不校验证书和主机名，降低 TLS 身份校验安全性。</td></tr>
+        </table>
+        <pre><code>fp = fopen(name, "a")
+current_size = ftell(fp)
+range = "%d-" % current_size
+
+curl_easy_setopt(curl, CURLOPT_RANGE, range)
+curl_easy_setopt(curl, CURLOPT_WRITEFUNCTION, _fwrite_callback)
+curl_easy_setopt(curl, CURLOPT_WRITEDATA, fp)
+curl_easy_setopt(curl, CURLOPT_XFERINFOFUNCTION, download_progress_callback)
+curl_easy_perform(curl)</code></pre>
+        <div class="principle"><strong>第一性原理：</strong>断点续传不是 libcurl 自动知道“下载到哪了”，而是应用读取本地文件大小，再通过 HTTP Range 告诉服务器从哪里继续。</div>
+      </section>
+
+      <section id="risks">
+        <h2>11. 风险与改进点</h2>
+        <table>
+          <tr><th>观察</th><th>风险/代价</th><th>建议</th></tr>
+          <tr><td>HTTPS 请求和下载均关闭 <code>CURLOPT_SSL_VERIFYPEER</code> / <code>CURLOPT_SSL_VERIFYHOST</code>。</td><td>无法验证服务端证书链和主机名，TLS 只剩加密通道，身份真实性不足。</td><td>产品化应配置 CA bundle/path，开启 peer 和 host verify；如受限，应在文档中明确安全边界。</td></tr>
+          <tr><td>每次请求创建 easy handle，完成后 cleanup。</td><td>连接缓存和 TLS session 复用机会减少。</td><td>对高频请求可复用 easy handle，或引入 share/multi 共享 DNS/TLS/connection cache。</td></tr>
+          <tr><td>响应缓存使用全局 <code>http_resp_header</code> / <code>http_resp_data</code>。</td><td>不适合并发请求；线程间会互相覆盖。</td><td>保持串行调用，或把缓存放入请求上下文并通过 <code>CURLOPT_*DATA</code> 传入。</td></tr>
+          <tr><td><code>CURLOPT_VERBOSE</code> 在下载设置为 1，但库禁用 verbose strings。</td><td>调试输出可能不完整；嵌入式体积优化与可诊断性存在取舍。</td><td>现场问题定位时确认构建是否允许 verbose strings，必要时临时开启诊断构建。</td></tr>
+          <tr><td>DNS 解析失败时调用 <code>res_init()</code>。</td><td>说明运行环境可能存在 resolver 配置变化；但它不是重试机制本身。</td><td>结合网络状态变化、DNS 配置刷新和请求重试策略分析失败路径。</td></tr>
+          <tr><td>下载写回调每次 <code>fsync()</code>。</td><td>提高掉电一致性，但可能显著降低写入吞吐、增加 flash 写压力。</td><td>按 OTA 可靠性需求保留或改为分段 fsync，并在断电恢复策略中验证。</td></tr>
+        </table>
+        <div class="principle"><strong>第一性原理：</strong>网络库只解决传输机制；身份校验、并发上下文、缓存复用、断电一致性和重试策略仍是业务集成层必须明确的工程决策。</div>
+      </section>
+
+      <section id="summary">
+        <h2>12. 总结</h2>
+        <div class="grid">
+          <div class="card"><h3>当前构建</h3><p>libcurl 7.36.0 已为 MIPS Buildroot 目标构建，产出动态库和静态库，启用 OpenSSL、zlib、IPv6，禁用 LDAP/LDAPS 和 verbose strings。</p></div>
+          <div class="card"><h3>设计模式</h3><p>libcurl 通过 easy/multi/share 三类接口组织传输；内部用状态机和协议 handler 函数表把多协议统一成同一套 API。</p></div>
+          <div class="card"><h3>当前落地</h3><p>OTA SDK 只使用 easy 同步模式，通过 HTTPS POST 完成云端鉴权、MQTT 配置、OTA 查询和状态上报；下载使用 Range 断点续传。</p></div>
+          <div class="card"><h3>关键边界</h3><p>当前业务关闭 TLS 证书和主机名校验；请求缓存是全局串行模型；如要并发或高频请求，需要重新设计上下文和复用策略。</p></div>
+        </div>
+        <div class="principle"><strong>第一性原理：</strong>本工程把 libcurl 当作“可靠的同步 URL 传输执行器”；业务层负责构造可信请求、处理响应、决定安全和持久化策略。</div>
+      </section>
+    </main>
+  </div>
+  <script>
+    const nav = document.getElementById('sideNav');
+    const menuButton = document.getElementById('menuButton');
+    const progressBar = document.getElementById('progressBar');
+    const links = Array.from(document.querySelectorAll('nav a'));
+    const sections = links.map(link => document.querySelector(link.getAttribute('href'))).filter(Boolean);
+    menuButton.addEventListener('click', () => nav.classList.toggle('open'));
+    links.forEach(link => link.addEventListener('click', () => nav.classList.remove('open')));
+    function updateProgress(){
+      const max = document.documentElement.scrollHeight - window.innerHeight;
+      const pct = max > 0 ? (window.scrollY / max) * 100 : 0;
+      progressBar.style.width = pct + '%';
+      let current = sections[0];
+      for (const section of sections) {
+        if (section.getBoundingClientRect().top <= 100) current = section;
+      }
+      links.forEach(link => link.classList.toggle('active', current && link.getAttribute('href') === '#' + current.id));
+    }
+    window.addEventListener('scroll', updateProgress, {passive:true});
+    window.addEventListener('resize', updateProgress);
+    document.addEventListener('keydown', event => {
+      if (event.target && ['INPUT','TEXTAREA','SELECT'].includes(event.target.tagName)) return;
+      const active = document.querySelector('nav a.active') || links[0];
+      const activeIndex = sections.findIndex(section => '#' + section.id === active.getAttribute('href'));
+      if (event.key === 'ArrowRight' && activeIndex < sections.length - 1) sections[activeIndex + 1].scrollIntoView();
+      if (event.key === 'ArrowLeft' && activeIndex > 0) sections[activeIndex - 1].scrollIntoView();
+    });
+    updateProgress();
+  </script>
+</body>
+</html>

@@ -1,0 +1,1702 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Linux 嵌入式 Flash 读写全路径解析</title>
+<style>
+  :root {
+    --bg: #0f1117;
+    --bg2: #161b27;
+    --bg3: #1e2535;
+    --border: #2a3650;
+    --accent: #3b82f6;
+    --accent2: #6366f1;
+    --accent3: #10b981;
+    --accent4: #f59e0b;
+    --accent5: #ef4444;
+    --text: #e2e8f0;
+    --text2: #94a3b8;
+    --text3: #64748b;
+    --nav-w: 280px;
+    --header-h: 56px;
+  }
+  *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+  html { scroll-behavior: smooth; font-size: 16px; }
+  body {
+    background: var(--bg);
+    color: var(--text);
+    font-family: 'Segoe UI', system-ui, -apple-system, sans-serif;
+    line-height: 1.7;
+    overflow-x: hidden;
+  }
+
+  /* ── Progress bar ── */
+  #progress-bar {
+    position: fixed; top: 0; left: 0; height: 3px;
+    background: linear-gradient(90deg, var(--accent), var(--accent2), var(--accent3));
+    width: 0%; z-index: 9999; transition: width 0.1s linear;
+  }
+
+  /* ── Top header ── */
+  header {
+    position: fixed; top: 0; left: 0; right: 0; height: var(--header-h);
+    background: rgba(15,17,23,0.92); backdrop-filter: blur(12px);
+    border-bottom: 1px solid var(--border);
+    display: flex; align-items: center; justify-content: space-between;
+    padding: 0 1.5rem; z-index: 900;
+  }
+  .header-title {
+    font-size: 1rem; font-weight: 700; color: var(--accent);
+    white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+  }
+  #hamburger {
+    display: none; flex-direction: column; gap: 5px; cursor: pointer;
+    padding: 8px; border-radius: 6px; border: 1px solid var(--border);
+    background: var(--bg2);
+  }
+  #hamburger span {
+    display: block; width: 22px; height: 2px;
+    background: var(--text2); border-radius: 2px;
+    transition: all 0.3s;
+  }
+  #hamburger.open span:nth-child(1) { transform: rotate(45deg) translate(5px, 5px); }
+  #hamburger.open span:nth-child(2) { opacity: 0; }
+  #hamburger.open span:nth-child(3) { transform: rotate(-45deg) translate(5px, -5px); }
+
+  /* ── Sidebar ── */
+  nav#sidebar {
+    position: fixed; top: var(--header-h); left: 0; bottom: 0;
+    width: var(--nav-w); background: var(--bg2);
+    border-right: 1px solid var(--border);
+    overflow-y: auto; z-index: 800;
+    padding: 1rem 0 2rem;
+    transition: transform 0.3s ease;
+  }
+  nav#sidebar::-webkit-scrollbar { width: 4px; }
+  nav#sidebar::-webkit-scrollbar-thumb { background: var(--border); border-radius: 4px; }
+
+  .nav-group { margin-bottom: 0.25rem; }
+  .nav-group-title {
+    padding: 0.5rem 1rem;
+    font-size: 0.68rem; font-weight: 700; letter-spacing: 0.1em;
+    text-transform: uppercase; color: var(--text3);
+  }
+  .nav-link {
+    display: flex; align-items: center; gap: 0.5rem;
+    padding: 0.45rem 1rem 0.45rem 1.25rem;
+    font-size: 0.82rem; color: var(--text2);
+    text-decoration: none; cursor: pointer;
+    border-left: 3px solid transparent;
+    transition: all 0.2s;
+  }
+  .nav-link:hover { color: var(--text); background: var(--bg3); }
+  .nav-link.active {
+    color: var(--accent); background: rgba(59,130,246,0.1);
+    border-left-color: var(--accent);
+  }
+  .nav-link .nav-num {
+    font-size: 0.7rem; color: var(--text3);
+    min-width: 1.2rem;
+  }
+
+  /* ── Overlay ── */
+  #overlay {
+    display: none; position: fixed; inset: 0;
+    background: rgba(0,0,0,0.6); z-index: 750;
+  }
+
+  /* ── Main content ── */
+  main {
+    margin-left: var(--nav-w);
+    padding-top: calc(var(--header-h) + 2rem);
+    min-height: 100vh;
+  }
+  .content-wrap {
+    max-width: 860px;
+    margin: 0 auto;
+    padding: 0 2rem 4rem;
+  }
+
+  /* ── Sections ── */
+  .section {
+    margin-bottom: 4rem;
+    scroll-margin-top: calc(var(--header-h) + 1.5rem);
+  }
+  .section-header {
+    display: flex; align-items: center; gap: 0.75rem;
+    margin-bottom: 1.5rem; padding-bottom: 0.75rem;
+    border-bottom: 1px solid var(--border);
+  }
+  .section-num {
+    font-size: 0.75rem; font-weight: 700;
+    color: var(--bg); background: var(--accent);
+    padding: 0.2rem 0.55rem; border-radius: 999px;
+    white-space: nowrap;
+  }
+  h2.section-title {
+    font-size: 1.35rem; font-weight: 700; color: var(--text);
+  }
+  h3 {
+    font-size: 1rem; font-weight: 600; color: var(--accent2);
+    margin: 1.5rem 0 0.6rem;
+  }
+  p { margin-bottom: 0.9rem; color: var(--text2); }
+  strong { color: var(--text); }
+
+  /* ── Code blocks ── */
+  pre, code {
+    font-family: 'Cascadia Code', 'Fira Code', 'JetBrains Mono', monospace;
+    font-size: 0.82rem;
+  }
+  code {
+    background: var(--bg3); color: #7dd3fc;
+    padding: 0.1em 0.4em; border-radius: 4px;
+  }
+  pre {
+    background: var(--bg3); border: 1px solid var(--border);
+    border-radius: 8px; padding: 1rem 1.25rem;
+    overflow-x: auto; margin: 0.75rem 0 1rem;
+    line-height: 1.6;
+  }
+  pre code { background: none; padding: 0; color: #e2e8f0; }
+
+  /* ── Info boxes ── */
+  .box {
+    border-radius: 8px; padding: 1rem 1.25rem;
+    margin: 1rem 0; border-left: 4px solid;
+    font-size: 0.88rem;
+  }
+  .box-blue { background: rgba(59,130,246,0.08); border-color: var(--accent); }
+  .box-green { background: rgba(16,185,129,0.08); border-color: var(--accent3); }
+  .box-yellow { background: rgba(245,158,11,0.08); border-color: var(--accent4); }
+  .box-red { background: rgba(239,68,68,0.08); border-color: var(--accent5); }
+  .box-title {
+    font-weight: 700; font-size: 0.8rem; text-transform: uppercase;
+    letter-spacing: 0.05em; margin-bottom: 0.4rem;
+  }
+  .box-blue .box-title { color: var(--accent); }
+  .box-green .box-title { color: var(--accent3); }
+  .box-yellow .box-title { color: var(--accent4); }
+  .box-red .box-title { color: var(--accent5); }
+
+  /* ── First-principles block ── */
+  .fp-block {
+    background: linear-gradient(135deg, rgba(99,102,241,0.1), rgba(59,130,246,0.08));
+    border: 1px solid rgba(99,102,241,0.3);
+    border-radius: 10px; padding: 1.25rem 1.5rem; margin-top: 2rem;
+  }
+  .fp-block .fp-title {
+    font-size: 0.78rem; font-weight: 700; text-transform: uppercase;
+    letter-spacing: 0.08em; color: var(--accent2);
+    display: flex; align-items: center; gap: 0.5rem; margin-bottom: 0.75rem;
+  }
+  .fp-block p { color: var(--text); font-size: 0.88rem; margin-bottom: 0.5rem; }
+  .fp-block p:last-child { margin-bottom: 0; }
+
+  /* ── SVG Diagrams ── */
+  .diagram-wrap {
+    background: var(--bg2); border: 1px solid var(--border);
+    border-radius: 10px; padding: 1.5rem;
+    margin: 1.25rem 0; overflow-x: auto;
+    display: flex; justify-content: center;
+  }
+  .diagram-wrap svg { max-width: 100%; height: auto; }
+
+  /* ── Command table ── */
+  .cmd-table {
+    width: 100%; border-collapse: collapse;
+    font-size: 0.83rem; margin: 0.75rem 0;
+  }
+  .cmd-table th {
+    background: var(--bg3); color: var(--accent);
+    padding: 0.55rem 0.85rem; text-align: left;
+    border-bottom: 2px solid var(--border);
+    font-weight: 600; font-size: 0.78rem; text-transform: uppercase;
+  }
+  .cmd-table td {
+    padding: 0.5rem 0.85rem; border-bottom: 1px solid var(--border);
+    vertical-align: top;
+  }
+  .cmd-table tr:last-child td { border-bottom: none; }
+  .cmd-table tr:hover td { background: var(--bg3); }
+  .cmd-table td:first-child code { color: #86efac; }
+  .cmd-table td:nth-child(2) { color: var(--text2); }
+
+  /* ── Keyboard nav hint ── */
+  .kbd-hint {
+    position: fixed; bottom: 1.25rem; right: 1.25rem;
+    display: flex; gap: 0.5rem; align-items: center;
+    font-size: 0.72rem; color: var(--text3); z-index: 100;
+  }
+  kbd {
+    background: var(--bg3); border: 1px solid var(--border);
+    border-radius: 4px; padding: 0.15rem 0.45rem;
+    font-family: inherit; font-size: 0.72rem; color: var(--text2);
+  }
+
+  /* ── Source links ── */
+  .src-link {
+    display: inline-flex; align-items: center; gap: 0.3rem;
+    font-size: 0.75rem; color: var(--accent); text-decoration: none;
+    border: 1px solid rgba(59,130,246,0.3); border-radius: 4px;
+    padding: 0.1rem 0.5rem; margin: 0.1rem;
+    transition: all 0.2s;
+  }
+  .src-link:hover { background: rgba(59,130,246,0.1); }
+
+  /* ── Responsive ── */
+  @media (max-width: 768px) {
+    :root { --nav-w: 260px; }
+    #hamburger { display: flex; }
+    nav#sidebar { transform: translateX(-100%); }
+    nav#sidebar.open { transform: translateX(0); }
+    #overlay.open { display: block; }
+    main { margin-left: 0; }
+    .content-wrap { padding: 0 1rem 4rem; }
+    h2.section-title { font-size: 1.15rem; }
+    .kbd-hint { display: none; }
+  }
+  @media (max-width: 480px) {
+    .content-wrap { padding: 0 0.75rem 4rem; }
+    pre { padding: 0.75rem; font-size: 0.75rem; }
+    .cmd-table { font-size: 0.76rem; }
+    .cmd-table th, .cmd-table td { padding: 0.4rem 0.5rem; }
+  }
+</style>
+</head>
+<body>
+
+<div id="progress-bar"></div>
+
+<!-- ══ Header ══ -->
+<header>
+  <div class="header-title">⚡ Linux 嵌入式 Flash 读写全路径解析</div>
+  <button id="hamburger" aria-label="菜单" onclick="toggleNav()">
+    <span></span><span></span><span></span>
+  </button>
+</header>
+
+<!-- ══ Sidebar ══ -->
+<nav id="sidebar">
+  <div class="nav-group">
+    <div class="nav-group-title">概览</div>
+    <a class="nav-link" data-target="s0">
+      <span class="nav-num">00</span> 架构总览
+    </a>
+  </div>
+  <div class="nav-group">
+    <div class="nav-group-title">用户态层</div>
+    <a class="nav-link" data-target="s1">
+      <span class="nav-num">01</span> 用户应用 & 系统调用
+    </a>
+    <a class="nav-link" data-target="s2">
+      <span class="nav-num">02</span> VFS 虚拟文件系统
+    </a>
+    <a class="nav-link" data-target="s3">
+      <span class="nav-num">03</span> 页缓存（Page Cache）
+    </a>
+  </div>
+  <div class="nav-group">
+    <div class="nav-group-title">文件系统层</div>
+    <a class="nav-link" data-target="s4">
+      <span class="nav-num">04</span> Flash 文件系统
+    </a>
+    <a class="nav-link" data-target="s5">
+      <span class="nav-num">05</span> UBI 卷管理层
+    </a>
+  </div>
+  <div class="nav-group">
+    <div class="nav-group-title">MTD 子系统</div>
+    <a class="nav-link" data-target="s6">
+      <span class="nav-num">06</span> MTD 核心抽象层
+    </a>
+    <a class="nav-link" data-target="s7">
+      <span class="nav-num">07</span> MTD 字符/块设备接口
+    </a>
+  </div>
+  <div class="nav-group">
+    <div class="nav-group-title">驱动与硬件层</div>
+    <a class="nav-link" data-target="s8">
+      <span class="nav-num">08</span> Flash 驱动（NAND / NOR）
+    </a>
+    <a class="nav-link" data-target="s9">
+      <span class="nav-num">09</span> ECC 校验机制
+    </a>
+    <a class="nav-link" data-target="s10">
+      <span class="nav-num">10</span> 总线控制器 & 物理硬件
+    </a>
+  </div>
+  <div class="nav-group">
+    <div class="nav-group-title">调试观测</div>
+    <a class="nav-link" data-target="s11">
+      <span class="nav-num">11</span> 各阶段调试命令
+    </a>
+  </div>
+</nav>
+
+<div id="overlay" onclick="toggleNav()"></div>
+
+<!-- ══ Main ══ -->
+<main>
+<div class="content-wrap">
+
+<!-- §0 架构总览 -->
+<section class="section" id="s0">
+  <div class="section-header">
+    <span class="section-num">00</span>
+    <h2 class="section-title">架构总览：从用户态到 Flash 硬件</h2>
+  </div>
+
+  <p>在 Linux 嵌入式系统中，用户态程序对 Flash 的每一次读写请求，都要经历多个软件层的转换、翻译与保护。与普通块设备（如 eMMC）不同，<strong>裸 Flash（Raw Flash）</strong>没有内置 FTL（Flash 转换层），操作系统必须直接管理擦除块、坏块、磨损均衡和 ECC 纠错。</p>
+
+  <p>Linux 为此提供了一套完整的软件栈——<strong>MTD（Memory Technology Device）子系统</strong>，它是连接用户空间与 Flash 物理硬件的核心桥梁。</p>
+
+  <div class="box box-blue">
+    <div class="box-title">📌 官方来源</div>
+    MTD 子系统由 Linux 内核维护，官方文档位于：
+    <a class="src-link" href="http://linux-mtd.infradead.org/doc/general.html" target="_blank">linux-mtd.infradead.org</a>
+    <a class="src-link" href="https://www.kernel.org/doc/html/latest/driver-api/mtd/" target="_blank">kernel.org MTD API</a>
+    <a class="src-link" href="https://www.kernel.org/doc/Documentation/filesystems/ubifs.txt" target="_blank">kernel.org UBIFS</a>
+  </div>
+
+  <!-- 总架构 SVG -->
+  <div class="diagram-wrap">
+    <svg viewBox="0 0 720 580" xmlns="http://www.w3.org/2000/svg" width="720" height="580">
+      <defs>
+        <linearGradient id="gU" x1="0%" y1="0%" x2="100%" y2="0%">
+          <stop offset="0%" stop-color="#3b82f6" stop-opacity="0.9"/>
+          <stop offset="100%" stop-color="#6366f1" stop-opacity="0.9"/>
+        </linearGradient>
+        <linearGradient id="gK" x1="0%" y1="0%" x2="100%" y2="0%">
+          <stop offset="0%" stop-color="#10b981" stop-opacity="0.9"/>
+          <stop offset="100%" stop-color="#059669" stop-opacity="0.9"/>
+        </linearGradient>
+        <linearGradient id="gH" x1="0%" y1="0%" x2="100%" y2="0%">
+          <stop offset="0%" stop-color="#f59e0b" stop-opacity="0.9"/>
+          <stop offset="100%" stop-color="#d97706" stop-opacity="0.9"/>
+        </linearGradient>
+        <marker id="arr" markerWidth="8" markerHeight="8" refX="6" refY="3" orient="auto">
+          <path d="M0,0 L0,6 L8,3 z" fill="#94a3b8"/>
+        </marker>
+        <marker id="arr2" markerWidth="8" markerHeight="8" refX="6" refY="3" orient="auto">
+          <path d="M0,0 L0,6 L8,3 z" fill="#3b82f6"/>
+        </marker>
+      </defs>
+
+      <!-- Zone labels -->
+      <rect x="8" y="10" width="704" height="108" rx="8" fill="rgba(59,130,246,0.06)" stroke="rgba(59,130,246,0.2)" stroke-width="1"/>
+      <text x="20" y="30" font-size="11" fill="#3b82f6" font-weight="700" font-family="system-ui">用户态 (User Space)</text>
+
+      <rect x="8" y="128" width="704" height="270" rx="8" fill="rgba(16,185,129,0.06)" stroke="rgba(16,185,129,0.2)" stroke-width="1"/>
+      <text x="20" y="148" font-size="11" fill="#10b981" font-weight="700" font-family="system-ui">内核态 (Kernel Space)</text>
+
+      <rect x="8" y="408" width="704" height="150" rx="8" fill="rgba(245,158,11,0.06)" stroke="rgba(245,158,11,0.2)" stroke-width="1"/>
+      <text x="20" y="428" font-size="11" fill="#f59e0b" font-weight="700" font-family="system-ui">硬件层 (Hardware)</text>
+
+      <!-- ── User space boxes ── -->
+      <!-- App -->
+      <rect x="40" y="38" width="160" height="64" rx="7" fill="url(#gU)" opacity="0.85"/>
+      <text x="120" y="62" text-anchor="middle" font-size="12" font-weight="700" fill="white" font-family="system-ui">用户应用程序</text>
+      <text x="120" y="78" text-anchor="middle" font-size="10" fill="rgba(255,255,255,0.85)" font-family="monospace">open/read/write/ioctl</text>
+      <text x="120" y="93" text-anchor="middle" font-size="9" fill="rgba(255,255,255,0.7)" font-family="system-ui">§01</text>
+
+      <!-- mtd-utils -->
+      <rect x="230" y="38" width="170" height="64" rx="7" fill="url(#gU)" opacity="0.7"/>
+      <text x="315" y="62" text-anchor="middle" font-size="12" font-weight="700" fill="white" font-family="system-ui">mtd-utils 工具</text>
+      <text x="315" y="78" text-anchor="middle" font-size="10" fill="rgba(255,255,255,0.85)" font-family="monospace">flash_erase / nandwrite</text>
+      <text x="315" y="93" text-anchor="middle" font-size="9" fill="rgba(255,255,255,0.7)" font-family="system-ui">§07</text>
+
+      <!-- libc -->
+      <rect x="430" y="38" width="140" height="64" rx="7" fill="url(#gU)" opacity="0.6"/>
+      <text x="500" y="62" text-anchor="middle" font-size="12" font-weight="700" fill="white" font-family="system-ui">C 标准库</text>
+      <text x="500" y="78" text-anchor="middle" font-size="10" fill="rgba(255,255,255,0.85)" font-family="monospace">glibc / musl</text>
+      <text x="500" y="93" text-anchor="middle" font-size="9" fill="rgba(255,255,255,0.7)" font-family="system-ui">syscall 封装</text>
+
+      <!-- ── Kernel space boxes ── -->
+      <!-- VFS -->
+      <rect x="40" y="160" width="180" height="50" rx="7" fill="rgba(16,185,129,0.25)" stroke="rgba(16,185,129,0.5)" stroke-width="1.5"/>
+      <text x="130" y="181" text-anchor="middle" font-size="12" font-weight="700" fill="#86efac" font-family="system-ui">VFS 虚拟文件系统</text>
+      <text x="130" y="197" text-anchor="middle" font-size="9.5" fill="#6ee7b7" font-family="monospace">vfs_read / vfs_write</text>
+
+      <!-- Page Cache -->
+      <rect x="250" y="160" width="170" height="50" rx="7" fill="rgba(16,185,129,0.2)" stroke="rgba(16,185,129,0.4)" stroke-width="1.5"/>
+      <text x="335" y="181" text-anchor="middle" font-size="12" font-weight="700" fill="#86efac" font-family="system-ui">页缓存 Page Cache</text>
+      <text x="335" y="197" text-anchor="middle" font-size="9.5" fill="#6ee7b7" font-family="monospace">struct page / address_space</text>
+
+      <!-- Flash FS -->
+      <rect x="40" y="235" width="230" height="50" rx="7" fill="rgba(16,185,129,0.2)" stroke="rgba(16,185,129,0.4)" stroke-width="1.5"/>
+      <text x="155" y="256" text-anchor="middle" font-size="12" font-weight="700" fill="#86efac" font-family="system-ui">Flash 文件系统</text>
+      <text x="155" y="272" text-anchor="middle" font-size="9.5" fill="#6ee7b7" font-family="monospace">UBIFS / JFFS2 / YAFFS2</text>
+
+      <!-- UBI -->
+      <rect x="290" y="235" width="200" height="50" rx="7" fill="rgba(16,185,129,0.2)" stroke="rgba(16,185,129,0.4)" stroke-width="1.5"/>
+      <text x="390" y="256" text-anchor="middle" font-size="12" font-weight="700" fill="#86efac" font-family="system-ui">UBI 卷管理层</text>
+      <text x="390" y="272" text-anchor="middle" font-size="9.5" fill="#6ee7b7" font-family="monospace">wear-leveling / bad-block</text>
+
+      <!-- MTD Core -->
+      <rect x="40" y="310" width="450" height="50" rx="7" fill="rgba(16,185,129,0.25)" stroke="rgba(16,185,129,0.6)" stroke-width="2"/>
+      <text x="265" y="331" text-anchor="middle" font-size="13" font-weight="700" fill="#34d399" font-family="system-ui">MTD 核心层  (mtd_read / mtd_write / mtd_erase)</text>
+      <text x="265" y="349" text-anchor="middle" font-size="9.5" fill="#6ee7b7" font-family="monospace">include/linux/mtd/mtd.h · /dev/mtdX 字符设备  主设备号 90</text>
+
+      <!-- MTD char block -->
+      <rect x="510" y="160" width="175" height="200" rx="7" fill="rgba(16,185,129,0.12)" stroke="rgba(16,185,129,0.3)" stroke-width="1.5"/>
+      <text x="597" y="185" text-anchor="middle" font-size="11" font-weight="700" fill="#86efac" font-family="system-ui">MTD 设备接口</text>
+      <text x="597" y="203" text-anchor="middle" font-size="9.5" fill="#6ee7b7" font-family="monospace">/dev/mtd0 (char)</text>
+      <text x="597" y="218" text-anchor="middle" font-size="9.5" fill="#6ee7b7" font-family="monospace">major=90</text>
+      <line x1="520" y1="230" x2="675" y2="230" stroke="rgba(16,185,129,0.3)" stroke-width="1" stroke-dasharray="4,3"/>
+      <text x="597" y="250" text-anchor="middle" font-size="9.5" fill="#6ee7b7" font-family="monospace">/dev/mtdblock0</text>
+      <text x="597" y="265" text-anchor="middle" font-size="9.5" fill="#6ee7b7" font-family="monospace">major=31</text>
+      <line x1="520" y1="278" x2="675" y2="278" stroke="rgba(16,185,129,0.3)" stroke-width="1" stroke-dasharray="4,3"/>
+      <text x="597" y="298" text-anchor="middle" font-size="9.5" fill="#6ee7b7" font-family="monospace">ioctl: MEMERASE</text>
+      <text x="597" y="313" text-anchor="middle" font-size="9.5" fill="#6ee7b7" font-family="monospace">MEMWRITE / MEMREAD</text>
+      <text x="597" y="328" text-anchor="middle" font-size="9.5" fill="#6ee7b7" font-family="monospace">MEMREADOOB ...</text>
+      <text x="597" y="349" text-anchor="middle" font-size="9" fill="rgba(134,239,172,0.6)" font-family="system-ui">§07</text>
+
+      <!-- NAND Driver -->
+      <rect x="40" y="420" width="200" height="50" rx="7" fill="rgba(245,158,11,0.2)" stroke="rgba(245,158,11,0.5)" stroke-width="1.5"/>
+      <text x="140" y="441" text-anchor="middle" font-size="12" font-weight="700" fill="#fde68a" font-family="system-ui">NAND 驱动</text>
+      <text x="140" y="457" text-anchor="middle" font-size="9.5" fill="#fcd34d" font-family="monospace">drivers/mtd/nand/</text>
+
+      <!-- NOR/SPI Driver -->
+      <rect x="260" y="420" width="200" height="50" rx="7" fill="rgba(245,158,11,0.2)" stroke="rgba(245,158,11,0.5)" stroke-width="1.5"/>
+      <text x="360" y="441" text-anchor="middle" font-size="12" font-weight="700" fill="#fde68a" font-family="system-ui">SPI-NOR 驱动</text>
+      <text x="360" y="457" text-anchor="middle" font-size="9.5" fill="#fcd34d" font-family="monospace">drivers/mtd/spi-nor/</text>
+
+      <!-- ECC -->
+      <rect x="480" y="420" width="200" height="50" rx="7" fill="rgba(245,158,11,0.18)" stroke="rgba(245,158,11,0.4)" stroke-width="1.5"/>
+      <text x="580" y="441" text-anchor="middle" font-size="12" font-weight="700" fill="#fde68a" font-family="system-ui">ECC 引擎</text>
+      <text x="580" y="457" text-anchor="middle" font-size="9.5" fill="#fcd34d" font-family="monospace">软件 / 硬件 ECC</text>
+
+      <!-- Hardware -->
+      <rect x="40" y="490" width="210" height="46" rx="7" fill="url(#gH)" opacity="0.8"/>
+      <text x="145" y="511" text-anchor="middle" font-size="12" font-weight="700" fill="white" font-family="system-ui">NAND 控制器</text>
+      <text x="145" y="527" text-anchor="middle" font-size="9.5" fill="rgba(255,255,255,0.85)" font-family="monospace">NAND 物理芯片</text>
+
+      <rect x="265" y="490" width="210" height="46" rx="7" fill="url(#gH)" opacity="0.7"/>
+      <text x="370" y="511" text-anchor="middle" font-size="12" font-weight="700" fill="white" font-family="system-ui">SPI 控制器</text>
+      <text x="370" y="527" text-anchor="middle" font-size="9.5" fill="rgba(255,255,255,0.85)" font-family="monospace">SPI NOR 芯片</text>
+
+      <!-- ── Arrows ── -->
+      <!-- User App → VFS -->
+      <line x1="120" y1="102" x2="120" y2="158" stroke="#94a3b8" stroke-width="1.5" marker-end="url(#arr)"/>
+      <!-- User App → syscall boundary text -->
+      <text x="128" y="135" font-size="9" fill="#64748b" font-family="system-ui">syscall</text>
+
+      <!-- VFS → Page Cache -->
+      <line x1="222" y1="185" x2="248" y2="185" stroke="#94a3b8" stroke-width="1.5" marker-end="url(#arr)"/>
+
+      <!-- VFS → Flash FS -->
+      <line x1="130" y1="212" x2="130" y2="233" stroke="#94a3b8" stroke-width="1.5" marker-end="url(#arr)"/>
+
+      <!-- Page Cache → Flash FS -->
+      <line x1="280" y1="212" x2="220" y2="235" stroke="#94a3b8" stroke-width="1.5" marker-end="url(#arr)"/>
+
+      <!-- Flash FS → MTD Core -->
+      <line x1="155" y1="287" x2="200" y2="308" stroke="#94a3b8" stroke-width="1.5" marker-end="url(#arr)"/>
+
+      <!-- UBI → MTD Core -->
+      <line x1="350" y1="287" x2="310" y2="308" stroke="#94a3b8" stroke-width="1.5" marker-end="url(#arr)"/>
+
+      <!-- Flash FS → UBI -->
+      <line x1="272" y1="260" x2="288" y2="260" stroke="#94a3b8" stroke-width="1.5" marker-end="url(#arr)"/>
+
+      <!-- MTD Core → NAND Driver -->
+      <line x1="140" y1="362" x2="140" y2="418" stroke="#94a3b8" stroke-width="1.5" marker-end="url(#arr)"/>
+
+      <!-- MTD Core → SPI Driver -->
+      <line x1="320" y1="362" x2="330" y2="418" stroke="#94a3b8" stroke-width="1.5" marker-end="url(#arr)"/>
+
+      <!-- MTD Core → ECC -->
+      <line x1="450" y1="345" x2="540" y2="418" stroke="#94a3b8" stroke-width="1.5" marker-end="url(#arr)"/>
+
+      <!-- NAND Driver → HW -->
+      <line x1="145" y1="472" x2="145" y2="488" stroke="#94a3b8" stroke-width="1.5" marker-end="url(#arr)"/>
+
+      <!-- SPI Driver → HW -->
+      <line x1="355" y1="472" x2="355" y2="488" stroke="#94a3b8" stroke-width="1.5" marker-end="url(#arr)"/>
+
+      <!-- Kernel boundary dashed line -->
+      <line x1="15" y1="126" x2="705" y2="126" stroke="rgba(255,255,255,0.1)" stroke-width="1" stroke-dasharray="6,4"/>
+      <line x1="15" y1="406" x2="705" y2="406" stroke="rgba(255,255,255,0.1)" stroke-width="1" stroke-dasharray="6,4"/>
+    </svg>
+  </div>
+
+  <div class="fp-block">
+    <div class="fp-title">⚡ 第一性原理</div>
+    <p>Flash 不是磁盘。它不能原地改写，只能先擦再写；擦写次数有限，坏块可能增多。因此 Linux 必须设计一个专用子系统（MTD）来屏蔽这些物理限制，让上层软件像操作普通文件一样操作 Flash，同时在底层默默完成坏块管理、磨损均衡和 ECC 纠错。整个软件栈的存在，本质上是对 Flash 物理约束的抽象与补偿。</p>
+  </div>
+</section>
+
+<!-- §1 用户应用 & 系统调用 -->
+<section class="section" id="s1">
+  <div class="section-header">
+    <span class="section-num">01</span>
+    <h2 class="section-title">用户应用 & 系统调用入口</h2>
+  </div>
+
+  <p>用户态程序通过 <strong>POSIX 标准 C 函数</strong>（<code>open</code>、<code>read</code>、<code>write</code>、<code>ioctl</code>）与 Flash 交互。这些函数由 glibc/musl 封装为系统调用指令（<code>syscall</code>），触发 CPU 从用户模式切换到内核模式（trap），进入内核的系统调用入口。</p>
+
+  <h3>两种访问路径</h3>
+  <table class="cmd-table">
+    <thead><tr><th>访问方式</th><th>设备节点</th><th>说明</th></tr></thead>
+    <tbody>
+      <tr><td><code>open/read/write</code></td><td><code>/dev/mtd0</code></td><td>MTD 字符设备，支持任意大小读，写必须对齐最小写单元</td></tr>
+      <tr><td><code>ioctl(MEMERASE)</code></td><td><code>/dev/mtd0</code></td><td>擦除操作必须用 ioctl，不能用 write 直接擦</td></tr>
+      <tr><td>挂载文件系统</td><td><code>/dev/mtdblock0</code></td><td>MTD 块设备，供 ext2 等块文件系统使用（不推荐裸 NAND）</td></tr>
+      <tr><td>UBIFS 挂载</td><td><code>ubi0:rootfs</code></td><td>经过 UBI 层的卷名访问，最推荐的 NAND 使用方式</td></tr>
+    </tbody>
+  </table>
+
+  <h3>系统调用过程（以 read 为例）</h3>
+  <pre><code># 用户态 C 代码
+int fd = open("/dev/mtd0", O_RDONLY);
+read(fd, buf, 512);
+// ↑ glibc 将此转为:
+// mov rax, __NR_read   ; 系统调用号
+// syscall              ; 触发中断/异常，进入内核</code></pre>
+
+  <div class="box box-yellow">
+    <div class="box-title">⚠️ NAND 写入限制</div>
+    直接对 <code>/dev/mtd0</code> 写入时：<br>
+    • 写大小必须是设备 <strong>最小写单元（writesize）</strong> 的整数倍（通常 512B / 2048B / 4096B）<br>
+    • 写之前对应块必须已被擦除（全为 0xFF）<br>
+    • 读可以是任意大小（内核会对齐后拷贝所需字节）
+  </div>
+
+  <!-- 系统调用流 SVG -->
+  <div class="diagram-wrap">
+    <svg viewBox="0 0 680 200" xmlns="http://www.w3.org/2000/svg" width="680" height="200">
+      <defs>
+        <marker id="a1" markerWidth="8" markerHeight="8" refX="6" refY="3" orient="auto">
+          <path d="M0,0 L0,6 L8,3 z" fill="#3b82f6"/>
+        </marker>
+      </defs>
+      <!-- boxes -->
+      <rect x="10" y="70" width="110" height="60" rx="7" fill="rgba(59,130,246,0.2)" stroke="rgba(59,130,246,0.5)" stroke-width="1.5"/>
+      <text x="65" y="97" text-anchor="middle" font-size="11" font-weight="700" fill="#93c5fd" font-family="system-ui">应用程序</text>
+      <text x="65" y="113" text-anchor="middle" font-size="9" fill="#7dd3fc" font-family="monospace">read(fd, buf, n)</text>
+
+      <rect x="160" y="70" width="110" height="60" rx="7" fill="rgba(99,102,241,0.2)" stroke="rgba(99,102,241,0.5)" stroke-width="1.5"/>
+      <text x="215" y="97" text-anchor="middle" font-size="11" font-weight="700" fill="#c4b5fd" font-family="system-ui">glibc</text>
+      <text x="215" y="113" text-anchor="middle" font-size="9" fill="#a5b4fc" font-family="monospace">syscall(__NR_read)</text>
+
+      <rect x="310" y="70" width="130" height="60" rx="7" fill="rgba(16,185,129,0.2)" stroke="rgba(16,185,129,0.5)" stroke-width="1.5"/>
+      <text x="375" y="93" text-anchor="middle" font-size="11" font-weight="700" fill="#86efac" font-family="system-ui">内核入口</text>
+      <text x="375" y="108" text-anchor="middle" font-size="9" fill="#6ee7b7" font-family="monospace">SYSCALL_DEFINE3</text>
+      <text x="375" y="122" text-anchor="middle" font-size="9" fill="#6ee7b7" font-family="monospace">(read, ...)</text>
+
+      <rect x="490" y="70" width="130" height="60" rx="7" fill="rgba(16,185,129,0.2)" stroke="rgba(16,185,129,0.5)" stroke-width="1.5"/>
+      <text x="555" y="97" text-anchor="middle" font-size="11" font-weight="700" fill="#86efac" font-family="system-ui">VFS 层</text>
+      <text x="555" y="113" text-anchor="middle" font-size="9" fill="#6ee7b7" font-family="monospace">vfs_read()</text>
+
+      <!-- arrows -->
+      <line x1="122" y1="100" x2="157" y2="100" stroke="#3b82f6" stroke-width="2" marker-end="url(#a1)"/>
+      <line x1="272" y1="100" x2="307" y2="100" stroke="#3b82f6" stroke-width="2" marker-end="url(#a1)"/>
+      <line x1="442" y1="100" x2="487" y2="100" stroke="#3b82f6" stroke-width="2" marker-end="url(#a1)"/>
+
+      <!-- mode switch label -->
+      <line x1="280" y1="20" x2="280" y2="175" stroke="rgba(255,255,255,0.15)" stroke-width="1" stroke-dasharray="5,4"/>
+      <text x="240" y="38" text-anchor="middle" font-size="10" fill="#94a3b8" font-family="system-ui">用户态</text>
+      <text x="350" y="38" text-anchor="middle" font-size="10" fill="#94a3b8" font-family="system-ui">内核态</text>
+      <text x="284" y="52" font-size="9" fill="#64748b" font-family="system-ui">⟵ trap ⟶</text>
+
+      <!-- CPU mode label -->
+      <text x="65" y="155" text-anchor="middle" font-size="9" fill="#64748b" font-family="system-ui">Ring 3</text>
+      <text x="215" y="155" text-anchor="middle" font-size="9" fill="#64748b" font-family="system-ui">Ring 3</text>
+      <text x="375" y="155" text-anchor="middle" font-size="9" fill="#64748b" font-family="system-ui">Ring 0</text>
+      <text x="555" y="155" text-anchor="middle" font-size="9" fill="#64748b" font-family="system-ui">Ring 0</text>
+    </svg>
+  </div>
+
+  <div class="fp-block">
+    <div class="fp-title">⚡ 第一性原理</div>
+    <p>系统调用是用户态与内核态的唯一合法边界。用户程序无法直接访问硬件寄存器，必须通过系统调用请求内核代劳。这个边界的本质是 CPU 特权级切换（Ring 3 → Ring 0），内核在此验证参数合法性，防止用户程序破坏系统。</p>
+  </div>
+</section>
+
+<!-- §2 VFS 虚拟文件系统 -->
+<section class="section" id="s2">
+  <div class="section-header">
+    <span class="section-num">02</span>
+    <h2 class="section-title">VFS 虚拟文件系统层</h2>
+  </div>
+
+  <p>VFS（Virtual File System）是 Linux 内核中的<strong>统一文件系统抽象层</strong>。它定义了一套通用的数据结构和操作接口，使得应用程序无需关心底层是 ext4、UBIFS 还是 NFS，统一使用相同的 POSIX API。</p>
+
+  <h3>核心数据结构</h3>
+  <table class="cmd-table">
+    <thead><tr><th>结构体</th><th>作用</th></tr></thead>
+    <tbody>
+      <tr><td><code>struct superblock</code></td><td>描述整个已挂载文件系统的元数据（块大小、总块数、文件系统类型）</td></tr>
+      <tr><td><code>struct inode</code></td><td>描述单个文件/目录的元信息（权限、大小、块指针）</td></tr>
+      <tr><td><code>struct dentry</code></td><td>目录项缓存，将路径名映射到 inode（dentry cache）</td></tr>
+      <tr><td><code>struct file</code></td><td>进程打开文件的上下文（当前偏移、标志位、file_operations 指针）</td></tr>
+    </tbody>
+  </table>
+
+  <h3>VFS 如何分发到 MTD</h3>
+  <p>每种文件系统注册自己的 <code>file_operations</code> 和 <code>address_space_operations</code>。当 VFS 收到读写请求时，通过函数指针调用具体文件系统的实现。对于 MTD 字符设备（<code>/dev/mtdX</code>），分发路径如下：</p>
+
+  <pre><code>sys_read()
+  └─ vfs_read()
+       └─ file->f_op->read()          ← MTD 字符驱动注册的 .read
+            └─ mtd_read_oob() / mtd_read()
+                 └─ 具体 NAND/NOR 驱动</code></pre>
+
+  <div class="box box-blue">
+    <div class="box-title">📌 官方参考</div>
+    VFS 设计参考：<a class="src-link" href="https://www.kernel.org/doc/html/latest/filesystems/vfs.html" target="_blank">kernel.org VFS 文档</a>
+    MTD 字符设备注册：<code>drivers/mtd/mtdchar.c</code>，MTD 块设备：<code>drivers/mtd/mtdblock.c</code>
+  </div>
+
+  <!-- VFS dispatch SVG -->
+  <div class="diagram-wrap">
+    <svg viewBox="0 0 680 260" xmlns="http://www.w3.org/2000/svg" width="680" height="260">
+      <defs>
+        <marker id="a2" markerWidth="8" markerHeight="8" refX="6" refY="3" orient="auto">
+          <path d="M0,0 L0,6 L8,3 z" fill="#94a3b8"/>
+        </marker>
+      </defs>
+      <!-- VFS center -->
+      <rect x="250" y="10" width="180" height="50" rx="8" fill="rgba(16,185,129,0.3)" stroke="rgba(16,185,129,0.6)" stroke-width="2"/>
+      <text x="340" y="32" text-anchor="middle" font-size="12" font-weight="700" fill="#34d399" font-family="system-ui">VFS</text>
+      <text x="340" y="50" text-anchor="middle" font-size="9.5" fill="#6ee7b7" font-family="monospace">file_operations 分发</text>
+
+      <!-- dentry cache -->
+      <rect x="10" y="10" width="200" height="50" rx="7" fill="rgba(99,102,241,0.18)" stroke="rgba(99,102,241,0.4)" stroke-width="1.5"/>
+      <text x="110" y="32" text-anchor="middle" font-size="11" font-weight="700" fill="#c4b5fd" font-family="system-ui">Dentry Cache</text>
+      <text x="110" y="50" text-anchor="middle" font-size="9.5" fill="#a5b4fc" font-family="monospace">路径 → inode 映射</text>
+
+      <!-- arrows from VFS to 3 targets -->
+      <line x1="340" y1="62" x2="120" y2="128" stroke="#94a3b8" stroke-width="1.5" marker-end="url(#a2)"/>
+      <line x1="340" y1="62" x2="340" y2="128" stroke="#94a3b8" stroke-width="1.5" marker-end="url(#a2)"/>
+      <line x1="340" y1="62" x2="560" y2="128" stroke="#94a3b8" stroke-width="1.5" marker-end="url(#a2)"/>
+
+      <!-- UBIFS branch -->
+      <rect x="30" y="130" width="185" height="50" rx="7" fill="rgba(16,185,129,0.15)" stroke="rgba(16,185,129,0.35)" stroke-width="1.5"/>
+      <text x="122" y="151" text-anchor="middle" font-size="11" font-weight="700" fill="#86efac" font-family="system-ui">UBIFS / JFFS2</text>
+      <text x="122" y="168" text-anchor="middle" font-size="9.5" fill="#6ee7b7" font-family="monospace">ubifs_read_folio()</text>
+
+      <!-- MTD char branch -->
+      <rect x="250" y="130" width="185" height="50" rx="7" fill="rgba(59,130,246,0.15)" stroke="rgba(59,130,246,0.35)" stroke-width="1.5"/>
+      <text x="342" y="151" text-anchor="middle" font-size="11" font-weight="700" fill="#93c5fd" font-family="system-ui">MTD 字符设备</text>
+      <text x="342" y="168" text-anchor="middle" font-size="9.5" fill="#7dd3fc" font-family="monospace">mtd_read() via ioctl</text>
+
+      <!-- mtdblock branch -->
+      <rect x="470" y="130" width="185" height="50" rx="7" fill="rgba(245,158,11,0.15)" stroke="rgba(245,158,11,0.35)" stroke-width="1.5"/>
+      <text x="562" y="151" text-anchor="middle" font-size="11" font-weight="700" fill="#fde68a" font-family="system-ui">MTD 块设备</text>
+      <text x="562" y="168" text-anchor="middle" font-size="9.5" fill="#fcd34d" font-family="monospace">mtdblock (不推荐)</text>
+
+      <!-- converge to MTD Core -->
+      <line x1="122" y1="182" x2="300" y2="218" stroke="#94a3b8" stroke-width="1.5" marker-end="url(#a2)"/>
+      <line x1="342" y1="182" x2="340" y2="218" stroke="#94a3b8" stroke-width="1.5" marker-end="url(#a2)"/>
+      <line x1="562" y1="182" x2="380" y2="218" stroke="#94a3b8" stroke-width="1.5" marker-end="url(#a2)"/>
+
+      <rect x="200" y="220" width="280" height="35" rx="7" fill="rgba(16,185,129,0.3)" stroke="rgba(16,185,129,0.6)" stroke-width="2"/>
+      <text x="340" y="243" text-anchor="middle" font-size="12" font-weight="700" fill="#34d399" font-family="system-ui">MTD 核心层 mtd_read/write</text>
+    </svg>
+  </div>
+
+  <div class="fp-block">
+    <div class="fp-title">⚡ 第一性原理</div>
+    <p>VFS 的本质是<strong>接口与实现的解耦</strong>。它用函数指针表（<code>file_operations</code>）定义"应该做什么"，具体文件系统实现"怎么做"。这和面向对象中的"接口/多态"完全等价。对于 Flash，VFS 是所有上层请求的第一个分拣员，决定请求该去哪条路径。</p>
+  </div>
+</section>
+
+<!-- §3 页缓存 -->
+<section class="section" id="s3">
+  <div class="section-header">
+    <span class="section-num">03</span>
+    <h2 class="section-title">页缓存（Page Cache）</h2>
+  </div>
+
+  <p>页缓存是 Linux 内核中以<strong>内存页（4KB）为单位</strong>的数据缓冲区。读操作优先查页缓存，命中则直接返回；未命中才触发实际 Flash 读取并填充缓存。写操作先写入页缓存（脏页），由内核定期刷写（writeback）。</p>
+
+  <h3>Flash 文件系统的特殊性</h3>
+  <div class="box box-red">
+    <div class="box-title">⚠️ 重要差异</div>
+    UBIFS / JFFS2 等 <strong>Flash 文件系统不完全依赖标准页缓存路径</strong>。原因是：<br>
+    • Flash 擦除块远大于 4KB（通常 128KB~256KB），不能像磁盘一样原地覆写<br>
+    • JFFS2 完全绕过页缓存，直接管理 Flash<br>
+    • UBIFS 使用自己的 TNC（Tree Node Cache）缓存索引，写操作通过 journal 机制批量提交<br>
+    • MTD 字符设备直接读写，也绕过页缓存（O_DIRECT 语义）
+  </div>
+
+  <h3>直接访问（mtd-utils）与 FS 访问对比</h3>
+  <table class="cmd-table">
+    <thead><tr><th>访问方式</th><th>是否经过页缓存</th><th>说明</th></tr></thead>
+    <tbody>
+      <tr><td><code>read /dev/mtd0</code></td><td>❌ 否</td><td>直接到 MTD 核心，绕过页缓存</td></tr>
+      <tr><td>UBIFS 文件读写</td><td>△ 部分</td><td>UBIFS 有自己的 TNC 缓存，特定路径会用 page cache</td></tr>
+      <tr><td>JFFS2 文件读写</td><td>✅ 是（读）</td><td>读取后填充页缓存；但扫描挂载时全量读取 Flash</td></tr>
+      <tr><td><code>nandwrite</code> 工具</td><td>❌ 否</td><td>直接 ioctl/write 到 MTD 字符设备</td></tr>
+    </tbody>
+  </table>
+
+  <div class="fp-block">
+    <div class="fp-title">⚡ 第一性原理</div>
+    <p>页缓存的存在是为了弥补 CPU（GHz）与存储（慢得多）之间的速度鸿沟。但 Flash 的写入物理约束（必须先擦再写、块粒度大）使得通用页缓存的 writeback 策略不够高效，Flash 文件系统因此各自实现了更适合 Flash 特性的缓冲机制。</p>
+  </div>
+</section>
+
+<!-- §4 Flash 文件系统 -->
+<section class="section" id="s4">
+  <div class="section-header">
+    <span class="section-num">04</span>
+    <h2 class="section-title">Flash 文件系统层（UBIFS / JFFS2）</h2>
+  </div>
+
+  <p>Flash 文件系统工作在 MTD 层之上，负责文件的组织、索引、压缩和崩溃恢复。主流选择是 <strong>UBIFS</strong>（推荐）和 <strong>JFFS2</strong>（较老）。</p>
+
+  <div class="box box-blue">
+    <div class="box-title">📌 官方来源</div>
+    <a class="src-link" href="http://www.linux-mtd.infradead.org/doc/ubifs.html" target="_blank">UBIFS 官方文档</a>
+    <a class="src-link" href="https://www.kernel.org/doc/Documentation/filesystems/ubifs.txt" target="_blank">kernel.org UBIFS.txt</a>
+  </div>
+
+  <h3>UBIFS vs JFFS2 核心区别</h3>
+
+  <!-- Comparison SVG -->
+  <div class="diagram-wrap">
+    <svg viewBox="0 0 680 230" xmlns="http://www.w3.org/2000/svg" width="680" height="230">
+      <!-- Headers -->
+      <rect x="10" y="10" width="220" height="35" rx="6" fill="rgba(16,185,129,0.25)" stroke="rgba(16,185,129,0.5)" stroke-width="1.5"/>
+      <text x="120" y="33" text-anchor="middle" font-size="13" font-weight="700" fill="#34d399" font-family="system-ui">UBIFS（推荐）</text>
+      <rect x="450" y="10" width="220" height="35" rx="6" fill="rgba(245,158,11,0.2)" stroke="rgba(245,158,11,0.4)" stroke-width="1.5"/>
+      <text x="560" y="33" text-anchor="middle" font-size="13" font-weight="700" fill="#fde68a" font-family="system-ui">JFFS2（较老）</text>
+
+      <!-- UBIFS features -->
+      <g font-family="system-ui" font-size="10.5" fill="#94a3b8">
+        <text x="22" y="67">✅ 挂载时间与 Flash 大小无关</text>
+        <text x="22" y="87">✅ on-flash B+树索引（不扫全盘）</text>
+        <text x="22" y="107">✅ 支持 write-back（批量写入）</text>
+        <text x="22" y="127">✅ TNC 缓存，内存占用可控</text>
+        <text x="22" y="147">✅ Journal 机制，快速崩溃恢复</text>
+        <text x="22" y="167">⚠️ 依赖 UBI 层（需先 ubiattach）</text>
+        <text x="22" y="187">✅ 数据压缩（LZO / zlib）</text>
+      </g>
+
+      <!-- JFFS2 features -->
+      <g font-family="system-ui" font-size="10.5" fill="#94a3b8">
+        <text x="462" y="67">❌ 挂载时必须全量扫描 Flash</text>
+        <text x="462" y="87">❌ 内存用量线性增长（与文件数量）</text>
+        <text x="462" y="107">⚠️ 完全同步写入（write-through）</text>
+        <text x="462" y="127">❌ 文件越大打开越慢（fragment树）</text>
+        <text x="462" y="147">✅ 直接工作在 MTD 上，无需 UBI</text>
+        <text x="462" y="167">✅ 历史成熟，兼容性好</text>
+        <text x="462" y="187">✅ 数据压缩（zlib）</text>
+      </g>
+
+      <!-- center divider -->
+      <line x1="340" y1="10" x2="340" y2="220" stroke="rgba(255,255,255,0.1)" stroke-width="1" stroke-dasharray="5,4"/>
+      <text x="340" y="120" text-anchor="middle" font-size="9" fill="#475569" font-family="system-ui" transform="rotate(-90, 340, 120)">Flash 文件系统对比</text>
+    </svg>
+  </div>
+
+  <h3>UBIFS 内部数据结构</h3>
+  <table class="cmd-table">
+    <thead><tr><th>组件</th><th>作用</th><th>存储位置</th></tr></thead>
+    <tbody>
+      <tr><td><code>Index (B+树)</code></td><td>文件系统索引，叶节点存文件数据</td><td>Flash 上</td></tr>
+      <tr><td><code>Journal</code></td><td>先于索引更新写入，降低写放大</td><td>Flash 上（固定大小）</td></tr>
+      <tr><td><code>TNC</code></td><td>B+树的内存镜像，加速查找</td><td>RAM 中</td></tr>
+      <tr><td><code>LPT</code></td><td>每个 LEB 的空间账本（空闲/脏）</td><td>Flash 上</td></tr>
+    </tbody>
+  </table>
+
+  <h3>UBIFS 写入流程</h3>
+  <pre><code>用户 write(fd, data, len)
+  → VFS → UBIFS ubifs_write_begin/end()
+     → 数据写入 Journal（追加写，不原地改）
+     → 定期 commit：Journal → B+树索引
+     → 通过 UBI API 写 LEB
+        → MTD mtd_write()
+           → NAND 驱动</code></pre>
+
+  <div class="fp-block">
+    <div class="fp-title">⚡ 第一性原理</div>
+    <p>UBIFS 的设计核心是<strong>日志结构（Log-Structured）</strong>——所有写操作以追加方式写入 Journal，避免频繁随机写。这契合 Flash 的物理特性：追加顺序写比随机写效率高得多，且延迟了擦除操作。B+树提供 O(log n) 查找，克服了 JFFS2 扫描式设计的可扩展性瓶颈。</p>
+  </div>
+</section>
+
+<!-- §5 UBI -->
+<section class="section" id="s5">
+  <div class="section-header">
+    <span class="section-num">05</span>
+    <h2 class="section-title">UBI 卷管理层（Unsorted Block Images）</h2>
+  </div>
+
+  <p>UBI 是 Linux 内核中的<strong>裸 Flash 卷管理系统</strong>，由 Artem Bityutskiy 开发，自 Linux 2.6.22 起并入主线。UBI 工作在 MTD 层之上、文件系统之下，提供逻辑卷（volume）抽象，对上层屏蔽坏块和磨损均衡细节。</p>
+
+  <div class="box box-blue">
+    <div class="box-title">📌 官方来源</div>
+    <a class="src-link" href="http://www.linux-mtd.infradead.org/doc/ubi.html" target="_blank">UBI 官方文档（linux-mtd.infradead.org）</a>
+    源码目录：<code>drivers/mtd/ubi/</code>
+  </div>
+
+  <h3>UBI 核心功能</h3>
+
+  <!-- UBI SVG -->
+  <div class="diagram-wrap">
+    <svg viewBox="0 0 680 310" xmlns="http://www.w3.org/2000/svg" width="680" height="310">
+      <defs>
+        <marker id="a3" markerWidth="8" markerHeight="8" refX="6" refY="3" orient="auto">
+          <path d="M0,0 L0,6 L8,3 z" fill="#94a3b8"/>
+        </marker>
+      </defs>
+      <!-- Title -->
+      <text x="340" y="25" text-anchor="middle" font-size="13" font-weight="700" fill="#94a3b8" font-family="system-ui">UBI: 逻辑擦除块(LEB) → 物理擦除块(PEB) 动态映射</text>
+
+      <!-- LEBs -->
+      <g>
+        <text x="30" y="55" font-size="10.5" fill="#86efac" font-weight="700" font-family="system-ui">逻辑层（UBIFS 看到）</text>
+        <rect x="30" y="65" width="80" height="42" rx="5" fill="rgba(16,185,129,0.25)" stroke="rgba(16,185,129,0.5)" stroke-width="1.5"/>
+        <text x="70" y="83" text-anchor="middle" font-size="10" fill="#86efac" font-family="monospace">LEB 0</text>
+        <text x="70" y="97" text-anchor="middle" font-size="9" fill="#6ee7b7" font-family="monospace">rootfs</text>
+
+        <rect x="125" y="65" width="80" height="42" rx="5" fill="rgba(16,185,129,0.25)" stroke="rgba(16,185,129,0.5)" stroke-width="1.5"/>
+        <text x="165" y="83" text-anchor="middle" font-size="10" fill="#86efac" font-family="monospace">LEB 1</text>
+        <text x="165" y="97" text-anchor="middle" font-size="9" fill="#6ee7b7" font-family="monospace">rootfs</text>
+
+        <rect x="220" y="65" width="80" height="42" rx="5" fill="rgba(59,130,246,0.25)" stroke="rgba(59,130,246,0.5)" stroke-width="1.5"/>
+        <text x="260" y="83" text-anchor="middle" font-size="10" fill="#93c5fd" font-family="monospace">LEB 0</text>
+        <text x="260" y="97" text-anchor="middle" font-size="9" fill="#7dd3fc" font-family="monospace">data</text>
+
+        <rect x="315" y="65" width="80" height="42" rx="5" fill="rgba(59,130,246,0.25)" stroke="rgba(59,130,246,0.5)" stroke-width="1.5"/>
+        <text x="355" y="83" text-anchor="middle" font-size="10" fill="#93c5fd" font-family="monospace">LEB 1</text>
+        <text x="355" y="97" text-anchor="middle" font-size="9" fill="#7dd3fc" font-family="monospace">data</text>
+      </g>
+
+      <!-- UBI mapping engine -->
+      <rect x="30" y="140" width="600" height="55" rx="8" fill="rgba(99,102,241,0.2)" stroke="rgba(99,102,241,0.5)" stroke-width="2"/>
+      <text x="330" y="163" text-anchor="middle" font-size="12" font-weight="700" fill="#c4b5fd" font-family="system-ui">UBI 映射引擎（EBA Table）</text>
+      <text x="330" y="181" text-anchor="middle" font-size="10" fill="#a5b4fc" font-family="monospace">LEB→PEB 动态映射  |  磨损均衡  |  坏块透明替换  |  bitflip scrubbing</text>
+
+      <!-- Arrows down -->
+      <line x1="70" y1="109" x2="200" y2="138" stroke="#94a3b8" stroke-width="1.5" marker-end="url(#a3)"/>
+      <line x1="165" y1="109" x2="260" y2="138" stroke="#94a3b8" stroke-width="1.5" marker-end="url(#a3)"/>
+      <line x1="260" y1="109" x2="340" y2="138" stroke="#94a3b8" stroke-width="1.5" marker-end="url(#a3)"/>
+      <line x1="355" y1="109" x2="410" y2="138" stroke="#94a3b8" stroke-width="1.5" marker-end="url(#a3)"/>
+
+      <!-- PEBs -->
+      <text x="30" y="225" font-size="10.5" fill="#fde68a" font-weight="700" font-family="system-ui">物理层（Flash 实际分布）</text>
+
+      <g>
+        <rect x="30" y="235" width="70" height="55" rx="5" fill="rgba(245,158,11,0.2)" stroke="rgba(245,158,11,0.4)" stroke-width="1.5"/>
+        <text x="65" y="255" text-anchor="middle" font-size="9.5" fill="#fde68a" font-family="monospace">PEB 0</text>
+        <text x="65" y="270" text-anchor="middle" font-size="8.5" fill="#fcd34d" font-family="monospace">EC=1203</text>
+        <text x="65" y="282" text-anchor="middle" font-size="8" fill="#92400e" font-family="monospace">EC hdr+data</text>
+
+        <rect x="115" y="235" width="70" height="55" rx="5" fill="rgba(239,68,68,0.2)" stroke="rgba(239,68,68,0.4)" stroke-width="1.5"/>
+        <text x="150" y="255" text-anchor="middle" font-size="9.5" fill="#fca5a5" font-family="monospace">PEB 5</text>
+        <text x="150" y="270" text-anchor="middle" font-size="8.5" fill="#fca5a5" font-family="monospace">坏块 ⛔</text>
+        <text x="150" y="282" text-anchor="middle" font-size="8" fill="#7f1d1d" font-family="monospace">reserved</text>
+
+        <rect x="200" y="235" width="70" height="55" rx="5" fill="rgba(245,158,11,0.2)" stroke="rgba(245,158,11,0.4)" stroke-width="1.5"/>
+        <text x="235" y="255" text-anchor="middle" font-size="9.5" fill="#fde68a" font-family="monospace">PEB 12</text>
+        <text x="235" y="270" text-anchor="middle" font-size="8.5" fill="#fcd34d" font-family="monospace">EC=847</text>
+        <text x="235" y="282" text-anchor="middle" font-size="8" fill="#92400e" font-family="monospace">EC hdr+data</text>
+
+        <rect x="285" y="235" width="70" height="55" rx="5" fill="rgba(245,158,11,0.2)" stroke="rgba(245,158,11,0.4)" stroke-width="1.5"/>
+        <text x="320" y="255" text-anchor="middle" font-size="9.5" fill="#fde68a" font-family="monospace">PEB 33</text>
+        <text x="320" y="270" text-anchor="middle" font-size="8.5" fill="#fcd34d" font-family="monospace">EC=3201</text>
+        <text x="320" y="282" text-anchor="middle" font-size="8" fill="#92400e" font-family="monospace">EC hdr+data</text>
+
+        <rect x="370" y="235" width="70" height="55" rx="5" fill="rgba(16,185,129,0.15)" stroke="rgba(16,185,129,0.35)" stroke-width="1.5"/>
+        <text x="405" y="255" text-anchor="middle" font-size="9.5" fill="#86efac" font-family="monospace">PEB 67</text>
+        <text x="405" y="270" text-anchor="middle" font-size="8.5" fill="#6ee7b7" font-family="monospace">EC=0 (空)</text>
+        <text x="405" y="282" text-anchor="middle" font-size="8" fill="#065f46" font-family="monospace">free pool</text>
+      </g>
+
+      <!-- Arrows from UBI to PEBs -->
+      <line x1="170" y1="197" x2="65" y2="233" stroke="#94a3b8" stroke-width="1.2" marker-end="url(#a3)" stroke-dasharray="4,3"/>
+      <line x1="260" y1="197" x2="235" y2="233" stroke="#94a3b8" stroke-width="1.2" marker-end="url(#a3)" stroke-dasharray="4,3"/>
+      <line x1="350" y1="197" x2="320" y2="233" stroke="#94a3b8" stroke-width="1.2" marker-end="url(#a3)" stroke-dasharray="4,3"/>
+      <line x1="430" y1="197" x2="405" y2="233" stroke="#94a3b8" stroke-width="1.2" marker-end="url(#a3)" stroke-dasharray="4,3"/>
+    </svg>
+  </div>
+
+  <h3>UBI 每个 PEB 的两个头部（64 字节）</h3>
+  <pre><code>每个物理擦除块（PEB）开头存放两个 64 字节头：
+
+EC Header（擦除计数头）：
+  magic | version | padding_type | erase_count | crc32
+
+VID Header（卷标识头）：
+  magic | version | vol_type | copy_flag | compat | vol_id
+  lnum  | leb_ver | data_size | used_ebs | data_pad
+  data_crc | sqnum | crc32</code></pre>
+
+  <div class="box box-green">
+    <div class="box-title">✅ UBI 操作命令</div>
+    <pre style="margin:0">ubiattach /dev/ubi_ctrl -m 0      # 将 mtd0 附加到 UBI
+ubimkvol /dev/ubi0 -N rootfs -s 64MiB  # 创建逻辑卷
+ubiinfo /dev/ubi0                  # 查看 UBI 设备信息
+cat /sys/class/ubi/ubi0/volumes_count  # sysfs 查询卷数量</pre>
+  </div>
+
+  <div class="fp-block">
+    <div class="fp-title">⚡ 第一性原理</div>
+    <p>UBI 的本质是一个<strong>中间映射层</strong>：逻辑擦除块（LEB）到物理擦除块（PEB）的动态映射表。通过在写时选择磨损最轻的 PEB，UBI 实现全局磨损均衡；通过维护备用 PEB 池，透明替换坏块。这与 SSD 内部 FTL 的原理相同，只是在软件层实现而非硬件层。</p>
+  </div>
+</section>
+
+<!-- §6 MTD 核心 -->
+<section class="section" id="s6">
+  <div class="section-header">
+    <span class="section-num">06</span>
+    <h2 class="section-title">MTD 核心抽象层</h2>
+  </div>
+
+  <p>MTD（Memory Technology Device）是 Linux 内核中专门为<strong>裸 Flash 设备</strong>设计的抽象层，提供统一 API 屏蔽不同 Flash 类型（NAND、NOR、OneNAND 等）的差异。</p>
+
+  <div class="box box-blue">
+    <div class="box-title">📌 官方来源</div>
+    API 定义：<code>include/linux/mtd/mtd.h</code>
+    <a class="src-link" href="http://linux-mtd.infradead.org/doc/general.html#L_mtd_api" target="_blank">MTD API 文档</a>
+  </div>
+
+  <h3>MTD 核心 API（内核内部调用）</h3>
+  <pre><code>/* 定义于 include/linux/mtd/mtd.h */
+
+/* 读取数据（自 from 偏移起读 len 字节） */
+int mtd_read(struct mtd_info *mtd, loff_t from, size_t len,
+             size_t *retlen, u_char *buf);
+
+/* 写入数据（写之前该块必须已擦除） */
+int mtd_write(struct mtd_info *mtd, loff_t to, size_t len,
+              size_t *retlen, const u_char *buf);
+
+/* 擦除一个擦除块（整块擦除） */
+int mtd_erase(struct mtd_info *mtd, struct erase_info *instr);
+
+/* 读取 OOB 区域（NAND 专用，含 ECC 信息） */
+int mtd_read_oob(struct mtd_info *mtd, loff_t from,
+                 struct mtd_oob_ops *ops);
+
+/* 写入 OOB 区域 */
+int mtd_write_oob(struct mtd_info *mtd, loff_t to,
+                  struct mtd_oob_ops *ops);</code></pre>
+
+  <h3>struct mtd_info 关键字段</h3>
+  <pre><code>struct mtd_info {
+    u_char   type;          /* MTD_NANDFLASH / MTD_NORFLASH 等 */
+    uint32_t flags;         /* MTD_WRITEABLE / MTD_NO_ERASE 等 */
+    uint64_t size;          /* 设备总大小（字节） */
+    uint32_t erasesize;     /* 擦除块大小（如 131072 = 128KiB） */
+    uint32_t writesize;     /* 最小写单元（NAND：页大小） */
+    uint32_t oobsize;       /* OOB 区域大小（每页） */
+    /* ... 函数指针：_read / _write / _erase / _read_oob ... */
+    int (*_read)(struct mtd_info *, loff_t, size_t, size_t *, u_char *);
+    int (*_write)(struct mtd_info *, loff_t, size_t, size_t *, const u_char *);
+    int (*_erase)(struct mtd_info *, struct erase_info *);
+    /* ... */
+};</code></pre>
+
+  <h3>mtd_read() 返回值说明</h3>
+  <table class="cmd-table">
+    <thead><tr><th>返回值</th><th>含义</th></tr></thead>
+    <tbody>
+      <tr><td><code>0</code></td><td>成功，无任何位翻转</td></tr>
+      <tr><td><code>-EUCLEAN</code></td><td>有位翻转但已被 ECC 纠正（严重程度超过阈值，建议迁移数据）</td></tr>
+      <tr><td><code>-EBADMSG</code></td><td>不可纠正的 ECC 错误（数据已损坏）</td></tr>
+      <tr><td><code>-ENODEV</code></td><td>设备不存在</td></tr>
+    </tbody>
+  </table>
+
+  <div class="box box-blue">
+    <div class="box-title">📌 内核 3.4 之后的变化</div>
+    在 Linux 3.4 之前，上层代码直接调用 <code>mtd_info</code> 中的函数指针（<code>mtd->read()</code>）。<br>
+    <strong>3.4 之后</strong>，统一改为调用 <code>mtd_read()</code> 等封装函数，由 MTD 核心代码中转后再调用驱动的函数指针，增加了统一检查和钩子。
+  </div>
+
+  <div class="fp-block">
+    <div class="fp-title">⚡ 第一性原理</div>
+    <p>MTD 核心层的本质是<strong>接口标准化</strong>：无论下面是并行 NAND、SPI NOR 还是 OneNAND，上层代码只需调用统一的 <code>mtd_read/write/erase</code>。这是软件工程中"依赖抽象而非依赖实现"原则的直接体现。函数指针表（<code>struct mtd_info</code> 中的 <code>_read/_write</code>）就是 C 语言实现的虚函数表。</p>
+  </div>
+</section>
+
+<!-- §7 MTD 字符/块设备接口 -->
+<section class="section" id="s7">
+  <div class="section-header">
+    <span class="section-num">07</span>
+    <h2 class="section-title">MTD 字符 / 块设备接口 & mtd-utils</h2>
+  </div>
+
+  <p>MTD 向用户空间暴露两类设备节点，以及一套 <code>ioctl</code> 接口用于擦除、OOB 读写等 Flash 专有操作。</p>
+
+  <div class="box box-blue">
+    <div class="box-title">📌 官方来源</div>
+    ioctl 定义：<code>include/uapi/mtd/mtd-abi.h</code>
+    <a class="src-link" href="https://daemons.net/linux/storage/mtd.html" target="_blank">daemons.net MTD 参考</a>
+    mtd-utils 源码：<a class="src-link" href="http://git.infradead.org/mtd-utils.git" target="_blank">git.infradead.org</a>
+  </div>
+
+  <h3>设备节点对照</h3>
+  <table class="cmd-table">
+    <thead><tr><th>设备节点</th><th>主设备号</th><th>类型</th><th>说明</th></tr></thead>
+    <tbody>
+      <tr><td><code>/dev/mtd0</code></td><td>90（偶数）</td><td>字符设备（读写）</td><td>原始 Flash 访问，支持 ioctl 擦除</td></tr>
+      <tr><td><code>/dev/mtd0ro</code></td><td>90（奇数）</td><td>字符设备（只读）</td><td>只读访问</td></tr>
+      <tr><td><code>/dev/mtdblock0</code></td><td>31</td><td>块设备</td><td>模拟块设备，用于挂载 ext2 等（不推荐 NAND）</td></tr>
+    </tbody>
+  </table>
+
+  <h3>完整 ioctl 接口（来自 mtd-abi.h）</h3>
+  <pre><code>/* 获取 MTD 设备基本信息（推荐用 sysfs 代替） */
+#define MEMGETINFO      _IOR('M', 1, struct mtd_info_user)
+
+/* 擦除 MTD 段 */
+#define MEMERASE        _IOW('M', 2, struct erase_info_user)
+
+/* 写 OOB 数据 */
+#define MEMWRITEOOB     _IOWR('M', 3, struct mtd_oob_buf)
+
+/* 读 OOB 数据 */
+#define MEMREADOOB      _IOWR('M', 4, struct mtd_oob_buf)
+
+/* 锁定芯片（支持的设备） */
+#define MEMLOCK         _IOW('M', 5, struct erase_info_user)
+
+/* 解锁芯片 */
+#define MEMUNLOCK       _IOW('M', 6, struct erase_info_user)
+
+/* 检查擦除块是否为坏块 */
+#define MEMGETBADBLOCK  _IOW('M', 11, __kernel_loff_t)
+
+/* 标记擦除块为坏块 */
+#define MEMSETBADBLOCK  _IOW('M', 12, __kernel_loff_t)
+
+/* 检查芯片是否锁定 */
+#define MEMISLOCKED     _IOR('M', 23, struct erase_info_user)
+
+/* 最通用写接口：可同时写 in-band 和 OOB */
+#define MEMWRITE        _IOWR('M', 24, struct mtd_write_req)</code></pre>
+
+  <h3>mtd-utils 常用工具</h3>
+  <table class="cmd-table">
+    <thead><tr><th>命令</th><th>功能</th><th>典型用法</th></tr></thead>
+    <tbody>
+      <tr><td><code>mtdinfo</code></td><td>显示 MTD 设备信息</td><td><code>mtdinfo /dev/mtd0</code></td></tr>
+      <tr><td><code>flash_erase</code></td><td>擦除 Flash 区域</td><td><code>flash_erase /dev/mtd0 0 0</code></td></tr>
+      <tr><td><code>nandwrite</code></td><td>写入 NAND，自动跳过坏块</td><td><code>nandwrite /dev/mtd0 img.bin</code></td></tr>
+      <tr><td><code>nanddump</code></td><td>读取 NAND，自动跳过坏块</td><td><code>nanddump /dev/mtd0 -f dump.bin</code></td></tr>
+      <tr><td><code>mtdpart</code></td><td>动态添加/删除 MTD 分区</td><td><code>mtdpart add /dev/mtd0 ubi 0 1M</code></td></tr>
+      <tr><td><code>ubiformat</code></td><td>格式化 Flash 为 UBI</td><td><code>ubiformat /dev/mtd0</code></td></tr>
+      <tr><td><code>ubiattach</code></td><td>将 MTD 设备附加到 UBI</td><td><code>ubiattach /dev/ubi_ctrl -m 0</code></td></tr>
+    </tbody>
+  </table>
+
+  <div class="fp-block">
+    <div class="fp-title">⚡ 第一性原理</div>
+    <p>MTD 字符设备接口的核心价值是将 Flash 的"不规则"操作（擦除、OOB 读写）暴露给用户空间，同时保持 POSIX read/write 接口的兼容性。ioctl 是 Linux 中"针对设备的特殊命令"标准通道——凡是不适合 read/write 抽象的操作，都通过 ioctl 传达。</p>
+  </div>
+</section>
+
+<!-- §8 Flash 驱动 -->
+<section class="section" id="s8">
+  <div class="section-header">
+    <span class="section-num">08</span>
+    <h2 class="section-title">Flash 驱动层（NAND / SPI-NOR）</h2>
+  </div>
+
+  <p>Flash 驱动是 MTD 子系统与物理硬件之间的桥接层。不同接口的 Flash 有对应的驱动框架：</p>
+
+  <!-- Driver stack SVG -->
+  <div class="diagram-wrap">
+    <svg viewBox="0 0 680 320" xmlns="http://www.w3.org/2000/svg" width="680" height="320">
+      <!-- NAND Stack -->
+      <text x="170" y="22" text-anchor="middle" font-size="12" font-weight="700" fill="#fde68a" font-family="system-ui">NAND Flash 驱动栈</text>
+
+      <rect x="30" y="32" width="280" height="38" rx="6" fill="rgba(16,185,129,0.2)" stroke="rgba(16,185,129,0.4)" stroke-width="1.5"/>
+      <text x="170" y="48" text-anchor="middle" font-size="10.5" fill="#86efac" font-family="monospace">MTD 核心层 (mtd_read/write)</text>
+      <text x="170" y="62" text-anchor="middle" font-size="9" fill="#6ee7b7" font-family="monospace">include/linux/mtd/mtd.h</text>
+
+      <rect x="30" y="82" width="280" height="38" rx="6" fill="rgba(245,158,11,0.2)" stroke="rgba(245,158,11,0.4)" stroke-width="1.5"/>
+      <text x="170" y="98" text-anchor="middle" font-size="10.5" fill="#fde68a" font-family="monospace">NAND 核心框架</text>
+      <text x="170" y="112" text-anchor="middle" font-size="9" fill="#fcd34d" font-family="monospace">drivers/mtd/nand/core.c</text>
+
+      <rect x="30" y="132" width="280" height="38" rx="6" fill="rgba(245,158,11,0.18)" stroke="rgba(245,158,11,0.35)" stroke-width="1.5"/>
+      <text x="170" y="148" text-anchor="middle" font-size="10.5" fill="#fde68a" font-family="monospace">ECC 引擎（软件/硬件）</text>
+      <text x="170" y="162" text-anchor="middle" font-size="9" fill="#fcd34d" font-family="monospace">nand_ecc_sw_hamming.c</text>
+
+      <rect x="30" y="182" width="280" height="38" rx="6" fill="rgba(245,158,11,0.15)" stroke="rgba(245,158,11,0.3)" stroke-width="1.5"/>
+      <text x="170" y="198" text-anchor="middle" font-size="10.5" fill="#fde68a" font-family="monospace">SoC NAND 控制器驱动</text>
+      <text x="170" y="212" text-anchor="middle" font-size="9" fill="#fcd34d" font-family="monospace">drivers/mtd/nand/raw/xxx.c</text>
+
+      <rect x="30" y="232" width="280" height="42" rx="6" fill="rgba(239,68,68,0.15)" stroke="rgba(239,68,68,0.35)" stroke-width="1.5"/>
+      <text x="170" y="249" text-anchor="middle" font-size="10.5" fill="#fca5a5" font-family="monospace">并行 NAND 芯片</text>
+      <text x="170" y="263" text-anchor="middle" font-size="9" fill="#f87171" font-family="monospace">8/16-bit 并行总线</text>
+      <text x="170" y="275" text-anchor="middle" font-size="8.5" fill="#ef4444" font-family="monospace">Samsung K9F / Micron MT29F ...</text>
+
+      <!-- NOR/SPI Stack -->
+      <text x="510" y="22" text-anchor="middle" font-size="12" font-weight="700" fill="#93c5fd" font-family="system-ui">SPI-NOR Flash 驱动栈</text>
+
+      <rect x="370" y="32" width="280" height="38" rx="6" fill="rgba(16,185,129,0.2)" stroke="rgba(16,185,129,0.4)" stroke-width="1.5"/>
+      <text x="510" y="48" text-anchor="middle" font-size="10.5" fill="#86efac" font-family="monospace">MTD 核心层 (mtd_read/write)</text>
+      <text x="510" y="62" text-anchor="middle" font-size="9" fill="#6ee7b7" font-family="monospace">include/linux/mtd/mtd.h</text>
+
+      <rect x="370" y="82" width="280" height="38" rx="6" fill="rgba(59,130,246,0.2)" stroke="rgba(59,130,246,0.4)" stroke-width="1.5"/>
+      <text x="510" y="98" text-anchor="middle" font-size="10.5" fill="#93c5fd" font-family="monospace">SPI-NOR 框架</text>
+      <text x="510" y="112" text-anchor="middle" font-size="9" fill="#7dd3fc" font-family="monospace">drivers/mtd/spi-nor/core.c</text>
+
+      <rect x="370" y="132" width="280" height="38" rx="6" fill="rgba(59,130,246,0.18)" stroke="rgba(59,130,246,0.35)" stroke-width="1.5"/>
+      <text x="510" y="148" text-anchor="middle" font-size="10.5" fill="#93c5fd" font-family="monospace">厂商驱动（m25p80 等）</text>
+      <text x="510" y="162" text-anchor="middle" font-size="9" fill="#7dd3fc" font-family="monospace">drivers/mtd/spi-nor/winbond.c ...</text>
+
+      <rect x="370" y="182" width="280" height="38" rx="6" fill="rgba(59,130,246,0.15)" stroke="rgba(59,130,246,0.3)" stroke-width="1.5"/>
+      <text x="510" y="198" text-anchor="middle" font-size="10.5" fill="#93c5fd" font-family="monospace">SPI 总线框架 + 控制器驱动</text>
+      <text x="510" y="212" text-anchor="middle" font-size="9" fill="#7dd3fc" font-family="monospace">drivers/spi/spi.c + spi-xxx.c</text>
+
+      <rect x="370" y="232" width="280" height="42" rx="6" fill="rgba(239,68,68,0.15)" stroke="rgba(239,68,68,0.35)" stroke-width="1.5"/>
+      <text x="510" y="249" text-anchor="middle" font-size="10.5" fill="#fca5a5" font-family="monospace">SPI NOR 芯片</text>
+      <text x="510" y="263" text-anchor="middle" font-size="9" fill="#f87171" font-family="monospace">MOSI/MISO/CLK/CS 4线</text>
+      <text x="510" y="275" text-anchor="middle" font-size="8.5" fill="#ef4444" font-family="monospace">Winbond W25Q / Micron N25Q ...</text>
+
+      <!-- Vertical arrows NAND -->
+      <line x1="170" y1="72" x2="170" y2="80" stroke="#94a3b8" stroke-width="1.5" marker-end="url(#a3)"/>
+      <line x1="170" y1="122" x2="170" y2="130" stroke="#94a3b8" stroke-width="1.5" marker-end="url(#a3)"/>
+      <line x1="170" y1="172" x2="170" y2="180" stroke="#94a3b8" stroke-width="1.5" marker-end="url(#a3)"/>
+      <line x1="170" y1="222" x2="170" y2="230" stroke="#94a3b8" stroke-width="1.5" marker-end="url(#a3)"/>
+
+      <!-- Vertical arrows NOR -->
+      <line x1="510" y1="72" x2="510" y2="80" stroke="#94a3b8" stroke-width="1.5" marker-end="url(#a3)"/>
+      <line x1="510" y1="122" x2="510" y2="130" stroke="#94a3b8" stroke-width="1.5" marker-end="url(#a3)"/>
+      <line x1="510" y1="172" x2="510" y2="180" stroke="#94a3b8" stroke-width="1.5" marker-end="url(#a3)"/>
+      <line x1="510" y1="222" x2="510" y2="230" stroke="#94a3b8" stroke-width="1.5" marker-end="url(#a3)"/>
+    </svg>
+  </div>
+
+  <h3>SPI-NOR 驱动软件栈（来自 Analog Devices 官方文档）</h3>
+  <pre><code>         MTD
+------------------------
+    SPI NOR framework        ← drivers/mtd/spi-nor/core.c
+------------------------
+        m25p80               ← 厂商芯片驱动（JEDEC ID 识别）
+------------------------
+     SPI bus driver          ← drivers/spi/spi.c
+------------------------
+      SPI NOR chip           ← 物理芯片（硬件）</code></pre>
+
+  <h3>NAND 读操作（驱动层）关键步骤</h3>
+  <pre><code>/* drivers/mtd/nand/core.c 简化流程 */
+nand_do_read_ops()
+  1. 等待芯片就绪（等待 R/B# 引脚拉高）
+  2. 发送 READ 命令序列到 NAND 控制器：
+       CMD_READ0 (0x00) | 列地址 | 行地址 | CMD_READSTART (0x30)
+  3. 等待芯片内部操作完成（tR 时间）
+  4. 从数据寄存器读取页数据 + OOB
+  5. 调用 ECC 引擎校验数据
+  6. 拷贝有效数据到用户 buffer
+  7. 如有 bitflip 超阈值，返回 -EUCLEAN</code></pre>
+
+  <div class="fp-block">
+    <div class="fp-title">⚡ 第一性原理</div>
+    <p>Flash 驱动的核心工作是<strong>将逻辑地址转换为物理命令序列</strong>，发送给硬件控制器。NAND 的"命令-地址-数据"三阶段协议和 SPI NOR 的"操作码+地址+数据"协议，都是硬件厂商定义的协议，驱动代码忠实实现这些协议并向上层提供统一的 read/write/erase 语义。</p>
+  </div>
+</section>
+
+<!-- §9 ECC -->
+<section class="section" id="s9">
+  <div class="section-header">
+    <span class="section-num">09</span>
+    <h2 class="section-title">ECC 校验机制</h2>
+  </div>
+
+  <p>ECC（Error-Correcting Code，纠错码）是 Flash（尤其是 NAND）数据可靠性的关键保障。NAND 在存储和传输过程中会产生<strong>位翻转（bit-flip）</strong>，ECC 用于检测和纠正这些错误。</p>
+
+  <div class="box box-blue">
+    <div class="box-title">📌 官方来源</div>
+    <a class="src-link" href="https://www.kernel.org/doc/html/latest/driver-api/mtd/nand_ecc.html" target="_blank">kernel.org NAND ECC 文档</a>
+    源码：<code>drivers/mtd/nand/ecc-sw-hamming.c</code>
+  </div>
+
+  <h3>ECC 存储位置：OOB 区域</h3>
+
+  <!-- OOB SVG -->
+  <div class="diagram-wrap">
+    <svg viewBox="0 0 680 180" xmlns="http://www.w3.org/2000/svg" width="680" height="180">
+      <!-- Page structure -->
+      <text x="340" y="20" text-anchor="middle" font-size="11.5" font-weight="700" fill="#94a3b8" font-family="system-ui">NAND Flash 页结构（以 2048+64 字节页为例）</text>
+
+      <!-- Main data area -->
+      <rect x="20" y="32" width="510" height="60" rx="6" fill="rgba(59,130,246,0.2)" stroke="rgba(59,130,246,0.5)" stroke-width="2"/>
+      <text x="275" y="56" text-anchor="middle" font-size="12" font-weight="700" fill="#93c5fd" font-family="system-ui">主数据区（2048 字节）</text>
+      <text x="275" y="74" text-anchor="middle" font-size="10" fill="#7dd3fc" font-family="monospace">文件系统数据 / 用户数据（4 个 512B 子页）</text>
+      <text x="275" y="88" text-anchor="middle" font-size="9" fill="#60a5fa" font-family="system-ui">最小写单元（writesize = 2048）</text>
+
+      <!-- OOB area -->
+      <rect x="542" y="32" width="120" height="60" rx="6" fill="rgba(16,185,129,0.25)" stroke="rgba(16,185,129,0.5)" stroke-width="2"/>
+      <text x="602" y="52" text-anchor="middle" font-size="11.5" font-weight="700" fill="#34d399" font-family="system-ui">OOB</text>
+      <text x="602" y="67" text-anchor="middle" font-size="9" fill="#6ee7b7" font-family="monospace">64 字节</text>
+      <text x="602" y="80" text-anchor="middle" font-size="9" fill="#6ee7b7" font-family="monospace">oobsize=64</text>
+
+      <!-- OOB breakdown -->
+      <rect x="542" y="105" width="120" height="65" rx="5" fill="rgba(16,185,129,0.1)" stroke="rgba(16,185,129,0.3)" stroke-width="1"/>
+      <text x="602" y="123" text-anchor="middle" font-size="9" fill="#86efac" font-family="system-ui">ECC 校验字节</text>
+      <text x="602" y="137" text-anchor="middle" font-size="9" fill="#86efac" font-family="system-ui">坏块标记</text>
+      <text x="602" y="151" text-anchor="middle" font-size="9" fill="#86efac" font-family="system-ui">文件系统元数据</text>
+      <text x="602" y="165" text-anchor="middle" font-size="8" fill="#6ee7b7" font-family="monospace">(jffs2_node等)</text>
+
+      <!-- Arrow -->
+      <line x1="602" y1="94" x2="602" y2="103" stroke="#94a3b8" stroke-width="1.5" marker-end="url(#a3)"/>
+    </svg>
+  </div>
+
+  <h3>Linux 内核 ECC 实现方式</h3>
+  <table class="cmd-table">
+    <thead><tr><th>方式</th><th>说明</th><th>配置</th></tr></thead>
+    <tbody>
+      <tr><td><strong>软件 Hamming ECC</strong></td><td>CPU 计算汉明码，256B 数据生成 3B ECC，可纠 1-bit 错误</td><td><code>NAND_ECC_ENGINE_TYPE_SOFT</code></td></tr>
+      <tr><td><strong>软件 BCH ECC</strong></td><td>BCH 码，可纠正更多位错误（4/8/16-bit），适合 MLC NAND</td><td><code>NAND_ECC_ENGINE_TYPE_SOFT + BCH</code></td></tr>
+      <tr><td><strong>硬件 ECC</strong></td><td>SoC NAND 控制器内置 ECC 引擎，CPU 不参与计算</td><td><code>NAND_ECC_ENGINE_TYPE_ON_HOST</code></td></tr>
+      <tr><td><strong>片内 ECC</strong></td><td>NAND 芯片内部自带 ECC（如某些 eMMC/UFS）</td><td><code>NAND_ECC_ENGINE_TYPE_ON_DIE</code></td></tr>
+    </tbody>
+  </table>
+
+  <h3>ECC 工作流程</h3>
+  <pre><code>写入时：
+  1. 对每 256 字节（或 512B/页）数据计算 ECC 码
+  2. 将 ECC 码写入同一页的 OOB 区域
+  3. 数据和 ECC 一起写入 Flash
+
+读取时：
+  1. 读取页数据 + OOB 中的 ECC 码
+  2. 对读出数据重新计算 ECC 并与存储值比对
+  3. 无差异 → 数据正确，返回 0
+  4. 有差异 → 尝试纠正（1-bit → 可纠正，返回 -EUCLEAN）
+           → 超出纠正能力 → 返回 -EBADMSG（数据损坏）</code></pre>
+
+  <div class="box box-yellow">
+    <div class="box-title">⚠️ -EUCLEAN 阈值</div>
+    Linux 3.4 之后，<code>-EUCLEAN</code> 表示"纠正的位翻转数量超过 <code>bitflip_threshold</code>"。<br>
+    该阈值可通过 sysfs 调整：<code>/sys/class/mtd/mtd0/bitflip_threshold</code><br>
+    建议值：≤ ECC 强度的 75%，触发后应将该擦除块数据迁移。
+  </div>
+
+  <div class="fp-block">
+    <div class="fp-title">⚡ 第一性原理</div>
+    <p>ECC 的本质是<strong>冗余信息换可靠性</strong>：牺牲少量存储空间（OOB 区域）存储校验码，获得在数据发生少量位翻转时的自我修复能力。汉明码/BCH 码都是信息论中"最优前向纠错（FEC）码"的工程实现。Flash 越来越小的制程使位翻转率增加，ECC 强度也随之提升（从 1-bit 到 64-bit 纠错）。</p>
+  </div>
+</section>
+
+<!-- §10 总线控制器 -->
+<section class="section" id="s10">
+  <div class="section-header">
+    <span class="section-num">10</span>
+    <h2 class="section-title">总线控制器 & 物理硬件层</h2>
+  </div>
+
+  <p>最底层是 Flash 控制器和物理芯片之间的电气信号交互。不同 Flash 类型使用不同总线协议：</p>
+
+  <h3>NAND Flash 命令序列（以读页为例）</h3>
+  <pre><code>NAND 控制器发出的信号序列（并行接口）：
+
+CLE=1, WE↓  → 发送命令字节 0x00 (READ0)
+ALE=1, WE↓  → 发送列地址低字节 (column[7:0])
+ALE=1, WE↓  → 发送列地址高字节 (column[11:8])
+ALE=1, WE↓  → 发送行地址 byte0 (row[7:0])
+ALE=1, WE↓  → 发送行地址 byte1 (row[15:8])
+ALE=1, WE↓  → 发送行地址 byte2 (row[23:16])  ← 大容量 NAND
+CLE=1, WE↓  → 发送命令字节 0x30 (READ START)
+
+等待 R/B# 引脚变高（芯片内部页读取完成，约 25μs）
+
+RE↓ × 2112  → 循环从 I/O[7:0] 读取 2048+64 字节数据</code></pre>
+
+  <h3>SPI-NOR Flash 命令序列</h3>
+  <pre><code>SPI 控制器发出的序列（4 线 SPI）：
+
+CS 低电平 → 开始通信
+MOSI → 0x03 (READ 操作码 SPINOR_OP_READ)
+MOSI → 地址字节 [23:16]
+MOSI → 地址字节 [15:8]
+MOSI → 地址字节 [7:0]
+MISO → 连续读取 N 字节数据
+CS 高电平 → 结束通信
+
+写入前必须发送：
+0x06 (WREN)  → 写使能
+0x20 (SE)    → 扇区擦除（必须先擦）
+等待 WIP bit（状态寄存器）清零（约 100ms~1s）
+0x02 (PP)    → 页编程，最多 256 字节</code></pre>
+
+  <!-- Physical timing SVG -->
+  <div class="diagram-wrap">
+    <svg viewBox="0 0 680 220" xmlns="http://www.w3.org/2000/svg" width="680" height="220">
+      <text x="340" y="20" text-anchor="middle" font-size="12" font-weight="700" fill="#94a3b8" font-family="system-ui">NAND Flash 读操作时序简图</text>
+
+      <!-- Signal labels -->
+      <g font-family="monospace" font-size="10" fill="#94a3b8">
+        <text x="8" y="55">CLE</text>
+        <text x="8" y="90">ALE</text>
+        <text x="8" y="125">WE#</text>
+        <text x="8" y="160">R/B#</text>
+        <text x="8" y="195">RE#</text>
+      </g>
+
+      <!-- CLE signal -->
+      <polyline points="55,65 55,40 130,40 130,65 195,65 195,40 220,40 220,65 620,65"
+        fill="none" stroke="#3b82f6" stroke-width="2"/>
+
+      <!-- ALE signal -->
+      <polyline points="55,100 55,100 135,100 135,75 210,75 210,100 620,100"
+        fill="none" stroke="#6366f1" stroke-width="2"/>
+
+      <!-- WE# signal (pulses) -->
+      <polyline points="55,130 80,130 80,115 100,115 100,130 120,130 120,115 140,115 140,130
+        160,130 160,115 180,115 180,130 200,130 200,115 220,115 220,130 300,130"
+        fill="none" stroke="#10b981" stroke-width="2"/>
+      <text x="310" y="127" font-size="9" fill="#6ee7b7" font-family="monospace">...</text>
+
+      <!-- R/B# signal (goes low then high) -->
+      <polyline points="55,165 230,165 230,150 380,150 380,165 620,165"
+        fill="none" stroke="#f59e0b" stroke-width="2"/>
+      <text x="290" y="145" font-size="9" fill="#fcd34d" font-family="system-ui">芯片内部读取（~25μs）</text>
+
+      <!-- RE# pulses (many) -->
+      <polyline points="55,205 380,205 390,190 400,205 410,190 420,205 430,190 440,205
+        450,190 460,205 470,190 480,205 490,190 500,205 510,190 520,205 530,190 540,205
+        550,190 560,205 570,190 580,205 590,190 600,205 610,190 620,205"
+        fill="none" stroke="#ef4444" stroke-width="2"/>
+      <text x="450" y="218" text-anchor="middle" font-size="9" fill="#fca5a5" font-family="system-ui">数据输出（每个脉冲 1 字节）</text>
+
+      <!-- Phase labels -->
+      <text x="90" y="215" text-anchor="middle" font-size="8.5" fill="#64748b" font-family="system-ui">CMD</text>
+      <text x="175" y="215" text-anchor="middle" font-size="8.5" fill="#64748b" font-family="system-ui">ADDR</text>
+      <text x="228" y="215" text-anchor="middle" font-size="8.5" fill="#64748b" font-family="system-ui">CMD</text>
+
+      <!-- vertical phase dividers -->
+      <line x1="135" y1="30" x2="135" y2="210" stroke="rgba(255,255,255,0.08)" stroke-width="1" stroke-dasharray="3,3"/>
+      <line x1="222" y1="30" x2="222" y2="210" stroke="rgba(255,255,255,0.08)" stroke-width="1" stroke-dasharray="3,3"/>
+      <line x1="380" y1="30" x2="380" y2="210" stroke="rgba(255,255,255,0.08)" stroke-width="1" stroke-dasharray="3,3"/>
+    </svg>
+  </div>
+
+  <h3>设备树（Device Tree）中的 Flash 描述</h3>
+  <pre><code>/* QSPI Flash 设备树示例（来自 Petalinux/Xilinx 官方文档） */
+&qspi {
+    flash0: flash@0 {
+        compatible = "micron,n25q512a", "jedec,spi-nor";
+        reg = <0x0>;
+        spi-tx-bus-width = <1>;
+        spi-rx-bus-width = <4>;
+        spi-max-frequency = <50000000>;    /* 50 MHz */
+
+        partition@0 {
+            label = "boot";
+            reg = <0x00000000 0x00500000>;
+        };
+        partition@1 {
+            label = "kernel";
+            reg = <0x00520000 0x00a80000>;
+        };
+    };
+};</code></pre>
+
+  <div class="fp-block">
+    <div class="fp-title">⚡ 第一性原理</div>
+    <p>物理层的本质是<strong>电信号协议</strong>：控制器通过时序精确的高低电平序列告诉 Flash 芯片"执行什么操作、操作哪个地址、传输多少数据"。设备树则是操作系统在启动时了解硬件拓扑的机制——相当于硬件的"说明书"，驱动根据它知道 Flash 连在哪条总线、什么型号、支持哪些参数。</p>
+  </div>
+</section>
+
+<!-- §11 调试命令 -->
+<section class="section" id="s11">
+  <div class="section-header">
+    <span class="section-num">11</span>
+    <h2 class="section-title">各阶段调试与观测命令</h2>
+  </div>
+
+  <p>每个软件层都提供了相应的观测手段，下面按层次列出关键命令和文件。</p>
+
+  <h3>① 用户态 / 设备层观测</h3>
+  <table class="cmd-table">
+    <thead><tr><th>命令 / 文件</th><th>观测内容</th></tr></thead>
+    <tbody>
+      <tr><td><code>cat /proc/mtd</code></td><td>列出所有 MTD 分区（大小、擦除块大小、名称）</td></tr>
+      <tr><td><code>mtdinfo -a</code></td><td>详细 MTD 设备信息（sysfs 读取，推荐）</td></tr>
+      <tr><td><code>ls /sys/class/mtd/</code></td><td>每个 MTD 设备的 sysfs 目录</td></tr>
+      <tr><td><code>cat /sys/class/mtd/mtd0/name</code></td><td>分区名称</td></tr>
+      <tr><td><code>cat /sys/class/mtd/mtd0/erasesize</code></td><td>擦除块大小</td></tr>
+      <tr><td><code>cat /sys/class/mtd/mtd0/writesize</code></td><td>最小写单元（页大小）</td></tr>
+      <tr><td><code>cat /sys/class/mtd/mtd0/oobsize</code></td><td>OOB 区域大小</td></tr>
+      <tr><td><code>cat /sys/class/mtd/mtd0/bitflip_threshold</code></td><td>ECC 位翻转触发 -EUCLEAN 的阈值</td></tr>
+      <tr><td><code>cat /sys/class/mtd/mtd0/bad_blocks</code></td><td>当前坏块数量</td></tr>
+    </tbody>
+  </table>
+
+  <h3>② UBI 层观测</h3>
+  <table class="cmd-table">
+    <thead><tr><th>命令 / 文件</th><th>观测内容</th></tr></thead>
+    <tbody>
+      <tr><td><code>ubinfo -a</code></td><td>所有 UBI 设备和卷的详细信息</td></tr>
+      <tr><td><code>cat /sys/class/ubi/ubi0/volumes_count</code></td><td>UBI 设备上的卷数量</td></tr>
+      <tr><td><code>cat /sys/class/ubi/ubi0/bad_peb_count</code></td><td>UBI 管理的坏物理擦除块数</td></tr>
+      <tr><td><code>cat /sys/class/ubi/ubi0/max_ec</code></td><td>最大擦除计数</td></tr>
+      <tr><td><code>cat /sys/class/ubi/ubi0/mean_ec</code></td><td>平均擦除计数</td></tr>
+      <tr><td><code>cat /sys/class/ubi/ubi0_0/corrupted</code></td><td>卷是否损坏（0=正常，1=更新中断）</td></tr>
+    </tbody>
+  </table>
+
+  <h3>③ 内核日志（dmesg）观测</h3>
+  <pre><code># Flash 初始化信息
+dmesg | grep -i "nand\|mtd\|spi-nor\|ubi\|jffs2\|ubifs"
+
+# 典型输出示例：
+[    1.234567] nand: device found, Manufacturer ID: 0xec, Chip ID: 0xda
+[    1.234890] Samsung NAND 256MiB 3,3V 8-bit
+[    1.235100] nand: 256 MiB, SLC, erase size: 128 KiB, page size: 2048
+[    1.235200] Creating 4 MTD partitions on "NAND 256MiB 3,3V 8-bit":
+[    1.235300] 0x000000000000-0x000000100000 : "uboot"
+[    1.235400] 0x000000100000-0x000000600000 : "kernel"
+[    1.235500] 0x000000600000-0x000010000000 : "rootfs"
+
+# UBI 附加信息
+[    2.567890] UBI: attaching mtd2
+[    2.891234] UBI: scanning is finished
+[    2.891500] UBI: attached mtd2 (name "rootfs", size 250 MiB)
+[    2.891600] UBI: PEB size: 131072 bytes (128 KiB), LEB size: 126976 bytes
+[    2.891700] UBI: min./max. I/O unit sizes: 2048/2048, sub-page size 512
+[    2.891800] UBI: VID header offset: 512 (aligned 512), data offset: 2048</code></pre>
+
+  <h3>④ strace 追踪系统调用</h3>
+  <pre><code># 追踪 nanddump 对 Flash 的操作
+strace nanddump /dev/mtd0 -f /tmp/dump.bin
+
+# 关键输出（可见 ioctl 调用）：
+openat(AT_FDCWD, "/dev/mtd0", O_RDONLY) = 3
+ioctl(3, MEMGETINFO, {type=4, flags=0x400, size=268435456,
+       erasesize=131072, writesize=2048, oobsize=64, ...}) = 0
+ioctl(3, MEMGETBADBLOCK, [0x0]) = 0
+read(3, "\xff\xff\xff...", 2048) = 2048</code></pre>
+
+  <h3>⑤ ftrace 追踪内核函数调用</h3>
+  <pre><code># 追踪 MTD 读写函数
+cd /sys/kernel/debug/tracing
+
+# 启用 function_graph tracer
+echo function_graph > current_tracer
+echo "mtd_read" > set_graph_function
+echo 1 > tracing_on
+
+# 执行操作（如 nanddump）后关闭
+echo 0 > tracing_on
+cat trace | head -60
+
+# 典型输出：
+# mtd_read() {
+#   nand_read() {
+#     nand_do_read_ops() {
+#       nand_read_page_hwecc() {
+#         ...
+#       }
+#     }
+#   }
+# }</code></pre>
+
+  <h3>⑥ MTD 测试工具</h3>
+  <pre><code># 内核模块测试（需内核启用 CONFIG_MTD_TESTS）
+modprobe mtd_speedtest dev=0    # Flash 读写速度测试
+modprobe mtd_stresstest dev=0   # 随机读写压力测试
+modprobe mtd_readtest dev=0     # 读取完整性测试
+modprobe mtd_pagetest dev=0     # NAND 页写入读取测试（NAND 专用）
+
+# 用户态测试工具（需编译 mtd-utils 带测试）
+flash_speed /dev/mtd0           # 速度测试
+flash_stress /dev/mtd0          # 压力测试</code></pre>
+
+  <h3>⑦ 完整读操作调用路径汇总</h3>
+
+  <!-- Full call stack SVG -->
+  <div class="diagram-wrap">
+    <svg viewBox="0 0 680 480" xmlns="http://www.w3.org/2000/svg" width="680" height="480">
+      <defs>
+        <marker id="aDown" markerWidth="8" markerHeight="8" refX="4" refY="4" orient="auto">
+          <path d="M0,0 L8,4 L0,8 z" fill="#64748b"/>
+        </marker>
+      </defs>
+
+      <!-- Title -->
+      <text x="340" y="18" text-anchor="middle" font-size="12" font-weight="700" fill="#94a3b8" font-family="system-ui">Flash 读操作完整调用链</text>
+
+      <!-- entries -->
+      <g font-family="monospace" font-size="10.5">
+        <!-- Step 1 -->
+        <rect x="20" y="28" width="640" height="34" rx="5" fill="rgba(59,130,246,0.2)" stroke="rgba(59,130,246,0.3)" stroke-width="1"/>
+        <text x="36" y="44" fill="#93c5fd">① 用户态</text>
+        <text x="150" y="44" fill="#7dd3fc">read(fd, buf, len)</text>
+        <text x="560" y="44" fill="#475569" font-size="9">ring 3</text>
+        <text x="36" y="56" fill="#60a5fa" font-size="9">open("/dev/mtd0") 或 open("文件路径")</text>
+
+        <!-- Arrow -->
+        <line x1="340" y1="64" x2="340" y2="76" stroke="#64748b" stroke-width="1.5" marker-end="url(#aDown)"/>
+        <text x="350" y="72" fill="#475569" font-size="9">syscall / trap</text>
+
+        <!-- Step 2 -->
+        <rect x="20" y="78" width="640" height="34" rx="5" fill="rgba(16,185,129,0.15)" stroke="rgba(16,185,129,0.3)" stroke-width="1"/>
+        <text x="36" y="94" fill="#86efac">② 内核入口</text>
+        <text x="150" y="94" fill="#6ee7b7">SYSCALL_DEFINE3(read, ...) → ksys_read() → vfs_read()</text>
+        <text x="36" y="107" fill="#34d399" font-size="9">fs/read_write.c</text>
+
+        <line x1="340" y1="114" x2="340" y2="126" stroke="#64748b" stroke-width="1.5" marker-end="url(#aDown)"/>
+
+        <!-- Step 3 -->
+        <rect x="20" y="128" width="640" height="34" rx="5" fill="rgba(16,185,129,0.15)" stroke="rgba(16,185,129,0.3)" stroke-width="1"/>
+        <text x="36" y="144" fill="#86efac">③ VFS 分发</text>
+        <text x="150" y="144" fill="#6ee7b7">file->f_op->read() 或 file->f_op->read_iter()</text>
+        <text x="36" y="157" fill="#34d399" font-size="9">根据文件类型（UBIFS/MTD字符设备）分发到不同实现</text>
+
+        <line x1="340" y1="164" x2="340" y2="176" stroke="#64748b" stroke-width="1.5" marker-end="url(#aDown)"/>
+
+        <!-- Step 4 -->
+        <rect x="20" y="178" width="640" height="34" rx="5" fill="rgba(16,185,129,0.15)" stroke="rgba(16,185,129,0.3)" stroke-width="1"/>
+        <text x="36" y="194" fill="#86efac">④ Flash 文件系统</text>
+        <text x="180" y="194" fill="#6ee7b7">ubifs_read_folio() / jffs2_readpage()</text>
+        <text x="36" y="207" fill="#34d399" font-size="9">查 TNC / B+树获取物理地址，调用 UBI API</text>
+
+        <line x1="340" y1="214" x2="340" y2="226" stroke="#64748b" stroke-width="1.5" marker-end="url(#aDown)"/>
+
+        <!-- Step 5 -->
+        <rect x="20" y="228" width="640" height="34" rx="5" fill="rgba(99,102,241,0.15)" stroke="rgba(99,102,241,0.3)" stroke-width="1"/>
+        <text x="36" y="244" fill="#c4b5fd">⑤ UBI 层</text>
+        <text x="150" y="244" fill="#a5b4fc">ubi_leb_read() → 查 EBA 映射表（LEB→PEB）</text>
+        <text x="36" y="257" fill="#a5b4fc" font-size="9">drivers/mtd/ubi/io.c  坏块透明处理 | bitflip scrubbing</text>
+
+        <line x1="340" y1="264" x2="340" y2="276" stroke="#64748b" stroke-width="1.5" marker-end="url(#aDown)"/>
+
+        <!-- Step 6 -->
+        <rect x="20" y="278" width="640" height="34" rx="5" fill="rgba(16,185,129,0.2)" stroke="rgba(16,185,129,0.4)" stroke-width="1.5"/>
+        <text x="36" y="294" fill="#34d399" font-weight="700">⑥ MTD 核心</text>
+        <text x="160" y="294" fill="#6ee7b7">mtd_read(mtd, from, len, &retlen, buf)</text>
+        <text x="36" y="307" fill="#34d399" font-size="9">include/linux/mtd/mtd.h · 调用 mtd->_read() 函数指针</text>
+
+        <line x1="340" y1="314" x2="340" y2="326" stroke="#64748b" stroke-width="1.5" marker-end="url(#aDown)"/>
+
+        <!-- Step 7 -->
+        <rect x="20" y="328" width="640" height="34" rx="5" fill="rgba(245,158,11,0.15)" stroke="rgba(245,158,11,0.3)" stroke-width="1"/>
+        <text x="36" y="344" fill="#fde68a">⑦ NAND 驱动核心</text>
+        <text x="190" y="344" fill="#fcd34d">nand_read() → nand_do_read_ops()</text>
+        <text x="36" y="357" fill="#fcd34d" font-size="9">drivers/mtd/nand/core.c  处理跨页/跨块、坏块跳过</text>
+
+        <line x1="340" y1="364" x2="340" y2="376" stroke="#64748b" stroke-width="1.5" marker-end="url(#aDown)"/>
+
+        <!-- Step 8 -->
+        <rect x="20" y="378" width="640" height="34" rx="5" fill="rgba(245,158,11,0.15)" stroke="rgba(245,158,11,0.3)" stroke-width="1"/>
+        <text x="36" y="394" fill="#fde68a">⑧ ECC + SoC 控制器</text>
+        <text x="210" y="394" fill="#fcd34d">nand_read_page_hwecc() / ecc_sw</text>
+        <text x="36" y="407" fill="#fcd34d" font-size="9">发送命令序列 → 等待 R/B# → 读数据 → ECC 校验</text>
+
+        <line x1="340" y1="414" x2="340" y2="426" stroke="#64748b" stroke-width="1.5" marker-end="url(#aDown)"/>
+
+        <!-- Step 9 -->
+        <rect x="20" y="428" width="640" height="40" rx="5" fill="rgba(239,68,68,0.15)" stroke="rgba(239,68,68,0.35)" stroke-width="1.5"/>
+        <text x="36" y="444" fill="#fca5a5">⑨ 物理硬件</text>
+        <text x="150" y="444" fill="#f87171">NAND 控制器寄存器 → 电气信号 → NAND 芯片内部操作</text>
+        <text x="36" y="460" fill="#f87171" font-size="9">CLE/ALE/WE#/RE#/I/O[7:0] 信号时序 → 内部电荷读取 → I/O 输出</text>
+      </g>
+    </svg>
+  </div>
+
+  <div class="fp-block">
+    <div class="fp-title">⚡ 第一性原理</div>
+    <p>调试的本质是<strong>在软件层次结构中精确定位问题所在的层</strong>。每一层都有其专属的观测接口：用户态用 strace，内核态用 ftrace/dmesg，硬件层用示波器/逻辑分析仪。分层调试的核心策略是"分而治之"——先确认上层数据是否正确到达本层，再验证本层输出是否符合预期，从而将问题缩小到具体的一层。</p>
+  </div>
+</section>
+
+<!-- Footer -->
+<footer style="margin-top:2rem; padding-top:1.5rem; border-top:1px solid var(--border); text-align:center; color:var(--text3); font-size:0.78rem; line-height:1.8;">
+  <p>内容基于 Linux 官方文档整理</p>
+  <p>
+    <a class="src-link" href="http://linux-mtd.infradead.org/doc/general.html" target="_blank">MTD 官方文档</a>
+    <a class="src-link" href="http://linux-mtd.infradead.org/doc/ubi.html" target="_blank">UBI 官方文档</a>
+    <a class="src-link" href="https://www.kernel.org/doc/Documentation/filesystems/ubifs.txt" target="_blank">UBIFS kernel.org</a>
+    <a class="src-link" href="https://www.kernel.org/doc/html/latest/driver-api/mtd/nand_ecc.html" target="_blank">NAND ECC kernel.org</a>
+    <a class="src-link" href="https://daemons.net/linux/storage/mtd.html" target="_blank">daemons.net MTD</a>
+  </p>
+</footer>
+
+</div><!-- /content-wrap -->
+</main>
+
+<!-- Keyboard nav hint -->
+<div class="kbd-hint">
+  <kbd>←</kbd> 上一节
+  <kbd>→</kbd> 下一节
+</div>
+
+<script>
+(function(){
+  // ── Navigation data ──
+  const sections = ['s0','s1','s2','s3','s4','s5','s6','s7','s8','s9','s10','s11'];
+  let currentIdx = 0;
+
+  // ── Progress bar ──
+  const pb = document.getElementById('progress-bar');
+  function updateProgress() {
+    const scrollTop = window.scrollY;
+    const docHeight = document.documentElement.scrollHeight - window.innerHeight;
+    const pct = docHeight > 0 ? (scrollTop / docHeight) * 100 : 0;
+    pb.style.width = pct + '%';
+  }
+
+  // ── Active nav highlight (IntersectionObserver) ──
+  const navLinks = document.querySelectorAll('.nav-link[data-target]');
+  const sectionEls = sections.map(id => document.getElementById(id));
+
+  const obs = new IntersectionObserver(entries => {
+    entries.forEach(entry => {
+      if (entry.isIntersecting) {
+        const id = entry.target.id;
+        currentIdx = sections.indexOf(id);
+        navLinks.forEach(l => l.classList.toggle('active', l.dataset.target === id));
+      }
+    });
+  }, { rootMargin: '-20% 0px -60% 0px', threshold: 0 });
+
+  sectionEls.forEach(el => el && obs.observe(el));
+
+  // ── Nav click ──
+  navLinks.forEach(link => {
+    link.addEventListener('click', () => {
+      const target = document.getElementById(link.dataset.target);
+      if (target) {
+        target.scrollIntoView({ behavior: 'smooth', block: 'start' });
+        if (window.innerWidth <= 768) toggleNav(false);
+      }
+    });
+  });
+
+  // ── Hamburger ──
+  window.toggleNav = function(forceClose) {
+    const nav = document.getElementById('sidebar');
+    const overlay = document.getElementById('overlay');
+    const btn = document.getElementById('hamburger');
+    const isOpen = nav.classList.contains('open');
+    const open = forceClose === false ? false : !isOpen;
+    nav.classList.toggle('open', open);
+    overlay.classList.toggle('open', open);
+    btn.classList.toggle('open', open);
+  };
+
+  // ── Keyboard nav ──
+  document.addEventListener('keydown', e => {
+    if (e.target.tagName === 'INPUT' || e.target.tagName === 'TEXTAREA') return;
+    if (e.key === 'ArrowRight' || e.key === 'ArrowDown') {
+      e.preventDefault();
+      const next = Math.min(currentIdx + 1, sections.length - 1);
+      document.getElementById(sections[next])?.scrollIntoView({ behavior: 'smooth' });
+    } else if (e.key === 'ArrowLeft' || e.key === 'ArrowUp') {
+      e.preventDefault();
+      const prev = Math.max(currentIdx - 1, 0);
+      document.getElementById(sections[prev])?.scrollIntoView({ behavior: 'smooth' });
+    }
+  });
+
+  // ── Scroll events ──
+  window.addEventListener('scroll', updateProgress, { passive: true });
+  updateProgress();
+})();
+</script>
+</body>
+</html>

@@ -1,0 +1,1716 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Linux PPP 与 TTY 子系统的关联深度解析</title>
+<style>
+  :root {
+    --bg: #0f1117;
+    --sidebar-bg: #161b22;
+    --card-bg: #1c2230;
+    --border: #2d3748;
+    --accent: #58a6ff;
+    --accent2: #39d353;
+    --accent3: #f78166;
+    --accent4: #e3b341;
+    --text: #e6edf3;
+    --text-muted: #8b949e;
+    --text-dim: #6e7681;
+    --sidebar-w: 280px;
+    --header-h: 56px;
+    --progress-h: 3px;
+    --highlight: rgba(88,166,255,0.10);
+    --code-bg: #161b22;
+    --tag-bg: rgba(88,166,255,0.13);
+  }
+
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+
+  html { scroll-behavior: smooth; }
+
+  body {
+    font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', 'PingFang SC', 'Microsoft YaHei', sans-serif;
+    background: var(--bg);
+    color: var(--text);
+    line-height: 1.75;
+    overflow-x: hidden;
+  }
+
+  /* ===== 进度条 ===== */
+  #progress-bar {
+    position: fixed;
+    top: 0; left: 0;
+    height: var(--progress-h);
+    width: 0%;
+    background: linear-gradient(90deg, var(--accent), var(--accent2));
+    z-index: 9999;
+    transition: width 0.1s linear;
+    box-shadow: 0 0 8px var(--accent);
+  }
+
+  /* ===== 顶部栏 ===== */
+  #topbar {
+    position: fixed;
+    top: var(--progress-h); left: 0; right: 0;
+    height: var(--header-h);
+    background: rgba(15,17,23,0.96);
+    backdrop-filter: blur(12px);
+    border-bottom: 1px solid var(--border);
+    display: flex;
+    align-items: center;
+    padding: 0 20px;
+    z-index: 1000;
+    gap: 14px;
+  }
+
+  #hamburger {
+    display: none;
+    background: none;
+    border: none;
+    cursor: pointer;
+    flex-direction: column;
+    gap: 5px;
+    padding: 4px;
+  }
+  #hamburger span {
+    display: block;
+    width: 22px; height: 2px;
+    background: var(--text);
+    border-radius: 2px;
+    transition: all 0.3s;
+  }
+
+  #topbar h1 {
+    font-size: 0.95rem;
+    font-weight: 600;
+    color: var(--accent);
+    flex: 1;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+  }
+
+  .nav-arrows {
+    display: flex; gap: 8px;
+  }
+  .nav-arrows button {
+    background: var(--card-bg);
+    border: 1px solid var(--border);
+    color: var(--text-muted);
+    padding: 5px 13px;
+    border-radius: 6px;
+    cursor: pointer;
+    font-size: 0.85rem;
+    transition: all 0.2s;
+  }
+  .nav-arrows button:hover {
+    background: var(--accent);
+    color: #fff;
+    border-color: var(--accent);
+  }
+
+  /* ===== 布局 ===== */
+  #layout {
+    display: flex;
+    margin-top: calc(var(--header-h) + var(--progress-h));
+    min-height: calc(100vh - var(--header-h) - var(--progress-h));
+  }
+
+  /* ===== 侧边栏 ===== */
+  #sidebar {
+    position: fixed;
+    top: calc(var(--header-h) + var(--progress-h));
+    left: 0;
+    width: var(--sidebar-w);
+    height: calc(100vh - var(--header-h) - var(--progress-h));
+    background: var(--sidebar-bg);
+    border-right: 1px solid var(--border);
+    overflow-y: auto;
+    overflow-x: hidden;
+    transition: transform 0.3s ease;
+    z-index: 900;
+    padding-bottom: 30px;
+  }
+
+  #sidebar::-webkit-scrollbar { width: 4px; }
+  #sidebar::-webkit-scrollbar-thumb { background: var(--border); border-radius: 2px; }
+
+  .sidebar-header {
+    padding: 18px 18px 10px;
+    font-size: 0.72rem;
+    font-weight: 700;
+    letter-spacing: 0.12em;
+    color: var(--text-dim);
+    text-transform: uppercase;
+    border-bottom: 1px solid var(--border);
+    margin-bottom: 6px;
+  }
+
+  .nav-group {
+    margin: 4px 0;
+  }
+  .nav-group-label {
+    padding: 10px 18px 4px;
+    font-size: 0.7rem;
+    font-weight: 700;
+    letter-spacing: 0.08em;
+    color: var(--text-dim);
+    text-transform: uppercase;
+  }
+
+  .nav-item {
+    display: flex;
+    align-items: center;
+    padding: 7px 18px 7px 28px;
+    font-size: 0.82rem;
+    color: var(--text-muted);
+    cursor: pointer;
+    border-left: 3px solid transparent;
+    transition: all 0.18s;
+    line-height: 1.4;
+    gap: 8px;
+  }
+  .nav-item:hover {
+    background: var(--highlight);
+    color: var(--text);
+  }
+  .nav-item.active {
+    background: var(--highlight);
+    color: var(--accent);
+    border-left-color: var(--accent);
+    font-weight: 600;
+  }
+  .nav-item .num {
+    font-size: 0.7rem;
+    color: var(--text-dim);
+    min-width: 18px;
+  }
+
+  /* ===== 主内容 ===== */
+  #main {
+    margin-left: var(--sidebar-w);
+    flex: 1;
+    min-width: 0;
+    padding: 40px 48px 80px;
+    max-width: 900px;
+  }
+
+  /* ===== 章节 ===== */
+  .section {
+    margin-bottom: 80px;
+    scroll-margin-top: calc(var(--header-h) + 24px);
+  }
+
+  .section-badge {
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+    background: var(--tag-bg);
+    color: var(--accent);
+    border: 1px solid rgba(88,166,255,0.25);
+    border-radius: 20px;
+    padding: 3px 12px;
+    font-size: 0.72rem;
+    font-weight: 700;
+    letter-spacing: 0.06em;
+    margin-bottom: 14px;
+    text-transform: uppercase;
+  }
+
+  .section h2 {
+    font-size: 1.7rem;
+    font-weight: 700;
+    margin-bottom: 18px;
+    color: var(--text);
+    line-height: 1.3;
+    border-bottom: 2px solid var(--border);
+    padding-bottom: 12px;
+  }
+
+  .section h3 {
+    font-size: 1.15rem;
+    font-weight: 600;
+    margin: 28px 0 12px;
+    color: var(--accent4);
+  }
+
+  .section p {
+    margin-bottom: 14px;
+    color: #cdd5e0;
+    font-size: 0.97rem;
+  }
+
+  .section ul, .section ol {
+    margin: 10px 0 14px 22px;
+    color: #cdd5e0;
+    font-size: 0.97rem;
+  }
+  .section li { margin-bottom: 6px; }
+
+  /* ===== 代码 ===== */
+  code {
+    font-family: 'JetBrains Mono', 'Fira Code', 'Cascadia Code', Consolas, monospace;
+    font-size: 0.82em;
+    background: var(--code-bg);
+    color: #79c0ff;
+    padding: 1px 6px;
+    border-radius: 4px;
+    border: 1px solid var(--border);
+  }
+
+  pre {
+    background: var(--code-bg);
+    border: 1px solid var(--border);
+    border-radius: 10px;
+    padding: 18px 20px;
+    overflow-x: auto;
+    margin: 16px 0;
+    font-size: 0.85rem;
+    line-height: 1.65;
+    max-width: 100%;
+  }
+  pre code {
+    background: none;
+    border: none;
+    padding: 0;
+    color: #a5d6ff;
+    font-size: 1em;
+  }
+
+  /* ===== 信息框 ===== */
+  .callout {
+    border-radius: 10px;
+    padding: 16px 20px;
+    margin: 18px 0;
+    border-left: 4px solid;
+    font-size: 0.93rem;
+  }
+  .callout.info {
+    background: rgba(88,166,255,0.07);
+    border-color: var(--accent);
+    color: #a8cfff;
+  }
+  .callout.warn {
+    background: rgba(227,179,65,0.07);
+    border-color: var(--accent4);
+    color: #e8d08a;
+  }
+  .callout.tip {
+    background: rgba(57,211,83,0.07);
+    border-color: var(--accent2);
+    color: #86efac;
+  }
+  .callout.principle {
+    background: rgba(247,129,102,0.07);
+    border-color: var(--accent3);
+    color: #fca5a5;
+  }
+  .callout strong {
+    display: block;
+    margin-bottom: 6px;
+    font-size: 0.8rem;
+    letter-spacing: 0.08em;
+    text-transform: uppercase;
+  }
+
+  /* ===== 引用来源 ===== */
+  .source-link {
+    display: inline-flex;
+    align-items: center;
+    gap: 5px;
+    background: rgba(88,166,255,0.06);
+    border: 1px solid rgba(88,166,255,0.2);
+    color: var(--accent);
+    font-size: 0.75rem;
+    padding: 3px 10px;
+    border-radius: 4px;
+    text-decoration: none;
+    margin: 4px 4px 4px 0;
+    transition: all 0.2s;
+  }
+  .source-link:hover {
+    background: rgba(88,166,255,0.15);
+  }
+
+  /* ===== 表格 ===== */
+  table {
+    width: 100%;
+    border-collapse: collapse;
+    margin: 16px 0;
+    font-size: 0.88rem;
+    overflow-x: auto;
+    display: block;
+  }
+  table thead tr {
+    background: rgba(88,166,255,0.1);
+  }
+  table th {
+    padding: 10px 14px;
+    text-align: left;
+    color: var(--accent);
+    font-size: 0.8rem;
+    letter-spacing: 0.05em;
+    text-transform: uppercase;
+    border: 1px solid var(--border);
+  }
+  table td {
+    padding: 9px 14px;
+    border: 1px solid var(--border);
+    color: #cdd5e0;
+    vertical-align: top;
+  }
+  table tr:nth-child(even) td {
+    background: rgba(255,255,255,0.02);
+  }
+
+  /* ===== SVG 图表 ===== */
+  .svg-container {
+    background: var(--card-bg);
+    border: 1px solid var(--border);
+    border-radius: 12px;
+    padding: 20px;
+    margin: 20px 0;
+    overflow-x: auto;
+    -webkit-overflow-scrolling: touch;
+  }
+  .svg-container svg {
+    display: block;
+    max-width: 100%;
+    height: auto;
+  }
+  .svg-caption {
+    text-align: center;
+    font-size: 0.78rem;
+    color: var(--text-dim);
+    margin-top: 10px;
+  }
+
+  /* ===== 第一性原理 ===== */
+  .first-principle {
+    background: linear-gradient(135deg, rgba(247,129,102,0.08), rgba(88,166,255,0.05));
+    border: 1px solid rgba(247,129,102,0.3);
+    border-radius: 12px;
+    padding: 20px 24px;
+    margin-top: 30px;
+  }
+  .first-principle .fp-title {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    font-size: 0.85rem;
+    font-weight: 700;
+    color: var(--accent3);
+    margin-bottom: 10px;
+    letter-spacing: 0.04em;
+    text-transform: uppercase;
+  }
+  .first-principle p {
+    color: #f5c6c6;
+    font-size: 0.94rem;
+  }
+
+  /* ===== 遮罩 ===== */
+  #overlay {
+    display: none;
+    position: fixed;
+    inset: 0;
+    background: rgba(0,0,0,0.6);
+    z-index: 850;
+  }
+
+  /* ===== 响应式 ===== */
+  @media (max-width: 768px) {
+    #hamburger { display: flex; }
+    #sidebar {
+      transform: translateX(-100%);
+    }
+    #sidebar.open {
+      transform: translateX(0);
+    }
+    #overlay.show { display: block; }
+    #main {
+      margin-left: 0;
+      padding: 24px 18px 60px;
+    }
+    .section h2 { font-size: 1.3rem; }
+    .svg-container { padding: 12px; }
+  }
+
+  @media (max-width: 480px) {
+    #main { padding: 16px 12px 60px; }
+    .section h2 { font-size: 1.15rem; }
+    pre { font-size: 0.78rem; padding: 12px 14px; }
+  }
+
+  /* ===== 动画 ===== */
+  .section { animation: fadeUp 0.4s ease both; }
+  @keyframes fadeUp {
+    from { opacity: 0; transform: translateY(16px); }
+    to   { opacity: 1; transform: translateY(0); }
+  }
+
+  /* ===== 选中高亮 ===== */
+  ::selection { background: rgba(88,166,255,0.25); }
+</style>
+</head>
+<body>
+
+<div id="progress-bar"></div>
+
+<header id="topbar">
+  <button id="hamburger" aria-label="菜单" onclick="toggleSidebar()">
+    <span></span><span></span><span></span>
+  </button>
+  <h1>Linux PPP 与 TTY 子系统关联深度解析</h1>
+  <div class="nav-arrows">
+    <button onclick="prevSection()" title="上一章 (←)">← 上一章</button>
+    <button onclick="nextSection()" title="下一章 (→)">下一章 →</button>
+  </div>
+</header>
+
+<div id="overlay" onclick="closeSidebar()"></div>
+
+<div id="layout">
+
+  <nav id="sidebar">
+    <div class="sidebar-header">📖 目录导航</div>
+
+    <div class="nav-group">
+      <div class="nav-group-label">引言</div>
+      <div class="nav-item" data-target="s0" onclick="jumpTo('s0')">
+        <span class="num">§0</span> 问题背景
+      </div>
+    </div>
+
+    <div class="nav-group">
+      <div class="nav-group-label">第一部分 · TTY 子系统</div>
+      <div class="nav-item" data-target="s1" onclick="jumpTo('s1')">
+        <span class="num">§1</span> TTY 的历史与架构
+      </div>
+      <div class="nav-item" data-target="s2" onclick="jumpTo('s2')">
+        <span class="num">§2</span> 线路规程（Line Discipline）
+      </div>
+    </div>
+
+    <div class="nav-group">
+      <div class="nav-group-label">第二部分 · PPP 架构</div>
+      <div class="nav-item" data-target="s3" onclick="jumpTo('s3')">
+        <span class="num">§3</span> PPP 在 Linux 内核中的结构
+      </div>
+      <div class="nav-item" data-target="s4" onclick="jumpTo('s4')">
+        <span class="num">§4</span> N_PPP：PPP 线路规程
+      </div>
+    </div>
+
+    <div class="nav-group">
+      <div class="nav-group-label">第三部分 · 关联机制</div>
+      <div class="nav-item" data-target="s5" onclick="jumpTo('s5')">
+        <span class="num">§5</span> 建立连接的完整流程
+      </div>
+      <div class="nav-item" data-target="s6" onclick="jumpTo('s6')">
+        <span class="num">§6</span> 数据收发路径
+      </div>
+      <div class="nav-item" data-target="s7" onclick="jumpTo('s7')">
+        <span class="num">§7</span> 关键数据结构
+      </div>
+    </div>
+
+    <div class="nav-group">
+      <div class="nav-group-label">第四部分 · 深层原因</div>
+      <div class="nav-item" data-target="s8" onclick="jumpTo('s8')">
+        <span class="num">§8</span> 为什么 PPP 需要 TTY？
+      </div>
+      <div class="nav-item" data-target="s9" onclick="jumpTo('s9')">
+        <span class="num">§9</span> 总结与第一性原理
+      </div>
+    </div>
+  </nav>
+
+  <main id="main">
+
+    <!-- ===== §0 引言 ===== -->
+    <section class="section" id="s0">
+      <div class="section-badge">§0 · 引言</div>
+      <h2>问题背景：为什么要研究这个问题？</h2>
+
+      <p>当你拨号上网时，<code>pppd</code> 守护进程打开串口（如 <code>/dev/ttyS0</code>），在 AT 命令握手之后，拨号连接升级成了 PPP 网络接口（<code>ppp0</code>）。这背后发生了什么？</p>
+
+      <p>PPP（Point-to-Point Protocol，点对点协议）是 RFC 1661 定义的标准互联网协议，用于在串行链路上传输 IP 帧。它为什么要和 TTY 子系统扯上关系？难道不能独立实现一个网络驱动？</p>
+
+      <p>答案隐藏在 Linux 内核的历史设计哲学中：<strong>串行硬件的唯一内核入口是 TTY 子系统</strong>。要使用串口，就必须通过 TTY；要在 TTY 上跑网络协议，就必须使用「线路规程」（Line Discipline）这个插件机制。</p>
+
+      <div class="callout info">
+        <strong>📌 原始文献来源</strong>
+        本文内容严格基于以下权威来源：
+        <a class="source-link" href="https://www.kernel.org/doc/Documentation/networking/ppp_generic.txt" target="_blank">🔗 kernel.org · ppp_generic.txt</a>
+        <a class="source-link" href="https://docs.kernel.org/driver-api/tty/tty_ldisc.html" target="_blank">🔗 kernel.org · TTY Line Discipline</a>
+        <a class="source-link" href="https://www.linusakesson.net/programming/tty/index.php" target="_blank">🔗 The TTY demystified</a>
+        <a class="source-link" href="https://github.com/torvalds/linux/blob/master/drivers/net/ppp/ppp_async.c" target="_blank">🔗 GitHub · ppp_async.c</a>
+        <a class="source-link" href="https://github.com/ppp-project/ppp/blob/master/pppd/sys-linux.c" target="_blank">🔗 GitHub · pppd/sys-linux.c</a>
+      </div>
+
+      <div class="first-principle">
+        <div class="fp-title">⚛ 第一性原理概述</div>
+        <p>串行硬件（UART）的字节流需要一个内核层来管理；Linux 将所有串行设备统一抽象为 TTY，并通过可插拔的"线路规程"模块扩展其行为。PPP 不是第一个，也不是最后一个复用这个机制的网络协议（SLIP 更早）。问题的本质是：<strong>如何在不修改底层驱动的前提下，改变串行数据的处理方式？</strong>答案是线路规程。</p>
+      </div>
+    </section>
+
+    <!-- ===== §1 TTY 架构 ===== -->
+    <section class="section" id="s1">
+      <div class="section-badge">§1 · TTY 子系统</div>
+      <h2>TTY 的历史与整体架构</h2>
+
+      <h3>历史起源</h3>
+      <p>TTY（Teletype，电传打字机）子系统的历史可以追溯到 1869 年的股票报价机。电传打字机是早期 UNIX 计算机的标准输入输出设备。当物理电传打字机逐渐消失后，它的软件抽象却以 TTY 的形式保留了下来，成为 Linux 与 UNIX 系统设计的核心组件。</p>
+
+      <p>如 Linus Åkesson 在「<a class="source-link" href="https://www.linusakesson.net/programming/tty/index.php" target="_blank">The TTY demystified</a>」中所述：</p>
+      <blockquote style="border-left:3px solid var(--border);padding:8px 16px;color:var(--text-muted);margin:12px 0;font-style:italic;">
+        "In present time, we find ourselves in a world where physical teletypes and video terminals are practically extinct... But the legacy from the old cast-iron beasts is still lurking beneath the surface."
+      </blockquote>
+
+      <h3>三层架构</h3>
+      <p>TTY 子系统由三个层次组成，从底层到顶层：</p>
+
+      <div class="svg-container">
+        <svg viewBox="0 0 680 360" xmlns="http://www.w3.org/2000/svg" style="min-width:340px;width:100%">
+          <defs>
+            <marker id="arr" markerWidth="8" markerHeight="6" refX="8" refY="3" orient="auto">
+              <polygon points="0 0, 8 3, 0 6" fill="#58a6ff"/>
+            </marker>
+            <marker id="arr2" markerWidth="8" markerHeight="6" refX="0" refY="3" orient="auto">
+              <polygon points="8 0, 0 3, 8 6" fill="#58a6ff"/>
+            </marker>
+          </defs>
+
+          <!-- 用户进程 -->
+          <rect x="220" y="20" width="240" height="52" rx="10" fill="#1c2230" stroke="#58a6ff" stroke-width="1.5"/>
+          <text x="340" y="42" text-anchor="middle" fill="#e6edf3" font-size="13" font-weight="600">用户进程</text>
+          <text x="340" y="60" text-anchor="middle" fill="#8b949e" font-size="11">bash / pppd / application</text>
+
+          <!-- 箭头 -->
+          <line x1="340" y1="72" x2="340" y2="100" stroke="#58a6ff" stroke-width="1.5" marker-end="url(#arr)"/>
+          <line x1="340" y1="100" x2="340" y2="72" stroke="#39d353" stroke-width="1.5" stroke-dasharray="4,3" marker-end="url(#arr2)"/>
+          <text x="350" y="90" fill="#8b949e" font-size="10">read/write/ioctl</text>
+
+          <!-- TTY 驱动 -->
+          <rect x="170" y="100" width="340" height="52" rx="10" fill="#1c2230" stroke="#e3b341" stroke-width="1.5"/>
+          <text x="340" y="122" text-anchor="middle" fill="#e3b341" font-size="13" font-weight="600">TTY 驱动层</text>
+          <text x="340" y="140" text-anchor="middle" fill="#8b949e" font-size="11">tty_io.c · 会话管理 · 作业控制</text>
+
+          <!-- 箭头 -->
+          <line x1="340" y1="152" x2="340" y2="180" stroke="#58a6ff" stroke-width="1.5" marker-end="url(#arr)"/>
+          <line x1="340" y1="180" x2="340" y2="152" stroke="#39d353" stroke-width="1.5" stroke-dasharray="4,3" marker-end="url(#arr2)"/>
+
+          <!-- 线路规程 -->
+          <rect x="120" y="180" width="440" height="70" rx="10" fill="rgba(88,166,255,0.08)" stroke="#58a6ff" stroke-width="2"/>
+          <text x="340" y="204" text-anchor="middle" fill="#58a6ff" font-size="13" font-weight="700">线路规程（Line Discipline）</text>
+          <text x="340" y="222" text-anchor="middle" fill="#a8cfff" font-size="11">N_TTY（默认）/ N_PPP / N_SLIP / N_HDLC / ...</text>
+          <text x="340" y="240" text-anchor="middle" fill="#8b949e" font-size="10">tty_register_ldisc() 注册 · TIOCSETD ioctl 切换</text>
+
+          <!-- 箭头 -->
+          <line x1="340" y1="250" x2="340" y2="278" stroke="#58a6ff" stroke-width="1.5" marker-end="url(#arr)"/>
+          <line x1="340" y1="278" x2="340" y2="250" stroke="#39d353" stroke-width="1.5" stroke-dasharray="4,3" marker-end="url(#arr2)"/>
+
+          <!-- UART 驱动 -->
+          <rect x="170" y="278" width="340" height="52" rx="10" fill="#1c2230" stroke="#f78166" stroke-width="1.5"/>
+          <text x="340" y="300" text-anchor="middle" fill="#f78166" font-size="13" font-weight="600">UART / 硬件驱动层</text>
+          <text x="340" y="318" text-anchor="middle" fill="#8b949e" font-size="11">ttyS0 / ttyUSB0 / 物理串口硬件</text>
+
+          <!-- 标签 -->
+          <text x="100" y="220" fill="#8b949e" font-size="10" text-anchor="middle">可插拔</text>
+          <text x="100" y="232" fill="#8b949e" font-size="10" text-anchor="middle">模块</text>
+        </svg>
+        <div class="svg-caption">图1：Linux TTY 子系统三层架构</div>
+      </div>
+
+      <table>
+        <thead>
+          <tr>
+            <th>层次</th>
+            <th>核心文件</th>
+            <th>主要职责</th>
+          </tr>
+        </thead>
+        <tbody>
+          <tr>
+            <td>UART 驱动</td>
+            <td><code>drivers/tty/serial/</code></td>
+            <td>物理字节传输、波特率、奇偶校验、流控</td>
+          </tr>
+          <tr>
+            <td>线路规程</td>
+            <td><code>drivers/tty/n_tty.c</code> 等</td>
+            <td>数据解释与处理（行编辑、协议封帧等）</td>
+          </tr>
+          <tr>
+            <td>TTY 驱动</td>
+            <td><code>drivers/tty/tty_io.c</code></td>
+            <td>会话管理、作业控制、信号派发</td>
+          </tr>
+        </tbody>
+      </table>
+
+      <div class="first-principle">
+        <div class="fp-title">⚛ 第一性原理</div>
+        <p>TTY 的核心价值是<strong>关注点分离</strong>：硬件只管传字节（UART 驱动），内核只管会话与信号（TTY 驱动），而数据的语义解释留给可插拔的线路规程。这种分层使得在不改任何底层代码的情况下，只需替换中间层就能改变数据的行为——这正是 PPP 所利用的设计契机。</p>
+      </div>
+    </section>
+
+    <!-- ===== §2 线路规程 ===== -->
+    <section class="section" id="s2">
+      <div class="section-badge">§2 · 线路规程</div>
+      <h2>线路规程（Line Discipline）详解</h2>
+
+      <h3>核心概念</h3>
+      <p>官方内核文档（<a class="source-link" href="https://docs.kernel.org/driver-api/tty/tty_ldisc.html" target="_blank">kernel.org · tty_ldisc</a>）定义：</p>
+      <blockquote style="border-left:3px solid var(--border);padding:8px 16px;color:var(--text-muted);margin:12px 0;font-style:italic;">
+        "TTY line discipline process all incoming and outgoing character from/to a tty device. The default line discipline is N_TTY. It is also a fallback if establishing any other discipline for a tty fails."
+      </blockquote>
+
+      <p>线路规程是一个<strong>可插拔的内核模块</strong>，插在 UART 驱动与 TTY 驱动之间，负责处理所有进出数据的语义。每个 TTY 设备在任何时刻只能使用一种线路规程。</p>
+
+      <h3>注册与切换</h3>
+
+      <pre><code>/* 注册新线路规程 - 来自 include/linux/tty_ldisc.h */
+int tty_register_ldisc(const struct tty_ldisc_ops *new_ldisc);
+
+/* 切换线路规程 - 用户空间通过 ioctl 触发 */
+int disc = N_PPP;
+ioctl(tty_fd, TIOCSETD, &disc);  /* 将 tty_fd 切换到 PPP 线路规程 */</code></pre>
+
+      <h3>tty_ldisc_ops 接口结构</h3>
+      <p>来自官方内核文档，线路规程通过 <code>tty_ldisc_ops</code> 结构提供接口：</p>
+
+      <pre><code>struct tty_ldisc_ops {
+    char  *name;           /* 显示在 /proc/tty/ldiscs 中 */
+    int    num;            /* N_* 编号（如 N_TTY=0, N_PPP=3） */
+
+    /* 来自 TTY 核心的调用（"上方"） */
+    int     (*open)(struct tty_struct *tty);
+    void    (*close)(struct tty_struct *tty);
+    ssize_t (*read)(struct tty_struct *tty, ...);
+    ssize_t (*write)(struct tty_struct *tty, ...);
+    int     (*ioctl)(struct tty_struct *tty, unsigned int cmd, ...);
+    void    (*hangup)(struct tty_struct *tty);
+
+    /* 来自底层驱动的调用（"下方"） */
+    void    (*receive_buf)(struct tty_struct *tty,
+                           const u8 *cp, const u8 *fp, size_t count);
+    void    (*write_wakeup)(struct tty_struct *tty);
+    /* ... */
+};</code></pre>
+
+      <h3>已知线路规程编号</h3>
+      <table>
+        <thead>
+          <tr><th>编号</th><th>宏名</th><th>协议</th><th>用途</th></tr>
+        </thead>
+        <tbody>
+          <tr><td>0</td><td><code>N_TTY</code></td><td>默认</td><td>标准终端行编辑</td></tr>
+          <tr><td>1</td><td><code>N_SLIP</code></td><td>SLIP</td><td>串行线路网络协议（PPP 前身）</td></tr>
+          <tr><td>3</td><td><code>N_PPP</code></td><td>PPP</td><td>点对点协议（异步）</td></tr>
+          <tr><td>12</td><td><code>N_HDLC</code></td><td>HDLC</td><td>同步数据链路控制</td></tr>
+          <tr><td>14</td><td><code>N_SYNC_PPP</code></td><td>PPP 同步</td><td>同步串行 PPP</td></tr>
+          <tr><td>27</td><td><code>N_NULL</code></td><td>NULL</td><td>丢弃所有数据（最终兜底）</td></tr>
+        </tbody>
+      </table>
+
+      <div class="callout tip">
+        <strong>💡 来自内核文档的警告</strong>
+        "Do not reuse ldisc numbers as they are part of the userspace ABI and writing over an existing ldisc will cause demons to eat your computer." —— kernel.org/doc/driver-api/tty/tty_ldisc
+      </div>
+
+      <div class="first-principle">
+        <div class="fp-title">⚛ 第一性原理</div>
+        <p>线路规程本质上是一个<strong>策略插件</strong>——它回答"这些字节的含义是什么？"这个问题。N_TTY 说"这是可编辑的文本"，N_PPP 说"这是 PPP 帧的字节流"。通过运行时替换策略，内核实现了"同一块硬件，不同语义"的多态能力，而无需为每个协议重写驱动。</p>
+      </div>
+    </section>
+
+    <!-- ===== §3 PPP 内核结构 ===== -->
+    <section class="section" id="s3">
+      <div class="section-badge">§3 · PPP 架构</div>
+      <h2>PPP 在 Linux 内核中的整体结构</h2>
+
+      <h3>三层 PPP 架构</h3>
+      <p>根据 Linux 内核官方文档（<a class="source-link" href="https://www.kernel.org/doc/Documentation/networking/ppp_generic.txt" target="_blank">ppp_generic.txt</a>），Linux PPP 实现分为三个层次：</p>
+
+      <div class="svg-container">
+        <svg viewBox="0 0 680 440" xmlns="http://www.w3.org/2000/svg" style="min-width:340px;width:100%">
+          <defs>
+            <marker id="arr3" markerWidth="8" markerHeight="6" refX="8" refY="3" orient="auto">
+              <polygon points="0 0, 8 3, 0 6" fill="#58a6ff"/>
+            </marker>
+          </defs>
+
+          <!-- IP 网络层 -->
+          <rect x="200" y="20" width="280" height="50" rx="8" fill="rgba(57,211,83,0.1)" stroke="#39d353" stroke-width="1.5"/>
+          <text x="340" y="42" text-anchor="middle" fill="#39d353" font-size="13" font-weight="600">IP 网络层</text>
+          <text x="340" y="58" text-anchor="middle" fill="#8b949e" font-size="11">netif_rx() · ppp0 网络接口</text>
+
+          <line x1="340" y1="70" x2="340" y2="100" stroke="#58a6ff" stroke-width="1.5" marker-end="url(#arr3)"/>
+
+          <!-- PPP 通用层 -->
+          <rect x="100" y="100" width="480" height="80" rx="8" fill="rgba(88,166,255,0.08)" stroke="#58a6ff" stroke-width="2"/>
+          <text x="340" y="128" text-anchor="middle" fill="#58a6ff" font-size="14" font-weight="700">PPP 通用层（Generic Layer）</text>
+          <text x="340" y="148" text-anchor="middle" fill="#a8cfff" font-size="11">drivers/net/ppp/ppp_generic.c</text>
+          <text x="340" y="166" text-anchor="middle" fill="#8b949e" font-size="10">多链路/压缩/TCP头压缩/数据包过滤 · /dev/ppp 接口</text>
+
+          <line x1="220" y1="180" x2="220" y2="210" stroke="#58a6ff" stroke-width="1.5" marker-end="url(#arr3)"/>
+          <line x1="460" y1="180" x2="460" y2="210" stroke="#58a6ff" stroke-width="1.5" marker-end="url(#arr3)"/>
+
+          <!-- PPP 通道层 -->
+          <rect x="60" y="210" width="220" height="70" rx="8" fill="rgba(227,179,65,0.08)" stroke="#e3b341" stroke-width="1.5"/>
+          <text x="170" y="234" text-anchor="middle" fill="#e3b341" font-size="12" font-weight="600">异步 PPP 通道</text>
+          <text x="170" y="252" text-anchor="middle" fill="#8b949e" font-size="10">ppp_async.c</text>
+          <text x="170" y="268" text-anchor="middle" fill="#8b949e" font-size="10">N_PPP 线路规程</text>
+
+          <rect x="400" y="210" width="220" height="70" rx="8" fill="rgba(247,129,102,0.08)" stroke="#f78166" stroke-width="1.5"/>
+          <text x="510" y="234" text-anchor="middle" fill="#f78166" font-size="12" font-weight="600">同步 PPP 通道</text>
+          <text x="510" y="252" text-anchor="middle" fill="#8b949e" font-size="10">ppp_synctty.c</text>
+          <text x="510" y="268" text-anchor="middle" fill="#8b949e" font-size="10">N_SYNC_PPP 线路规程</text>
+
+          <!-- PPPoE 另一个通道 -->
+          <rect x="220" y="210" width="160" height="70" rx="8" fill="rgba(139,148,158,0.08)" stroke="#8b949e" stroke-width="1" stroke-dasharray="4,3"/>
+          <text x="300" y="240" text-anchor="middle" fill="#8b949e" font-size="11">PPPoE 通道</text>
+          <text x="300" y="258" text-anchor="middle" fill="#6e7681" font-size="10">pppoe.c</text>
+          <text x="300" y="275" text-anchor="middle" fill="#6e7681" font-size="10">（不经 TTY）</text>
+
+          <line x1="170" y1="280" x2="170" y2="310" stroke="#58a6ff" stroke-width="1.5" marker-end="url(#arr3)"/>
+          <line x1="510" y1="280" x2="510" y2="310" stroke="#58a6ff" stroke-width="1.5" marker-end="url(#arr3)"/>
+
+          <!-- TTY 子系统 -->
+          <rect x="60" y="310" width="220" height="70" rx="8" fill="rgba(247,129,102,0.08)" stroke="#f78166" stroke-width="1.5"/>
+          <text x="170" y="338" text-anchor="middle" fill="#f78166" font-size="13" font-weight="600">TTY 子系统</text>
+          <text x="170" y="356" text-anchor="middle" fill="#8b949e" font-size="10">UART 驱动 · 串口硬件</text>
+          <text x="170" y="372" text-anchor="middle" fill="#8b949e" font-size="10">/dev/ttyS0 / /dev/ttyUSB0</text>
+
+          <rect x="400" y="310" width="220" height="70" rx="8" fill="rgba(247,129,102,0.08)" stroke="#f78166" stroke-width="1.5"/>
+          <text x="510" y="338" text-anchor="middle" fill="#f78166" font-size="13" font-weight="600">TTY 子系统</text>
+          <text x="510" y="356" text-anchor="middle" fill="#8b949e" font-size="10">同步 HDLC 驱动</text>
+          <text x="510" y="372" text-anchor="middle" fill="#8b949e" font-size="10">同步串口硬件</text>
+
+          <!-- pppd -->
+          <rect x="540" y="100" width="120" height="50" rx="8" fill="rgba(57,211,83,0.08)" stroke="#39d353" stroke-width="1.2"/>
+          <text x="600" y="122" text-anchor="middle" fill="#39d353" font-size="11" font-weight="600">pppd 守护进程</text>
+          <text x="600" y="138" text-anchor="middle" fill="#8b949e" font-size="10">/dev/ppp</text>
+          <line x1="540" y1="125" x2="580" y2="142" stroke="#39d353" stroke-width="1" stroke-dasharray="3,2"/>
+
+          <!-- 图例 -->
+          <text x="340" y="415" text-anchor="middle" fill="#6e7681" font-size="10">PPP 通用层通过 ppp_channel 接口与各通道通信（来源：ppp_generic.txt）</text>
+        </svg>
+        <div class="svg-caption">图2：Linux PPP 内核架构（基于 ppp_generic.txt）</div>
+      </div>
+
+      <h3>PPP 通用层的职责</h3>
+      <p>官方文档（ppp_generic.txt）描述 PPP 通用层提供以下功能：</p>
+      <ul>
+        <li>网络接口单元（<code>ppp0</code> 等）</li>
+        <li>与 Linux 网络栈的接口</li>
+        <li>PPP 多链路（Multilink）：在多个链路间分片传输数据报</li>
+        <li>通过 <code>/dev/ppp</code> 字符设备与 pppd 的接口</li>
+        <li>数据包压缩与解压（Deflate、BSD-Compress）</li>
+        <li>TCP/IP 头压缩与解压</li>
+        <li>按需拨号检测与空闲超时</li>
+        <li>简单数据包过滤</li>
+      </ul>
+
+      <h3>PPP 通道（Channel）抽象</h3>
+      <p>文档原文：</p>
+      <blockquote style="border-left:3px solid var(--border);padding:8px 16px;color:var(--text-muted);margin:12px 0;font-style:italic;">
+        "A PPP channel encapsulates a mechanism for transporting PPP frames from one machine to another. A PPP channel implementation can be arbitrarily complex internally but has a very simple interface with the generic PPP code: it merely has to be able to send PPP frames, receive PPP frames, and optionally handle ioctl requests."
+      </blockquote>
+
+      <pre><code>/* PPP 通道接口 - include/linux/ppp_channel.h */
+struct ppp_channel_ops {
+    /* 发送 PPP 帧：返回 1 表示接受，0 表示拒绝（流控） */
+    int  (*start_xmit)(struct ppp_channel *chan, struct sk_buff *skb);
+    /* 处理 ioctl */
+    int  (*ioctl)(struct ppp_channel *chan, unsigned int cmd,
+                  unsigned long arg);
+};</code></pre>
+
+      <div class="first-principle">
+        <div class="fp-title">⚛ 第一性原理</div>
+        <p>PPP 通用层与 PPP 通道之间的接口极度精简——只有"发帧"和"收帧"两个动作。这符合<strong>接口最小化原则</strong>：通道层不需要知道上层在做多链路还是压缩，通用层也不需要知道下面跑的是异步串口还是以太网（PPPoE）。分层解耦使得每一层都可以独立演化。</p>
+      </div>
+    </section>
+
+    <!-- ===== §4 N_PPP ===== -->
+    <section class="section" id="s4">
+      <div class="section-badge">§4 · N_PPP</div>
+      <h2>N_PPP：PPP 线路规程的实现</h2>
+
+      <h3>异步 PPP 线路规程</h3>
+      <p>来源：<a class="source-link" href="https://github.com/torvalds/linux/blob/master/drivers/net/ppp/ppp_async.c" target="_blank">drivers/net/ppp/ppp_async.c</a></p>
+
+      <p><code>ppp_async.c</code> 实现了异步 PPP 的 TTY 线路规程，本质上是在 PPP 通用驱动和底层 TTY 设备之间插入了一个中间层，负责 HDLC 帧的封装与解封。</p>
+
+      <pre><code>/* ppp_async.c 注册 N_PPP 线路规程 */
+static int __init ppp_async_init(void)
+{
+    int err = tty_register_ldisc(&ppp_ldisc);
+    /* N_PPP = 3 */
+    return err;
+}
+
+/* 线路规程操作集 */
+static struct tty_ldisc_ops ppp_ldisc = {
+    .owner      = THIS_MODULE,
+    .num        = N_PPP,
+    .name       = "ppp",
+    .open       = ppp_asynctty_open,
+    .close      = ppp_asynctty_close,
+    .hangup     = ppp_asynctty_hangup,
+    .read       = ppp_asynctty_read,     /* 返回 -EAGAIN（不直接读）*/
+    .write      = ppp_asynctty_write,    /* 返回 -EAGAIN（不直接写）*/
+    .ioctl      = ppp_asynctty_ioctl,
+    .receive_buf = ppp_asynctty_receive, /* 核心：从 UART 接收数据 */
+    .write_wakeup = ppp_asynctty_wakeup, /* 通知可以继续发送 */
+};</code></pre>
+
+      <h3>read/write 返回 -EAGAIN 的设计</h3>
+      <p>代码注释原文（来自 ppp_async.c）揭示了一个重要设计决策：</p>
+
+      <pre><code>/*
+ * Read does nothing - no data is ever available this way.
+ * Pppd reads and writes packets via /dev/ppp instead.
+ */
+static ssize_t ppp_asynctty_read(...)  { return -EAGAIN; }
+
+/*
+ * Write on the tty does nothing, the packets all come in
+ * from the ppp generic stuff.
+ */
+static ssize_t ppp_asynctty_write(...) { return -EAGAIN; }</code></pre>
+
+      <div class="callout warn">
+        <strong>⚠️ 关键设计点</strong>
+        pppd <strong>不</strong>通过 tty 的 read()/write() 接口读写 PPP 数据！它通过 <code>/dev/ppp</code> 字符设备操作数据，而 tty 的 <code>receive_buf</code>（由底层 UART 驱动调用）才是真正的数据入口。
+      </div>
+
+      <h3>asyncppp 状态结构</h3>
+      <pre><code>/* ppp_async.c 内部状态 */
+struct asyncppp {
+    struct tty_struct *tty;        /* 关联的 TTY 设备 */
+    unsigned int      flags;
+    unsigned int      state;
+    unsigned int      rbits;
+    int               mru;         /* 最大接收单元 */
+    spinlock_t        xmit_lock;
+    spinlock_t        recv_lock;
+    /* ... */
+    struct sk_buff    *rpkt;       /* 正在组装的接收包 */
+    struct sk_buff_head rqueue;    /* 接收队列 */
+    struct tasklet_struct tsk;
+    struct ppp_channel chan;       /* 通向 PPP 通用层的接口 */
+};</code></pre>
+
+      <div class="svg-container">
+        <svg viewBox="0 0 680 280" xmlns="http://www.w3.org/2000/svg" style="min-width:340px;width:100%">
+          <defs>
+            <marker id="a4" markerWidth="7" markerHeight="6" refX="7" refY="3" orient="auto">
+              <polygon points="0 0, 7 3, 0 6" fill="#58a6ff"/>
+            </marker>
+          </defs>
+
+          <!-- asyncppp 结构 -->
+          <rect x="200" y="20" width="280" height="220" rx="10" fill="#1c2230" stroke="#58a6ff" stroke-width="1.5"/>
+          <text x="340" y="45" text-anchor="middle" fill="#58a6ff" font-size="13" font-weight="700">asyncppp 结构体</text>
+
+          <!-- 字段 -->
+          <rect x="215" y="56" width="250" height="26" rx="4" fill="#161b22" stroke="#2d3748"/>
+          <text x="225" y="73" fill="#79c0ff" font-size="11" font-family="monospace">*tty</text>
+          <text x="380" y="73" fill="#8b949e" font-size="10" text-anchor="end">→ tty_struct（TTY 设备）</text>
+
+          <rect x="215" y="86" width="250" height="26" rx="4" fill="#161b22" stroke="#2d3748"/>
+          <text x="225" y="103" fill="#79c0ff" font-size="11" font-family="monospace">*rpkt</text>
+          <text x="380" y="103" fill="#8b949e" font-size="10" text-anchor="end">→ 正在拼接的接收帧</text>
+
+          <rect x="215" y="116" width="250" height="26" rx="4" fill="#161b22" stroke="#2d3748"/>
+          <text x="225" y="133" fill="#79c0ff" font-size="11" font-family="monospace">rqueue</text>
+          <text x="380" y="133" fill="#8b949e" font-size="10" text-anchor="end">→ sk_buff 接收队列</text>
+
+          <rect x="215" y="146" width="250" height="26" rx="4" fill="#161b22" stroke="#2d3748"/>
+          <text x="225" y="163" fill="#79c0ff" font-size="11" font-family="monospace">chan</text>
+          <text x="380" y="163" fill="#e3b341" font-size="10" text-anchor="end">→ ppp_channel（上行接口）</text>
+
+          <rect x="215" y="176" width="250" height="26" rx="4" fill="#161b22" stroke="#2d3748"/>
+          <text x="225" y="193" fill="#79c0ff" font-size="11" font-family="monospace">tsk</text>
+          <text x="380" y="193" fill="#8b949e" font-size="10" text-anchor="end">→ tasklet（异步发送）</text>
+
+          <rect x="215" y="206" width="250" height="26" rx="4" fill="#161b22" stroke="#2d3748"/>
+          <text x="225" y="223" fill="#79c0ff" font-size="11" font-family="monospace">xmit_lock / recv_lock</text>
+          <text x="380" y="223" fill="#8b949e" font-size="10" text-anchor="end">→ SMP 并发保护</text>
+
+          <!-- 左边：TTY -->
+          <rect x="20" y="80" width="120" height="50" rx="8" fill="rgba(247,129,102,0.1)" stroke="#f78166" stroke-width="1.2"/>
+          <text x="80" y="101" text-anchor="middle" fill="#f78166" font-size="11" font-weight="600">tty_struct</text>
+          <text x="80" y="117" text-anchor="middle" fill="#8b949e" font-size="10">disc_data 指向 asyncppp</text>
+          <line x1="140" y1="105" x2="198" y2="110" stroke="#f78166" stroke-width="1.2" marker-end="url(#a4)"/>
+
+          <!-- 右边：ppp_generic -->
+          <rect x="540" y="80" width="120" height="50" rx="8" fill="rgba(88,166,255,0.1)" stroke="#58a6ff" stroke-width="1.2"/>
+          <text x="600" y="101" text-anchor="middle" fill="#58a6ff" font-size="11" font-weight="600">ppp_generic</text>
+          <text x="600" y="117" text-anchor="middle" fill="#8b949e" font-size="10">通过 ppp_channel</text>
+          <line x1="482" y1="155" x2="538" y2="108" stroke="#e3b341" stroke-width="1.2" marker-end="url(#a4)"/>
+
+          <text x="340" y="260" text-anchor="middle" fill="#6e7681" font-size="10">asyncppp 是异步 PPP 线路规程的核心状态容器</text>
+        </svg>
+        <div class="svg-caption">图3：asyncppp 结构体与相邻层的关系</div>
+      </div>
+
+      <div class="first-principle">
+        <div class="fp-title">⚛ 第一性原理</div>
+        <p>N_PPP 线路规程的关键设计是<strong>双向解耦</strong>：向下，它通过 <code>receive_buf</code> 钩子被动接收 UART 字节流，通过 <code>tty->ops->write()</code> 主动发出字节流；向上，它通过 <code>ppp_channel</code> 接口与 PPP 通用层交换完整 PPP 帧。两端都不需要知道对方的实现细节——这是标准的"端口/适配器"架构（Hexagonal Architecture）在内核中的体现。</p>
+      </div>
+    </section>
+
+    <!-- ===== §5 建立流程 ===== -->
+    <section class="section" id="s5">
+      <div class="section-badge">§5 · 建立连接</div>
+      <h2>建立 PPP 连接的完整流程</h2>
+
+      <h3>pppd 的实际操作步骤</h3>
+      <p>来源：<a class="source-link" href="https://github.com/ppp-project/ppp/blob/master/pppd/sys-linux.c" target="_blank">pppd/sys-linux.c · tty_establish_ppp()</a> 与 kernel.org 文档</p>
+
+      <div class="svg-container">
+        <svg viewBox="0 0 680 560" xmlns="http://www.w3.org/2000/svg" style="min-width:340px;width:100%">
+          <defs>
+            <marker id="a5" markerWidth="7" markerHeight="5" refX="7" refY="2.5" orient="auto">
+              <polygon points="0 0, 7 2.5, 0 5" fill="#58a6ff"/>
+            </marker>
+          </defs>
+
+          <!-- 时序线 -->
+          <line x1="140" y1="30" x2="140" y2="530" stroke="#2d3748" stroke-width="1" stroke-dasharray="4,3"/>
+          <line x1="380" y1="30" x2="380" y2="530" stroke="#2d3748" stroke-width="1" stroke-dasharray="4,3"/>
+          <line x1="580" y1="30" x2="580" y2="530" stroke="#2d3748" stroke-width="1" stroke-dasharray="4,3"/>
+
+          <!-- 标题 -->
+          <text x="140" y="22" text-anchor="middle" fill="#e3b341" font-size="11" font-weight="700">pppd 进程</text>
+          <text x="380" y="22" text-anchor="middle" fill="#58a6ff" font-size="11" font-weight="700">内核 TTY + 线路规程</text>
+          <text x="580" y="22" text-anchor="middle" fill="#39d353" font-size="11" font-weight="700">PPP 通用层</text>
+
+          <!-- 步骤 1 -->
+          <rect x="20" y="38" width="238" height="38" rx="6" fill="rgba(227,179,65,0.1)" stroke="#e3b341" stroke-width="1"/>
+          <text x="139" y="54" text-anchor="middle" fill="#e3b341" font-size="10" font-weight="600">① open("/dev/ttyS0", O_RDWR)</text>
+          <text x="139" y="68" text-anchor="middle" fill="#8b949e" font-size="10">打开串口文件</text>
+          <line x1="258" y1="57" x2="364" y2="57" stroke="#58a6ff" stroke-width="1.2" marker-end="url(#a5)"/>
+
+          <!-- 步骤 2 -->
+          <rect x="20" y="96" width="238" height="38" rx="6" fill="rgba(227,179,65,0.1)" stroke="#e3b341" stroke-width="1"/>
+          <text x="139" y="112" text-anchor="middle" fill="#e3b341" font-size="10" font-weight="600">② chat / AT 命令建立拨号连接</text>
+          <text x="139" y="126" text-anchor="middle" fill="#8b949e" font-size="10">通过 N_TTY 进行文本交互</text>
+
+          <!-- 步骤 3 -->
+          <rect x="20" y="154" width="238" height="38" rx="6" fill="rgba(227,179,65,0.1)" stroke="#e3b341" stroke-width="1"/>
+          <text x="139" y="169" text-anchor="middle" fill="#e3b341" font-size="10" font-weight="600">③ ioctl(fd, TIOCEXCL, 0)</text>
+          <text x="139" y="184" text-anchor="middle" fill="#8b949e" font-size="10">独占串口（拒绝其他进程访问）</text>
+          <line x1="258" y1="172" x2="364" y2="172" stroke="#58a6ff" stroke-width="1.2" marker-end="url(#a5)"/>
+
+          <!-- 步骤 4 - 关键 -->
+          <rect x="20" y="212" width="238" height="50" rx="6" fill="rgba(88,166,255,0.12)" stroke="#58a6ff" stroke-width="2"/>
+          <text x="139" y="228" text-anchor="middle" fill="#58a6ff" font-size="10" font-weight="700">④ ppp_disc = N_PPP;</text>
+          <text x="139" y="243" text-anchor="middle" fill="#79c0ff" font-size="10" font-weight="600">ioctl(fd, TIOCSETD, &ppp_disc)</text>
+          <text x="139" y="256" text-anchor="middle" fill="#8b949e" font-size="9">🔑 切换线路规程！N_TTY → N_PPP</text>
+          <line x1="258" y1="237" x2="364" y2="237" stroke="#58a6ff" stroke-width="2" marker-end="url(#a5)"/>
+
+          <!-- 内核操作 -->
+          <rect x="270" y="212" width="220" height="50" rx="6" fill="rgba(88,166,255,0.06)" stroke="#58a6ff" stroke-width="1"/>
+          <text x="380" y="230" text-anchor="middle" fill="#a8cfff" font-size="10">tty_set_ldisc() 调用</text>
+          <text x="380" y="246" text-anchor="middle" fill="#a8cfff" font-size="10">ppp_asynctty_open()</text>
+          <text x="380" y="262" text-anchor="middle" fill="#8b949e" font-size="9">分配 asyncppp 结构，注册通道</text>
+
+          <!-- 步骤 5 -->
+          <rect x="20" y="282" width="238" height="38" rx="6" fill="rgba(227,179,65,0.1)" stroke="#e3b341" stroke-width="1"/>
+          <text x="139" y="298" text-anchor="middle" fill="#e3b341" font-size="10" font-weight="600">⑤ ioctl(fd, PPPIOCGCHAN, &chan_idx)</text>
+          <text x="139" y="312" text-anchor="middle" fill="#8b949e" font-size="10">获取通道编号</text>
+          <line x1="258" y1="300" x2="364" y2="300" stroke="#58a6ff" stroke-width="1.2" marker-end="url(#a5)"/>
+
+          <!-- 步骤 6 -->
+          <rect x="20" y="340" width="238" height="38" rx="6" fill="rgba(227,179,65,0.1)" stroke="#e3b341" stroke-width="1"/>
+          <text x="139" y="356" text-anchor="middle" fill="#e3b341" font-size="10" font-weight="600">⑥ open("/dev/ppp", O_RDWR)</text>
+          <text x="139" y="370" text-anchor="middle" fill="#8b949e" font-size="10">打开 PPP 通用层控制接口</text>
+          <line x1="258" y1="358" x2="490" y2="358" stroke="#39d353" stroke-width="1.2" marker-end="url(#a5)"/>
+
+          <!-- 步骤 7 -->
+          <rect x="20" y="398" width="238" height="38" rx="6" fill="rgba(227,179,65,0.1)" stroke="#e3b341" stroke-width="1"/>
+          <text x="139" y="413" text-anchor="middle" fill="#e3b341" font-size="10" font-weight="600">⑦ ioctl(ppp_fd, PPPIOCATTCHAN, &chan_idx)</text>
+          <text x="139" y="428" text-anchor="middle" fill="#8b949e" font-size="10">将 /dev/ppp 实例绑定到通道</text>
+          <line x1="258" y1="417" x2="490" y2="417" stroke="#39d353" stroke-width="1.2" marker-end="url(#a5)"/>
+
+          <!-- 步骤 8 -->
+          <rect x="20" y="456" width="238" height="38" rx="6" fill="rgba(57,211,83,0.1)" stroke="#39d353" stroke-width="1"/>
+          <text x="139" y="472" text-anchor="middle" fill="#39d353" font-size="10" font-weight="600">⑧ ioctl(ppp_fd, PPPIOCCONNECT, &unit)</text>
+          <text x="139" y="487" text-anchor="middle" fill="#8b949e" font-size="10">通道连接到 PPP 网络接口 (ppp0)</text>
+          <line x1="258" y1="475" x2="490" y2="475" stroke="#39d353" stroke-width="1.2" marker-end="url(#a5)"/>
+
+          <text x="340" y="545" text-anchor="middle" fill="#6e7681" font-size="10">完成后 ppp0 接口可用，IP 数据包开始流动</text>
+        </svg>
+        <div class="svg-caption">图4：pppd 建立 PPP 连接的时序图（基于 pppd/sys-linux.c）</div>
+      </div>
+
+      <h3>关键代码：tty_establish_ppp()</h3>
+      <p>以下是 pppd 源码（<code>pppd/sys-linux.c</code>）中的核心函数，展示了线路规程切换的精确过程：</p>
+
+      <pre><code>/* pppd/sys-linux.c - tty_establish_ppp() */
+int tty_establish_ppp(int tty_fd)
+{
+    /* 1. 独占串口 */
+    ioctl(tty_fd, TIOCEXCL, 0);
+
+    /* 2. 选择线路规程：同步或异步 */
+    ppp_disc = ppp_sync_serial() ? N_SYNC_PPP : N_PPP;
+
+    /* 3. 🔑 关键操作：切换线路规程 */
+    if (ioctl(tty_fd, TIOCSETD, &ppp_disc) < 0) {
+        error("Couldn't set tty to PPP discipline: %m");
+        return -1;
+    }
+
+    /* 4. 建立通用 PPP 层连接 */
+    ret_fd = ppp_generic_establish(tty_fd);
+
+    return ret_fd;
+}
+
+int ppp_generic_establish(int fd)
+{
+    /* 获取通道编号 */
+    ioctl(fd, PPPIOCGCHAN, &chindex);
+
+    /* 打开 /dev/ppp 控制接口 */
+    fd = open("/dev/ppp", O_RDWR);
+
+    /* 绑定通道 */
+    ioctl(fd, PPPIOCATTCHAN, &chindex);
+
+    /* ... 创建或连接 PPP 网络单元 ... */
+}</code></pre>
+
+      <div class="callout info">
+        <strong>📖 官方文档原文（ppp_generic.txt）</strong>
+        "Generally a user-level process will initialize the underlying communications medium and prepare it to do PPP. For example, with an async tty, this can involve setting the tty speed and modes, issuing modem commands, and then going through some sort of dialog with the remote system to invoke PPP service there. We refer to this process as 'discovery'."
+      </div>
+
+      <div class="first-principle">
+        <div class="fp-title">⚛ 第一性原理</div>
+        <p>整个建立过程体现了 UNIX 哲学中的<strong>渐进式配置</strong>：先用已有工具（N_TTY 文本模式）做准备（拨号），再用一个 ioctl 原子性地切换语义（TIOCSETD），最后用标准的 fd 传递机制把不同层次连接起来。没有新的系统调用，没有新的特权接口——一切都通过现有机制组合完成。</p>
+      </div>
+    </section>
+
+    <!-- ===== §6 数据收发 ===== -->
+    <section class="section" id="s6">
+      <div class="section-badge">§6 · 数据路径</div>
+      <h2>数据收发的完整路径</h2>
+
+      <h3>接收路径（RX）：从串口到 IP 栈</h3>
+
+      <div class="svg-container">
+        <svg viewBox="0 0 680 300" xmlns="http://www.w3.org/2000/svg" style="min-width:360px;width:100%">
+          <defs>
+            <marker id="arx" markerWidth="7" markerHeight="5" refX="7" refY="2.5" orient="auto">
+              <polygon points="0 0, 7 2.5, 0 5" fill="#39d353"/>
+            </marker>
+          </defs>
+
+          <!-- 硬件 -->
+          <rect x="10" y="120" width="100" height="60" rx="8" fill="rgba(247,129,102,0.1)" stroke="#f78166" stroke-width="1.5"/>
+          <text x="60" y="146" text-anchor="middle" fill="#f78166" font-size="11" font-weight="600">串口硬件</text>
+          <text x="60" y="162" text-anchor="middle" fill="#8b949e" font-size="9">UART 中断</text>
+          <text x="60" y="174" text-anchor="middle" fill="#8b949e" font-size="9">字节到达</text>
+
+          <line x1="110" y1="150" x2="148" y2="150" stroke="#39d353" stroke-width="1.5" marker-end="url(#arx)"/>
+
+          <!-- UART 驱动 -->
+          <rect x="148" y="110" width="110" height="80" rx="8" fill="rgba(247,129,102,0.08)" stroke="#f78166" stroke-width="1"/>
+          <text x="203" y="140" text-anchor="middle" fill="#f78166" font-size="11" font-weight="600">UART 驱动</text>
+          <text x="203" y="157" text-anchor="middle" fill="#8b949e" font-size="9">tty_insert_</text>
+          <text x="203" y="170" text-anchor="middle" fill="#8b949e" font-size="9">flip_char()</text>
+          <text x="203" y="183" text-anchor="middle" fill="#8b949e" font-size="9">→ flip buffer</text>
+
+          <line x1="258" y1="150" x2="298" y2="150" stroke="#39d353" stroke-width="1.5" marker-end="url(#arx)"/>
+          <text x="278" y="143" text-anchor="middle" fill="#6e7681" font-size="9">flush_to_ldisc</text>
+
+          <!-- N_PPP -->
+          <rect x="298" y="90" width="130" height="120" rx="8" fill="rgba(88,166,255,0.1)" stroke="#58a6ff" stroke-width="2"/>
+          <text x="363" y="116" text-anchor="middle" fill="#58a6ff" font-size="12" font-weight="700">N_PPP</text>
+          <text x="363" y="133" text-anchor="middle" fill="#a8cfff" font-size="10">receive_buf()</text>
+          <text x="363" y="150" text-anchor="middle" fill="#8b949e" font-size="9">HDLC 解帧</text>
+          <text x="363" y="164" text-anchor="middle" fill="#8b949e" font-size="9">转义字符处理</text>
+          <text x="363" y="178" text-anchor="middle" fill="#8b949e" font-size="9">FCS 校验</text>
+          <text x="363" y="192" text-anchor="middle" fill="#8b949e" font-size="9">→ sk_buff 组帧</text>
+
+          <line x1="428" y1="150" x2="468" y2="150" stroke="#39d353" stroke-width="1.5" marker-end="url(#arx)"/>
+          <text x="448" y="143" text-anchor="middle" fill="#6e7681" font-size="9">ppp_input()</text>
+
+          <!-- PPP 通用层 -->
+          <rect x="468" y="100" width="110" height="100" rx="8" fill="rgba(88,166,255,0.08)" stroke="#58a6ff" stroke-width="1"/>
+          <text x="523" y="126" text-anchor="middle" fill="#58a6ff" font-size="11" font-weight="600">PPP 通用层</text>
+          <text x="523" y="143" text-anchor="middle" fill="#8b949e" font-size="9">解压缩</text>
+          <text x="523" y="157" text-anchor="middle" fill="#8b949e" font-size="9">TCP头解压</text>
+          <text x="523" y="171" text-anchor="middle" fill="#8b949e" font-size="9">多链路重组</text>
+          <text x="523" y="185" text-anchor="middle" fill="#8b949e" font-size="9">→ netif_rx()</text>
+
+          <line x1="578" y1="150" x2="618" y2="150" stroke="#39d353" stroke-width="1.5" marker-end="url(#arx)"/>
+
+          <!-- IP 栈 -->
+          <rect x="618" y="120" width="52" height="60" rx="8" fill="rgba(57,211,83,0.1)" stroke="#39d353" stroke-width="1.5"/>
+          <text x="644" y="148" text-anchor="middle" fill="#39d353" font-size="10" font-weight="600">IP</text>
+          <text x="644" y="163" text-anchor="middle" fill="#39d353" font-size="10" font-weight="600">栈</text>
+
+          <!-- 标签 -->
+          <text x="340" y="260" text-anchor="middle" fill="#6e7681" font-size="10">接收路径（RX）：字节流 → HDLC 帧 → PPP 帧 → IP 数据包</text>
+
+          <!-- 控制路径 -->
+          <rect x="298" y="240" width="280" height="32" rx="6" fill="rgba(227,179,65,0.06)" stroke="#e3b341" stroke-width="1" stroke-dasharray="4,3"/>
+          <text x="438" y="254" text-anchor="middle" fill="#e3b341" font-size="10">控制帧 → sk_buff 入队 → pppd 通过 /dev/ppp 读取</text>
+          <text x="438" y="266" text-anchor="middle" fill="#6e7681" font-size="9">LCP / IPCP / CCP 协商数据包</text>
+        </svg>
+        <div class="svg-caption">图5：PPP 数据接收路径（RX Path）</div>
+      </div>
+
+      <h3>发送路径（TX）：从 IP 栈到串口</h3>
+
+      <div class="svg-container">
+        <svg viewBox="0 0 680 220" xmlns="http://www.w3.org/2000/svg" style="min-width:360px;width:100%">
+          <defs>
+            <marker id="atx" markerWidth="7" markerHeight="5" refX="7" refY="2.5" orient="auto">
+              <polygon points="0 0, 7 2.5, 0 5" fill="#f78166"/>
+            </marker>
+          </defs>
+
+          <!-- IP 栈 -->
+          <rect x="10" y="80" width="70" height="60" rx="8" fill="rgba(57,211,83,0.1)" stroke="#39d353" stroke-width="1.5"/>
+          <text x="45" y="106" text-anchor="middle" fill="#39d353" font-size="11" font-weight="600">IP</text>
+          <text x="45" y="122" text-anchor="middle" fill="#39d353" font-size="11" font-weight="600">栈</text>
+
+          <line x1="80" y1="110" x2="118" y2="110" stroke="#f78166" stroke-width="1.5" marker-end="url(#atx)"/>
+          <text x="99" y="103" text-anchor="middle" fill="#6e7681" font-size="9">start_xmit()</text>
+
+          <!-- PPP 通用层 -->
+          <rect x="118" y="60" width="130" height="100" rx="8" fill="rgba(88,166,255,0.08)" stroke="#58a6ff" stroke-width="1.5"/>
+          <text x="183" y="86" text-anchor="middle" fill="#58a6ff" font-size="11" font-weight="600">PPP 通用层</text>
+          <text x="183" y="103" text-anchor="middle" fill="#8b949e" font-size="9">TCP头压缩</text>
+          <text x="183" y="117" text-anchor="middle" fill="#8b949e" font-size="9">数据包压缩</text>
+          <text x="183" y="131" text-anchor="middle" fill="#8b949e" font-size="9">多链路分片</text>
+          <text x="183" y="145" text-anchor="middle" fill="#8b949e" font-size="9">ppp_xmit_process()</text>
+
+          <line x1="248" y1="110" x2="288" y2="110" stroke="#f78166" stroke-width="1.5" marker-end="url(#atx)"/>
+          <text x="268" y="103" text-anchor="middle" fill="#6e7681" font-size="9">start_xmit()</text>
+
+          <!-- N_PPP -->
+          <rect x="288" y="50" width="130" height="120" rx="8" fill="rgba(88,166,255,0.1)" stroke="#58a6ff" stroke-width="2"/>
+          <text x="353" y="78" text-anchor="middle" fill="#58a6ff" font-size="12" font-weight="700">N_PPP</text>
+          <text x="353" y="95" text-anchor="middle" fill="#a8cfff" font-size="10">ppp_async_send()</text>
+          <text x="353" y="112" text-anchor="middle" fill="#8b949e" font-size="9">PPP 帧封装</text>
+          <text x="353" y="126" text-anchor="middle" fill="#8b949e" font-size="9">HDLC 转义处理</text>
+          <text x="353" y="140" text-anchor="middle" fill="#8b949e" font-size="9">FCS 计算</text>
+          <text x="353" y="154" text-anchor="middle" fill="#8b949e" font-size="9">tty->ops->write()</text>
+
+          <line x1="418" y1="110" x2="458" y2="110" stroke="#f78166" stroke-width="1.5" marker-end="url(#atx)"/>
+
+          <!-- UART 驱动 -->
+          <rect x="458" y="70" width="110" height="80" rx="8" fill="rgba(247,129,102,0.08)" stroke="#f78166" stroke-width="1"/>
+          <text x="513" y="100" text-anchor="middle" fill="#f78166" font-size="11" font-weight="600">UART 驱动</text>
+          <text x="513" y="117" text-anchor="middle" fill="#8b949e" font-size="9">发送缓冲区</text>
+          <text x="513" y="130" text-anchor="middle" fill="#8b949e" font-size="9">DMA / 中断驱动</text>
+
+          <line x1="568" y1="110" x2="608" y2="110" stroke="#f78166" stroke-width="1.5" marker-end="url(#atx)"/>
+
+          <!-- 硬件 -->
+          <rect x="608" y="80" width="62" height="60" rx="8" fill="rgba(247,129,102,0.1)" stroke="#f78166" stroke-width="1.5"/>
+          <text x="639" y="106" text-anchor="middle" fill="#f78166" font-size="10" font-weight="600">串口</text>
+          <text x="639" y="121" text-anchor="middle" fill="#f78166" font-size="10" font-weight="600">硬件</text>
+
+          <text x="340" y="195" text-anchor="middle" fill="#6e7681" font-size="10">发送路径（TX）：IP 数据包 → PPP 帧 → HDLC 封装 → 字节流</text>
+        </svg>
+        <div class="svg-caption">图6：PPP 数据发送路径（TX Path）</div>
+      </div>
+
+      <h3>流量控制</h3>
+      <p>官方文档（ppp_generic.txt）描述了 PPP 的流控机制：</p>
+      <ul>
+        <li>当通道的 <code>start_xmit()</code> 返回 <code>0</code> 时，表示拒绝接受数据包（流控）</li>
+        <li>通道在可以接受更多数据时调用 <code>ppp_output_wakeup()</code></li>
+        <li>PPP 通用层会重新尝试发送被拒绝的帧</li>
+        <li>TTY 层的 <code>write_wakeup</code> 回调在发送缓冲区有空间时触发</li>
+      </ul>
+
+      <div class="first-principle">
+        <div class="fp-title">⚛ 第一性原理</div>
+        <p>数据路径揭示了<strong>协议栈的本质是函数调用链</strong>：每一层接收下层的原始数据，添加/去除自己的语义（帧边界、错误检测、压缩），再传递给相邻层。PPP 通过线路规程将这条调用链的一个环节（字节流 ↔ PPP 帧）插入到 TTY 与 UART 之间，优雅地避免了对现有代码的任何修改。</p>
+      </div>
+    </section>
+
+    <!-- ===== §7 数据结构 ===== -->
+    <section class="section" id="s7">
+      <div class="section-badge">§7 · 数据结构</div>
+      <h2>关键数据结构全景</h2>
+
+      <div class="svg-container">
+        <svg viewBox="0 0 680 480" xmlns="http://www.w3.org/2000/svg" style="min-width:380px;width:100%">
+          <defs>
+            <marker id="ads" markerWidth="6" markerHeight="5" refX="6" refY="2.5" orient="auto">
+              <polygon points="0 0, 6 2.5, 0 5" fill="#8b949e"/>
+            </marker>
+          </defs>
+
+          <!-- tty_struct -->
+          <rect x="20" y="20" width="190" height="160" rx="8" fill="#1c2230" stroke="#e3b341" stroke-width="1.5"/>
+          <text x="115" y="42" text-anchor="middle" fill="#e3b341" font-size="12" font-weight="700">tty_struct</text>
+          <line x1="20" y1="50" x2="210" y2="50" stroke="#2d3748"/>
+          <text x="30" y="67" fill="#79c0ff" font-size="10" font-family="monospace">*driver</text>
+          <text x="30" y="84" fill="#79c0ff" font-size="10" font-family="monospace">*ldisc</text>
+          <text x="30" y="101" fill="#79c0ff" font-size="10" font-family="monospace">*disc_data</text>
+          <text x="30" y="118" fill="#79c0ff" font-size="10" font-family="monospace">termios</text>
+          <text x="30" y="135" fill="#79c0ff" font-size="10" font-family="monospace">session</text>
+          <text x="30" y="152" fill="#79c0ff" font-size="10" font-family="monospace">pgrp</text>
+          <text x="30" y="169" fill="#8b949e" font-size="9">...</text>
+
+          <!-- tty_ldisc -->
+          <rect x="250" y="20" width="190" height="130" rx="8" fill="#1c2230" stroke="#58a6ff" stroke-width="1.5"/>
+          <text x="345" y="42" text-anchor="middle" fill="#58a6ff" font-size="12" font-weight="700">tty_ldisc_ops</text>
+          <line x1="250" y1="50" x2="440" y2="50" stroke="#2d3748"/>
+          <text x="260" y="67" fill="#79c0ff" font-size="10" font-family="monospace">num = N_PPP(3)</text>
+          <text x="260" y="84" fill="#79c0ff" font-size="10" font-family="monospace">*open()</text>
+          <text x="260" y="101" fill="#79c0ff" font-size="10" font-family="monospace">*close()</text>
+          <text x="260" y="118" fill="#79c0ff" font-size="10" font-family="monospace">*receive_buf()</text>
+          <text x="260" y="135" fill="#79c0ff" font-size="10" font-family="monospace">*write_wakeup()</text>
+
+          <!-- asyncppp -->
+          <rect x="20" y="230" width="190" height="200" rx="8" fill="#1c2230" stroke="#58a6ff" stroke-width="2"/>
+          <text x="115" y="252" text-anchor="middle" fill="#58a6ff" font-size="12" font-weight="700">asyncppp</text>
+          <line x1="20" y1="260" x2="210" y2="260" stroke="#2d3748"/>
+          <text x="30" y="277" fill="#79c0ff" font-size="10" font-family="monospace">*tty</text>
+          <text x="30" y="294" fill="#79c0ff" font-size="10" font-family="monospace">flags / state</text>
+          <text x="30" y="311" fill="#79c0ff" font-size="10" font-family="monospace">mru</text>
+          <text x="30" y="328" fill="#79c0ff" font-size="10" font-family="monospace">*rpkt (sk_buff)</text>
+          <text x="30" y="345" fill="#79c0ff" font-size="10" font-family="monospace">rqueue</text>
+          <text x="30" y="362" fill="#79c0ff" font-size="10" font-family="monospace">tsk (tasklet)</text>
+          <text x="30" y="379" fill="#e3b341" font-size="10" font-family="monospace">chan (ppp_channel)</text>
+          <text x="30" y="396" fill="#79c0ff" font-size="10" font-family="monospace">xmit_lock</text>
+          <text x="30" y="413" fill="#79c0ff" font-size="10" font-family="monospace">recv_lock</text>
+
+          <!-- ppp_channel -->
+          <rect x="250" y="200" width="190" height="110" rx="8" fill="#1c2230" stroke="#e3b341" stroke-width="1.5"/>
+          <text x="345" y="222" text-anchor="middle" fill="#e3b341" font-size="12" font-weight="700">ppp_channel</text>
+          <line x1="250" y1="230" x2="440" y2="230" stroke="#2d3748"/>
+          <text x="260" y="247" fill="#79c0ff" font-size="10" font-family="monospace">*ops</text>
+          <text x="260" y="264" fill="#79c0ff" font-size="10" font-family="monospace">*ppp (→ ppp struct)</text>
+          <text x="260" y="281" fill="#79c0ff" font-size="10" font-family="monospace">hdrlen</text>
+          <text x="260" y="298" fill="#79c0ff" font-size="10" font-family="monospace">mtu</text>
+
+          <!-- ppp struct -->
+          <rect x="480" y="20" width="180" height="200" rx="8" fill="#1c2230" stroke="#39d353" stroke-width="1.5"/>
+          <text x="570" y="42" text-anchor="middle" fill="#39d353" font-size="12" font-weight="700">ppp (通用层)</text>
+          <line x1="480" y1="50" x2="660" y2="50" stroke="#2d3748"/>
+          <text x="490" y="67" fill="#79c0ff" font-size="10" font-family="monospace">net (net_device)</text>
+          <text x="490" y="84" fill="#79c0ff" font-size="10" font-family="monospace">channels list</text>
+          <text x="490" y="101" fill="#79c0ff" font-size="10" font-family="monospace">xq (发送队列)</text>
+          <text x="490" y="118" fill="#79c0ff" font-size="10" font-family="monospace">mru</text>
+          <text x="490" y="135" fill="#79c0ff" font-size="10" font-family="monospace">flags</text>
+          <text x="490" y="152" fill="#79c0ff" font-size="10" font-family="monospace">compressor</text>
+          <text x="490" y="169" fill="#79c0ff" font-size="10" font-family="monospace">decompressor</text>
+          <text x="490" y="186" fill="#79c0ff" font-size="10" font-family="monospace">xcomp_scratch</text>
+          <text x="490" y="203" fill="#79c0ff" font-size="10" font-family="monospace">file (→/dev/ppp)</text>
+
+          <!-- 连线 -->
+          <!-- tty_struct → tty_ldisc -->
+          <line x1="210" y1="57" x2="249" y2="57" stroke="#8b949e" stroke-width="1" marker-end="url(#ads)"/>
+          <text x="228" y="52" text-anchor="middle" fill="#6e7681" font-size="9">*ldisc</text>
+
+          <!-- tty_struct → asyncppp (disc_data) -->
+          <line x1="115" y1="180" x2="115" y2="229" stroke="#8b949e" stroke-width="1" marker-end="url(#ads)"/>
+          <text x="125" y="208" fill="#6e7681" font-size="9">disc_data</text>
+
+          <!-- asyncppp → ppp_channel (内部) -->
+          <line x1="210" y1="379" x2="249" y2="280" stroke="#e3b341" stroke-width="1" marker-end="url(#ads)"/>
+          <text x="242" y="340" fill="#6e7681" font-size="9" text-anchor="middle">内嵌</text>
+
+          <!-- ppp_channel → ppp -->
+          <line x1="440" y1="264" x2="479" y2="120" stroke="#8b949e" stroke-width="1" marker-end="url(#ads)"/>
+          <text x="475" y="195" fill="#6e7681" font-size="9">→ ppp</text>
+
+          <!-- asyncppp → tty_struct -->
+          <line x1="30" y1="277" x2="115" y2="182" stroke="#8b949e" stroke-width="0.8" stroke-dasharray="3,2" marker-end="url(#ads)"/>
+
+          <text x="340" y="460" text-anchor="middle" fill="#6e7681" font-size="10">核心数据结构关系图（基于内核源码 ppp_async.c / ppp_generic.c）</text>
+        </svg>
+        <div class="svg-caption">图7：PPP 相关核心数据结构关系</div>
+      </div>
+
+      <h3>结构关系说明</h3>
+      <table>
+        <thead>
+          <tr><th>结构体</th><th>所在文件</th><th>作用</th></tr>
+        </thead>
+        <tbody>
+          <tr>
+            <td><code>tty_struct</code></td>
+            <td><code>include/linux/tty.h</code></td>
+            <td>TTY 设备的核心状态，<code>disc_data</code> 字段指向当前线路规程的私有数据（asyncppp）</td>
+          </tr>
+          <tr>
+            <td><code>tty_ldisc_ops</code></td>
+            <td><code>include/linux/tty_ldisc.h</code></td>
+            <td>线路规程操作函数表，N_PPP 注册此结构</td>
+          </tr>
+          <tr>
+            <td><code>asyncppp</code></td>
+            <td><code>drivers/net/ppp/ppp_async.c</code></td>
+            <td>异步 PPP 线路规程的私有状态，内嵌 ppp_channel</td>
+          </tr>
+          <tr>
+            <td><code>ppp_channel</code></td>
+            <td><code>include/linux/ppp_channel.h</code></td>
+            <td>通道与通用层之间的接口结构</td>
+          </tr>
+          <tr>
+            <td><code>ppp</code>（通用层）</td>
+            <td><code>drivers/net/ppp/ppp_generic.c</code></td>
+            <td>PPP 网络接口状态，管理所有通道、压缩、net_device</td>
+          </tr>
+        </tbody>
+      </table>
+
+      <div class="first-principle">
+        <div class="fp-title">⚛ 第一性原理</div>
+        <p>数据结构的设计反映了<strong>所有权与生命周期管理</strong>原则：<code>asyncppp</code> 由线路规程拥有（在 open 时分配，close 时释放），<code>ppp_channel</code> 内嵌其中（无需单独分配），<code>tty_struct.disc_data</code> 指向它（TTY 层不拥有）。这种设计使得任何一层崩溃都不会导致悬空指针——因为引用计数和 RCU 锁确保了访问者在结构有效期内使用。</p>
+      </div>
+    </section>
+
+    <!-- ===== §8 为什么需要 TTY ===== -->
+    <section class="section" id="s8">
+      <div class="section-badge">§8 · 深层原因</div>
+      <h2>为什么 PPP 必须与 TTY 子系统关联？</h2>
+
+      <h3>原因一：串行硬件的唯一内核入口</h3>
+      <p>在 Linux 内核中，所有串行硬件（UART）的访问都通过 TTY 子系统。UART 驱动注册为 TTY 驱动，其接口对外只暴露 <code>/dev/ttyS0</code>、<code>/dev/ttyUSB0</code> 等 TTY 设备文件。没有绕过 TTY 的"原始 UART 接口"。</p>
+
+      <p>如 O'Reilly《Linux Network Administrator's Guide》所述（<a class="source-link" href="https://www.oreilly.com/library/view/linux-network-administrators/1565924002/ch04s02.html" target="_blank">原文链接</a>）：</p>
+      <blockquote style="border-left:3px solid var(--border);padding:8px 16px;color:var(--text-muted);margin:12px 0;font-style:italic;">
+        "The kernel doesn't really treat the tty device as a network device that you can manipulate like an Ethernet device, using commands such as ifconfig. However, it does treat tty devices as places where network devices can be bound. To do this, the kernel changes what is called the 'line discipline' of the tty device. Both SLIP and PPP are line disciplines that may be enabled on tty devices."
+      </blockquote>
+
+      <h3>原因二：线路规程提供了完美的插入点</h3>
+      <p>线路规程机制在 PPP 出现之前就存在（为 N_TTY 设计），它在 UART 驱动和 TTY 驱动之间提供了一个<strong>天然的拦截点</strong>：</p>
+      <ul>
+        <li>不需要修改 UART 驱动（硬件相关，难以修改）</li>
+        <li>不需要修改 TTY 驱动（通用，修改影响面广）</li>
+        <li>只需注册一个新的线路规程，拦截字节流即可</li>
+      </ul>
+
+      <h3>原因三：历史路径依赖（SLIP 先例）</h3>
+      <p>SLIP（Serial Line Internet Protocol）是 PPP 的前身，它同样通过线路规程（<code>N_SLIP</code>）实现。PPP 沿用了这一成熟模式。</p>
+
+      <div class="svg-container">
+        <svg viewBox="0 0 680 280" xmlns="http://www.w3.org/2000/svg" style="min-width:340px;width:100%">
+          <!-- 时间轴 -->
+          <line x1="60" y1="240" x2="650" y2="240" stroke="#2d3748" stroke-width="2"/>
+          <polygon points="645,235 655,240 645,245" fill="#2d3748"/>
+
+          <!-- 节点 -->
+          <circle cx="100" cy="240" r="6" fill="#8b949e"/>
+          <text x="100" y="220" text-anchor="middle" fill="#8b949e" font-size="10">1969</text>
+          <text x="100" y="206" text-anchor="middle" fill="#6e7681" font-size="9">股票报价机/</text>
+          <text x="100" y="194" text-anchor="middle" fill="#6e7681" font-size="9">电传打字机</text>
+
+          <circle cx="200" cy="240" r="6" fill="#8b949e"/>
+          <text x="200" y="220" text-anchor="middle" fill="#8b949e" font-size="10">1970s</text>
+          <text x="200" y="206" text-anchor="middle" fill="#6e7681" font-size="9">UNIX TTY</text>
+          <text x="200" y="194" text-anchor="middle" fill="#6e7681" font-size="9">子系统诞生</text>
+
+          <circle cx="310" cy="240" r="6" fill="#e3b341"/>
+          <text x="310" y="220" text-anchor="middle" fill="#e3b341" font-size="10">1988</text>
+          <text x="310" y="206" text-anchor="middle" fill="#e3b341" font-size="9">SLIP (N_SLIP)</text>
+          <text x="310" y="194" text-anchor="middle" fill="#e3b341" font-size="9">线路规程先例</text>
+          <text x="310" y="182" text-anchor="middle" fill="#6e7681" font-size="8">RFC 1055</text>
+
+          <circle cx="430" cy="240" r="8" fill="#58a6ff"/>
+          <text x="430" y="220" text-anchor="middle" fill="#58a6ff" font-size="10">1994</text>
+          <text x="430" y="206" text-anchor="middle" fill="#58a6ff" font-size="10" font-weight="700">PPP (N_PPP)</text>
+          <text x="430" y="194" text-anchor="middle" fill="#a8cfff" font-size="9">Linux 1.1.13+</text>
+          <text x="430" y="182" text-anchor="middle" fill="#6e7681" font-size="8">RFC 1661</text>
+
+          <circle cx="550" cy="240" r="6" fill="#39d353"/>
+          <text x="550" y="220" text-anchor="middle" fill="#39d353" font-size="10">2000s</text>
+          <text x="550" y="206" text-anchor="middle" fill="#39d353" font-size="9">PPPoE</text>
+          <text x="550" y="194" text-anchor="middle" fill="#39d353" font-size="9">（绕过 TTY）</text>
+          <text x="550" y="182" text-anchor="middle" fill="#6e7681" font-size="8">宽带时代</text>
+
+          <!-- 说明 -->
+          <text x="340" y="265" text-anchor="middle" fill="#6e7681" font-size="10">PPP 继承了 SLIP 的线路规程模式，是 TTY 子系统扩展性的典型应用</text>
+
+          <!-- 竖线 -->
+          <line x1="310" y1="170" x2="310" y2="234" stroke="#e3b341" stroke-width="0.8" stroke-dasharray="3,2"/>
+          <line x1="430" y1="170" x2="430" y2="232" stroke="#58a6ff" stroke-width="0.8" stroke-dasharray="3,2"/>
+        </svg>
+        <div class="svg-caption">图8：串行网络协议的历史演进</div>
+      </div>
+
+      <h3>原因四：复用现有的设备管理基础设施</h3>
+      <p>通过 TTY 子系统，PPP 可以免费获得：</p>
+      <ul>
+        <li><strong>设备文件</strong>：<code>/dev/ttyS0</code> 等已经存在，无需为 PPP 创建新设备</li>
+        <li><strong>modem 控制</strong>：DCD（载波检测）、HUP 信号处理</li>
+        <li><strong>独占访问</strong>：<code>TIOCEXCL</code> 防止多个进程竞争串口</li>
+        <li><strong>波特率和线路配置</strong>：通过 <code>termios</code> API 设置，pppd 和 chat 都使用</li>
+        <li><strong>流量控制</strong>：硬件 RTS/CTS 流控，软件 XON/XOFF 流控</li>
+      </ul>
+
+      <h3>原因五：PPPoE 说明了问题的反面</h3>
+      <p>PPPoE（PPP over Ethernet）<strong>不</strong>经过 TTY 子系统——它运行在以太网上，直接与网络层交互。这恰好证明了：PPP 需要 TTY 的原因是载体（串行线路），而不是 PPP 协议本身的需要。当载体是以太网时，就不需要 TTY 了。</p>
+
+      <div class="callout principle">
+        <strong>🎯 关键洞察</strong>
+        PPP 需要 TTY 的原因是：<strong>它的物理载体是串行线路，而 Linux 内核中串行线路的唯一抽象是 TTY</strong>。线路规程机制是这个约束下最优雅的扩展方式。
+      </div>
+
+      <div class="first-principle">
+        <div class="fp-title">⚛ 第一性原理</div>
+        <p>网络协议的实现路径由其<strong>物理介质</strong>决定。PPP 的物理介质是串行线（UART），而 Linux 对串行硬件的抽象就是 TTY。因此 PPP 必须通过 TTY。这不是 PPP 的特殊性，而是普遍规律：以太网协议通过网络驱动框架，USB 协议通过 USB 子系统，串行协议通过 TTY 子系统——<strong>每类硬件在内核中只有一个抽象入口</strong>。</p>
+      </div>
+    </section>
+
+    <!-- ===== §9 总结 ===== -->
+    <section class="section" id="s9">
+      <div class="section-badge">§9 · 总结</div>
+      <h2>总结与第一性原理综述</h2>
+
+      <h3>完整关系图</h3>
+
+      <div class="svg-container">
+        <svg viewBox="0 0 680 420" xmlns="http://www.w3.org/2000/svg" style="min-width:360px;width:100%">
+          <defs>
+            <marker id="af" markerWidth="7" markerHeight="5" refX="7" refY="2.5" orient="auto">
+              <polygon points="0 0, 7 2.5, 0 5" fill="#58a6ff"/>
+            </marker>
+          </defs>
+
+          <!-- 用户空间 -->
+          <rect x="10" y="10" width="660" height="100" rx="10" fill="rgba(57,211,83,0.04)" stroke="#39d353" stroke-width="1" stroke-dasharray="5,3"/>
+          <text x="20" y="28" fill="#39d353" font-size="10" font-weight="700">用户空间</text>
+
+          <rect x="30" y="35" width="130" height="60" rx="6" fill="#1c2230" stroke="#39d353" stroke-width="1"/>
+          <text x="95" y="58" text-anchor="middle" fill="#39d353" font-size="11" font-weight="600">pppd 守护进程</text>
+          <text x="95" y="74" text-anchor="middle" fill="#8b949e" font-size="9">PPP 协商 (LCP/IPCP)</text>
+          <text x="95" y="87" text-anchor="middle" fill="#8b949e" font-size="9">chat / AT 命令</text>
+
+          <rect x="200" y="35" width="130" height="60" rx="6" fill="#1c2230" stroke="#39d353" stroke-width="1"/>
+          <text x="265" y="58" text-anchor="middle" fill="#39d353" font-size="11" font-weight="600">/dev/ppp</text>
+          <text x="265" y="74" text-anchor="middle" fill="#8b949e" font-size="9">控制接口</text>
+          <text x="265" y="87" text-anchor="middle" fill="#8b949e" font-size="9">PPPIOCNEWUNIT 等</text>
+
+          <rect x="370" y="35" width="130" height="60" rx="6" fill="#1c2230" stroke="#39d353" stroke-width="1"/>
+          <text x="435" y="58" text-anchor="middle" fill="#39d353" font-size="11" font-weight="600">/dev/ttyS0</text>
+          <text x="435" y="74" text-anchor="middle" fill="#8b949e" font-size="9">串口文件</text>
+          <text x="435" y="87" text-anchor="middle" fill="#8b949e" font-size="9">TIOCSETD(N_PPP)</text>
+
+          <rect x="540" y="35" width="120" height="60" rx="6" fill="#1c2230" stroke="#39d353" stroke-width="1"/>
+          <text x="600" y="58" text-anchor="middle" fill="#39d353" font-size="11" font-weight="600">ifconfig / ip</text>
+          <text x="600" y="74" text-anchor="middle" fill="#8b949e" font-size="9">ppp0 接口管理</text>
+          <text x="600" y="87" text-anchor="middle" fill="#8b949e" font-size="9">路由配置</text>
+
+          <!-- 内核空间 -->
+          <rect x="10" y="130" width="660" height="250" rx="10" fill="rgba(88,166,255,0.03)" stroke="#58a6ff" stroke-width="1" stroke-dasharray="5,3"/>
+          <text x="20" y="148" fill="#58a6ff" font-size="10" font-weight="700">内核空间</text>
+
+          <!-- PPP 通用层 -->
+          <rect x="30" y="160" width="200" height="80" rx="8" fill="rgba(88,166,255,0.08)" stroke="#58a6ff" stroke-width="1.5"/>
+          <text x="130" y="182" text-anchor="middle" fill="#58a6ff" font-size="12" font-weight="700">PPP 通用层</text>
+          <text x="130" y="199" text-anchor="middle" fill="#8b949e" font-size="10">ppp_generic.c</text>
+          <text x="130" y="215" text-anchor="middle" fill="#8b949e" font-size="9">net_device (ppp0)</text>
+          <text x="130" y="229" text-anchor="middle" fill="#8b949e" font-size="9">压缩 / 多链路</text>
+
+          <!-- N_PPP 线路规程 -->
+          <rect x="260" y="160" width="200" height="80" rx="8" fill="rgba(88,166,255,0.12)" stroke="#58a6ff" stroke-width="2"/>
+          <text x="360" y="182" text-anchor="middle" fill="#58a6ff" font-size="12" font-weight="700">N_PPP 线路规程</text>
+          <text x="360" y="199" text-anchor="middle" fill="#a8cfff" font-size="10">ppp_async.c</text>
+          <text x="360" y="215" text-anchor="middle" fill="#8b949e" font-size="9">HDLC 帧封装/解封</text>
+          <text x="360" y="229" text-anchor="middle" fill="#8b949e" font-size="9">tty_ldisc_ops N_PPP</text>
+
+          <!-- TTY 子系统 -->
+          <rect x="490" y="160" width="170" height="80" rx="8" fill="rgba(227,179,65,0.08)" stroke="#e3b341" stroke-width="1.5"/>
+          <text x="575" y="182" text-anchor="middle" fill="#e3b341" font-size="12" font-weight="700">TTY 子系统</text>
+          <text x="575" y="199" text-anchor="middle" fill="#8b949e" font-size="10">tty_io.c</text>
+          <text x="575" y="215" text-anchor="middle" fill="#8b949e" font-size="9">会话/作业控制</text>
+          <text x="575" y="229" text-anchor="middle" fill="#8b949e" font-size="9">线路规程切换</text>
+
+          <!-- UART 驱动 -->
+          <rect x="260" y="275" width="200" height="60" rx="8" fill="rgba(247,129,102,0.08)" stroke="#f78166" stroke-width="1.5"/>
+          <text x="360" y="298" text-anchor="middle" fill="#f78166" font-size="12" font-weight="600">UART 驱动</text>
+          <text x="360" y="315" text-anchor="middle" fill="#8b949e" font-size="9">serial_core · 8250 · ftdi_sio 等</text>
+
+          <!-- IP 网络层 -->
+          <rect x="30" y="275" width="200" height="60" rx="8" fill="rgba(57,211,83,0.08)" stroke="#39d353" stroke-width="1.5"/>
+          <text x="130" y="298" text-anchor="middle" fill="#39d353" font-size="12" font-weight="600">IP 网络层</text>
+          <text x="130" y="315" text-anchor="middle" fill="#8b949e" font-size="9">netif_rx() · sk_buff</text>
+
+          <!-- 连线 -->
+          <line x1="230" y1="200" x2="258" y2="200" stroke="#58a6ff" stroke-width="1.5" marker-end="url(#af)"/>
+          <line x1="460" y1="200" x2="488" y2="200" stroke="#58a6ff" stroke-width="1.5" marker-end="url(#af)"/>
+          <line x1="360" y1="240" x2="360" y2="274" stroke="#58a6ff" stroke-width="1.5" marker-end="url(#af)"/>
+          <line x1="230" y1="305" x2="258" y2="305" stroke="#39d353" stroke-width="1.5" marker-end="url(#af)"/>
+
+          <!-- 用户空间到内核的连线 -->
+          <line x1="265" y1="95" x2="130" y2="159" stroke="#8b949e" stroke-width="1" stroke-dasharray="3,2" marker-end="url(#af)"/>
+          <line x1="435" y1="95" x2="360" y2="159" stroke="#8b949e" stroke-width="1" stroke-dasharray="3,2" marker-end="url(#af)"/>
+
+          <text x="340" y="400" text-anchor="middle" fill="#6e7681" font-size="10">PPP 与 TTY 子系统完整关系全景图</text>
+        </svg>
+        <div class="svg-caption">图9：Linux PPP 与 TTY 子系统全景关系图</div>
+      </div>
+
+      <h3>六个核心结论</h3>
+      <table>
+        <thead>
+          <tr><th>#</th><th>结论</th><th>技术依据</th></tr>
+        </thead>
+        <tbody>
+          <tr>
+            <td>1</td>
+            <td>PPP 通过 <strong>N_PPP 线路规程</strong>与 TTY 关联</td>
+            <td><code>tty_register_ldisc()</code>，编号 3</td>
+          </tr>
+          <tr>
+            <td>2</td>
+            <td><strong>TIOCSETD ioctl</strong> 是触发关联的用户态操作</td>
+            <td>pppd/sys-linux.c: <code>ioctl(fd, TIOCSETD, &ppp_disc)</code></td>
+          </tr>
+          <tr>
+            <td>3</td>
+            <td>数据不经过 tty 的 read/write，而经过 <strong>receive_buf</strong> 和 <strong>tty->ops->write</strong></td>
+            <td>ppp_async.c 代码注释原文</td>
+          </tr>
+          <tr>
+            <td>4</td>
+            <td>pppd 控制通过 <strong>/dev/ppp</strong>，数据物理路径通过 <strong>/dev/ttyS0</strong></td>
+            <td>ppp_generic.txt: /dev/ppp 接口描述</td>
+          </tr>
+          <tr>
+            <td>5</td>
+            <td>PPP 需要 TTY 的根本原因是<strong>串行硬件的内核抽象只有 TTY</strong></td>
+            <td>O'Reilly LNAG，kernel TTY 架构</td>
+          </tr>
+          <tr>
+            <td>6</td>
+            <td><strong>PPPoE 不需要 TTY</strong>，证明关联是物理介质决定的</td>
+            <td>ppp_generic.txt: "Currently there are PPP channel implementations for async serial, sync serial, and PPP over ethernet"</td>
+          </tr>
+        </tbody>
+      </table>
+
+      <div class="first-principle">
+        <div class="fp-title">⚛ 终极第一性原理</div>
+        <p>
+          一切的根源在于一个物理事实：<strong>信息在串行线路上以字节流的形式传输，没有天然的"包"边界</strong>。
+          <br><br>
+          为了在这种介质上运行网络协议，必须解决两个问题：①如何把字节流切割成有意义的帧（成帧）；②如何把这个成帧逻辑插入现有的内核体系（集成）。
+          <br><br>
+          Linux 的 TTY 线路规程机制完美解决了问题②：它是内核预留的、可替换的"字节流处理策略插槽"。PPP 通过注册 N_PPP 线路规程解决了问题①，并借用了 TTY 已有的全套基础设施。
+          <br><br>
+          <strong>结论：PPP 与 TTY 的关联，是物理约束（串行介质）、工程约束（复用已有内核基础设施）和设计哲学（可插拔、关注点分离）共同作用的必然结果。</strong>
+        </p>
+      </div>
+
+      <div class="callout info" style="margin-top:30px;">
+        <strong>📚 延伸阅读</strong>
+        <a class="source-link" href="https://www.kernel.org/doc/Documentation/networking/ppp_generic.txt" target="_blank">🔗 PPP Generic Driver and Channel Interface (Paul Mackerras, 2002)</a>
+        <a class="source-link" href="https://docs.kernel.org/driver-api/tty/tty_ldisc.html" target="_blank">🔗 TTY Line Discipline — The Linux Kernel documentation</a>
+        <a class="source-link" href="https://www.linusakesson.net/programming/tty/index.php" target="_blank">🔗 The TTY demystified (Linus Åkesson)</a>
+        <a class="source-link" href="https://github.com/torvalds/linux/blob/master/drivers/net/ppp/ppp_async.c" target="_blank">🔗 Linux kernel: drivers/net/ppp/ppp_async.c</a>
+        <a class="source-link" href="https://github.com/torvalds/linux/blob/master/drivers/net/ppp/ppp_generic.c" target="_blank">🔗 Linux kernel: drivers/net/ppp/ppp_generic.c</a>
+        <a class="source-link" href="https://github.com/ppp-project/ppp/blob/master/pppd/sys-linux.c" target="_blank">🔗 pppd: pppd/sys-linux.c</a>
+      </div>
+    </section>
+
+  </main>
+</div>
+
+<script>
+  // ===== 进度条 =====
+  function updateProgress() {
+    const scrollTop = window.pageYOffset || document.documentElement.scrollTop;
+    const docH = document.documentElement.scrollHeight - window.innerHeight;
+    const pct = docH > 0 ? (scrollTop / docH) * 100 : 0;
+    document.getElementById('progress-bar').style.width = pct + '%';
+  }
+
+  // ===== 导航高亮 =====
+  const sections = document.querySelectorAll('.section');
+  const navItems = document.querySelectorAll('.nav-item[data-target]');
+
+  function updateNav() {
+    const scrollY = window.pageYOffset + 100;
+    let current = null;
+    sections.forEach(s => {
+      if (s.offsetTop <= scrollY) current = s.id;
+    });
+    navItems.forEach(item => {
+      item.classList.toggle('active', item.dataset.target === current);
+    });
+  }
+
+  window.addEventListener('scroll', () => {
+    updateProgress();
+    updateNav();
+  }, { passive: true });
+
+  // ===== 跳转 =====
+  function jumpTo(id) {
+    const el = document.getElementById(id);
+    if (el) {
+      el.scrollIntoView({ behavior: 'smooth' });
+      closeSidebar();
+    }
+  }
+
+  // ===== 上下章节 =====
+  const sectionIds = Array.from(sections).map(s => s.id);
+
+  function currentSectionIndex() {
+    const scrollY = window.pageYOffset + 120;
+    let idx = 0;
+    sections.forEach((s, i) => {
+      if (s.offsetTop <= scrollY) idx = i;
+    });
+    return idx;
+  }
+
+  function nextSection() {
+    const idx = currentSectionIndex();
+    if (idx < sectionIds.length - 1) jumpTo(sectionIds[idx + 1]);
+  }
+
+  function prevSection() {
+    const idx = currentSectionIndex();
+    if (idx > 0) jumpTo(sectionIds[idx - 1]);
+  }
+
+  document.addEventListener('keydown', e => {
+    if (e.target.tagName === 'INPUT' || e.target.tagName === 'TEXTAREA') return;
+    if (e.key === 'ArrowRight') nextSection();
+    if (e.key === 'ArrowLeft') prevSection();
+  });
+
+  // ===== 汉堡菜单 =====
+  function toggleSidebar() {
+    const sidebar = document.getElementById('sidebar');
+    const overlay = document.getElementById('overlay');
+    sidebar.classList.toggle('open');
+    overlay.classList.toggle('show');
+  }
+
+  function closeSidebar() {
+    document.getElementById('sidebar').classList.remove('open');
+    document.getElementById('overlay').classList.remove('show');
+  }
+
+  // 初始化
+  updateProgress();
+  updateNav();
+</script>
+</body>
+</html>

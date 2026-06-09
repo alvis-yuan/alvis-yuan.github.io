@@ -14,9 +14,6 @@
 #include <sys/mman.h>
 #include <unistd.h>
 
-#define LogError(fmt, arg...) fprintf(stderr, "[ERROR][%s-%d] " fmt "\n", __func__, __LINE__, ##arg)
-#define LogInfo(fmt, arg...)  fprintf(stdout, "[INFO][%s-%d] " fmt "\n", __func__, __LINE__, ##arg)
-
 /**
  * @brief 为局部变量绑定 cleanup 回调。
  *
@@ -280,6 +277,5 @@ static inline void _macro_scoped_mutex_unlock(pthread_mutex_t **mutex_ptr)
              __with_lock_once;                                               \
              __with_lock_once = 0)
 
-#define REQUIRE(cond, msg) do { if (!(cond)) { LogError("%s", msg); goto out; } } while (0)
 
 #endif /* RAII_H */

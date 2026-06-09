@@ -12,7 +12,7 @@
 #define _GNU_SOURCE
 
 #include "mem_frag_diag.h"
-#include "timer_heap.h"
+#include "timer.h"
 
 #include <errno.h>
 #include <limits.h>
@@ -38,10 +38,10 @@ enum {
 /** 纳秒：周期性 tick 间隔 */
 #define EVENT_DEMO_TICK_NS  ((uint64_t)EVENT_DEMO_TICK_MS * 1000000ULL)
 
-/** 嵌入 timer_heap_node 的演示定时器 */
+/** 嵌入 timer_node 的演示定时器 */
 typedef struct demo_timer {
-    struct timer_heap_node node;
-    struct timer_heap     *heap;
+    struct timer_node node;
+    struct timer_context     *heap;
     const char            *name;
 } demo_timer_t;
 
@@ -49,13 +49,13 @@ typedef struct demo_timer {
 typedef struct event_demo_ctx {
     int              epfd;
     int              signal_fd;
-    struct timer_heap timers;
+    struct timer_context timers;
     demo_timer_t     tick_timer;
     bool             running;
 } event_demo_ctx_t;
 
 static void
-event_tick_cb(struct timer_heap_node *node)
+event_tick_cb(struct timer_node *node)
 {
     demo_timer_t *timer = NULL;
 
@@ -63,8 +63,8 @@ event_tick_cb(struct timer_heap_node *node)
     LogInfo("periodic timer '%s' fired", timer->name);
 
     /* 一次性 pop 后需重新入堆以实现周期触发 */
-    if (!timer_heap_push(timer->heap, node, EVENT_DEMO_TICK_NS, event_tick_cb)) {
-        LogError("timer_heap_push re-arm failed for '%s'", timer->name);
+    if (!timer_add(timer->heap, node, EVENT_DEMO_TICK_NS, event_tick_cb)) {
+        LogError("timer_add re-arm failed for '%s'", timer->name);
     }
 }
 
@@ -146,7 +146,7 @@ event_drain_signalfd(int signal_fd, bool *running)
 }
 
 static int
-event_epoll_wait_ms(const struct timer_heap *timers)
+event_epoll_wait_ms(const struct timer_context *timers)
 {
     int64_t next_ms = 0;
 
@@ -219,17 +219,17 @@ event_setup_timers(event_demo_ctx_t *ctx)
         return -1;
     }
 
-    timer_heap_init(&ctx->timers);
-    timer_heap_node_init(&ctx->tick_timer.node);
+    timer_context_init(&ctx->timers);
+    timer_node_init(&ctx->tick_timer.node);
 
     ctx->tick_timer.heap = &ctx->timers;
     ctx->tick_timer.name = "tick";
 
-    if (!timer_heap_push(&ctx->timers,
+    if (!timer_add(&ctx->timers,
                          &ctx->tick_timer.node,
                          EVENT_DEMO_TICK_NS,
                          event_tick_cb)) {
-        LogError("timer_heap_push initial tick failed");
+        LogError("timer_add initial tick failed");
         return -1;
     }
     return 0;

@@ -1,0 +1,1952 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>CMake 编译系统详解 — 以 curl 为例</title>
+<style>
+  :root {
+    --bg: #0f1117;
+    --bg2: #161b22;
+    --bg3: #1c2128;
+    --border: #30363d;
+    --accent: #58a6ff;
+    --accent2: #3fb950;
+    --accent3: #f78166;
+    --accent4: #e3b341;
+    --accent5: #bc8cff;
+    --text: #c9d1d9;
+    --text2: #8b949e;
+    --text3: #f0f6fc;
+    --sidebar-w: 280px;
+    --header-h: 4px;
+    --nav-h: 52px;
+  }
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  html { scroll-behavior: smooth; }
+  body {
+    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", "Noto Sans SC", sans-serif;
+    background: var(--bg);
+    color: var(--text);
+    line-height: 1.7;
+    overflow-x: hidden;
+  }
+
+  /* Progress bar */
+  #progress-bar {
+    position: fixed; top: 0; left: 0; height: var(--header-h);
+    background: linear-gradient(90deg, #58a6ff, #3fb950, #bc8cff);
+    z-index: 1000; transition: width 0.1s linear; width: 0%;
+  }
+
+  /* Top nav */
+  #topnav {
+    position: fixed; top: var(--header-h); left: 0; right: 0;
+    height: var(--nav-h); background: rgba(22,27,34,0.96);
+    border-bottom: 1px solid var(--border);
+    backdrop-filter: blur(8px);
+    display: flex; align-items: center; justify-content: space-between;
+    padding: 0 1.5rem; z-index: 900;
+  }
+  #topnav .brand {
+    font-size: 1rem; font-weight: 700; color: var(--accent);
+    display: flex; align-items: center; gap: 0.5rem;
+  }
+  #topnav .brand svg { width: 22px; height: 22px; }
+  #hamburger {
+    display: none; background: none; border: 1px solid var(--border);
+    border-radius: 6px; padding: 6px 10px; cursor: pointer; color: var(--text);
+    font-size: 1.2rem; line-height: 1;
+  }
+  #nav-hint { font-size: 0.78rem; color: var(--text2); }
+  @media (max-width: 768px) {
+    #hamburger { display: block; }
+    #nav-hint { display: none; }
+  }
+
+  /* Layout */
+  #layout {
+    display: flex;
+    padding-top: calc(var(--header-h) + var(--nav-h));
+    min-height: 100vh;
+  }
+
+  /* Sidebar */
+  #sidebar {
+    width: var(--sidebar-w);
+    min-width: var(--sidebar-w);
+    background: var(--bg2);
+    border-right: 1px solid var(--border);
+    position: fixed;
+    top: calc(var(--header-h) + var(--nav-h));
+    bottom: 0;
+    overflow-y: auto;
+    transition: transform 0.3s ease;
+    z-index: 800;
+    padding: 1.2rem 0 2rem 0;
+  }
+  #sidebar::-webkit-scrollbar { width: 4px; }
+  #sidebar::-webkit-scrollbar-track { background: transparent; }
+  #sidebar::-webkit-scrollbar-thumb { background: var(--border); border-radius: 2px; }
+
+  .nav-group { margin-bottom: 0.5rem; }
+  .nav-group-title {
+    font-size: 0.68rem; font-weight: 700; letter-spacing: 0.1em;
+    text-transform: uppercase; color: var(--text2);
+    padding: 0.6rem 1.2rem 0.3rem;
+  }
+  .nav-link {
+    display: flex; align-items: center; gap: 0.5rem;
+    padding: 0.42rem 1.2rem 0.42rem 1.5rem;
+    font-size: 0.86rem; color: var(--text2);
+    text-decoration: none; border-left: 3px solid transparent;
+    transition: all 0.15s; cursor: pointer;
+    border-radius: 0 6px 6px 0; margin-right: 0.5rem;
+  }
+  .nav-link:hover { color: var(--text3); background: var(--bg3); }
+  .nav-link.active {
+    color: var(--accent); background: rgba(88,166,255,0.1);
+    border-left-color: var(--accent);
+  }
+  .nav-dot {
+    width: 7px; height: 7px; border-radius: 50%;
+    background: var(--border); flex-shrink: 0;
+  }
+  .nav-link.active .nav-dot { background: var(--accent); }
+
+  @media (max-width: 768px) {
+    #sidebar {
+      transform: translateX(-100%);
+    }
+    #sidebar.open { transform: translateX(0); }
+    #sidebar-overlay {
+      display: none; position: fixed; inset: 0; background: rgba(0,0,0,0.6);
+      z-index: 799;
+    }
+    #sidebar-overlay.show { display: block; }
+  }
+
+  /* Main content */
+  #main {
+    margin-left: var(--sidebar-w);
+    flex: 1;
+    min-width: 0;
+    padding: 2.5rem clamp(1rem, 4vw, 3rem) 4rem;
+    max-width: 900px;
+  }
+  @media (max-width: 768px) {
+    #main { margin-left: 0; padding: 1.5rem 1rem 3rem; }
+  }
+
+  /* Sections */
+  section {
+    margin-bottom: 5rem;
+    scroll-margin-top: calc(var(--header-h) + var(--nav-h) + 20px);
+  }
+
+  /* Typography */
+  h1 { font-size: 2.2rem; font-weight: 800; color: var(--text3); margin-bottom: 0.5rem; }
+  h2 {
+    font-size: 1.5rem; font-weight: 700; color: var(--text3);
+    margin: 2.5rem 0 1rem;
+    padding-bottom: 0.5rem; border-bottom: 1px solid var(--border);
+    display: flex; align-items: center; gap: 0.6rem;
+  }
+  h2 .num {
+    display: inline-flex; align-items: center; justify-content: center;
+    width: 28px; height: 28px; border-radius: 50%;
+    background: linear-gradient(135deg, #58a6ff, #bc8cff);
+    font-size: 0.85rem; color: #fff; flex-shrink: 0;
+  }
+  h3 { font-size: 1.1rem; font-weight: 600; color: var(--text3); margin: 1.5rem 0 0.7rem; }
+  p { margin-bottom: 0.9rem; font-size: 0.95rem; }
+  a { color: var(--accent); text-decoration: none; }
+  a:hover { text-decoration: underline; }
+  ul, ol { padding-left: 1.4rem; margin-bottom: 0.9rem; }
+  li { margin-bottom: 0.3rem; font-size: 0.95rem; }
+  strong { color: var(--text3); }
+
+  /* Code */
+  code {
+    background: var(--bg3); border: 1px solid var(--border);
+    border-radius: 4px; padding: 0.15em 0.4em;
+    font-family: "JetBrains Mono", "Fira Code", "Courier New", monospace;
+    font-size: 0.83em; color: #e6edf3;
+  }
+  pre {
+    background: var(--bg3); border: 1px solid var(--border);
+    border-radius: 10px; padding: 1.2rem 1.5rem;
+    overflow-x: auto; margin: 1rem 0 1.3rem;
+    font-family: "JetBrains Mono", "Fira Code", monospace;
+    font-size: 0.83rem; line-height: 1.6;
+  }
+  pre code { background: none; border: none; padding: 0; font-size: 1em; }
+  .comment { color: #8b949e; }
+  .kw { color: #ff7b72; }
+  .str { color: #a5d6ff; }
+  .fn { color: #d2a8ff; }
+  .var { color: #79c0ff; }
+  .val { color: #56d364; }
+
+  /* Cards */
+  .card {
+    background: var(--bg2); border: 1px solid var(--border);
+    border-radius: 12px; padding: 1.3rem 1.5rem; margin: 1rem 0;
+  }
+  .card-title {
+    font-size: 0.82rem; font-weight: 700; letter-spacing: 0.06em;
+    text-transform: uppercase; color: var(--accent4); margin-bottom: 0.7rem;
+  }
+
+  /* Badges */
+  .badge {
+    display: inline-block; padding: 0.2em 0.6em; border-radius: 20px;
+    font-size: 0.72rem; font-weight: 600; margin: 0 0.2em;
+  }
+  .badge-blue { background: rgba(88,166,255,0.15); color: var(--accent); border: 1px solid rgba(88,166,255,0.3); }
+  .badge-green { background: rgba(63,185,80,0.15); color: var(--accent2); border: 1px solid rgba(63,185,80,0.3); }
+  .badge-red { background: rgba(247,129,102,0.15); color: var(--accent3); border: 1px solid rgba(247,129,102,0.3); }
+  .badge-yellow { background: rgba(227,179,65,0.15); color: var(--accent4); border: 1px solid rgba(227,179,65,0.3); }
+  .badge-purple { background: rgba(188,140,255,0.15); color: var(--accent5); border: 1px solid rgba(188,140,255,0.3); }
+
+  /* Tables */
+  .tbl-wrap { overflow-x: auto; margin: 1rem 0; border-radius: 10px; border: 1px solid var(--border); }
+  table { width: 100%; border-collapse: collapse; font-size: 0.88rem; }
+  th {
+    background: var(--bg3); color: var(--text3); font-weight: 600;
+    padding: 0.7rem 1rem; text-align: left; border-bottom: 1px solid var(--border);
+    white-space: nowrap;
+  }
+  td { padding: 0.65rem 1rem; border-bottom: 1px solid var(--border); vertical-align: top; }
+  tr:last-child td { border-bottom: none; }
+  tr:hover td { background: rgba(255,255,255,0.02); }
+
+  /* Callout */
+  .callout {
+    border-radius: 10px; padding: 1rem 1.2rem; margin: 1rem 0;
+    border-left: 4px solid; font-size: 0.9rem;
+  }
+  .callout-info { background: rgba(88,166,255,0.07); border-color: var(--accent); }
+  .callout-warn { background: rgba(227,179,65,0.07); border-color: var(--accent4); }
+  .callout-tip { background: rgba(63,185,80,0.07); border-color: var(--accent2); }
+  .callout-danger { background: rgba(247,129,102,0.07); border-color: var(--accent3); }
+  .callout-title { font-weight: 700; margin-bottom: 0.4rem; font-size: 0.85rem; letter-spacing: 0.04em; }
+
+  /* First-principle box */
+  .fp-box {
+    background: linear-gradient(135deg, rgba(88,166,255,0.08), rgba(188,140,255,0.08));
+    border: 1px solid rgba(188,140,255,0.3);
+    border-radius: 12px; padding: 1.3rem 1.5rem; margin-top: 2rem;
+  }
+  .fp-box .fp-title {
+    display: flex; align-items: center; gap: 0.5rem;
+    font-weight: 700; font-size: 0.9rem; color: var(--accent5); margin-bottom: 0.7rem;
+  }
+
+  /* Hero */
+  .hero {
+    text-align: center; padding: 2rem 0 3rem;
+    border-bottom: 1px solid var(--border); margin-bottom: 3rem;
+  }
+  .hero-sub { color: var(--text2); font-size: 1rem; margin-top: 0.7rem; }
+  .hero-meta { margin-top: 1rem; display: flex; gap: 0.5rem; justify-content: center; flex-wrap: wrap; }
+  .ref-link {
+    display: inline-flex; align-items: center; gap: 0.3rem;
+    font-size: 0.8rem; color: var(--text2);
+    background: var(--bg3); border: 1px solid var(--border);
+    border-radius: 6px; padding: 0.3rem 0.7rem;
+    text-decoration: none;
+  }
+  .ref-link:hover { color: var(--accent); border-color: var(--accent); }
+
+  /* SVG diagrams */
+  .diagram-wrap { margin: 1.5rem 0; overflow-x: auto; }
+  svg text { font-family: -apple-system, sans-serif; }
+
+  /* Phase steps */
+  .phase-list { list-style: none; padding: 0; counter-reset: phase; }
+  .phase-item {
+    counter-increment: phase;
+    display: flex; gap: 1rem; margin-bottom: 1.5rem;
+    padding: 1.2rem; background: var(--bg2);
+    border: 1px solid var(--border); border-radius: 10px;
+  }
+  .phase-num {
+    display: flex; align-items: flex-start; justify-content: center;
+    flex-shrink: 0; width: 32px; height: 32px; border-radius: 50%;
+    background: linear-gradient(135deg, var(--accent), var(--accent5));
+    color: #fff; font-weight: 800; font-size: 0.9rem; padding-top: 5px;
+  }
+  .phase-num::before { content: counter(phase); }
+  .phase-body { flex: 1; min-width: 0; }
+  .phase-body h4 { color: var(--text3); font-size: 0.95rem; margin-bottom: 0.4rem; }
+
+  /* Kbd */
+  kbd {
+    display: inline-block; padding: 0.15em 0.45em;
+    background: var(--bg3); border: 1px solid var(--border);
+    border-bottom: 2px solid var(--border);
+    border-radius: 4px; font-size: 0.8rem;
+    font-family: monospace; color: var(--text);
+  }
+
+  /* Chapter nav */
+  .chapter-nav {
+    display: flex; justify-content: space-between; gap: 1rem;
+    margin-top: 3rem; padding-top: 1.5rem; border-top: 1px solid var(--border);
+    flex-wrap: wrap;
+  }
+  .ch-btn {
+    display: flex; align-items: center; gap: 0.5rem; padding: 0.7rem 1.2rem;
+    background: var(--bg2); border: 1px solid var(--border); border-radius: 8px;
+    color: var(--text); text-decoration: none; font-size: 0.88rem;
+    transition: all 0.15s; cursor: pointer;
+  }
+  .ch-btn:hover { border-color: var(--accent); color: var(--accent); }
+
+  /* Responsive */
+  @media (max-width: 600px) {
+    h1 { font-size: 1.6rem; }
+    h2 { font-size: 1.2rem; }
+    pre { font-size: 0.78rem; padding: 0.9rem 1rem; }
+    .phase-item { flex-direction: column; }
+  }
+</style>
+</head>
+<body>
+
+<div id="progress-bar"></div>
+<div id="sidebar-overlay"></div>
+
+<!-- Top Nav -->
+<nav id="topnav">
+  <div class="brand">
+    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+      <polyline points="16 18 22 12 16 6"/><polyline points="8 6 2 12 8 18"/>
+    </svg>
+    CMake 编译系统详解
+  </div>
+  <span id="nav-hint"><kbd>←</kbd><kbd>→</kbd> 切换章节</span>
+  <button id="hamburger">☰</button>
+</nav>
+
+<!-- Sidebar -->
+<aside id="sidebar">
+  <div class="nav-group">
+    <div class="nav-group-title">📖 概述</div>
+    <a class="nav-link active" data-section="s0" onclick="goSection('s0')">
+      <span class="nav-dot"></span>引言与背景
+    </a>
+  </div>
+  <div class="nav-group">
+    <div class="nav-group-title">📁 配置文件</div>
+    <a class="nav-link" data-section="s1" onclick="goSection('s1')">
+      <span class="nav-dot"></span>文件总览
+    </a>
+    <a class="nav-link" data-section="s2" onclick="goSection('s2')">
+      <span class="nav-dot"></span>CMakeLists.txt
+    </a>
+    <a class="nav-link" data-section="s3" onclick="goSection('s3')">
+      <span class="nav-dot"></span>CMakeCache.txt
+    </a>
+    <a class="nav-link" data-section="s4" onclick="goSection('s4')">
+      <span class="nav-dot"></span>CMakePresets.json
+    </a>
+    <a class="nav-link" data-section="s5" onclick="goSection('s5')">
+      <span class="nav-dot"></span>Find模块与*.cmake
+    </a>
+    <a class="nav-link" data-section="s6" onclick="goSection('s6')">
+      <span class="nav-dot"></span>模板文件 (*.in)
+    </a>
+  </div>
+  <div class="nav-group">
+    <div class="nav-group-title">⚙️ 用户职责</div>
+    <a class="nav-link" data-section="s7" onclick="goSection('s7')">
+      <span class="nav-dot"></span>用户需维护的文件
+    </a>
+  </div>
+  <div class="nav-group">
+    <div class="nav-group-title">🔄 编译阶段</div>
+    <a class="nav-link" data-section="s8" onclick="goSection('s8')">
+      <span class="nav-dot"></span>阶段总览
+    </a>
+    <a class="nav-link" data-section="s9" onclick="goSection('s9')">
+      <span class="nav-dot"></span>阶段1：配置 Configure
+    </a>
+    <a class="nav-link" data-section="s10" onclick="goSection('s10')">
+      <span class="nav-dot"></span>阶段2：生成 Generate
+    </a>
+    <a class="nav-link" data-section="s11" onclick="goSection('s11')">
+      <span class="nav-dot"></span>阶段3：编译 Build
+    </a>
+    <a class="nav-link" data-section="s12" onclick="goSection('s12')">
+      <span class="nav-dot"></span>阶段4：安装 Install
+    </a>
+  </div>
+  <div class="nav-group">
+    <div class="nav-group-title">🎯 curl 实战</div>
+    <a class="nav-link" data-section="s13" onclick="goSection('s13')">
+      <span class="nav-dot"></span>curl 完整构建流程
+    </a>
+  </div>
+</aside>
+
+<!-- Main -->
+<div id="layout">
+<main id="main">
+
+<!-- ===== SECTION 0 ===== -->
+<section id="s0">
+  <div class="hero">
+    <h1>CMake 编译系统详解</h1>
+    <p class="hero-sub">以 <strong>curl / libcurl</strong> 为具体案例，深入解析 CMake 的配置文件体系与编译阶段</p>
+    <div class="hero-meta">
+      <a class="ref-link" href="https://cmake.org/cmake/help/latest/guide/user-interaction/index.html" target="_blank">
+        📄 CMake 官方用户交互指南
+      </a>
+      <a class="ref-link" href="https://github.com/curl/curl/blob/master/docs/INSTALL-CMAKE.md" target="_blank">
+        📄 curl 官方 CMake 构建文档
+      </a>
+      <a class="ref-link" href="https://cmake.org/cmake/help/latest/guide/tutorial/index.html" target="_blank">
+        📄 CMake 官方教程
+      </a>
+    </div>
+  </div>
+
+  <h2><span class="num">0</span>引言与背景</h2>
+  <p>
+    <strong>CMake</strong>（Cross-Platform Make）是一个跨平台的<strong>构建系统生成器</strong>，它本身不直接编译代码，而是读取项目的描述文件，生成适合目标平台的原生构建脚本（如 Makefile、Ninja、Visual Studio 工程文件等），再由这些原生工具完成实际编译。
+  </p>
+  <p>
+    <strong>curl</strong> 是互联网上使用最广泛的客户端 URL 传输库，其源码同时支持两套构建系统：传统的 <strong>Autotools</strong>（configure + make）和现代的 <strong>CMake</strong>。官方推荐在 Windows 平台优先使用 CMake 构建。
+  </p>
+
+  <div class="diagram-wrap">
+    <svg viewBox="0 0 720 200" width="100%" style="max-width:720px">
+      <!-- Background -->
+      <rect width="720" height="200" fill="#161b22" rx="12"/>
+      <!-- Source -->
+      <rect x="20" y="70" width="140" height="60" rx="8" fill="#1c2128" stroke="#30363d" stroke-width="1.5"/>
+      <text x="90" y="96" text-anchor="middle" fill="#c9d1d9" font-size="13" font-weight="600">源代码</text>
+      <text x="90" y="115" text-anchor="middle" fill="#8b949e" font-size="11">CMakeLists.txt</text>
+      <!-- Arrow 1 -->
+      <path d="M160 100 L220 100" stroke="#58a6ff" stroke-width="2" marker-end="url(#arr)"/>
+      <text x="190" y="93" text-anchor="middle" fill="#58a6ff" font-size="10">cmake</text>
+      <!-- CMake engine -->
+      <rect x="220" y="55" width="160" height="90" rx="8" fill="rgba(88,166,255,0.1)" stroke="#58a6ff" stroke-width="1.5"/>
+      <text x="300" y="88" text-anchor="middle" fill="#58a6ff" font-size="14" font-weight="700">CMake 引擎</text>
+      <text x="300" y="106" text-anchor="middle" fill="#8b949e" font-size="10">• 配置阶段</text>
+      <text x="300" y="120" text-anchor="middle" fill="#8b949e" font-size="10">• 生成阶段</text>
+      <!-- Arrow 2 -->
+      <path d="M380 100 L440 100" stroke="#3fb950" stroke-width="2" marker-end="url(#arr2)"/>
+      <text x="410" y="93" text-anchor="middle" fill="#3fb950" font-size="10">生成</text>
+      <!-- Build system -->
+      <rect x="440" y="50" width="130" height="100" rx="8" fill="rgba(63,185,80,0.08)" stroke="#3fb950" stroke-width="1.5"/>
+      <text x="505" y="80" text-anchor="middle" fill="#3fb950" font-size="12" font-weight="600">原生构建系统</text>
+      <text x="505" y="100" text-anchor="middle" fill="#8b949e" font-size="10">Makefile</text>
+      <text x="505" y="114" text-anchor="middle" fill="#8b949e" font-size="10">Ninja files</text>
+      <text x="505" y="128" text-anchor="middle" fill="#8b949e" font-size="10">VS Solution</text>
+      <!-- Arrow 3 -->
+      <path d="M570 100 L630 100" stroke="#bc8cff" stroke-width="2" marker-end="url(#arr3)"/>
+      <text x="600" y="93" text-anchor="middle" fill="#bc8cff" font-size="10">编译</text>
+      <!-- Output -->
+      <rect x="630" y="65" width="70" height="70" rx="8" fill="rgba(188,140,255,0.08)" stroke="#bc8cff" stroke-width="1.5"/>
+      <text x="665" y="94" text-anchor="middle" fill="#bc8cff" font-size="12" font-weight="600">产物</text>
+      <text x="665" y="110" text-anchor="middle" fill="#8b949e" font-size="10">libcurl</text>
+      <text x="665" y="124" text-anchor="middle" fill="#8b949e" font-size="10">curl</text>
+      <!-- Arrow markers -->
+      <defs>
+        <marker id="arr" markerWidth="8" markerHeight="8" refX="6" refY="3" orient="auto">
+          <path d="M0,0 L0,6 L8,3 z" fill="#58a6ff"/>
+        </marker>
+        <marker id="arr2" markerWidth="8" markerHeight="8" refX="6" refY="3" orient="auto">
+          <path d="M0,0 L0,6 L8,3 z" fill="#3fb950"/>
+        </marker>
+        <marker id="arr3" markerWidth="8" markerHeight="8" refX="6" refY="3" orient="auto">
+          <path d="M0,0 L0,6 L8,3 z" fill="#bc8cff"/>
+        </marker>
+      </defs>
+      <!-- Label -->
+      <text x="360" y="185" text-anchor="middle" fill="#8b949e" font-size="11">CMake 作为"元构建系统"，本身不编译，而是生成原生构建脚本</text>
+    </svg>
+  </div>
+
+  <div class="fp-box">
+    <div class="fp-title">
+      <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><circle cx="12" cy="12" r="10"/><line x1="12" y1="8" x2="12" y2="12"/><line x1="12" y1="16" x2="12.01" y2="16"/></svg>
+      第一性原理概述
+    </div>
+    <p style="margin:0;font-size:0.9rem;">
+      <strong>CMake 的存在解决了什么本质问题？</strong><br>
+      不同平台（Linux/macOS/Windows）的原生构建工具（Make/Ninja/MSBuild）的输入格式完全不同，手写多套构建脚本代价极高。CMake 提供了一套统一的<strong>高层抽象语言</strong>来描述"构建什么、怎么构建"，让同一份描述文件可以翻译成任意平台的原生构建指令——这是一种<strong>分离关注点</strong>（Separation of Concerns）的设计：描述意图 vs 执行实现。
+    </p>
+  </div>
+</section>
+
+<!-- ===== SECTION 1 ===== -->
+<section id="s1">
+  <h2><span class="num">1</span>配置文件总览</h2>
+  <p>一个典型的 CMake 项目（如 curl）涉及多种类型的文件，它们有各自的职责边界：</p>
+
+  <div class="diagram-wrap">
+    <svg viewBox="0 0 720 380" width="100%" style="max-width:720px">
+      <rect width="720" height="380" fill="#161b22" rx="12"/>
+      <!-- Title -->
+      <text x="360" y="30" text-anchor="middle" fill="#f0f6fc" font-size="14" font-weight="700">curl CMake 文件体系</text>
+
+      <!-- Source tree box -->
+      <rect x="20" y="50" width="320" height="300" rx="10" fill="rgba(88,166,255,0.04)" stroke="#30363d" stroke-width="1.5" stroke-dasharray="6,3"/>
+      <text x="180" y="72" text-anchor="middle" fill="#58a6ff" font-size="11" font-weight="700">📂 源码目录（用户维护）</text>
+
+      <rect x="35" y="85" width="290" height="38" rx="6" fill="#1c2128" stroke="#30363d"/>
+      <text x="55" y="101" fill="#e3b341" font-size="12" font-weight="600">CMakeLists.txt</text>
+      <text x="55" y="115" fill="#8b949e" font-size="10">根配置文件 — 项目核心描述</text>
+
+      <rect x="35" y="132" width="290" height="38" rx="6" fill="#1c2128" stroke="#30363d"/>
+      <text x="55" y="148" fill="#e3b341" font-size="12" font-weight="600">lib/CMakeLists.txt</text>
+      <text x="55" y="162" fill="#8b949e" font-size="10">子目录配置 — libcurl 库目标</text>
+
+      <rect x="35" y="179" width="290" height="38" rx="6" fill="#1c2128" stroke="#30363d"/>
+      <text x="55" y="195" fill="#e3b341" font-size="12" font-weight="600">src/CMakeLists.txt</text>
+      <text x="55" y="209" fill="#8b949e" font-size="10">子目录配置 — curl 可执行文件</text>
+
+      <rect x="35" y="226" width="290" height="38" rx="6" fill="#1c2128" stroke="#30363d"/>
+      <text x="55" y="242" fill="#3fb950" font-size="12" font-weight="600">CMake/FindXXX.cmake</text>
+      <text x="55" y="256" fill="#8b949e" font-size="10">依赖查找模块 (OpenSSL, zlib...)</text>
+
+      <rect x="35" y="273" width="290" height="38" rx="6" fill="#1c2128" stroke="#30363d"/>
+      <text x="55" y="289" fill="#3fb950" font-size="12" font-weight="600">lib/curl_config.h.cmake</text>
+      <text x="55" y="303" fill="#8b949e" font-size="10">头文件模板 (.in) — 配置时生成</text>
+
+      <rect x="35" y="320" width="290" height="22" rx="6" fill="#1c2128" stroke="#30363d"/>
+      <text x="55" y="335" fill="#bc8cff" font-size="11">CMakePresets.json  （可选）</text>
+
+      <!-- Build tree box -->
+      <rect x="380" y="50" width="320" height="300" rx="10" fill="rgba(63,185,80,0.04)" stroke="#30363d" stroke-width="1.5" stroke-dasharray="6,3"/>
+      <text x="540" y="72" text-anchor="middle" fill="#3fb950" font-size="11" font-weight="700">📂 构建目录（CMake 自动生成，勿手改）</text>
+
+      <rect x="395" y="85" width="290" height="38" rx="6" fill="#1c2128" stroke="#30363d"/>
+      <text x="415" y="101" fill="#f78166" font-size="12" font-weight="600">CMakeCache.txt</text>
+      <text x="415" y="115" fill="#8b949e" font-size="10">持久化缓存 — 变量键值对</text>
+
+      <rect x="395" y="132" width="290" height="38" rx="6" fill="#1c2128" stroke="#30363d"/>
+      <text x="415" y="148" fill="#f78166" font-size="12" font-weight="600">Makefile / build.ninja</text>
+      <text x="415" y="162" fill="#8b949e" font-size="10">生成的原生构建脚本</text>
+
+      <rect x="395" y="179" width="290" height="38" rx="6" fill="#1c2128" stroke="#30363d"/>
+      <text x="415" y="195" fill="#f78166" font-size="12" font-weight="600">CMakeFiles/</text>
+      <text x="415" y="209" fill="#8b949e" font-size="10">编译中间文件 (.o, depend...)</text>
+
+      <rect x="395" y="226" width="290" height="38" rx="6" fill="#1c2128" stroke="#30363d"/>
+      <text x="415" y="242" fill="#f78166" font-size="12" font-weight="600">include/curl/curl_config.h</text>
+      <text x="415" y="256" fill="#8b949e" font-size="10">由模板生成的配置头文件</text>
+
+      <rect x="395" y="273" width="290" height="38" rx="6" fill="#1c2128" stroke="#30363d"/>
+      <text x="415" y="289" fill="#f78166" font-size="12" font-weight="600">cmake_install.cmake</text>
+      <text x="415" y="303" fill="#8b949e" font-size="10">安装规则脚本（install 阶段用）</text>
+
+      <rect x="395" y="320" width="290" height="22" rx="6" fill="#1c2128" stroke="#30363d"/>
+      <text x="415" y="335" fill="#f78166" font-size="11">libcurl.so / curl  （最终产物）</text>
+
+      <!-- Arrow between -->
+      <path d="M340 200 L375 200" stroke="#58a6ff" stroke-width="2" stroke-dasharray="4,2" marker-end="url(#arr)"/>
+      <text x="357" y="194" text-anchor="middle" fill="#58a6ff" font-size="9">cmake</text>
+    </svg>
+  </div>
+
+  <div class="fp-box">
+    <div class="fp-title">
+      <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><circle cx="12" cy="12" r="10"/><line x1="12" y1="8" x2="12" y2="12"/><line x1="12" y1="16" x2="12.01" y2="16"/></svg>
+      第一性原理概述
+    </div>
+    <p style="margin:0;font-size:0.9rem;">
+      文件的本质是<strong>职责分离</strong>：源码目录中的文件由<strong>开发者维护</strong>，描述"项目长什么样"；构建目录中的文件由<strong>CMake 自动生成</strong>，是平台特定的实现细节。这种分离使得同一份源码可以在任意平台重新生成构建系统，也是"out-of-source build（源外构建）"最佳实践的理论基础。
+    </p>
+  </div>
+</section>
+
+<!-- ===== SECTION 2 ===== -->
+<section id="s2">
+  <h2><span class="num">2</span>CMakeLists.txt — 项目核心描述文件</h2>
+  <p>
+    <code>CMakeLists.txt</code> 是 CMake 的<strong>核心驱动文件</strong>，使用 CMake DSL（领域特定语言）编写。每个包含源文件的目录都可以有自己的 <code>CMakeLists.txt</code>，形成树形结构。
+    <span class="badge badge-blue">必需文件</span>
+    <span class="badge badge-green">开发者维护</span>
+  </p>
+
+  <h3>curl 根目录 CMakeLists.txt 的主要职责</h3>
+  <p>根据 <a href="https://github.com/curl/curl/blob/master/CMakeLists.txt" target="_blank">curl 官方源码</a>，其根 CMakeLists.txt 完成以下任务：</p>
+
+  <div class="tbl-wrap">
+    <table>
+      <tr><th>代码段</th><th>作用</th><th>curl 中的实例</th></tr>
+      <tr>
+        <td><code>cmake_minimum_required()</code></td>
+        <td>声明最低 CMake 版本要求</td>
+        <td><code>cmake_minimum_required(VERSION 3.7)</code></td>
+      </tr>
+      <tr>
+        <td><code>project()</code></td>
+        <td>定义项目名、版本、语言</td>
+        <td><code>project(CURL C)</code></td>
+      </tr>
+      <tr>
+        <td><code>option()</code></td>
+        <td>声明用户可配置的布尔选项</td>
+        <td><code>option(BUILD_CURL_EXE "Build curl executable" ON)</code></td>
+      </tr>
+      <tr>
+        <td><code>set(CMAKE_MODULE_PATH)</code></td>
+        <td>设置查找 .cmake 模块的路径</td>
+        <td><code>set(CMAKE_MODULE_PATH "${CMAKE_CURRENT_SOURCE_DIR}/CMake")</code></td>
+      </tr>
+      <tr>
+        <td><code>find_package()</code></td>
+        <td>查找系统中已安装的库</td>
+        <td><code>find_package(OpenSSL)</code>、<code>find_package(ZLIB)</code></td>
+      </tr>
+      <tr>
+        <td><code>configure_file()</code></td>
+        <td>从模板生成配置头文件</td>
+        <td>生成 <code>curl_config.h</code>（含平台检测结果）</td>
+      </tr>
+      <tr>
+        <td><code>add_library()</code></td>
+        <td>定义库目标</td>
+        <td><code>add_library(libcurl SHARED ...)</code></td>
+      </tr>
+      <tr>
+        <td><code>add_executable()</code></td>
+        <td>定义可执行文件目标</td>
+        <td><code>add_executable(curl ...)</code></td>
+      </tr>
+      <tr>
+        <td><code>target_link_libraries()</code></td>
+        <td>声明链接依赖</td>
+        <td><code>target_link_libraries(curl libcurl ${CURL_LIBS})</code></td>
+      </tr>
+      <tr>
+        <td><code>install()</code></td>
+        <td>定义安装规则</td>
+        <td>安装头文件、库文件、可执行文件到指定路径</td>
+      </tr>
+      <tr>
+        <td><code>add_subdirectory()</code></td>
+        <td>引入子目录的 CMakeLists.txt</td>
+        <td><code>add_subdirectory(lib)</code>、<code>add_subdirectory(src)</code></td>
+      </tr>
+    </table>
+  </div>
+
+  <h3>curl CMakeLists.txt 关键片段解析</h3>
+  <pre><code><span class="comment"># ① 最低版本 & 项目声明</span>
+<span class="fn">cmake_minimum_required</span>(<span class="kw">VERSION</span> 3.7)
+<span class="fn">project</span>(CURL <span class="kw">C</span>)
+
+<span class="comment"># ② 设置 CMake 模块搜索路径（用于 Find*.cmake 文件）</span>
+<span class="fn">set</span>(CMAKE_MODULE_PATH <span class="str">"${CMAKE_CURRENT_SOURCE_DIR}/CMake;${CMAKE_MODULE_PATH}"</span>)
+
+<span class="comment"># ③ 版本号从源文件中动态读取</span>
+<span class="fn">file</span>(<span class="kw">READ</span> <span class="str">"${CURL_SOURCE_DIR}/include/curl/curlver.h"</span> CURL_VERSION_H_CONTENTS)
+<span class="fn">string</span>(<span class="kw">REGEX MATCH</span> <span class="str">"LIBCURL_VERSION_MAJOR[ \t]+([0-9]+)"</span> ... )
+
+<span class="comment"># ④ 用户可配置选项</span>
+<span class="fn">option</span>(BUILD_CURL_EXE   <span class="str">"Build curl executable"</span>    <span class="val">ON</span>)
+<span class="fn">option</span>(BUILD_SHARED_LIBS <span class="str">"Build shared libraries"</span>   <span class="val">ON</span>)
+<span class="fn">option</span>(CURL_USE_OPENSSL  <span class="str">"Enable OpenSSL for SSL"</span>   <span class="val">ON</span>)
+
+<span class="comment"># ⑤ 查找依赖库</span>
+<span class="fn">find_package</span>(OpenSSL)
+<span class="fn">find_package</span>(ZLIB)
+<span class="fn">find_package</span>(NGHTTP2)
+
+<span class="comment"># ⑥ 从模板生成配置头文件</span>
+<span class="fn">configure_file</span>(lib/curl_config.h.cmake
+               <span class="str">"${PROJECT_BINARY_DIR}/lib/curl_config.h"</span>)
+
+<span class="comment"># ⑦ 处理子目录</span>
+<span class="fn">add_subdirectory</span>(lib)   <span class="comment"># → libcurl</span>
+<span class="fn">add_subdirectory</span>(src)   <span class="comment"># → curl 可执行文件</span>
+
+<span class="comment"># ⑧ 安装规则</span>
+<span class="fn">install</span>(<span class="kw">TARGETS</span> libcurl curl
+        <span class="kw">RUNTIME DESTINATION</span> <span class="str">"${CMAKE_INSTALL_BINDIR}"</span>
+        <span class="kw">LIBRARY DESTINATION</span> <span class="str">"${CMAKE_INSTALL_LIBDIR}"</span>)
+<span class="fn">install</span>(<span class="kw">DIRECTORY</span> include/curl
+        <span class="kw">DESTINATION</span> <span class="str">"${CMAKE_INSTALL_INCLUDEDIR}"</span>)</code></pre>
+
+  <div class="callout callout-info">
+    <div class="callout-title">ℹ️ 树形结构</div>
+    <p style="margin:0">curl 拥有多个 <code>CMakeLists.txt</code>：根目录一个，<code>lib/</code>、<code>src/</code>、<code>tests/</code> 各一个。父目录通过 <code>add_subdirectory()</code> 将子目录纳入构建树，子目录中可定义自己的 Target、编译选项，并能继承父目录的变量和属性。</p>
+  </div>
+
+  <div class="fp-box">
+    <div class="fp-title">
+      <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><circle cx="12" cy="12" r="10"/><line x1="12" y1="8" x2="12" y2="12"/><line x1="12" y1="16" x2="12.01" y2="16"/></svg>
+      第一性原理概述
+    </div>
+    <p style="margin:0;font-size:0.9rem;">
+      <code>CMakeLists.txt</code> 本质上是对<strong>构建图（Build Graph）</strong>的声明式描述：节点是 Target（库/可执行文件），边是依赖关系（<code>target_link_libraries</code>）。CMake 读取这份声明，将其翻译为特定构建工具的增量构建指令。这种图模型使得 CMake 能自动推导依赖顺序、传播编译标志（PRIVATE/PUBLIC/INTERFACE），无需手动管理编译顺序。
+    </p>
+  </div>
+</section>
+
+<!-- ===== SECTION 3 ===== -->
+<section id="s3">
+  <h2><span class="num">3</span>CMakeCache.txt — 持久化配置缓存</h2>
+  <p>
+    <code>CMakeCache.txt</code> 由 CMake 在<strong>首次配置时自动生成</strong>，位于构建目录根部。它保存了配置阶段发现的所有变量（编译器路径、依赖库位置、用户选项等），供后续 cmake 调用复用。
+    <span class="badge badge-red">自动生成</span>
+    <span class="badge badge-yellow">可手动编辑/工具辅助</span>
+  </p>
+
+  <h3>文件结构</h3>
+  <pre><code><span class="comment"># This is the CMakeCache file for curl build.</span>
+<span class="comment"># ========================</span>
+<span class="comment"># 格式：变量名:类型=值</span>
+
+<span class="comment">## 编译器相关</span>
+CMAKE_C_COMPILER:<span class="kw">FILEPATH</span>=<span class="val">/usr/bin/gcc</span>
+CMAKE_C_FLAGS:<span class="kw">STRING</span>=<span class="val"></span>
+CMAKE_BUILD_TYPE:<span class="kw">STRING</span>=<span class="val">Release</span>
+
+<span class="comment">## 安装路径</span>
+CMAKE_INSTALL_PREFIX:<span class="kw">PATH</span>=<span class="val">/usr/local</span>
+
+<span class="comment">## curl 特定选项</span>
+BUILD_CURL_EXE:<span class="kw">BOOL</span>=<span class="val">ON</span>
+BUILD_SHARED_LIBS:<span class="kw">BOOL</span>=<span class="val">ON</span>
+CURL_USE_OPENSSL:<span class="kw">BOOL</span>=<span class="val">ON</span>
+CURL_ZLIB:<span class="kw">STRING</span>=<span class="val">AUTO</span>
+
+<span class="comment">## 依赖库自动发现的路径</span>
+OPENSSL_INCLUDE_DIR:<span class="kw">PATH</span>=<span class="val">/usr/include/openssl</span>
+OPENSSL_SSL_LIBRARY:<span class="kw">FILEPATH</span>=<span class="val">/usr/lib/libssl.so</span>
+OPENSSL_CRYPTO_LIBRARY:<span class="kw">FILEPATH</span>=<span class="val">/usr/lib/libcrypto.so</span>
+ZLIB_INCLUDE_DIR:<span class="kw">PATH</span>=<span class="val">/usr/include</span>
+ZLIB_LIBRARY:<span class="kw">FILEPATH</span>=<span class="val">/usr/lib/libz.so</span></code></pre>
+
+  <h3>缓存变量类型</h3>
+  <div class="tbl-wrap">
+    <table>
+      <tr><th>类型</th><th>含义</th><th>在 cmake-gui 中的呈现</th></tr>
+      <tr><td><code>BOOL</code></td><td>布尔值（ON/OFF）</td><td>复选框</td></tr>
+      <tr><td><code>STRING</code></td><td>字符串</td><td>文本输入框（可附带下拉列表）</td></tr>
+      <tr><td><code>PATH</code></td><td>目录路径</td><td>文本框 + 文件夹选择器</td></tr>
+      <tr><td><code>FILEPATH</code></td><td>文件路径</td><td>文本框 + 文件选择器</td></tr>
+      <tr><td><code>INTERNAL</code></td><td>内部变量（不显示给用户）</td><td>隐藏</td></tr>
+    </table>
+  </div>
+
+  <h3>与 CMakeCache 交互的工具</h3>
+  <div class="card">
+    <div class="card-title">修改缓存变量的三种方式</div>
+    <pre style="margin:0"><code><span class="comment"># 方式1：命令行 -D 标志（最常用）</span>
+cmake -B build -<span class="kw">DCMAKE_BUILD_TYPE</span>=Release \
+               -<span class="kw">DCURL_USE_OPENSSL</span>=ON \
+               -<span class="kw">DCMAKE_INSTALL_PREFIX</span>=/opt/curl
+
+<span class="comment"># 方式2：ccmake（终端 TUI）</span>
+ccmake -S . -B build
+
+<span class="comment"># 方式3：cmake-gui（图形界面）</span>
+cmake-gui
+
+<span class="comment"># 删除缓存变量</span>
+cmake -B build -<span class="kw">UMyPackage_DIR</span></code></pre>
+  </div>
+
+  <div class="callout callout-warn">
+    <div class="callout-title">⚠️ 重要注意事项</div>
+    <p style="margin:0">
+      <code>CMakeCache.txt</code> 是<strong>机器特定</strong>的，不应提交到版本控制（加入 <code>.gitignore</code>）。如果编译环境出现问题，最可靠的修复方式是<strong>删除整个构建目录</strong>重新配置，而不是手动编辑缓存文件。
+    </p>
+  </div>
+
+  <div class="fp-box">
+    <div class="fp-title">
+      <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><circle cx="12" cy="12" r="10"/><line x1="12" y1="8" x2="12" y2="12"/><line x1="12" y1="16" x2="12.01" y2="16"/></svg>
+      第一性原理概述
+    </div>
+    <p style="margin:0;font-size:0.9rem;">
+      缓存的本质是<strong>增量配置</strong>的基础：编译器探测、库路径搜索是耗时操作，缓存让后续 <code>cmake</code> 调用跳过已知结果，直接复用。同时它提供了一个<strong>统一的配置界面</strong>——不管是命令行、GUI 还是 IDE，本质上都是在读写 <code>CMakeCache.txt</code> 中的键值对。
+    </p>
+  </div>
+</section>
+
+<!-- ===== SECTION 4 ===== -->
+<section id="s4">
+  <h2><span class="num">4</span>CMakePresets.json — 预设配置</h2>
+  <p>
+    <code>CMakePresets.json</code>（CMake 3.19+ 引入）允许项目维护者和用户将常用的配置参数集（生成器、构建目录、缓存变量等）保存为<strong>命名预设</strong>，消除"在我机器上能跑"问题。
+    <span class="badge badge-blue">可选文件</span>
+    <span class="badge badge-green">开发者维护（项目级）</span>
+    <span class="badge badge-purple">CMakeUserPresets.json（用户级，不提交）</span>
+  </p>
+
+  <div class="tbl-wrap">
+    <table>
+      <tr><th>文件</th><th>维护者</th><th>是否提交到 Git</th><th>用途</th></tr>
+      <tr>
+        <td><code>CMakePresets.json</code></td>
+        <td>项目维护者</td>
+        <td>✅ 提交</td>
+        <td>官方预设，供所有用户使用</td>
+      </tr>
+      <tr>
+        <td><code>CMakeUserPresets.json</code></td>
+        <td>个人开发者</td>
+        <td>❌ 加入 .gitignore</td>
+        <td>个人自定义预设（覆盖或扩展官方预设）</td>
+      </tr>
+    </table>
+  </div>
+
+  <h3>CMakePresets.json 结构示例</h3>
+  <pre><code>{
+  <span class="str">"version"</span>: 3,
+  <span class="str">"cmakeMinimumRequired"</span>: { <span class="str">"major"</span>: 3, <span class="str">"minor"</span>: 21, <span class="str">"patch"</span>: 0 },
+
+  <span class="str">"configurePresets"</span>: [
+    {
+      <span class="str">"name"</span>: <span class="str">"base"</span>,                    <span class="comment">// 基础预设（可被继承）</span>
+      <span class="str">"hidden"</span>: true,
+      <span class="str">"generator"</span>: <span class="str">"Ninja"</span>,
+      <span class="str">"binaryDir"</span>: <span class="str">"${sourceDir}/build/${presetName}"</span>
+    },
+    {
+      <span class="str">"name"</span>: <span class="str">"release"</span>,
+      <span class="str">"displayName"</span>: <span class="str">"Release with OpenSSL"</span>,
+      <span class="str">"inherits"</span>: <span class="str">"base"</span>,               <span class="comment">// 继承 base 预设</span>
+      <span class="str">"cacheVariables"</span>: {
+        <span class="str">"CMAKE_BUILD_TYPE"</span>: <span class="str">"Release"</span>,
+        <span class="str">"CURL_USE_OPENSSL"</span>: <span class="str">"ON"</span>,
+        <span class="str">"BUILD_SHARED_LIBS"</span>: <span class="str">"ON"</span>,
+        <span class="str">"CMAKE_INSTALL_PREFIX"</span>: <span class="str">"/usr/local"</span>
+      }
+    },
+    {
+      <span class="str">"name"</span>: <span class="str">"debug"</span>,
+      <span class="str">"displayName"</span>: <span class="str">"Debug Build"</span>,
+      <span class="str">"inherits"</span>: <span class="str">"base"</span>,
+      <span class="str">"cacheVariables"</span>: {
+        <span class="str">"CMAKE_BUILD_TYPE"</span>: <span class="str">"Debug"</span>,
+        <span class="str">"ENABLE_DEBUG"</span>: <span class="str">"ON"</span>
+      }
+    }
+  ],
+
+  <span class="str">"buildPresets"</span>: [
+    {
+      <span class="str">"name"</span>: <span class="str">"release-build"</span>,
+      <span class="str">"configurePreset"</span>: <span class="str">"release"</span>,
+      <span class="str">"jobs"</span>: 8                          <span class="comment">// 并行编译线程数</span>
+    }
+  ]
+}</code></pre>
+
+  <h3>使用预设</h3>
+  <pre><code><span class="comment"># 列出所有可用预设</span>
+cmake --list-presets
+
+<span class="comment"># 使用 release 预设配置</span>
+cmake --preset release
+
+<span class="comment"># 使用 release-build 预设编译</span>
+cmake --build --preset release-build</code></pre>
+
+  <div class="fp-box">
+    <div class="fp-title">
+      <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><circle cx="12" cy="12" r="10"/><line x1="12" y1="8" x2="12" y2="12"/><line x1="12" y1="16" x2="12.01" y2="16"/></svg>
+      第一性原理概述
+    </div>
+    <p style="margin:0;font-size:0.9rem;">
+      Presets 解决的核心问题是<strong>配置的可复现性</strong>（Reproducibility）：将过去散落在 CI 脚本、README、口口相传中的 <code>-D</code> 参数组合结构化为机器可读的 JSON，让开发者、CI 系统、IDE 使用完全相同的配置。这是"Infrastructure as Code"思想在构建系统层面的体现。
+    </p>
+  </div>
+</section>
+
+<!-- ===== SECTION 5 ===== -->
+<section id="s5">
+  <h2><span class="num">5</span>Find 模块与 *.cmake 辅助文件</h2>
+  <p>curl 的 <code>CMake/</code> 目录中包含大量 <code>Find*.cmake</code> 文件，用于在系统中定位第三方依赖库。这些文件是 CMake 的<strong>模块系统</strong>的一部分。</p>
+
+  <h3>curl 中的 Find 模块列表（部分）</h3>
+  <div class="tbl-wrap">
+    <table>
+      <tr><th>文件名</th><th>负责查找</th><th>设置的变量</th></tr>
+      <tr><td><code>FindMbedTLS.cmake</code></td><td>mbedTLS SSL 库</td><td><code>MBEDTLS_FOUND</code>、<code>MBEDTLS_INCLUDE_DIR</code>、<code>MBEDTLS_LIBRARY</code></td></tr>
+      <tr><td><code>FindNGHTTP2.cmake</code></td><td>HTTP/2 协议库</td><td><code>NGHTTP2_FOUND</code>、<code>NGHTTP2_INCLUDE_DIR</code>、<code>NGHTTP2_LIBRARY</code></td></tr>
+      <tr><td><code>FindLibssh2.cmake</code></td><td>SSH2 协议库</td><td><code>LIBSSH2_FOUND</code>、<code>LIBSSH2_INCLUDE_DIR</code>、<code>LIBSSH2_LIBRARY</code></td></tr>
+      <tr><td><code>FindGSS.cmake</code></td><td>Kerberos/GSSAPI</td><td><code>GSS_FOUND</code>、<code>GSS_LIBRARIES</code></td></tr>
+      <tr><td><code>FindWolfSSL.cmake</code></td><td>WolfSSL 库</td><td><code>WOLFSSL_FOUND</code>、<code>WOLFSSL_INCLUDE_DIR</code></td></tr>
+      <tr><td><code>FindBrotli.cmake</code></td><td>Brotli 压缩库</td><td><code>BROTLI_FOUND</code>、<code>BROTLIDEC_LIBRARY</code></td></tr>
+      <tr><td><code>FindZstd.cmake</code></td><td>Zstandard 压缩</td><td><code>ZSTD_FOUND</code>、<code>ZSTD_INCLUDE_DIR</code>、<code>ZSTD_LIBRARY</code></td></tr>
+    </table>
+  </div>
+
+  <h3>Find 模块的工作原理</h3>
+  <pre><code><span class="comment"># 用法（在 CMakeLists.txt 中调用）</span>
+<span class="fn">find_package</span>(OpenSSL)           <span class="comment"># 使用 CMake 内置模块 FindOpenSSL.cmake</span>
+<span class="fn">find_package</span>(NGHTTP2)           <span class="comment"># 使用 curl 自定义 CMake/FindNGHTTP2.cmake</span>
+
+<span class="comment"># 查找后可用变量</span>
+<span class="kw">if</span>(OPENSSL_FOUND)
+  <span class="fn">target_include_directories</span>(libcurl <span class="kw">PRIVATE</span> <span class="var">${OPENSSL_INCLUDE_DIR}</span>)
+  <span class="fn">target_link_libraries</span>(libcurl <span class="kw">PRIVATE</span> <span class="var">${OPENSSL_LIBRARIES}</span>)
+<span class="kw">endif</span>()</code></pre>
+
+  <h3>其他 *.cmake 辅助文件</h3>
+  <div class="tbl-wrap">
+    <table>
+      <tr><th>文件</th><th>位置</th><th>作用</th></tr>
+      <tr>
+        <td><code>curl-config.in.cmake</code></td>
+        <td>CMake/</td>
+        <td>包配置文件模板，安装后供其他项目 <code>find_package(CURL)</code> 使用</td>
+      </tr>
+      <tr>
+        <td><code>cmake_uninstall.in.cmake</code></td>
+        <td>CMake/</td>
+        <td>卸载脚本模板，配置时生成实际卸载脚本</td>
+      </tr>
+      <tr>
+        <td><code>Utilities.cmake</code></td>
+        <td>CMake/</td>
+        <td>自定义 CMake 工具函数</td>
+      </tr>
+      <tr>
+        <td><code>cmake_install.cmake</code></td>
+        <td>build/（自动生成）</td>
+        <td>安装规则的实际脚本，由 <code>cmake --install</code> 执行</td>
+      </tr>
+      <tr>
+        <td><code>CURLConfig.cmake</code></td>
+        <td>安装目录</td>
+        <td>安装后的包配置文件，供下游项目使用</td>
+      </tr>
+    </table>
+  </div>
+
+  <div class="fp-box">
+    <div class="fp-title">
+      <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><circle cx="12" cy="12" r="10"/><line x1="12" y1="8" x2="12" y2="12"/><line x1="12" y1="16" x2="12.01" y2="16"/></svg>
+      第一性原理概述
+    </div>
+    <p style="margin:0;font-size:0.9rem;">
+      Find 模块解决的是<strong>环境异构性</strong>问题：同一个库在不同系统、不同安装方式下，头文件和库文件的路径可能完全不同。Find 模块将这种"在哪里找到 X"的知识封装为可复用脚本，遵循"不要重复自己（DRY）"原则。本质上是一种<strong>服务发现</strong>（Service Discovery）机制在构建系统层面的应用。
+    </p>
+  </div>
+</section>
+
+<!-- ===== SECTION 6 ===== -->
+<section id="s6">
+  <h2><span class="num">6</span>模板文件（*.in / *.cmake.in）</h2>
+  <p>
+    模板文件（通常以 <code>.in</code> 为后缀）是<strong>配置时代码生成</strong>机制的输入端。CMake 在配置阶段读取模板，将其中的占位符替换为实际检测结果，输出到构建目录。
+    <span class="badge badge-green">开发者维护</span>
+    <span class="badge badge-red">输出文件自动生成</span>
+  </p>
+
+  <h3>curl 中的模板文件</h3>
+  <div class="tbl-wrap">
+    <table>
+      <tr><th>模板文件（源码目录）</th><th>生成文件（构建目录）</th><th>用途</th></tr>
+      <tr>
+        <td><code>lib/curl_config.h.cmake</code></td>
+        <td><code>build/lib/curl_config.h</code></td>
+        <td>平台检测结果（API 存在性、类型大小等）</td>
+      </tr>
+      <tr>
+        <td><code>libcurl.pc.in</code></td>
+        <td><code>build/libcurl.pc</code></td>
+        <td>pkg-config 描述文件</td>
+      </tr>
+      <tr>
+        <td><code>CMake/curl-config.in.cmake</code></td>
+        <td><code>build/CURLConfig.cmake</code></td>
+        <td>CMake 包配置文件（供下游 find_package 使用）</td>
+      </tr>
+      <tr>
+        <td><code>CMake/cmake_uninstall.in.cmake</code></td>
+        <td><code>build/CMake/cmake_uninstall.cmake</code></td>
+        <td>卸载脚本</td>
+      </tr>
+    </table>
+  </div>
+
+  <h3>configure_file() 工作机制</h3>
+  <pre><code><span class="comment"># curl_config.h.cmake 模板片段（开发者编写）</span>
+<span class="comment">/* ↓ CMake 在配置时替换这些占位符 ↓ */</span>
+
+<span class="fn">#cmakedefine</span> HAVE_ARPA_INET_H      <span class="comment">/* 系统是否有此头文件 */</span>
+<span class="fn">#cmakedefine</span> HAVE_OPENSSL          <span class="comment">/* 是否找到 OpenSSL   */</span>
+<span class="fn">#cmakedefine01</span> CURL_SIZEOF_LONG <span class="var">@CURL_SIZEOF_LONG@</span>
+
+<span class="comment">/* 生成后的 curl_config.h（Linux + OpenSSL 环境）*/</span>
+<span class="kw">#define</span> HAVE_ARPA_INET_H 1
+<span class="kw">#define</span> HAVE_OPENSSL 1
+<span class="kw">#define</span> CURL_SIZEOF_LONG 8</code></pre>
+
+  <div class="diagram-wrap">
+    <svg viewBox="0 0 640 130" width="100%" style="max-width:640px">
+      <rect width="640" height="130" fill="#161b22" rx="10"/>
+      <!-- template -->
+      <rect x="20" y="25" width="170" height="80" rx="8" fill="#1c2128" stroke="#e3b341" stroke-width="1.5"/>
+      <text x="105" y="52" text-anchor="middle" fill="#e3b341" font-size="12" font-weight="600">curl_config.h.cmake</text>
+      <text x="105" y="70" text-anchor="middle" fill="#8b949e" font-size="10">#cmakedefine HAVE_*</text>
+      <text x="105" y="84" text-anchor="middle" fill="#8b949e" font-size="10">@VAR@ 占位符</text>
+      <text x="105" y="98" text-anchor="middle" fill="#e3b341" font-size="9">源码目录（开发者维护）</text>
+
+      <!-- cmake -->
+      <rect x="235" y="45" width="170" height="40" rx="8" fill="rgba(88,166,255,0.1)" stroke="#58a6ff" stroke-width="1.5"/>
+      <text x="320" y="62" text-anchor="middle" fill="#58a6ff" font-size="11" font-weight="600">cmake configure_file()</text>
+      <text x="320" y="78" text-anchor="middle" fill="#8b949e" font-size="10">平台检测 → 变量替换</text>
+
+      <!-- output -->
+      <rect x="450" y="25" width="170" height="80" rx="8" fill="#1c2128" stroke="#3fb950" stroke-width="1.5"/>
+      <text x="535" y="52" text-anchor="middle" fill="#3fb950" font-size="12" font-weight="600">curl_config.h</text>
+      <text x="535" y="70" text-anchor="middle" fill="#8b949e" font-size="10">#define HAVE_* 1</text>
+      <text x="535" y="84" text-anchor="middle" fill="#8b949e" font-size="10">实际值已填入</text>
+      <text x="535" y="98" text-anchor="middle" fill="#3fb950" font-size="9">构建目录（自动生成）</text>
+
+      <!-- arrows -->
+      <path d="M190 65 L230 65" stroke="#e3b341" stroke-width="1.5" marker-end="url(#a1)"/>
+      <path d="M405 65 L445 65" stroke="#3fb950" stroke-width="1.5" marker-end="url(#a2)"/>
+      <defs>
+        <marker id="a1" markerWidth="7" markerHeight="7" refX="5" refY="3" orient="auto">
+          <path d="M0,0 L0,6 L7,3 z" fill="#e3b341"/>
+        </marker>
+        <marker id="a2" markerWidth="7" markerHeight="7" refX="5" refY="3" orient="auto">
+          <path d="M0,0 L0,6 L7,3 z" fill="#3fb950"/>
+        </marker>
+      </defs>
+    </svg>
+  </div>
+
+  <div class="fp-box">
+    <div class="fp-title">
+      <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><circle cx="12" cy="12" r="10"/><line x1="12" y1="8" x2="12" y2="12"/><line x1="12" y1="16" x2="12.01" y2="16"/></svg>
+      第一性原理概述
+    </div>
+    <p style="margin:0;font-size:0.9rem;">
+      模板文件解决的是<strong>配置与代码的耦合</strong>问题：不同平台的编译能力（某个函数是否存在、某个类型的大小等）在编译时才能确定，而源代码又必须根据这些信息做条件编译。模板机制是"<strong>配置即代码生成</strong>"（Config as Code Generation）：用统一语法描述所有可能的配置结果，由构建系统在配置阶段注入实际值。
+    </p>
+  </div>
+</section>
+
+<!-- ===== SECTION 7 ===== -->
+<section id="s7">
+  <h2><span class="num">7</span>用户需要维护哪些文件</h2>
+  <p>明确区分"<strong>开发者（项目维护者）维护</strong>"和"<strong>构建者（使用者）维护</strong>"，以及"CMake 自动生成"的文件：</p>
+
+  <div class="diagram-wrap">
+    <svg viewBox="0 0 720 280" width="100%" style="max-width:720px">
+      <rect width="720" height="280" fill="#161b22" rx="12"/>
+
+      <!-- Column 1: Project Developer -->
+      <rect x="15" y="15" width="215" height="250" rx="10" fill="rgba(63,185,80,0.05)" stroke="#3fb950" stroke-width="1.5"/>
+      <text x="122" y="38" text-anchor="middle" fill="#3fb950" font-size="11" font-weight="700">👨‍💻 项目开发者</text>
+      <text x="122" y="52" text-anchor="middle" fill="#8b949e" font-size="9">（维护，提交到版本控制）</text>
+      <rect x="25" y="60" width="195" height="24" rx="5" fill="#1c2128" stroke="#30363d"/>
+      <text x="35" y="76" fill="#e3b341" font-size="11">CMakeLists.txt（各级）</text>
+      <rect x="25" y="90" width="195" height="24" rx="5" fill="#1c2128" stroke="#30363d"/>
+      <text x="35" y="106" fill="#e3b341" font-size="11">CMake/Find*.cmake</text>
+      <rect x="25" y="120" width="195" height="24" rx="5" fill="#1c2128" stroke="#30363d"/>
+      <text x="35" y="136" fill="#e3b341" font-size="11">lib/curl_config.h.cmake</text>
+      <rect x="25" y="150" width="195" height="24" rx="5" fill="#1c2128" stroke="#30363d"/>
+      <text x="35" y="166" fill="#e3b341" font-size="11">libcurl.pc.in</text>
+      <rect x="25" y="180" width="195" height="24" rx="5" fill="#1c2128" stroke="#30363d"/>
+      <text x="35" y="196" fill="#e3b341" font-size="11">CMakePresets.json</text>
+      <rect x="25" y="210" width="195" height="24" rx="5" fill="#1c2128" stroke="#30363d"/>
+      <text x="35" y="226" fill="#e3b341" font-size="11">CMake/curl-config.in.cmake</text>
+
+      <!-- Column 2: Build User -->
+      <rect x="245" y="15" width="215" height="250" rx="10" fill="rgba(88,166,255,0.05)" stroke="#58a6ff" stroke-width="1.5"/>
+      <text x="352" y="38" text-anchor="middle" fill="#58a6ff" font-size="11" font-weight="700">🔧 构建用户</text>
+      <text x="352" y="52" text-anchor="middle" fill="#8b949e" font-size="9">（按需修改，不提交）</text>
+      <rect x="255" y="60" width="195" height="24" rx="5" fill="#1c2128" stroke="#30363d"/>
+      <text x="265" y="76" fill="#58a6ff" font-size="11">CMakeUserPresets.json</text>
+      <rect x="255" y="90" width="195" height="40" rx="5" fill="#1c2128" stroke="#30363d"/>
+      <text x="265" y="106" fill="#58a6ff" font-size="11">-D 命令行参数</text>
+      <text x="265" y="122" fill="#8b949e" font-size="10">（临时传入，最终写入缓存）</text>
+      <rect x="255" y="138" width="195" height="40" rx="5" fill="#1c2128" stroke="#30363d"/>
+      <text x="265" y="154" fill="#58a6ff" font-size="11">CMakeCache.txt</text>
+      <text x="265" y="170" fill="#8b949e" font-size="10">（通过 ccmake/cmake-gui 修改）</text>
+      <rect x="255" y="186" width="195" height="40" rx="5" fill="#1c2128" stroke="#30363d"/>
+      <text x="265" y="202" fill="#58a6ff" font-size="11">工具链文件</text>
+      <text x="265" y="218" fill="#8b949e" font-size="10">（交叉编译时需提供）</text>
+
+      <!-- Column 3: Auto Generated -->
+      <rect x="475" y="15" width="230" height="250" rx="10" fill="rgba(247,129,102,0.05)" stroke="#f78166" stroke-width="1.5"/>
+      <text x="590" y="38" text-anchor="middle" fill="#f78166" font-size="11" font-weight="700">🤖 CMake 自动生成</text>
+      <text x="590" y="52" text-anchor="middle" fill="#8b949e" font-size="9">（勿手动修改）</text>
+      <rect x="485" y="60" width="210" height="24" rx="5" fill="#1c2128" stroke="#30363d"/>
+      <text x="495" y="76" fill="#f78166" font-size="11">CMakeCache.txt（首次生成）</text>
+      <rect x="485" y="90" width="210" height="24" rx="5" fill="#1c2128" stroke="#30363d"/>
+      <text x="495" y="106" fill="#f78166" font-size="11">Makefile / build.ninja</text>
+      <rect x="485" y="120" width="210" height="24" rx="5" fill="#1c2128" stroke="#30363d"/>
+      <text x="495" y="136" fill="#f78166" font-size="11">CMakeFiles/ 目录</text>
+      <rect x="485" y="150" width="210" height="24" rx="5" fill="#1c2128" stroke="#30363d"/>
+      <text x="495" y="166" fill="#f78166" font-size="11">curl_config.h（由 .cmake 生成）</text>
+      <rect x="485" y="180" width="210" height="24" rx="5" fill="#1c2128" stroke="#30363d"/>
+      <text x="495" y="196" fill="#f78166" font-size="11">cmake_install.cmake</text>
+      <rect x="485" y="210" width="210" height="24" rx="5" fill="#1c2128" stroke="#30363d"/>
+      <text x="495" y="226" fill="#f78166" font-size="11">CURLConfig.cmake（安装后）</text>
+    </svg>
+  </div>
+
+  <div class="callout callout-tip">
+    <div class="callout-title">✅ 黄金法则</div>
+    <p style="margin:0">
+      一切放入 <strong>构建目录</strong> 的文件均由 CMake/编译器生成，<strong>不应手动修改，不应提交到版本控制</strong>。如遇构建问题，最彻底的修复方式是：<code>rm -rf build/ && cmake -B build ...</code>。
+    </p>
+  </div>
+
+  <div class="fp-box">
+    <div class="fp-title">
+      <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><circle cx="12" cy="12" r="10"/><line x1="12" y1="8" x2="12" y2="12"/><line x1="12" y1="16" x2="12.01" y2="16"/></svg>
+      第一性原理概述
+    </div>
+    <p style="margin:0;font-size:0.9rem;">
+      职责分离的最终目的是<strong>降低认知负担</strong>：开发者只需理解"描述文件"，构建者只需理解"配置接口"，两者之间的翻译由 CMake 自动完成。任何手动修改自动生成文件的行为都是在<strong>打破抽象边界</strong>，会在下次 <code>cmake</code> 调用时被覆盖，是技术债务的来源。
+    </p>
+  </div>
+</section>
+
+<!-- ===== SECTION 8 ===== -->
+<section id="s8">
+  <h2><span class="num">8</span>编译阶段总览</h2>
+  <p>构建一个 CMake 项目分为 <strong>4 个主要阶段</strong>，每个阶段有明确的输入和输出：</p>
+
+  <div class="diagram-wrap">
+    <svg viewBox="0 0 720 320" width="100%" style="max-width:720px">
+      <rect width="720" height="320" fill="#161b22" rx="12"/>
+      <!-- Title -->
+      <text x="360" y="28" text-anchor="middle" fill="#f0f6fc" font-size="14" font-weight="700">CMake 四阶段构建流程（以 curl 为例）</text>
+
+      <!-- Stage boxes -->
+      <!-- Phase 1: Configure -->
+      <rect x="20" y="50" width="155" height="220" rx="10" fill="rgba(88,166,255,0.08)" stroke="#58a6ff" stroke-width="1.5"/>
+      <rect x="30" y="58" width="135" height="28" rx="6" fill="rgba(88,166,255,0.2)"/>
+      <text x="97" y="76" text-anchor="middle" fill="#58a6ff" font-size="13" font-weight="700">① 配置</text>
+      <text x="97" y="90" text-anchor="middle" fill="#58a6ff" font-size="10">Configure</text>
+      <text x="30" y="115" fill="#8b949e" font-size="9" font-weight="700">输入：</text>
+      <text x="30" y="128" fill="#c9d1d9" font-size="9">• CMakeLists.txt</text>
+      <text x="30" y="141" fill="#c9d1d9" font-size="9">• CMakePresets.json</text>
+      <text x="30" y="154" fill="#c9d1d9" font-size="9">• -D 命令行变量</text>
+      <text x="30" y="167" fill="#c9d1d9" font-size="9">• 系统环境</text>
+      <text x="30" y="190" fill="#8b949e" font-size="9" font-weight="700">输出：</text>
+      <text x="30" y="203" fill="#3fb950" font-size="9">• CMakeCache.txt</text>
+      <text x="30" y="216" fill="#3fb950" font-size="9">• curl_config.h</text>
+      <text x="30" y="229" fill="#3fb950" font-size="9">• 内部构建图</text>
+      <text x="97" y="258" text-anchor="middle" fill="#58a6ff" font-size="10">cmake -B build</text>
+
+      <!-- Arrow 1→2 -->
+      <path d="M175 160 L195 160" stroke="#58a6ff" stroke-width="2" marker-end="url(#pa1)"/>
+
+      <!-- Phase 2: Generate -->
+      <rect x="195" y="50" width="155" height="220" rx="10" fill="rgba(188,140,255,0.08)" stroke="#bc8cff" stroke-width="1.5"/>
+      <rect x="205" y="58" width="135" height="28" rx="6" fill="rgba(188,140,255,0.2)"/>
+      <text x="272" y="76" text-anchor="middle" fill="#bc8cff" font-size="13" font-weight="700">② 生成</text>
+      <text x="272" y="90" text-anchor="middle" fill="#bc8cff" font-size="10">Generate</text>
+      <text x="205" y="115" fill="#8b949e" font-size="9" font-weight="700">输入：</text>
+      <text x="205" y="128" fill="#c9d1d9" font-size="9">• CMakeCache.txt</text>
+      <text x="205" y="141" fill="#c9d1d9" font-size="9">• 内部构建图</text>
+      <text x="205" y="154" fill="#c9d1d9" font-size="9">• 选择的 Generator</text>
+      <text x="205" y="190" fill="#8b949e" font-size="9" font-weight="700">输出：</text>
+      <text x="205" y="203" fill="#3fb950" font-size="9">• Makefile / build.ninja</text>
+      <text x="205" y="216" fill="#3fb950" font-size="9">• cmake_install.cmake</text>
+      <text x="205" y="229" fill="#3fb950" font-size="9">• VS .sln（Windows）</text>
+      <text x="272" y="258" text-anchor="middle" fill="#bc8cff" font-size="10">（自动，与①合并）</text>
+
+      <!-- Arrow 2→3 -->
+      <path d="M350 160 L370 160" stroke="#bc8cff" stroke-width="2" marker-end="url(#pa2)"/>
+
+      <!-- Phase 3: Build -->
+      <rect x="370" y="50" width="155" height="220" rx="10" fill="rgba(63,185,80,0.08)" stroke="#3fb950" stroke-width="1.5"/>
+      <rect x="380" y="58" width="135" height="28" rx="6" fill="rgba(63,185,80,0.2)"/>
+      <text x="447" y="76" text-anchor="middle" fill="#3fb950" font-size="13" font-weight="700">③ 编译</text>
+      <text x="447" y="90" text-anchor="middle" fill="#3fb950" font-size="10">Build</text>
+      <text x="380" y="115" fill="#8b949e" font-size="9" font-weight="700">输入：</text>
+      <text x="380" y="128" fill="#c9d1d9" font-size="9">• Makefile / build.ninja</text>
+      <text x="380" y="141" fill="#c9d1d9" font-size="9">• 全部 .c 源文件</text>
+      <text x="380" y="154" fill="#c9d1d9" font-size="9">• curl_config.h</text>
+      <text x="380" y="167" fill="#c9d1d9" font-size="9">• 第三方库（OpenSSL...）</text>
+      <text x="380" y="190" fill="#8b949e" font-size="9" font-weight="700">输出：</text>
+      <text x="380" y="203" fill="#3fb950" font-size="9">• *.o 目标文件</text>
+      <text x="380" y="216" fill="#3fb950" font-size="9">• libcurl.so / libcurl.a</text>
+      <text x="380" y="229" fill="#3fb950" font-size="9">• curl 可执行文件</text>
+      <text x="447" y="258" text-anchor="middle" fill="#3fb950" font-size="10">cmake --build build</text>
+
+      <!-- Arrow 3→4 -->
+      <path d="M525 160 L545 160" stroke="#3fb950" stroke-width="2" marker-end="url(#pa3)"/>
+
+      <!-- Phase 4: Install -->
+      <rect x="545" y="50" width="155" height="220" rx="10" fill="rgba(247,129,102,0.08)" stroke="#f78166" stroke-width="1.5"/>
+      <rect x="555" y="58" width="135" height="28" rx="6" fill="rgba(247,129,102,0.2)"/>
+      <text x="622" y="76" text-anchor="middle" fill="#f78166" font-size="13" font-weight="700">④ 安装</text>
+      <text x="622" y="90" text-anchor="middle" fill="#f78166" font-size="10">Install</text>
+      <text x="555" y="115" fill="#8b949e" font-size="9" font-weight="700">输入：</text>
+      <text x="555" y="128" fill="#c9d1d9" font-size="9">• cmake_install.cmake</text>
+      <text x="555" y="141" fill="#c9d1d9" font-size="9">• libcurl.so / curl</text>
+      <text x="555" y="154" fill="#c9d1d9" font-size="9">• CMAKE_INSTALL_PREFIX</text>
+      <text x="555" y="190" fill="#8b949e" font-size="9" font-weight="700">输出：</text>
+      <text x="555" y="203" fill="#3fb950" font-size="9">• /usr/local/lib/libcurl.so</text>
+      <text x="555" y="216" fill="#3fb950" font-size="9">• /usr/local/include/curl/</text>
+      <text x="555" y="229" fill="#3fb950" font-size="9">• /usr/local/bin/curl</text>
+      <text x="622" y="258" text-anchor="middle" fill="#f78166" font-size="10">cmake --install build</text>
+
+      <text x="360" y="300" text-anchor="middle" fill="#8b949e" font-size="10">① ② 阶段由同一条 cmake 命令触发，③ 由构建工具（make/ninja）执行，④ 可选</text>
+
+      <defs>
+        <marker id="pa1" markerWidth="8" markerHeight="8" refX="6" refY="3" orient="auto">
+          <path d="M0,0 L0,6 L8,3 z" fill="#58a6ff"/>
+        </marker>
+        <marker id="pa2" markerWidth="8" markerHeight="8" refX="6" refY="3" orient="auto">
+          <path d="M0,0 L0,6 L8,3 z" fill="#bc8cff"/>
+        </marker>
+        <marker id="pa3" markerWidth="8" markerHeight="8" refX="6" refY="3" orient="auto">
+          <path d="M0,0 L0,6 L8,3 z" fill="#3fb950"/>
+        </marker>
+      </defs>
+    </svg>
+  </div>
+
+  <div class="tbl-wrap">
+    <table>
+      <tr><th>阶段</th><th>触发命令</th><th>执行者</th><th>关键输入</th><th>关键输出</th></tr>
+      <tr>
+        <td><span class="badge badge-blue">① 配置</span></td>
+        <td><code>cmake -B build</code></td>
+        <td>CMake</td>
+        <td>CMakeLists.txt、系统环境</td>
+        <td>CMakeCache.txt、curl_config.h</td>
+      </tr>
+      <tr>
+        <td><span class="badge badge-purple">② 生成</span></td>
+        <td>（与①同步）</td>
+        <td>CMake</td>
+        <td>缓存、内部模型</td>
+        <td>Makefile / build.ninja</td>
+      </tr>
+      <tr>
+        <td><span class="badge badge-green">③ 编译</span></td>
+        <td><code>cmake --build build</code></td>
+        <td>make/ninja</td>
+        <td>源文件、构建脚本、头文件</td>
+        <td>*.o、libcurl.so、curl</td>
+      </tr>
+      <tr>
+        <td><span class="badge badge-red">④ 安装</span></td>
+        <td><code>cmake --install build</code></td>
+        <td>CMake</td>
+        <td>构建产物、安装规则</td>
+        <td>系统目录中的库/头文件/可执行文件</td>
+      </tr>
+    </table>
+  </div>
+
+  <div class="fp-box">
+    <div class="fp-title">
+      <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><circle cx="12" cy="12" r="10"/><line x1="12" y1="8" x2="12" y2="12"/><line x1="12" y1="16" x2="12.01" y2="16"/></svg>
+      第一性原理概述
+    </div>
+    <p style="margin:0;font-size:0.9rem;">
+      四个阶段本质上对应软件工程中的<strong>四个不同时刻</strong>：<br>
+      <strong>配置时</strong>（Configure-time）= 探测环境、收集意图 →<br>
+      <strong>生成时</strong>（Generate-time）= 将意图翻译为机器可执行指令 →<br>
+      <strong>构建时</strong>（Build-time）= 执行实际编译链接 →<br>
+      <strong>安装时</strong>（Install-time）= 将产物部署到预定位置<br>
+      这种分阶段设计使每个阶段可独立重复执行，并且失败时精确定位问题所在层。
+    </p>
+  </div>
+</section>
+
+<!-- ===== SECTION 9 ===== -->
+<section id="s9">
+  <h2><span class="num">9</span>阶段1：配置（Configure）</h2>
+
+  <div class="callout callout-info">
+    <div class="callout-title">ℹ️ 官方定义</div>
+    <p style="margin:0">来源：<a href="https://cmake.org/cmake/help/latest/guide/user-interaction/index.html" target="_blank">CMake 官方用户交互指南</a><br>
+    "CMake must be instructed to generate a suitable buildsystem, then the user invokes a build tool to process that generated buildsystem."（CMake 必须先被指示生成合适的构建系统，然后用户再调用构建工具处理该生成的构建系统。）</p>
+  </div>
+
+  <h3>配置阶段做什么</h3>
+  <ol class="phase-list">
+    <li class="phase-item">
+      <div class="phase-num"></div>
+      <div class="phase-body">
+        <h4>解析 CMakeLists.txt（树形递归）</h4>
+        <p>从根目录的 <code>CMakeLists.txt</code> 开始，递归处理所有 <code>add_subdirectory()</code> 引入的子目录脚本，构建完整的项目模型（目标、依赖、编译选项）。</p>
+      </div>
+    </li>
+    <li class="phase-item">
+      <div class="phase-num"></div>
+      <div class="phase-body">
+        <h4>编译器与平台探测</h4>
+        <p>CMake 编写一个测试程序并尝试编译，确认编译器版本、目标架构、支持的 C 标准等。结果缓存到 <code>CMakeCache.txt</code>。</p>
+        <pre><code><span class="comment">-- The C compiler identification is GNU 11.4.1</span>
+<span class="comment">-- Detecting C compiler ABI info - done</span>
+<span class="comment">-- Check for working C compiler: /usr/bin/gcc - skipped</span>
+<span class="comment">-- Detecting C compile features - done</span></code></pre>
+      </div>
+    </li>
+    <li class="phase-item">
+      <div class="phase-num"></div>
+      <div class="phase-body">
+        <h4>依赖库查找（find_package）</h4>
+        <p>执行 <code>FindXXX.cmake</code> 模块，在系统路径、<code>CMAKE_PREFIX_PATH</code> 等位置搜索依赖库，将结果（路径、版本、是否找到）写入缓存。</p>
+        <pre><code><span class="comment">-- Found OpenSSL: /usr/lib/libssl.so (3.0.2)</span>
+<span class="comment">-- Found ZLIB: /usr/lib/x86_64-linux-gnu/libz.so (1.2.11)</span>
+<span class="comment">-- Enabled SSL backends: OpenSSL</span></code></pre>
+      </div>
+    </li>
+    <li class="phase-item">
+      <div class="phase-num"></div>
+      <div class="phase-body">
+        <h4>代码能力检测 & configure_file()</h4>
+        <p>使用 <code>check_include_file()</code>、<code>check_symbol_exists()</code> 等命令测试平台 API 可用性，然后将结果注入 <code>curl_config.h.cmake</code> 模板，生成 <code>curl_config.h</code>。</p>
+        <pre><code><span class="comment">-- Checking for header arpa/inet.h - found</span>
+<span class="comment">-- Checking for header netdb.h - found</span>
+<span class="comment">-- Enabled features: SSL IPv6 unixsockets libz AsynchDNS</span>
+<span class="comment">-- Enabled protocols: DICT FILE FTP FTPS HTTP HTTPS IMAP ...</span></code></pre>
+      </div>
+    </li>
+    <li class="phase-item">
+      <div class="phase-num"></div>
+      <div class="phase-body">
+        <h4>生成/更新 CMakeCache.txt</h4>
+        <p>将所有变量（包括用户通过 <code>-D</code> 传入的和自动检测的）持久化到 <code>CMakeCache.txt</code>，供下次调用复用。</p>
+      </div>
+    </li>
+  </ol>
+
+  <h3>curl 完整配置命令</h3>
+  <pre><code><span class="comment"># 标准源外构建（推荐）</span>
+cmake -S . -B ../curl-build \
+      -G Ninja \
+      -DCMAKE_BUILD_TYPE=Release \
+      -DCMAKE_INSTALL_PREFIX=/usr/local \
+      -DCURL_USE_OPENSSL=ON \
+      -DBUILD_SHARED_LIBS=ON \
+      -DBUILD_CURL_EXE=ON \
+      -DUSE_NGHTTP2=ON
+
+<span class="comment"># 或使用预设</span>
+cmake --preset release</code></pre>
+
+  <h3>配置阶段输入输出</h3>
+  <div class="tbl-wrap">
+    <table>
+      <tr><th>方向</th><th>文件/数据</th><th>说明</th></tr>
+      <tr><td rowspan="5"><strong>输入</strong></td><td><code>CMakeLists.txt</code>（各级）</td><td>项目构建描述</td></tr>
+      <tr><td><code>CMakePresets.json</code></td><td>预设配置（可选）</td></tr>
+      <tr><td>命令行 <code>-D</code> 参数</td><td>用户指定的变量</td></tr>
+      <tr><td>系统环境（PATH, CC, CXX...）</td><td>编译器、工具链位置</td></tr>
+      <tr><td><code>CMakeCache.txt</code>（若已存在）</td><td>上次配置的缓存</td></tr>
+      <tr><td rowspan="4"><strong>输出</strong></td><td><code>CMakeCache.txt</code>（新建/更新）</td><td>所有配置变量的持久化</td></tr>
+      <tr><td><code>build/lib/curl_config.h</code></td><td>平台检测结果头文件</td></tr>
+      <tr><td><code>build/libcurl.pc</code></td><td>pkg-config 文件</td></tr>
+      <tr><td>CMake 内部构建图（内存）</td><td>传递给生成阶段</td></tr>
+    </table>
+  </div>
+
+  <div class="fp-box">
+    <div class="fp-title">
+      <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><circle cx="12" cy="12" r="10"/><line x1="12" y1="8" x2="12" y2="12"/><line x1="12" y1="16" x2="12.01" y2="16"/></svg>
+      第一性原理概述
+    </div>
+    <p style="margin:0;font-size:0.9rem;">
+      配置阶段本质上是<strong>环境感知</strong>（Environment Introspection）：在实际编译之前，先"问清楚"当前系统有什么、能做什么，然后再决定怎么做。这与编译器的预处理（Preprocessing）思想相似——用元信息来生成实际的工作计划，避免在不满足条件的环境中盲目编译。
+    </p>
+  </div>
+</section>
+
+<!-- ===== SECTION 10 ===== -->
+<section id="s10">
+  <h2><span class="num">10</span>阶段2：生成（Generate）</h2>
+
+  <p>生成阶段紧接配置阶段执行（通常在同一次 <code>cmake</code> 命令中），将 CMake 内部的构建模型（Target 图、依赖关系、编译标志）转换为<strong>特定构建工具</strong>能够理解的文件格式。</p>
+
+  <h3>支持的生成器</h3>
+  <div class="tbl-wrap">
+    <table>
+      <tr><th>Generator（生成器）</th><th>生成文件</th><th>适用平台</th><th>执行命令</th></tr>
+      <tr><td>Unix Makefiles（默认）</td><td><code>Makefile</code></td><td>Linux/macOS</td><td><code>make</code></td></tr>
+      <tr><td>Ninja</td><td><code>build.ninja</code></td><td>全平台（推荐）</td><td><code>ninja</code></td></tr>
+      <tr><td>Visual Studio 17 2022</td><td><code>*.sln</code>、<code>*.vcxproj</code></td><td>Windows</td><td>msbuild</td></tr>
+      <tr><td>Xcode</td><td><code>*.xcodeproj</code></td><td>macOS</td><td>xcodebuild</td></tr>
+      <tr><td>NMake Makefiles</td><td><code>Makefile</code>（NMake 格式）</td><td>Windows MSVC</td><td><code>nmake</code></td></tr>
+      <tr><td>MinGW Makefiles</td><td><code>Makefile</code></td><td>Windows MinGW</td><td><code>mingw32-make</code></td></tr>
+    </table>
+  </div>
+
+  <h3>生成阶段的输出文件结构</h3>
+  <pre><code>curl-build/                      <span class="comment"># 构建目录</span>
+├── Makefile                     <span class="comment"># ← 生成的原生构建脚本</span>
+├── build.ninja                  <span class="comment"># ← 若使用 Ninja 生成器</span>
+├── cmake_install.cmake          <span class="comment"># ← 安装规则脚本</span>
+├── CMakeCache.txt               <span class="comment"># ← 配置缓存（配置阶段产物）</span>
+├── CMakeFiles/                  <span class="comment"># ← 内部文件</span>
+│   ├── cmake.check_cache        
+│   ├── CMakeDirectoryInformation.cmake
+│   ├── progress.marks
+│   └── Makefile2                <span class="comment"># 内部 Makefile</span>
+├── lib/
+│   ├── Makefile
+│   ├── curl_config.h            <span class="comment"># ← configure_file 输出</span>
+│   └── CMakeFiles/
+│       └── libcurl.dir/         <span class="comment"># 目标文件将放这里</span>
+└── src/
+    ├── Makefile
+    └── CMakeFiles/
+        └── curl.dir/</code></pre>
+
+  <div class="callout callout-warn">
+    <div class="callout-title">⚠️ 生成器不可在中途更换</div>
+    <p style="margin:0">
+      一旦用某个生成器（如 <code>-G Ninja</code>）配置了构建目录，<strong>不能</strong>再次用不同生成器（如 <code>-G "Unix Makefiles"</code>）重新配置该目录。必须删除构建目录重新开始。这是因为生成的文件格式完全不同，CMake 不做跨生成器的迁移。
+    </p>
+  </div>
+
+  <h3>生成阶段输入输出</h3>
+  <div class="tbl-wrap">
+    <table>
+      <tr><th>方向</th><th>文件/数据</th><th>说明</th></tr>
+      <tr><td rowspan="3"><strong>输入</strong></td><td>CMake 内部构建图（内存）</td><td>由配置阶段建立</td></tr>
+      <tr><td><code>CMakeCache.txt</code></td><td>变量值</td></tr>
+      <tr><td>选择的 Generator</td><td>决定输出格式</td></tr>
+      <tr><td rowspan="3"><strong>输出</strong></td><td><code>Makefile</code> / <code>build.ninja</code> / <code>*.sln</code></td><td>原生构建脚本</td></tr>
+      <tr><td><code>cmake_install.cmake</code></td><td>安装规则</td></tr>
+      <tr><td><code>CMakeFiles/</code> 内部辅助文件</td><td>依赖跟踪等</td></tr>
+    </table>
+  </div>
+
+  <div class="fp-box">
+    <div class="fp-title">
+      <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><circle cx="12" cy="12" r="10"/><line x1="12" y1="8" x2="12" y2="12"/><line x1="12" y1="16" x2="12.01" y2="16"/></svg>
+      第一性原理概述
+    </div>
+    <p style="margin:0;font-size:0.9rem;">
+      生成阶段是典型的<strong>编译器后端</strong>思维：配置阶段构建了语言无关的 IR（中间表示，即构建图），生成阶段将 IR 翻译为特定"机器码"（原生构建脚本）。CMake 本质上是一个<strong>构建系统的编译器</strong>，而 Generator 就是它的"目标架构"选项。
+    </p>
+  </div>
+</section>
+
+<!-- ===== SECTION 11 ===== -->
+<section id="s11">
+  <h2><span class="num">11</span>阶段3：编译（Build）</h2>
+
+  <p>编译阶段由生成的原生构建工具（make/ninja/msbuild）驱动，执行实际的编译和链接工作。CMake 本身退出舞台，只是调用工具的"代理人"。</p>
+
+  <h3>编译阶段内部细分</h3>
+
+  <div class="diagram-wrap">
+    <svg viewBox="0 0 680 200" width="100%" style="max-width:680px">
+      <rect width="680" height="200" fill="#161b22" rx="12"/>
+
+      <!-- Step 1 -->
+      <rect x="15" y="35" width="140" height="130" rx="8" fill="#1c2128" stroke="#58a6ff" stroke-width="1.5"/>
+      <text x="85" y="58" text-anchor="middle" fill="#58a6ff" font-size="11" font-weight="700">预处理</text>
+      <text x="85" y="74" text-anchor="middle" fill="#8b949e" font-size="10">Preprocessing</text>
+      <text x="85" y="98" text-anchor="middle" fill="#c9d1d9" font-size="9">输入: *.c 源文件</text>
+      <text x="85" y="112" text-anchor="middle" fill="#c9d1d9" font-size="9">+ curl_config.h</text>
+      <text x="85" y="133" text-anchor="middle" fill="#3fb950" font-size="9">输出: *.i</text>
+      <text x="85" y="147" text-anchor="middle" fill="#3fb950" font-size="9">（展开宏/头文件）</text>
+
+      <path d="M155 100 L170 100" stroke="#58a6ff" stroke-width="1.5" marker-end="url(#ba1)"/>
+
+      <!-- Step 2 -->
+      <rect x="170" y="35" width="140" height="130" rx="8" fill="#1c2128" stroke="#bc8cff" stroke-width="1.5"/>
+      <text x="240" y="58" text-anchor="middle" fill="#bc8cff" font-size="11" font-weight="700">编译</text>
+      <text x="240" y="74" text-anchor="middle" fill="#8b949e" font-size="10">Compile</text>
+      <text x="240" y="98" text-anchor="middle" fill="#c9d1d9" font-size="9">输入: *.i</text>
+      <text x="240" y="112" text-anchor="middle" fill="#c9d1d9" font-size="9">编译器标志</text>
+      <text x="240" y="133" text-anchor="middle" fill="#3fb950" font-size="9">输出: *.s</text>
+      <text x="240" y="147" text-anchor="middle" fill="#3fb950" font-size="9">（汇编代码）</text>
+
+      <path d="M310 100 L325 100" stroke="#bc8cff" stroke-width="1.5" marker-end="url(#ba2)"/>
+
+      <!-- Step 3 -->
+      <rect x="325" y="35" width="140" height="130" rx="8" fill="#1c2128" stroke="#e3b341" stroke-width="1.5"/>
+      <text x="395" y="58" text-anchor="middle" fill="#e3b341" font-size="11" font-weight="700">汇编</text>
+      <text x="395" y="74" text-anchor="middle" fill="#8b949e" font-size="10">Assemble</text>
+      <text x="395" y="98" text-anchor="middle" fill="#c9d1d9" font-size="9">输入: *.s</text>
+      <text x="395" y="133" text-anchor="middle" fill="#3fb950" font-size="9">输出: *.o</text>
+      <text x="395" y="147" text-anchor="middle" fill="#3fb950" font-size="9">（目标文件）</text>
+
+      <path d="M465 100 L480 100" stroke="#e3b341" stroke-width="1.5" marker-end="url(#ba3)"/>
+
+      <!-- Step 4 -->
+      <rect x="480" y="35" width="185" height="130" rx="8" fill="#1c2128" stroke="#3fb950" stroke-width="1.5"/>
+      <text x="572" y="58" text-anchor="middle" fill="#3fb950" font-size="11" font-weight="700">链接</text>
+      <text x="572" y="74" text-anchor="middle" fill="#8b949e" font-size="10">Link</text>
+      <text x="572" y="98" text-anchor="middle" fill="#c9d1d9" font-size="9">输入: *.o 目标文件</text>
+      <text x="572" y="112" text-anchor="middle" fill="#c9d1d9" font-size="9">+ libssl.so / libz.so</text>
+      <text x="572" y="133" text-anchor="middle" fill="#3fb950" font-size="9">输出: libcurl.so</text>
+      <text x="572" y="147" text-anchor="middle" fill="#3fb950" font-size="9">+ curl 可执行文件</text>
+
+      <defs>
+        <marker id="ba1" markerWidth="7" markerHeight="7" refX="5" refY="3" orient="auto"><path d="M0,0 L0,6 L7,3 z" fill="#58a6ff"/></marker>
+        <marker id="ba2" markerWidth="7" markerHeight="7" refX="5" refY="3" orient="auto"><path d="M0,0 L0,6 L7,3 z" fill="#bc8cff"/></marker>
+        <marker id="ba3" markerWidth="7" markerHeight="7" refX="5" refY="3" orient="auto"><path d="M0,0 L0,6 L7,3 z" fill="#e3b341"/></marker>
+      </defs>
+
+      <text x="340" y="185" text-anchor="middle" fill="#8b949e" font-size="10">make/ninja 自动管理增量编译：只重新编译已修改的源文件</text>
+    </svg>
+  </div>
+
+  <h3>编译命令</h3>
+  <pre><code><span class="comment"># 基本编译</span>
+cmake --build ../curl-build
+
+<span class="comment"># 并行编译（-j 8 表示 8 个并行任务）</span>
+cmake --build ../curl-build --parallel 8
+
+<span class="comment"># 只编译特定目标</span>
+cmake --build ../curl-build --target libcurl
+cmake --build ../curl-build --target curl
+
+<span class="comment"># Debug / Release 配置（多配置生成器，如 Visual Studio）</span>
+cmake --build ../curl-build --config Release
+
+<span class="comment"># 显示详细编译命令</span>
+cmake --build ../curl-build --verbose
+
+<span class="comment"># 等价的直接调用（在构建目录内）</span>
+cd ../curl-build && make -j8
+cd ../curl-build && ninja -j8</code></pre>
+
+  <h3>编译阶段输入输出</h3>
+  <div class="tbl-wrap">
+    <table>
+      <tr><th>方向</th><th>文件</th><th>说明</th></tr>
+      <tr><td rowspan="5"><strong>输入</strong></td><td><code>Makefile</code> / <code>build.ninja</code></td><td>编译指令描述</td></tr>
+      <tr><td><code>lib/*.c</code>、<code>src/*.c</code></td><td>curl 全部 C 源文件</td></tr>
+      <tr><td><code>build/lib/curl_config.h</code></td><td>平台配置头文件</td></tr>
+      <tr><td><code>include/curl/*.h</code></td><td>公共头文件</td></tr>
+      <tr><td>第三方库（<code>libssl.so</code>、<code>libz.so</code>等）</td><td>链接依赖</td></tr>
+      <tr><td rowspan="4"><strong>输出</strong></td><td><code>build/lib/CMakeFiles/libcurl.dir/*.o</code></td><td>目标文件</td></tr>
+      <tr><td><code>build/lib/libcurl.so.x.y.z</code></td><td>共享库</td></tr>
+      <tr><td><code>build/lib/libcurl.a</code></td><td>静态库（若启用）</td></tr>
+      <tr><td><code>build/src/curl</code></td><td>可执行文件</td></tr>
+    </table>
+  </div>
+
+  <div class="callout callout-tip">
+    <div class="callout-title">✅ 增量编译</div>
+    <p style="margin:0">
+      make/ninja 会追踪文件修改时间戳和依赖关系。只有修改过的 <code>.c</code> 文件及其依赖链才会被重新编译，这称为<strong>增量编译</strong>（Incremental Build），大幅节省重复构建时间。
+    </p>
+  </div>
+
+  <div class="fp-box">
+    <div class="fp-title">
+      <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><circle cx="12" cy="12" r="10"/><line x1="12" y1="8" x2="12" y2="12"/><line x1="12" y1="16" x2="12.01" y2="16"/></svg>
+      第一性原理概述
+    </div>
+    <p style="margin:0;font-size:0.9rem;">
+      编译阶段的本质是<strong>信息变换</strong>：高级语言（C）→ 汇编 → 机器码 → 可链接目标 → 最终二进制。每一步都是信息的精确变换，输出完全由输入决定（确定性）。CMake 在这一阶段的贡献是确保所有编译单元使用<strong>一致的编译参数</strong>（头文件路径、宏定义、优化级别），通过 Target 的属性传播机制避免了手动管理参数的错误。
+    </p>
+  </div>
+</section>
+
+<!-- ===== SECTION 12 ===== -->
+<section id="s12">
+  <h2><span class="num">12</span>阶段4：安装（Install）</h2>
+
+  <p>安装阶段将编译产物从<strong>构建目录</strong>复制到<strong>系统目录</strong>（或指定的安装前缀），使其可供系统其他软件使用。这是可选步骤——如果只是本地开发使用，可以直接引用构建目录中的文件。</p>
+
+  <div class="callout callout-info">
+    <div class="callout-title">ℹ️ curl 官方说明</div>
+    <p style="margin:0">来源：<a href="https://github.com/curl/curl/blob/master/docs/INSTALL-CMAKE.md" target="_blank">curl INSTALL-CMAKE.md</a><br>
+    "Do not use --prefix to change the installation prefix as the output produced by the curl-config script is determined at CMake configure time. If you want to set a custom install prefix for curl, set CMAKE_INSTALL_PREFIX when configuring the CMake build."</p>
+  </div>
+
+  <h3>安装命令</h3>
+  <pre><code><span class="comment"># 安装到默认路径（CMAKE_INSTALL_PREFIX，通常是 /usr/local）</span>
+cmake --install ../curl-build
+
+<span class="comment"># 安装到自定义路径（推荐在配置时指定，而非安装时）</span>
+cmake -B ../curl-build -DCMAKE_INSTALL_PREFIX=/opt/curl
+cmake --install ../curl-build
+
+<span class="comment"># 等价的旧式写法</span>
+cd ../curl-build && make install
+
+<span class="comment"># DESTDIR 重定向（打包时常用）</span>
+DESTDIR=/tmp/staging cmake --install ../curl-build
+<span class="comment"># 文件将安装至 /tmp/staging/usr/local/... </span></code></pre>
+
+  <h3>curl 安装的文件清单</h3>
+  <div class="tbl-wrap">
+    <table>
+      <tr><th>安装目标</th><th>源（构建目录）</th><th>目标（系统目录）</th></tr>
+      <tr>
+        <td>curl 可执行文件</td>
+        <td><code>build/src/curl</code></td>
+        <td><code>{prefix}/bin/curl</code></td>
+      </tr>
+      <tr>
+        <td>libcurl 共享库</td>
+        <td><code>build/lib/libcurl.so.x.y.z</code></td>
+        <td><code>{prefix}/lib/libcurl.so.x.y.z</code></td>
+      </tr>
+      <tr>
+        <td>libcurl 静态库</td>
+        <td><code>build/lib/libcurl.a</code></td>
+        <td><code>{prefix}/lib/libcurl.a</code></td>
+      </tr>
+      <tr>
+        <td>公共头文件</td>
+        <td><code>include/curl/*.h</code></td>
+        <td><code>{prefix}/include/curl/*.h</code></td>
+      </tr>
+      <tr>
+        <td>pkg-config 文件</td>
+        <td><code>build/libcurl.pc</code></td>
+        <td><code>{prefix}/lib/pkgconfig/libcurl.pc</code></td>
+      </tr>
+      <tr>
+        <td>CMake 包配置</td>
+        <td><code>build/CURLConfig.cmake</code></td>
+        <td><code>{prefix}/lib/cmake/CURL/CURLConfig.cmake</code></td>
+      </tr>
+      <tr>
+        <td>curl-config 脚本</td>
+        <td><code>build/curl-config</code></td>
+        <td><code>{prefix}/bin/curl-config</code></td>
+      </tr>
+      <tr>
+        <td>man 手册页</td>
+        <td><code>build/docs/curl.1</code></td>
+        <td><code>{prefix}/share/man/man1/curl.1</code></td>
+      </tr>
+    </table>
+  </div>
+
+  <h3>安装后的包配置（供下游项目使用）</h3>
+  <pre><code><span class="comment"># 在其他 CMake 项目中使用已安装的 curl</span>
+<span class="fn">find_package</span>(CURL 8.0 <span class="kw">REQUIRED</span>)
+
+<span class="fn">add_executable</span>(myapp main.c)
+<span class="fn">target_link_libraries</span>(myapp <span class="kw">PRIVATE</span> <span class="var">CURL::libcurl</span>)
+
+<span class="comment"># CMake 会自动找到：</span>
+<span class="comment"># /usr/local/lib/cmake/CURL/CURLConfig.cmake</span>
+<span class="comment"># 并设置 CURL_INCLUDE_DIRS、CURL_LIBRARIES 等变量</span></code></pre>
+
+  <h3>安装阶段输入输出</h3>
+  <div class="tbl-wrap">
+    <table>
+      <tr><th>方向</th><th>文件</th><th>说明</th></tr>
+      <tr><td rowspan="3"><strong>输入</strong></td><td><code>cmake_install.cmake</code></td><td>安装规则脚本（生成阶段产物）</td></tr>
+      <tr><td>构建目录中的编译产物</td><td>库文件、可执行文件等</td></tr>
+      <tr><td><code>CMAKE_INSTALL_PREFIX</code></td><td>安装根目录</td></tr>
+      <tr><td rowspan="4"><strong>输出</strong></td><td><code>{prefix}/bin/curl</code></td><td>工具可执行文件</td></tr>
+      <tr><td><code>{prefix}/lib/libcurl.so</code></td><td>运行时库</td></tr>
+      <tr><td><code>{prefix}/include/curl/</code></td><td>开发头文件</td></tr>
+      <tr><td><code>{prefix}/lib/cmake/CURL/</code></td><td>下游 CMake 集成所需</td></tr>
+    </table>
+  </div>
+
+  <div class="fp-box">
+    <div class="fp-title">
+      <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><circle cx="12" cy="12" r="10"/><line x1="12" y1="8" x2="12" y2="12"/><line x1="12" y1="16" x2="12.01" y2="16"/></svg>
+      第一性原理概述
+    </div>
+    <p style="margin:0;font-size:0.9rem;">
+      安装阶段解决的是<strong>软件部署</strong>（Deployment）问题：构建目录是"工厂车间"，安装目录是"货架"。安装不仅仅是复制文件，还要生成 <code>CURLConfig.cmake</code>、<code>libcurl.pc</code> 等<strong>服务发现元数据</strong>，让下游项目能够定位到这个库。这种"安装即发布接口"的设计，是现代包管理体系（vcpkg、Conan、apt）的底层基础。
+    </p>
+  </div>
+</section>
+
+<!-- ===== SECTION 13 ===== -->
+<section id="s13">
+  <h2><span class="num">13</span>curl 完整构建流程实战</h2>
+
+  <p>综合以上所有知识，以下是在 Linux 上从源码构建并安装 curl 的完整命令流：</p>
+
+  <pre><code><span class="comment">##############################################</span>
+<span class="comment">##  curl 完整 CMake 构建流程（Linux）          ##</span>
+<span class="comment">##############################################</span>
+
+<span class="comment"># ① 获取源码</span>
+git clone https://github.com/curl/curl.git
+<span class="kw">cd</span> curl
+
+<span class="comment"># ② 配置阶段 + 生成阶段（一次命令完成）</span>
+<span class="comment">#    输入: CMakeLists.txt, 系统环境</span>
+<span class="comment">#    输出: CMakeCache.txt, Makefile/build.ninja, curl_config.h</span>
+cmake -S . -B ../curl-build \
+      -G Ninja \
+      -DCMAKE_BUILD_TYPE=Release \
+      -DCMAKE_INSTALL_PREFIX=/usr/local \
+      -DCURL_USE_OPENSSL=ON \
+      -DBUILD_SHARED_LIBS=ON \
+      -DBUILD_CURL_EXE=ON \
+      -DUSE_NGHTTP2=ON
+
+<span class="comment"># 配置成功输出类似：</span>
+<span class="comment"># -- Found OpenSSL: /usr/lib/libssl.so (3.0.2)</span>
+<span class="comment"># -- Enabled protocols: DICT FILE FTP FTPS HTTP HTTPS IMAP ...</span>
+<span class="comment"># -- Configuring done (20.2s)</span>
+<span class="comment"># -- Generating done (0.3s)</span>
+<span class="comment"># -- Build files have been written to: .../curl-build</span>
+
+<span class="comment"># ③ 编译阶段</span>
+<span class="comment">#    输入: build.ninja, lib/*.c, curl_config.h, libssl.so...</span>
+<span class="comment">#    输出: libcurl.so, curl</span>
+cmake --build ../curl-build --parallel 8
+
+<span class="comment"># 验证编译产物</span>
+ls ../curl-build/lib/libcurl.so*
+ls ../curl-build/src/curl
+
+<span class="comment"># ④ 安装阶段（可选，需要权限）</span>
+<span class="comment">#    输入: cmake_install.cmake, libcurl.so, curl</span>
+<span class="comment">#    输出: /usr/local/bin/curl, /usr/local/lib/libcurl.so, ...</span>
+sudo cmake --install ../curl-build
+
+<span class="comment"># 验证安装</span>
+curl --version
+ldconfig -p | grep libcurl</code></pre>
+
+  <h3>完整流程数据流图</h3>
+  <div class="diagram-wrap">
+    <svg viewBox="0 0 720 420" width="100%" style="max-width:720px">
+      <rect width="720" height="420" fill="#161b22" rx="12"/>
+      <text x="360" y="28" text-anchor="middle" fill="#f0f6fc" font-size="14" font-weight="700">curl CMake 构建完整数据流</text>
+
+      <!-- Source files (left) -->
+      <rect x="10" y="45" width="160" height="170" rx="8" fill="rgba(88,166,255,0.05)" stroke="#30363d" stroke-width="1"/>
+      <text x="90" y="63" text-anchor="middle" fill="#8b949e" font-size="10" font-weight="700">源码目录</text>
+      <rect x="18" y="70" width="144" height="20" rx="4" fill="#1c2128" stroke="#30363d"/>
+      <text x="26" y="84" fill="#e3b341" font-size="9">CMakeLists.txt（根）</text>
+      <rect x="18" y="94" width="144" height="20" rx="4" fill="#1c2128" stroke="#30363d"/>
+      <text x="26" y="108" fill="#e3b341" font-size="9">lib/CMakeLists.txt</text>
+      <rect x="18" y="118" width="144" height="20" rx="4" fill="#1c2128" stroke="#30363d"/>
+      <text x="26" y="132" fill="#e3b341" font-size="9">src/CMakeLists.txt</text>
+      <rect x="18" y="142" width="144" height="20" rx="4" fill="#1c2128" stroke="#30363d"/>
+      <text x="26" y="156" fill="#e3b341" font-size="9">CMake/Find*.cmake</text>
+      <rect x="18" y="166" width="144" height="20" rx="4" fill="#1c2128" stroke="#30363d"/>
+      <text x="26" y="180" fill="#e3b341" font-size="9">lib/curl_config.h.cmake</text>
+      <rect x="18" y="190" width="144" height="20" rx="4" fill="#1c2128" stroke="#30363d"/>
+      <text x="26" y="204" fill="#e3b341" font-size="9">libcurl.pc.in</text>
+
+      <!-- User input -->
+      <rect x="10" y="230" width="160" height="80" rx="8" fill="rgba(227,179,65,0.05)" stroke="#30363d" stroke-width="1"/>
+      <text x="90" y="248" text-anchor="middle" fill="#8b949e" font-size="10" font-weight="700">用户输入</text>
+      <rect x="18" y="255" width="144" height="20" rx="4" fill="#1c2128" stroke="#30363d"/>
+      <text x="26" y="269" fill="#e3b341" font-size="9">-D 命令行参数</text>
+      <rect x="18" y="279" width="144" height="20" rx="4" fill="#1c2128" stroke="#30363d"/>
+      <text x="26" y="293" fill="#e3b341" font-size="9">CMakePresets.json</text>
+
+      <!-- System environment -->
+      <rect x="10" y="325" width="160" height="60" rx="8" fill="rgba(63,185,80,0.05)" stroke="#30363d" stroke-width="1"/>
+      <text x="90" y="343" text-anchor="middle" fill="#8b949e" font-size="10" font-weight="700">系统环境</text>
+      <text x="20" y="360" fill="#c9d1d9" font-size="9">gcc/clang, libssl.so</text>
+      <text x="20" y="374" fill="#c9d1d9" font-size="9">libz.so, pkg-config</text>
+
+      <!-- Arrow to Configure -->
+      <path d="M170 130 L220 130" stroke="#58a6ff" stroke-width="1.5" stroke-dasharray="4,2" marker-end="url(#fa1)"/>
+      <path d="M170 260 L220 200" stroke="#e3b341" stroke-width="1.5" stroke-dasharray="4,2" marker-end="url(#fa1)"/>
+      <path d="M170 350 L220 240" stroke="#3fb950" stroke-width="1.5" stroke-dasharray="4,2" marker-end="url(#fa1)"/>
+
+      <!-- Configure+Generate Box -->
+      <rect x="220" y="75" width="155" height="200" rx="10" fill="rgba(88,166,255,0.1)" stroke="#58a6ff" stroke-width="2"/>
+      <rect x="228" y="83" width="139" height="30" rx="6" fill="rgba(88,166,255,0.25)"/>
+      <text x="297" y="100" text-anchor="middle" fill="#58a6ff" font-size="12" font-weight="700">cmake -B build</text>
+      <text x="297" y="113" text-anchor="middle" fill="#8b949e" font-size="9">配置 + 生成</text>
+      <text x="228" y="140" fill="#c9d1d9" font-size="9">• 解析 CMakeLists</text>
+      <text x="228" y="154" fill="#c9d1d9" font-size="9">• 探测编译器</text>
+      <text x="228" y="168" fill="#c9d1d9" font-size="9">• find_package()</text>
+      <text x="228" y="182" fill="#c9d1d9" font-size="9">• configure_file()</text>
+      <text x="228" y="196" fill="#c9d1d9" font-size="9">• 构建缓存</text>
+      <text x="228" y="210" fill="#c9d1d9" font-size="9">• 生成 Makefile/ninja</text>
+      <text x="228" y="255" text-anchor="start" fill="#3fb950" font-size="9">→ CMakeCache.txt</text>
+      <text x="228" y="267" text-anchor="start" fill="#3fb950" font-size="9">→ curl_config.h</text>
+      <text x="228" y="279" text-anchor="start" fill="#3fb950" font-size="9">→ build.ninja</text>
+
+      <!-- Arrow to Build -->
+      <path d="M375 175 L415 175" stroke="#3fb950" stroke-width="2" marker-end="url(#fa2)"/>
+
+      <!-- Build Box -->
+      <rect x="415" y="100" width="145" height="150" rx="10" fill="rgba(63,185,80,0.1)" stroke="#3fb950" stroke-width="2"/>
+      <rect x="423" y="108" width="129" height="30" rx="6" fill="rgba(63,185,80,0.25)"/>
+      <text x="487" y="125" text-anchor="middle" fill="#3fb950" font-size="12" font-weight="700">cmake --build</text>
+      <text x="487" y="138" text-anchor="middle" fill="#8b949e" font-size="9">编译</text>
+      <text x="423" y="162" fill="#c9d1d9" font-size="9">• 预处理 .c → .i</text>
+      <text x="423" y="176" fill="#c9d1d9" font-size="9">• 编译 .i → .s</text>
+      <text x="423" y="190" fill="#c9d1d9" font-size="9">• 汇编 .s → .o</text>
+      <text x="423" y="204" fill="#c9d1d9" font-size="9">• 链接 .o → .so/.exe</text>
+      <text x="423" y="225" text-anchor="start" fill="#3fb950" font-size="9">→ libcurl.so</text>
+      <text x="423" y="237" text-anchor="start" fill="#3fb950" font-size="9">→ curl (binary)</text>
+
+      <!-- Arrow to Install -->
+      <path d="M560 175 L600 175" stroke="#f78166" stroke-width="2" marker-end="url(#fa3)"/>
+
+      <!-- Install Box -->
+      <rect x="600" y="100" width="110" height="150" rx="10" fill="rgba(247,129,102,0.1)" stroke="#f78166" stroke-width="2"/>
+      <rect x="608" y="108" width="94" height="30" rx="6" fill="rgba(247,129,102,0.25)"/>
+      <text x="655" y="125" text-anchor="middle" fill="#f78166" font-size="12" font-weight="700">cmake --install</text>
+      <text x="655" y="138" text-anchor="middle" fill="#8b949e" font-size="9">安装</text>
+      <text x="608" y="162" fill="#c9d1d9" font-size="9">• 复制文件</text>
+      <text x="608" y="176" fill="#c9d1d9" font-size="9">• 创建符号链接</text>
+      <text x="608" y="190" fill="#c9d1d9" font-size="9">• 生成元数据</text>
+      <text x="608" y="225" text-anchor="start" fill="#3fb950" font-size="9">→ /usr/local/</text>
+      <text x="608" y="237" text-anchor="start" fill="#3fb950" font-size="9">   bin/curl</text>
+      <text x="608" y="249" text-anchor="start" fill="#3fb950" font-size="9">   lib/libcurl.so</text>
+
+      <!-- Source files for build -->
+      <rect x="415" y="300" width="145" height="80" rx="8" fill="rgba(63,185,80,0.05)" stroke="#30363d" stroke-width="1"/>
+      <text x="487" y="318" text-anchor="middle" fill="#8b949e" font-size="9" font-weight="700">源文件（C代码）</text>
+      <text x="425" y="334" fill="#c9d1d9" font-size="9">lib/*.c (libcurl)</text>
+      <text x="425" y="348" fill="#c9d1d9" font-size="9">src/*.c (curl tool)</text>
+      <text x="425" y="362" fill="#c9d1d9" font-size="9">include/curl/*.h</text>
+      <path d="M487 300 L487 250" stroke="#3fb950" stroke-width="1.5" stroke-dasharray="3,2" marker-end="url(#fa2)"/>
+
+      <defs>
+        <marker id="fa1" markerWidth="7" markerHeight="7" refX="5" refY="3" orient="auto"><path d="M0,0 L0,6 L7,3 z" fill="#58a6ff"/></marker>
+        <marker id="fa2" markerWidth="7" markerHeight="7" refX="5" refY="3" orient="auto"><path d="M0,0 L0,6 L7,3 z" fill="#3fb950"/></marker>
+        <marker id="fa3" markerWidth="7" markerHeight="7" refX="5" refY="3" orient="auto"><path d="M0,0 L0,6 L7,3 z" fill="#f78166"/></marker>
+      </defs>
+
+      <!-- Reference links -->
+      <text x="360" y="395" text-anchor="middle" fill="#8b949e" font-size="10">参考：</text>
+      <text x="360" y="410" text-anchor="middle" fill="#58a6ff" font-size="9">https://github.com/curl/curl/blob/master/docs/INSTALL-CMAKE.md</text>
+    </svg>
+  </div>
+
+  <h3>常用调试与检查命令</h3>
+  <pre><code><span class="comment"># 查看当前构建目录的所有缓存变量</span>
+cmake -B ../curl-build -L
+
+<span class="comment"># 查看详细（含高级变量）</span>
+cmake -B ../curl-build -LA
+
+<span class="comment"># 删除缓存并重新配置（解决配置污染）</span>
+rm -rf ../curl-build && cmake -S . -B ../curl-build ...
+
+<span class="comment"># 查看可用预设</span>
+cmake --list-presets
+
+<span class="comment"># 以 ccmake 交互式修改选项</span>
+ccmake ../curl-build
+
+<span class="comment"># 生成 compile_commands.json（供 IDE/clangd 使用）</span>
+cmake -B ../curl-build -DCMAKE_EXPORT_COMPILE_COMMANDS=ON</code></pre>
+
+  <div class="fp-box">
+    <div class="fp-title">
+      <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><circle cx="12" cy="12" r="10"/><line x1="12" y1="8" x2="12" y2="12"/><line x1="12" y1="16" x2="12.01" y2="16"/></svg>
+      第一性原理总结
+    </div>
+    <p style="margin:0;font-size:0.9rem;">
+      CMake 的整个设计哲学可以归结为：<strong>将构建的"意图"（What）与"实现"（How）彻底分离</strong>。
+      <br><br>
+      开发者在 <code>CMakeLists.txt</code> 中声明"我要构建一个叫 libcurl 的共享库，它需要 OpenSSL"（意图），
+      CMake 负责将这个意图翻译成任意平台的具体实现（make/ninja/msbuild）。
+      <br><br>
+      配置阶段解决"环境在哪"，生成阶段解决"怎么描述任务"，编译阶段解决"执行任务"，安装阶段解决"部署结果"。
+      每个阶段都是<strong>信息精炼</strong>的过程：从高层抽象到低层具体，最终产出可运行的二进制。
+      <br><br>
+      理解了这个分层模型，无论遇到任何 CMake 问题，都可以定位到具体的阶段和文件，而不是面对一个不可知的"黑盒"。
+    </p>
+  </div>
+
+  <!-- Chapter nav -->
+  <div class="chapter-nav">
+    <span class="ch-btn" onclick="prevSection()">← 上一章</span>
+    <span class="ch-btn" onclick="nextSection()">下一章 →</span>
+  </div>
+</section>
+
+</main>
+</div>
+
+<script>
+  const sections = ['s0','s1','s2','s3','s4','s5','s6','s7','s8','s9','s10','s11','s12','s13'];
+  let currentIndex = 0;
+
+  function updateProgress() {
+    const scrollTop = document.documentElement.scrollTop || document.body.scrollTop;
+    const scrollHeight = document.documentElement.scrollHeight - document.documentElement.clientHeight;
+    const progress = scrollHeight > 0 ? (scrollTop / scrollHeight) * 100 : 0;
+    document.getElementById('progress-bar').style.width = progress + '%';
+  }
+
+  function updateActiveNav() {
+    const scrollTop = window.scrollY + 80;
+    let active = 's0';
+    sections.forEach(id => {
+      const el = document.getElementById(id);
+      if (el && el.offsetTop <= scrollTop) active = id;
+    });
+    document.querySelectorAll('.nav-link').forEach(link => {
+      link.classList.toggle('active', link.dataset.section === active);
+    });
+    currentIndex = sections.indexOf(active);
+  }
+
+  function goSection(id) {
+    const el = document.getElementById(id);
+    if (el) {
+      el.scrollIntoView({ behavior: 'smooth', block: 'start' });
+      closeSidebar();
+    }
+  }
+
+  function prevSection() {
+    if (currentIndex > 0) goSection(sections[currentIndex - 1]);
+  }
+
+  function nextSection() {
+    if (currentIndex < sections.length - 1) goSection(sections[currentIndex + 1]);
+  }
+
+  // Keyboard navigation
+  document.addEventListener('keydown', e => {
+    if (e.target.tagName === 'INPUT' || e.target.tagName === 'TEXTAREA') return;
+    if (e.key === 'ArrowLeft') prevSection();
+    if (e.key === 'ArrowRight') nextSection();
+  });
+
+  // Scroll events
+  window.addEventListener('scroll', () => {
+    updateProgress();
+    updateActiveNav();
+  });
+
+  // Hamburger menu
+  const hamburger = document.getElementById('hamburger');
+  const sidebar = document.getElementById('sidebar');
+  const overlay = document.getElementById('sidebar-overlay');
+
+  function closeSidebar() {
+    sidebar.classList.remove('open');
+    overlay.classList.remove('show');
+  }
+
+  hamburger.addEventListener('click', () => {
+    sidebar.classList.toggle('open');
+    overlay.classList.toggle('show');
+  });
+
+  overlay.addEventListener('click', closeSidebar);
+
+  // Nav link click
+  document.querySelectorAll('.nav-link').forEach(link => {
+    link.addEventListener('click', () => {
+      const id = link.dataset.section;
+      if (id) goSection(id);
+    });
+  });
+
+  // Initial state
+  updateActiveNav();
+</script>
+</body>
+</html>

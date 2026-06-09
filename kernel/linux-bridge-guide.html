@@ -1,0 +1,2948 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Linux 内核 Bridge 协议栈深度解析</title>
+<style>
+  :root {
+    --primary: #1e40af;
+    --primary-light: #3b82f6;
+    --primary-dark: #1e3a8a;
+    --accent: #0ea5e9;
+    --bg: #f8fafc;
+    --sidebar-bg: #0f172a;
+    --sidebar-text: #cbd5e1;
+    --sidebar-active: #3b82f6;
+    --sidebar-hover: #1e293b;
+    --card-bg: #ffffff;
+    --text: #1e293b;
+    --text-light: #64748b;
+    --border: #e2e8f0;
+    --code-bg: #0f172a;
+    --code-text: #e2e8f0;
+    --highlight: #fef3c7;
+    --nav-width: 280px;
+    --progress-h: 3px;
+  }
+
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+
+  html { scroll-behavior: smooth; }
+
+  body {
+    font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', 'PingFang SC', 'Microsoft YaHei', sans-serif;
+    background: var(--bg);
+    color: var(--text);
+    line-height: 1.7;
+    overflow-x: hidden;
+  }
+
+  /* Progress bar */
+  #progress-bar {
+    position: fixed;
+    top: 0; left: 0;
+    width: 0%;
+    height: var(--progress-h);
+    background: linear-gradient(90deg, #3b82f6, #0ea5e9, #06b6d4);
+    z-index: 1000;
+    transition: width 0.1s linear;
+  }
+
+  /* Sidebar */
+  #sidebar {
+    position: fixed;
+    top: 0; left: 0;
+    width: var(--nav-width);
+    height: 100vh;
+    background: var(--sidebar-bg);
+    overflow-y: auto;
+    z-index: 100;
+    transition: transform 0.3s ease;
+    display: flex;
+    flex-direction: column;
+  }
+
+  #sidebar-header {
+    padding: 20px 16px 16px;
+    border-bottom: 1px solid #1e293b;
+    background: #020617;
+  }
+
+  #sidebar-header h2 {
+    font-size: 13px;
+    font-weight: 700;
+    color: #94a3b8;
+    text-transform: uppercase;
+    letter-spacing: 0.08em;
+    margin-bottom: 4px;
+  }
+
+  #sidebar-header p {
+    font-size: 11px;
+    color: #475569;
+  }
+
+  #sidebar-nav {
+    flex: 1;
+    padding: 8px 0 20px;
+  }
+
+  .nav-group-title {
+    padding: 12px 16px 4px;
+    font-size: 10px;
+    font-weight: 700;
+    color: #475569;
+    text-transform: uppercase;
+    letter-spacing: 0.1em;
+  }
+
+  .nav-item {
+    display: block;
+    padding: 7px 16px 7px 20px;
+    color: var(--sidebar-text);
+    text-decoration: none;
+    font-size: 13px;
+    transition: all 0.2s;
+    border-left: 3px solid transparent;
+    cursor: pointer;
+  }
+
+  .nav-item:hover {
+    background: var(--sidebar-hover);
+    color: #f1f5f9;
+    border-left-color: #334155;
+  }
+
+  .nav-item.active {
+    background: rgba(59, 130, 246, 0.15);
+    color: #93c5fd;
+    border-left-color: var(--sidebar-active);
+    font-weight: 600;
+  }
+
+  /* Mobile burger */
+  #burger {
+    display: none;
+    position: fixed;
+    top: 10px; left: 12px;
+    z-index: 200;
+    background: var(--sidebar-bg);
+    border: none;
+    color: #fff;
+    width: 40px; height: 40px;
+    border-radius: 8px;
+    cursor: pointer;
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
+    gap: 5px;
+    box-shadow: 0 2px 8px rgba(0,0,0,0.3);
+  }
+
+  #burger span {
+    display: block;
+    width: 22px; height: 2px;
+    background: #fff;
+    border-radius: 2px;
+    transition: all 0.3s;
+  }
+
+  #overlay {
+    display: none;
+    position: fixed;
+    inset: 0;
+    background: rgba(0,0,0,0.5);
+    z-index: 99;
+  }
+
+  /* Main content */
+  #main {
+    margin-left: var(--nav-width);
+    min-height: 100vh;
+    transition: margin-left 0.3s;
+  }
+
+  .section {
+    display: none;
+    padding: 48px 40px 80px;
+    max-width: 900px;
+  }
+
+  .section.active {
+    display: block;
+  }
+
+  /* Keyboard hint */
+  #kbd-hint {
+    position: fixed;
+    bottom: 20px; right: 20px;
+    background: rgba(15,23,42,0.85);
+    color: #94a3b8;
+    font-size: 11px;
+    padding: 8px 14px;
+    border-radius: 8px;
+    backdrop-filter: blur(8px);
+    z-index: 50;
+  }
+
+  #kbd-hint kbd {
+    background: #1e293b;
+    border: 1px solid #334155;
+    border-radius: 4px;
+    padding: 1px 5px;
+    font-family: monospace;
+    color: #e2e8f0;
+  }
+
+  /* Typography */
+  h1 {
+    font-size: clamp(22px, 4vw, 32px);
+    font-weight: 800;
+    color: var(--primary-dark);
+    margin-bottom: 12px;
+    line-height: 1.2;
+  }
+
+  h2 {
+    font-size: clamp(18px, 3vw, 24px);
+    font-weight: 700;
+    color: var(--primary);
+    margin: 36px 0 14px;
+    padding-bottom: 8px;
+    border-bottom: 2px solid var(--border);
+  }
+
+  h3 {
+    font-size: clamp(15px, 2.5vw, 18px);
+    font-weight: 600;
+    color: #1e293b;
+    margin: 24px 0 10px;
+  }
+
+  p { margin-bottom: 14px; }
+
+  .lead {
+    font-size: clamp(14px, 2vw, 16px);
+    color: var(--text-light);
+    margin-bottom: 24px;
+    line-height: 1.8;
+  }
+
+  /* Section badge */
+  .section-badge {
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+    background: linear-gradient(135deg, #dbeafe, #e0f2fe);
+    color: var(--primary);
+    font-size: 12px;
+    font-weight: 600;
+    padding: 4px 12px;
+    border-radius: 20px;
+    margin-bottom: 16px;
+    border: 1px solid #bfdbfe;
+  }
+
+  /* Code blocks */
+  pre {
+    background: var(--code-bg);
+    color: var(--code-text);
+    padding: 20px 24px;
+    border-radius: 10px;
+    overflow-x: auto;
+    margin: 16px 0;
+    font-size: 13px;
+    line-height: 1.6;
+    border: 1px solid #1e293b;
+    max-width: 100%;
+  }
+
+  code {
+    font-family: 'JetBrains Mono', 'Fira Code', 'Courier New', monospace;
+  }
+
+  p code, li code {
+    background: #f1f5f9;
+    color: #dc2626;
+    padding: 1px 6px;
+    border-radius: 4px;
+    font-size: 13px;
+  }
+
+  /* Cards */
+  .card {
+    background: var(--card-bg);
+    border: 1px solid var(--border);
+    border-radius: 12px;
+    padding: 20px 24px;
+    margin: 16px 0;
+    box-shadow: 0 1px 3px rgba(0,0,0,0.05);
+  }
+
+  .card-title {
+    font-weight: 700;
+    color: var(--primary);
+    margin-bottom: 8px;
+    font-size: 15px;
+  }
+
+  /* Info box */
+  .info-box {
+    background: linear-gradient(135deg, #eff6ff, #f0f9ff);
+    border-left: 4px solid var(--primary-light);
+    padding: 16px 20px;
+    border-radius: 0 8px 8px 0;
+    margin: 16px 0;
+  }
+
+  .info-box.warning {
+    background: linear-gradient(135deg, #fffbeb, #fef9c3);
+    border-left-color: #f59e0b;
+  }
+
+  .info-box.success {
+    background: linear-gradient(135deg, #f0fdf4, #dcfce7);
+    border-left-color: #22c55e;
+  }
+
+  .info-box.principle {
+    background: linear-gradient(135deg, #faf5ff, #f3e8ff);
+    border-left: 4px solid #a855f7;
+    margin-top: 32px;
+  }
+
+  .info-box .box-title {
+    font-weight: 700;
+    margin-bottom: 8px;
+    font-size: 14px;
+    display: flex;
+    align-items: center;
+    gap: 6px;
+  }
+
+  /* Tables */
+  table {
+    width: 100%;
+    border-collapse: collapse;
+    margin: 16px 0;
+    font-size: 14px;
+    overflow-x: auto;
+    display: block;
+  }
+
+  th {
+    background: var(--primary);
+    color: white;
+    padding: 10px 14px;
+    text-align: left;
+    font-weight: 600;
+  }
+
+  td {
+    padding: 9px 14px;
+    border-bottom: 1px solid var(--border);
+  }
+
+  tr:nth-child(even) td { background: #f8fafc; }
+  tr:hover td { background: #eff6ff; }
+
+  /* SVG container */
+  .svg-container {
+    background: white;
+    border: 1px solid var(--border);
+    border-radius: 12px;
+    padding: 16px;
+    margin: 20px 0;
+    overflow-x: auto;
+    box-shadow: 0 1px 3px rgba(0,0,0,0.05);
+  }
+
+  .svg-caption {
+    text-align: center;
+    font-size: 13px;
+    color: var(--text-light);
+    margin-top: 10px;
+    font-style: italic;
+  }
+
+  svg {
+    max-width: 100%;
+    height: auto;
+    display: block;
+    margin: 0 auto;
+  }
+
+  /* Lists */
+  ul, ol {
+    padding-left: 24px;
+    margin: 12px 0;
+  }
+
+  li { margin: 5px 0; }
+
+  /* Source link */
+  .source-link {
+    display: inline-flex;
+    align-items: center;
+    gap: 5px;
+    color: var(--accent);
+    font-size: 12px;
+    text-decoration: none;
+    background: #f0f9ff;
+    padding: 3px 10px;
+    border-radius: 20px;
+    border: 1px solid #bae6fd;
+    margin: 4px 4px 4px 0;
+  }
+
+  .source-link:hover { background: #e0f2fe; }
+
+  /* Chapter nav */
+  .chapter-nav {
+    display: flex;
+    gap: 12px;
+    margin-top: 48px;
+    padding-top: 24px;
+    border-top: 1px solid var(--border);
+    flex-wrap: wrap;
+  }
+
+  .chapter-nav-btn {
+    flex: 1;
+    min-width: 140px;
+    padding: 12px 16px;
+    background: white;
+    border: 1px solid var(--border);
+    border-radius: 10px;
+    cursor: pointer;
+    transition: all 0.2s;
+    font-size: 13px;
+    color: var(--text);
+  }
+
+  .chapter-nav-btn:hover {
+    background: var(--primary);
+    color: white;
+    border-color: var(--primary);
+  }
+
+  .chapter-nav-btn .nav-label {
+    font-size: 11px;
+    color: var(--text-light);
+    margin-bottom: 4px;
+  }
+
+  .chapter-nav-btn:hover .nav-label { color: #bfdbfe; }
+
+  .chapter-nav-btn .nav-title { font-weight: 600; }
+
+  .chapter-nav-btn.next { text-align: right; }
+
+  /* Highlight keyword */
+  .kw { color: #60a5fa; }
+  .str { color: #86efac; }
+  .cmt { color: #475569; font-style: italic; }
+  .type { color: #fbbf24; }
+  .fn { color: #f472b6; }
+
+  /* Responsive */
+  @media (max-width: 768px) {
+    :root { --nav-width: 280px; }
+
+    #burger { display: flex; }
+
+    #sidebar {
+      transform: translateX(-100%);
+    }
+
+    #sidebar.open {
+      transform: translateX(0);
+    }
+
+    #overlay.open { display: block; }
+
+    #main {
+      margin-left: 0;
+    }
+
+    .section {
+      padding: 60px 16px 80px;
+    }
+
+    #kbd-hint { display: none; }
+  }
+
+  @media (max-width: 480px) {
+    pre { font-size: 12px; padding: 14px 16px; }
+    .card { padding: 14px 16px; }
+  }
+
+  /* Scrollbar */
+  #sidebar::-webkit-scrollbar { width: 4px; }
+  #sidebar::-webkit-scrollbar-track { background: transparent; }
+  #sidebar::-webkit-scrollbar-thumb { background: #334155; border-radius: 2px; }
+</style>
+</head>
+<body>
+
+<div id="progress-bar"></div>
+
+<!-- Mobile burger -->
+<button id="burger" aria-label="菜单">
+  <span></span><span></span><span></span>
+</button>
+
+<div id="overlay"></div>
+
+<!-- Sidebar -->
+<nav id="sidebar">
+  <div id="sidebar-header">
+    <h2>Linux Kernel Bridge</h2>
+    <p>内核协议栈 · 深度解析</p>
+  </div>
+  <div id="sidebar-nav">
+    <div class="nav-group-title">入门基础</div>
+    <a class="nav-item active" data-section="s0">① 什么是网桥（Bridge）</a>
+    <a class="nav-item" data-section="s1">② OSI 模型与 L2 转发</a>
+
+    <div class="nav-group-title">核心数据结构</div>
+    <a class="nav-item" data-section="s2">③ net_bridge 主结构体</a>
+    <a class="nav-item" data-section="s3">④ net_bridge_port 端口结构</a>
+    <a class="nav-item" data-section="s4">⑤ FDB 转发数据库</a>
+    <a class="nav-item" data-section="s5">⑥ VLAN 结构体</a>
+
+    <div class="nav-group-title">初始化流程</div>
+    <a class="nav-item" data-section="s6">⑦ 模块初始化 br_init</a>
+    <a class="nav-item" data-section="s7">⑧ 创建网桥 br_add_bridge</a>
+    <a class="nav-item" data-section="s8">⑨ 添加端口 br_add_if</a>
+
+    <div class="nav-group-title">收发数据流程</div>
+    <a class="nav-item" data-section="s9">⑩ 接收流程（RX Path）</a>
+    <a class="nav-item" data-section="s10">⑪ 转发决策与 FDB 查找</a>
+    <a class="nav-item" data-section="s11">⑫ 发送流程（TX Path）</a>
+
+    <div class="nav-group-title">高级特性</div>
+    <a class="nav-item" data-section="s12">⑬ Netfilter Bridge Hooks</a>
+    <a class="nav-item" data-section="s13">⑭ STP 生成树协议</a>
+    <a class="nav-item" data-section="s14">⑮ 完整数据流全景图</a>
+  </div>
+</nav>
+
+<!-- Main -->
+<main id="main">
+
+<!-- Section 0: 什么是网桥 -->
+<section class="section active" id="s0">
+  <div class="section-badge">🌉 入门基础 · 第①章</div>
+  <h1>什么是网桥（Bridge）</h1>
+  <p class="lead">
+    网桥是连接两个或多个网络段的设备，工作在 OSI 模型第二层（数据链路层），
+    依据目标 MAC 地址对帧进行过滤和转发。Linux 内核原生实现了软件网桥功能。
+  </p>
+
+  <div class="info-box">
+    <div class="box-title">📖 官方定义</div>
+    IEEE 802.1Q-2022 标准定义：网桥（Bridge）是连接两个或多个网络段、
+    运行在 OSI 数据链路层（L2）的设备，其目的是基于目标 MAC 地址对帧进行过滤和转发。
+    <br><br>
+    <a href="https://docs.kernel.org/networking/bridge.html" class="source-link" target="_blank">📄 kernel.org/networking/bridge.html</a>
+  </div>
+
+  <h2>现实中的类比</h2>
+  <p>可以把网桥想象成一台"智能"交换机：它记住了每个端口背后有哪些 MAC 地址（学习），并根据目标 MAC 把帧只发送到正确的端口（转发），而不是像集线器那样广播给所有人。</p>
+
+  <div class="svg-container">
+    <svg viewBox="0 0 700 300" xmlns="http://www.w3.org/2000/svg" font-family="'PingFang SC','Microsoft YaHei',sans-serif">
+      <!-- Background -->
+      <rect width="700" height="300" fill="#f8fafc" rx="12"/>
+      
+      <!-- Bridge box -->
+      <rect x="250" y="100" width="200" height="100" rx="12" fill="#1e40af" opacity="0.9"/>
+      <text x="350" y="143" text-anchor="middle" fill="white" font-size="14" font-weight="bold">Linux Bridge</text>
+      <text x="350" y="163" text-anchor="middle" fill="#bfdbfe" font-size="11">网桥 (br0)</text>
+      <text x="350" y="183" text-anchor="middle" fill="#93c5fd" font-size="10">Layer 2 转发</text>
+
+      <!-- Left host -->
+      <rect x="30" y="110" width="120" height="80" rx="8" fill="#0ea5e9" opacity="0.85"/>
+      <text x="90" y="147" text-anchor="middle" fill="white" font-size="12" font-weight="bold">主机 A</text>
+      <text x="90" y="165" text-anchor="middle" fill="#e0f2fe" font-size="10">eth0</text>
+      <text x="90" y="180" text-anchor="middle" fill="#bae6fd" font-size="9">AA:BB:CC:11:22:33</text>
+
+      <!-- Right host -->
+      <rect x="550" y="110" width="120" height="80" rx="8" fill="#0ea5e9" opacity="0.85"/>
+      <text x="610" y="147" text-anchor="middle" fill="white" font-size="12" font-weight="bold">主机 B</text>
+      <text x="610" y="165" text-anchor="middle" fill="#e0f2fe" font-size="10">eth0</text>
+      <text x="610" y="180" text-anchor="middle" fill="#bae6fd" font-size="9">AA:BB:CC:44:55:66</text>
+
+      <!-- Top host -->
+      <rect x="290" y="10" width="120" height="60" rx="8" fill="#22c55e" opacity="0.85"/>
+      <text x="350" y="38" text-anchor="middle" fill="white" font-size="12" font-weight="bold">主机 C</text>
+      <text x="350" y="58" text-anchor="middle" fill="#dcfce7" font-size="10">AA:BB:CC:77:88:99</text>
+
+      <!-- Connections -->
+      <line x1="150" y1="150" x2="250" y2="150" stroke="#475569" stroke-width="2.5" stroke-dasharray="5,3"/>
+      <text x="200" y="142" text-anchor="middle" fill="#475569" font-size="10">eth0</text>
+      <text x="200" y="158" text-anchor="middle" fill="#3b82f6" font-size="9">port 1</text>
+
+      <line x1="450" y1="150" x2="550" y2="150" stroke="#475569" stroke-width="2.5" stroke-dasharray="5,3"/>
+      <text x="500" y="142" text-anchor="middle" fill="#475569" font-size="10">eth1</text>
+      <text x="500" y="158" text-anchor="middle" fill="#3b82f6" font-size="9">port 2</text>
+
+      <line x1="350" y1="100" x2="350" y2="70" stroke="#475569" stroke-width="2.5" stroke-dasharray="5,3"/>
+      <text x="370" y="88" fill="#475569" font-size="10">eth2</text>
+      <text x="370" y="102" fill="#3b82f6" font-size="9">port 3</text>
+
+      <!-- Frame arrow -->
+      <defs>
+        <marker id="arrow" markerWidth="8" markerHeight="8" refX="4" refY="4" orient="auto">
+          <path d="M0,0 L8,4 L0,8 Z" fill="#f59e0b"/>
+        </marker>
+      </defs>
+      <path d="M 155 135 L 245 135" stroke="#f59e0b" stroke-width="2" marker-end="url(#arrow)" fill="none"/>
+      <text x="200" y="130" text-anchor="middle" fill="#f59e0b" font-size="9" font-weight="bold">帧到达</text>
+
+      <!-- FDB label -->
+      <rect x="260" y="220" width="180" height="60" rx="8" fill="white" stroke="#3b82f6" stroke-width="1.5"/>
+      <text x="350" y="238" text-anchor="middle" fill="#1e40af" font-size="11" font-weight="bold">FDB 转发数据库</text>
+      <text x="350" y="255" text-anchor="middle" fill="#475569" font-size="10">MAC ↔ Port 映射表</text>
+      <text x="350" y="270" text-anchor="middle" fill="#475569" font-size="9">AA:BB:11 → port1 | AA:BB:44 → port2</text>
+      <line x1="350" y1="200" x2="350" y2="220" stroke="#3b82f6" stroke-width="1.5" stroke-dasharray="4,3"/>
+    </svg>
+    <div class="svg-caption">图1-1：Linux Bridge 拓扑结构示意图 —— 网桥连接多个网络端口，依托 FDB 进行 MAC 学习与转发</div>
+  </div>
+
+  <h2>Linux Bridge 的四大核心组件</h2>
+  <div style="display:grid; gap:12px; margin:16px 0;">
+    <div class="card">
+      <div class="card-title">🔌 端口集合（Network Ports）</div>
+      用于在网络段之间转发流量。每个加入网桥的物理或虚拟网络接口都成为一个"端口"。
+    </div>
+    <div class="card">
+      <div class="card-title">🎛️ 控制平面（Control Plane）</div>
+      运行 STP（生成树协议），计算最小生成树，防止环路导致广播风暴。
+    </div>
+    <div class="card">
+      <div class="card-title">✈️ 转发平面（Forwarding Plane）</div>
+      处理来自端口的入站帧，根据 MAC 学习数据库做出转发决策。
+    </div>
+    <div class="card">
+      <div class="card-title">📚 MAC 学习数据库（FDB）</div>
+      记录局域网中主机的位置信息（MAC → Port 映射），是转发决策的核心依据。
+    </div>
+  </div>
+
+  <h2>三种配置接口</h2>
+  <table>
+    <tr><th>接口</th><th>用途</th><th>示例工具</th></tr>
+    <tr><td><code>ioctl</code></td><td>创建/删除网桥，添加/删除接口</td><td>brctl, iproute2</td></tr>
+    <tr><td><code>sysfs</code></td><td>管理网桥和端口参数（已弃用）</td><td>/sys/class/net/br0/</td></tr>
+    <tr><td><code>Netlink</code></td><td>现代异步通信接口（推荐）</td><td>ip link, bridge命令</td></tr>
+  </table>
+
+  <div class="info-box principle">
+    <div class="box-title">🔬 第一性原理</div>
+    <strong>网桥的本质</strong>：将多块物理网卡虚拟成一台"软件交换机"。其核心洞察是：
+    帧转发只需要 L2 头部（MAC 地址），与上层协议（IP/IPv6/IPX）无关。
+    这种<strong>协议无关性</strong>使得网桥能透明地连接不同 L3 协议的网络段，
+    而不需要了解它们的内容。
+  </div>
+
+  <div class="chapter-nav">
+    <button class="chapter-nav-btn next" onclick="goTo('s1')">
+      <div class="nav-label">下一章 →</div>
+      <div class="nav-title">OSI 模型与 L2 转发</div>
+    </button>
+  </div>
+</section>
+
+<!-- Section 1: OSI Model -->
+<section class="section" id="s1">
+  <div class="section-badge">📐 入门基础 · 第②章</div>
+  <h1>OSI 模型与 L2 转发原理</h1>
+  <p class="lead">理解网桥工作在哪一层、为什么工作在这一层，是掌握其内核实现的基础。</p>
+
+  <h2>OSI 七层模型与网桥位置</h2>
+  <div class="svg-container">
+    <svg viewBox="0 0 680 380" xmlns="http://www.w3.org/2000/svg" font-family="'PingFang SC','Microsoft YaHei',sans-serif">
+      <rect width="680" height="380" fill="#f8fafc" rx="12"/>
+      
+      <!-- OSI Layers -->
+      <rect x="20" y="20" width="300" height="44" rx="6" fill="#7c3aed" opacity="0.8"/>
+      <text x="170" y="44" text-anchor="middle" fill="white" font-size="13" font-weight="bold">第7层 应用层 (Application)</text>
+      <text x="360" y="44" fill="#7c3aed" font-size="12">HTTP, FTP, DNS, SSH</text>
+
+      <rect x="20" y="70" width="300" height="44" rx="6" fill="#6d28d9" opacity="0.8"/>
+      <text x="170" y="94" text-anchor="middle" fill="white" font-size="13" font-weight="bold">第6层 表示层 (Presentation)</text>
+      <text x="360" y="94" fill="#6d28d9" font-size="12">SSL/TLS, 编解码</text>
+
+      <rect x="20" y="120" width="300" height="44" rx="6" fill="#2563eb" opacity="0.8"/>
+      <text x="170" y="144" text-anchor="middle" fill="white" font-size="13" font-weight="bold">第5层 会话层 (Session)</text>
+      <text x="360" y="144" fill="#2563eb" font-size="12">RPC, NetBIOS</text>
+
+      <rect x="20" y="170" width="300" height="44" rx="6" fill="#0284c7" opacity="0.8"/>
+      <text x="170" y="194" text-anchor="middle" fill="white" font-size="13" font-weight="bold">第4层 传输层 (Transport)</text>
+      <text x="360" y="194" fill="#0284c7" font-size="12">TCP, UDP, SCTP</text>
+
+      <rect x="20" y="220" width="300" height="44" rx="6" fill="#0891b2" opacity="0.8"/>
+      <text x="170" y="244" text-anchor="middle" fill="white" font-size="13" font-weight="bold">第3层 网络层 (Network)</text>
+      <text x="360" y="244" fill="#0891b2" font-size="12">IP, ICMP, 路由器</text>
+
+      <!-- Layer 2 - highlighted -->
+      <rect x="20" y="270" width="300" height="50" rx="6" fill="#dc2626"/>
+      <rect x="20" y="270" width="300" height="50" rx="6" fill="none" stroke="#fbbf24" stroke-width="3"/>
+      <text x="170" y="296" text-anchor="middle" fill="white" font-size="13" font-weight="bold">第2层 数据链路层 (Data Link)</text>
+      <text x="170" y="313" text-anchor="middle" fill="#fde68a" font-size="11">← Linux Bridge 工作在这里！</text>
+      <text x="360" y="295" fill="#dc2626" font-size="12">MAC地址, 以太网帧</text>
+      <text x="360" y="312" fill="#dc2626" font-size="11">交换机, 网桥, WiFi AP</text>
+
+      <rect x="20" y="326" width="300" height="44" rx="6" fill="#059669" opacity="0.8"/>
+      <text x="170" y="350" text-anchor="middle" fill="white" font-size="13" font-weight="bold">第1层 物理层 (Physical)</text>
+      <text x="360" y="350" fill="#059669" font-size="12">电信号, 光纤, 网卡</text>
+
+      <!-- Arrow pointing to L2 -->
+      <defs>
+        <marker id="arr2" markerWidth="8" markerHeight="8" refX="4" refY="4" orient="auto">
+          <path d="M0,0 L8,4 L0,8 Z" fill="#fbbf24"/>
+        </marker>
+      </defs>
+      <path d="M 640 295 L 332 295" stroke="#fbbf24" stroke-width="2" marker-end="url(#arr2)" fill="none"/>
+      <text x="600" y="285" text-anchor="middle" fill="#fbbf24" font-size="11" font-weight="bold">Bridge</text>
+    </svg>
+    <div class="svg-caption">图2-1：OSI 七层模型，Linux Bridge 工作在第二层（数据链路层）</div>
+  </div>
+
+  <h2>以太网帧结构</h2>
+  <p>网桥处理的基本单元是<strong>以太网帧</strong>，其格式如下：</p>
+
+  <div class="svg-container">
+    <svg viewBox="0 0 720 140" xmlns="http://www.w3.org/2000/svg" font-family="'PingFang SC','Microsoft YaHei',monospace">
+      <rect width="720" height="140" fill="#f8fafc" rx="10"/>
+      
+      <!-- Frame fields -->
+      <rect x="10" y="30" width="90" height="60" rx="5" fill="#1e40af"/>
+      <text x="55" y="56" text-anchor="middle" fill="white" font-size="10" font-weight="bold">目标 MAC</text>
+      <text x="55" y="72" text-anchor="middle" fill="#bfdbfe" font-size="9">6 字节</text>
+      <text x="55" y="88" text-anchor="middle" fill="#93c5fd" font-size="8">dst addr</text>
+
+      <rect x="105" y="30" width="90" height="60" rx="5" fill="#1e40af" opacity="0.8"/>
+      <text x="150" y="56" text-anchor="middle" fill="white" font-size="10" font-weight="bold">源 MAC</text>
+      <text x="150" y="72" text-anchor="middle" fill="#bfdbfe" font-size="9">6 字节</text>
+      <text x="150" y="88" text-anchor="middle" fill="#93c5fd" font-size="8">src addr</text>
+
+      <rect x="200" y="30" width="80" height="60" rx="5" fill="#7c3aed" opacity="0.85"/>
+      <text x="240" y="53" text-anchor="middle" fill="white" font-size="10" font-weight="bold">802.1Q</text>
+      <text x="240" y="68" text-anchor="middle" fill="#ddd6fe" font-size="9">VLAN Tag</text>
+      <text x="240" y="83" text-anchor="middle" fill="#c4b5fd" font-size="8">4字节(可选)</text>
+
+      <rect x="285" y="30" width="80" height="60" rx="5" fill="#0284c7"/>
+      <text x="325" y="53" text-anchor="middle" fill="white" font-size="10" font-weight="bold">EtherType</text>
+      <text x="325" y="68" text-anchor="middle" fill="#e0f2fe" font-size="9">2 字节</text>
+      <text x="325" y="83" text-anchor="middle" fill="#bae6fd" font-size="8">0x0800=IPv4</text>
+
+      <rect x="370" y="30" width="230" height="60" rx="5" fill="#059669"/>
+      <text x="485" y="56" text-anchor="middle" fill="white" font-size="10" font-weight="bold">数据载荷 (Payload)</text>
+      <text x="485" y="72" text-anchor="middle" fill="#d1fae5" font-size="9">46 ~ 1500 字节</text>
+      <text x="485" y="88" text-anchor="middle" fill="#a7f3d0" font-size="8">IP包/ARP/其他</text>
+
+      <rect x="605" y="30" width="75" height="60" rx="5" fill="#d97706"/>
+      <text x="642" y="53" text-anchor="middle" fill="white" font-size="10" font-weight="bold">FCS/CRC</text>
+      <text x="642" y="68" text-anchor="middle" fill="#fef3c7" font-size="9">4 字节</text>
+      <text x="642" y="83" text-anchor="middle" fill="#fde68a" font-size="8">校验和</text>
+
+      <!-- Bridge uses only these -->
+      <rect x="10" y="25" width="185" height="72" rx="6" fill="none" stroke="#f59e0b" stroke-width="2.5" stroke-dasharray="6,3"/>
+      <text x="102" y="110" text-anchor="middle" fill="#f59e0b" font-size="10" font-weight="bold">⬆ 网桥只看这两个字段做转发决策</text>
+    </svg>
+    <div class="svg-caption">图2-2：以太网帧结构，网桥基于目标 MAC 和源 MAC 进行转发学习</div>
+  </div>
+
+  <h2>L2 转发的核心逻辑</h2>
+  <div class="svg-container">
+    <svg viewBox="0 0 680 320" xmlns="http://www.w3.org/2000/svg" font-family="'PingFang SC','Microsoft YaHei',sans-serif">
+      <rect width="680" height="320" fill="#f8fafc" rx="10"/>
+      
+      <defs>
+        <marker id="arr3" markerWidth="8" markerHeight="8" refX="4" refY="4" orient="auto">
+          <path d="M0,0 L8,4 L0,8 Z" fill="#374151"/>
+        </marker>
+        <marker id="arr4" markerWidth="8" markerHeight="8" refX="4" refY="4" orient="auto">
+          <path d="M0,0 L8,4 L0,8 Z" fill="#22c55e"/>
+        </marker>
+        <marker id="arr5" markerWidth="8" markerHeight="8" refX="4" refY="4" orient="auto">
+          <path d="M0,0 L8,4 L0,8 Z" fill="#ef4444"/>
+        </marker>
+      </defs>
+
+      <!-- Start -->
+      <rect x="270" y="20" width="140" height="36" rx="18" fill="#1e40af"/>
+      <text x="340" y="43" text-anchor="middle" fill="white" font-size="12" font-weight="bold">帧到达端口</text>
+
+      <line x1="340" y1="56" x2="340" y2="76" stroke="#374151" stroke-width="2" marker-end="url(#arr3)"/>
+
+      <!-- Learn -->
+      <rect x="230" y="76" width="220" height="36" rx="6" fill="#0284c7" opacity="0.9"/>
+      <text x="340" y="99" text-anchor="middle" fill="white" font-size="11">学习源 MAC → 更新 FDB</text>
+
+      <line x1="340" y1="112" x2="340" y2="132" stroke="#374151" stroke-width="2" marker-end="url(#arr3)"/>
+
+      <!-- Decision -->
+      <polygon points="340,132 440,168 340,204 240,168" fill="#f59e0b" opacity="0.9"/>
+      <text x="340" y="165" text-anchor="middle" fill="white" font-size="11" font-weight="bold">目标 MAC 是</text>
+      <text x="340" y="180" text-anchor="middle" fill="white" font-size="10">广播/组播？</text>
+
+      <!-- Yes: flood -->
+      <line x1="240" y1="168" x2="140" y2="168" stroke="#ef4444" stroke-width="2" marker-end="url(#arr5)"/>
+      <text x="190" y="160" text-anchor="middle" fill="#ef4444" font-size="10">是</text>
+      <rect x="30" y="150" width="110" height="36" rx="6" fill="#ef4444" opacity="0.85"/>
+      <text x="85" y="173" text-anchor="middle" fill="white" font-size="11">泛洪所有端口</text>
+
+      <!-- No: lookup -->
+      <line x1="340" y1="204" x2="340" y2="224" stroke="#374151" stroke-width="2" marker-end="url(#arr3)"/>
+
+      <!-- FDB lookup -->
+      <polygon points="340,224 440,250 340,276 240,250" fill="#6d28d9" opacity="0.9"/>
+      <text x="340" y="247" text-anchor="middle" fill="white" font-size="11" font-weight="bold">FDB 查找</text>
+      <text x="340" y="262" text-anchor="middle" fill="#e9d5ff" font-size="10">目标 MAC？</text>
+
+      <!-- Hit -->
+      <line x1="440" y1="250" x2="560" y2="250" stroke="#22c55e" stroke-width="2" marker-end="url(#arr4)"/>
+      <text x="500" y="243" text-anchor="middle" fill="#22c55e" font-size="10">命中</text>
+      <rect x="560" y="232" width="100" height="36" rx="6" fill="#22c55e" opacity="0.85"/>
+      <text x="610" y="255" text-anchor="middle" fill="white" font-size="11">单播转发</text>
+
+      <!-- Miss -->
+      <line x1="340" y1="276" x2="340" y2="296" stroke="#ef4444" stroke-width="2" marker-end="url(#arr5)"/>
+      <text x="360" y="292" fill="#ef4444" font-size="10">未命中</text>
+      <rect x="270" y="296" width="140" height="14" rx="6" fill="#ef4444" opacity="0.7"/>
+      <text x="340" y="307" text-anchor="middle" fill="white" font-size="9">泛洪（除源端口）</text>
+    </svg>
+    <div class="svg-caption">图2-3：L2 转发决策流程图 —— 包含 MAC 学习、FDB 查找与泛洪逻辑</div>
+  </div>
+
+  <div class="info-box principle">
+    <div class="box-title">🔬 第一性原理</div>
+    <strong>L2 转发的本质是地址学习 + 最短路径</strong>。网桥工作在 L2 的原因：
+    以太网帧中的 MAC 地址是唯一标识符，帧长度固定、处理快速。
+    与 L3 路由不同，L2 转发不需要 TTL 递减、不需要分片、不需要校验和重算，
+    因此延迟极低。代价是 MAC 地址不具备层次性，无法像 IP 那样聚合路由，
+    所以网桥不适合大规模网络（广播域问题）。
+  </div>
+
+  <div class="chapter-nav">
+    <button class="chapter-nav-btn" onclick="goTo('s0')">
+      <div class="nav-label">← 上一章</div>
+      <div class="nav-title">什么是网桥</div>
+    </button>
+    <button class="chapter-nav-btn next" onclick="goTo('s2')">
+      <div class="nav-label">下一章 →</div>
+      <div class="nav-title">net_bridge 主结构体</div>
+    </button>
+  </div>
+</section>
+
+<!-- Section 2: net_bridge struct -->
+<section class="section" id="s2">
+  <div class="section-badge">🗄️ 核心数据结构 · 第③章</div>
+  <h1>net_bridge — 网桥主结构体</h1>
+  <p class="lead">
+    <code>struct net_bridge</code> 是内核中表示一个网桥实例的核心数据结构，
+    定义于 <code>net/bridge/br_private.h</code>。它聚合了网桥的所有状态信息。
+  </p>
+
+  <a href="https://github.com/torvalds/linux/blob/master/net/bridge/br_private.h" class="source-link" target="_blank">📄 net/bridge/br_private.h · GitHub</a>
+
+  <h2>核心字段解析</h2>
+  <pre><code><span class="cmt">/* net/bridge/br_private.h */</span>
+<span class="kw">struct</span> <span class="type">net_bridge</span> {
+    <span class="cmt">/* === 基础设施 === */</span>
+    spinlock_t              lock;           <span class="cmt">// 保护 bridge 状态的自旋锁</span>
+    <span class="kw">struct</span> list_head        port_list;      <span class="cmt">// 所有端口链表头</span>
+    <span class="kw">struct</span> net_device      *dev;           <span class="cmt">// 对应的虚拟网络设备</span>
+    
+    <span class="cmt">/* === 转发数据库 (FDB) === */</span>
+    <span class="kw">struct</span> rhashtable       fdb_hash_tbl;   <span class="cmt">// FDB 哈希表（RCU 保护）</span>
+    <span class="kw">struct</span> list_head        fdb_list;       <span class="cmt">// FDB 有序链表</span>
+    
+    <span class="cmt">/* === STP 生成树协议 === */</span>
+    bridge_id               designated_root; <span class="cmt">// 根桥 ID</span>
+    bridge_id               bridge_id;       <span class="cmt">// 本桥 ID（优先级+MAC）</span>
+    u32                     root_path_cost;  <span class="cmt">// 到根桥路径代价</span>
+    unsigned char           topology_change; <span class="cmt">// 拓扑变更标志</span>
+    <span class="kw">struct</span> timer_list       hello_timer;     <span class="cmt">// Hello 消息定时器</span>
+    <span class="kw">struct</span> timer_list       tcn_timer;       <span class="cmt">// TCN 定时器</span>
+    <span class="kw">struct</span> timer_list       topology_change_timer;
+    <span class="kw">struct</span> delayed_work     gc_work;         <span class="cmt">// FDB 老化工作队列</span>
+    u8                      stp_enabled;     <span class="cmt">// STP 开关</span>
+    
+    <span class="cmt">/* === VLAN 过滤 === */</span>
+    <span class="kw">struct</span> net_bridge_vlan_group __rcu *vlgrp; <span class="cmt">// VLAN 组</span>
+    u16                     default_pvid;    <span class="cmt">// 默认 PVID</span>
+    
+    <span class="cmt">/* === 组播/IGMP Snooping === */</span>
+    <span class="kw">struct</span> net_bridge_mcast  multicast_ctx;  <span class="cmt">// 组播上下文</span>
+    
+    <span class="cmt">/* === Netfilter 调用选项 === */</span>
+    unsigned long           options;         <span class="cmt">// BROPT_* 标志位</span>
+    
+    <span class="cmt">/* === 统计信息 === */</span>
+    <span class="kw">struct</span> pcpu_sw_netstats __percpu *stats;
+};</code></pre>
+
+  <div class="svg-container">
+    <svg viewBox="0 0 700 420" xmlns="http://www.w3.org/2000/svg" font-family="'PingFang SC','Microsoft YaHei',monospace">
+      <rect width="700" height="420" fill="#f8fafc" rx="10"/>
+      
+      <!-- Central struct -->
+      <rect x="230" y="160" width="240" height="100" rx="10" fill="#1e40af"/>
+      <text x="350" y="203" text-anchor="middle" fill="white" font-size="14" font-weight="bold">struct net_bridge</text>
+      <text x="350" y="223" text-anchor="middle" fill="#bfdbfe" font-size="10">网桥主控结构体</text>
+      <text x="350" y="243" text-anchor="middle" fill="#93c5fd" font-size="9">net/bridge/br_private.h</text>
+
+      <!-- net_device -->
+      <rect x="20" y="30" width="150" height="56" rx="8" fill="#0284c7" opacity="0.9"/>
+      <text x="95" y="55" text-anchor="middle" fill="white" font-size="11" font-weight="bold">struct net_device</text>
+      <text x="95" y="73" text-anchor="middle" fill="#e0f2fe" font-size="9">虚拟网络设备 br0</text>
+      <line x1="170" y1="58" x2="230" y2="185" stroke="#0284c7" stroke-width="1.5" stroke-dasharray="5,3"/>
+      <text x="165" y="130" fill="#0284c7" font-size="9">*dev</text>
+
+      <!-- port_list -->
+      <rect x="20" y="120" width="150" height="56" rx="8" fill="#059669" opacity="0.9"/>
+      <text x="95" y="145" text-anchor="middle" fill="white" font-size="11" font-weight="bold">port_list</text>
+      <text x="95" y="163" text-anchor="middle" fill="#d1fae5" font-size="9">端口链表</text>
+      <line x1="170" y1="148" x2="230" y2="200" stroke="#059669" stroke-width="1.5" stroke-dasharray="5,3"/>
+
+      <!-- FDB -->
+      <rect x="20" y="210" width="150" height="56" rx="8" fill="#7c3aed" opacity="0.9"/>
+      <text x="95" y="233" text-anchor="middle" fill="white" font-size="11" font-weight="bold">fdb_hash_tbl</text>
+      <text x="95" y="251" text-anchor="middle" fill="#ede9fe" font-size="9">转发数据库哈希表</text>
+      <line x1="170" y1="238" x2="230" y2="215" stroke="#7c3aed" stroke-width="1.5" stroke-dasharray="5,3"/>
+
+      <!-- STP -->
+      <rect x="20" y="300" width="150" height="70" rx="8" fill="#dc2626" opacity="0.85"/>
+      <text x="95" y="323" text-anchor="middle" fill="white" font-size="11" font-weight="bold">STP 状态</text>
+      <text x="95" y="340" text-anchor="middle" fill="#fecaca" font-size="9">designated_root</text>
+      <text x="95" y="356" text-anchor="middle" fill="#fecaca" font-size="9">bridge_id, timers</text>
+      <line x1="170" y1="335" x2="230" y2="245" stroke="#dc2626" stroke-width="1.5" stroke-dasharray="5,3"/>
+
+      <!-- VLAN -->
+      <rect x="530" y="30" width="150" height="56" rx="8" fill="#d97706" opacity="0.9"/>
+      <text x="605" y="55" text-anchor="middle" fill="white" font-size="11" font-weight="bold">VLAN Group</text>
+      <text x="605" y="73" text-anchor="middle" fill="#fef3c7" font-size="9">vlgrp (RCU 保护)</text>
+      <line x1="530" y1="58" x2="470" y2="185" stroke="#d97706" stroke-width="1.5" stroke-dasharray="5,3"/>
+
+      <!-- Multicast -->
+      <rect x="530" y="120" width="150" height="56" rx="8" fill="#0891b2" opacity="0.9"/>
+      <text x="605" y="143" text-anchor="middle" fill="white" font-size="11" font-weight="bold">Multicast Context</text>
+      <text x="605" y="161" text-anchor="middle" fill="#cffafe" font-size="9">IGMP/MLD Snooping</text>
+      <line x1="530" y1="148" x2="470" y2="200" stroke="#0891b2" stroke-width="1.5" stroke-dasharray="5,3"/>
+
+      <!-- Options -->
+      <rect x="530" y="210" width="150" height="56" rx="8" fill="#475569" opacity="0.9"/>
+      <text x="605" y="233" text-anchor="middle" fill="white" font-size="11" font-weight="bold">Options Flags</text>
+      <text x="605" y="251" text-anchor="middle" fill="#e2e8f0" font-size="9">BROPT_NF_CALL_*</text>
+      <line x1="530" y1="238" x2="470" y2="215" stroke="#475569" stroke-width="1.5" stroke-dasharray="5,3"/>
+
+      <!-- Stats -->
+      <rect x="530" y="300" width="150" height="56" rx="8" fill="#0f766e" opacity="0.9"/>
+      <text x="605" y="323" text-anchor="middle" fill="white" font-size="11" font-weight="bold">Per-CPU Stats</text>
+      <text x="605" y="341" text-anchor="middle" fill="#ccfbf1" font-size="9">rx/tx packets/bytes</text>
+      <line x1="530" y1="328" x2="470" y2="240" stroke="#0f766e" stroke-width="1.5" stroke-dasharray="5,3"/>
+
+      <!-- Label -->
+      <text x="350" y="390" text-anchor="middle" fill="#64748b" font-size="11">struct net_bridge 聚合了网桥的全部状态信息</text>
+    </svg>
+    <div class="svg-caption">图3-1：struct net_bridge 的主要字段关系图</div>
+  </div>
+
+  <h2>重要标志位（BROPT_* options）</h2>
+  <table>
+    <tr><th>标志位</th><th>含义</th></tr>
+    <tr><td><code>BROPT_NF_CALL_IPTABLES</code></td><td>桥上调用 iptables hooks</td></tr>
+    <tr><td><code>BROPT_VLAN_ENABLED</code></td><td>启用 VLAN 过滤</td></tr>
+    <tr><td><code>BROPT_MCAST_SNOOPING</code></td><td>启用组播 snooping</td></tr>
+    <tr><td><code>BROPT_STP_ENABLED</code></td><td>启用生成树协议</td></tr>
+  </table>
+
+  <div class="info-box principle">
+    <div class="box-title">🔬 第一性原理</div>
+    <strong>单一数据结构承载全部状态</strong>：<code>struct net_bridge</code> 将网络设备、
+    端口管理、FDB、STP、VLAN、组播等所有子系统都组合在一起。
+    这是 Linux 内核"一切皆结构体"设计哲学的体现——通过嵌入 <code>struct net_device</code> 指针，
+    网桥虚拟设备能无缝融入内核现有的设备管理框架。
+    <code>RCU（读-拷贝-更新）</code>锁机制保证了高并发下无锁读性能。
+  </div>
+
+  <div class="chapter-nav">
+    <button class="chapter-nav-btn" onclick="goTo('s1')">
+      <div class="nav-label">← 上一章</div>
+      <div class="nav-title">OSI 模型与 L2 转发</div>
+    </button>
+    <button class="chapter-nav-btn next" onclick="goTo('s3')">
+      <div class="nav-label">下一章 →</div>
+      <div class="nav-title">net_bridge_port 端口结构</div>
+    </button>
+  </div>
+</section>
+
+<!-- Section 3: net_bridge_port -->
+<section class="section" id="s3">
+  <div class="section-badge">🔌 核心数据结构 · 第④章</div>
+  <h1>net_bridge_port — 端口结构体</h1>
+  <p class="lead">
+    每个加入网桥的网络接口都由 <code>struct net_bridge_port</code> 表示，
+    它存储了端口的 STP 状态、STP 计时器、VLAN 信息及对父网桥的引用。
+  </p>
+
+  <a href="https://docs.huihoo.com/doxygen/linux/kernel/3.7/structnet__bridge__port.html" class="source-link" target="_blank">📄 net_bridge_port 结构体参考</a>
+
+  <pre><code><span class="cmt">/* net/bridge/br_private.h (简化版) */</span>
+<span class="kw">struct</span> <span class="type">net_bridge_port</span> {
+    <span class="cmt">/* === 关联关系 === */</span>
+    <span class="kw">struct</span> net_bridge      *br;        <span class="cmt">// 指向父网桥</span>
+    <span class="kw">struct</span> net_device      *dev;       <span class="cmt">// 对应的物理/虚拟网络接口</span>
+    <span class="kw">struct</span> list_head        list;      <span class="cmt">// 挂入 br->port_list</span>
+    
+    <span class="cmt">/* === STP 端口状态 === */</span>
+    u8                      priority;   <span class="cmt">// 端口优先级 (0-255)</span>
+    u8                      state;      <span class="cmt">// BR_STATE_DISABLED/LISTENING/</span>
+                                        <span class="cmt">// LEARNING/FORWARDING/BLOCKING</span>
+    u16                     port_no;    <span class="cmt">// 端口编号</span>
+    
+    <span class="cmt">/* === STP 计算字段 === */</span>
+    bridge_id               designated_root;   <span class="cmt">// 该端口看到的根桥</span>
+    bridge_id               designated_bridge; <span class="cmt">// 指定桥 ID</span>
+    port_id                 designated_port;   <span class="cmt">// 指定端口 ID</span>
+    u32                     path_cost;         <span class="cmt">// 路径代价</span>
+    u32                     designated_cost;   <span class="cmt">// 指定代价</span>
+    
+    <span class="cmt">/* === STP 定时器 === */</span>
+    <span class="kw">struct</span> timer_list       forward_delay_timer; <span class="cmt">// 转发延迟定时器</span>
+    <span class="kw">struct</span> timer_list       hold_timer;          <span class="cmt">// 发送 BPDU 限速</span>
+    <span class="kw">struct</span> timer_list       message_age_timer;   <span class="cmt">// BPDU 老化定时器</span>
+    
+    <span class="cmt">/* === VLAN === */</span>
+    <span class="kw">struct</span> net_bridge_vlan_group __rcu *vlgrp;   <span class="cmt">// 端口 VLAN 组</span>
+    
+    <span class="cmt">/* === 端口标志 === */</span>
+    unsigned long           flags;      <span class="cmt">// BR_LEARNING, BR_FLOOD, ...</span>
+    u32                     group_fwd_mask; <span class="cmt">// 组播转发掩码</span>
+    
+    <span class="kw">struct</span> kobject          kobj;       <span class="cmt">// sysfs 支持</span>
+    <span class="kw">struct</span> rcu_head         rcu;        <span class="cmt">// RCU 延迟释放</span>
+};</code></pre>
+
+  <h2>STP 端口状态机</h2>
+  <div class="svg-container">
+    <svg viewBox="0 0 700 360" xmlns="http://www.w3.org/2000/svg" font-family="'PingFang SC','Microsoft YaHei',sans-serif">
+      <rect width="700" height="360" fill="#f8fafc" rx="10"/>
+      
+      <defs>
+        <marker id="sarr" markerWidth="8" markerHeight="8" refX="4" refY="4" orient="auto">
+          <path d="M0,0 L8,4 L0,8 Z" fill="#6b7280"/>
+        </marker>
+      </defs>
+
+      <!-- States -->
+      <circle cx="100" cy="180" r="46" fill="#374151" opacity="0.9"/>
+      <text x="100" y="176" text-anchor="middle" fill="white" font-size="11" font-weight="bold">DISABLED</text>
+      <text x="100" y="192" text-anchor="middle" fill="#9ca3af" font-size="9">禁用</text>
+
+      <circle cx="250" cy="80" r="46" fill="#dc2626" opacity="0.9"/>
+      <text x="250" y="76" text-anchor="middle" fill="white" font-size="11" font-weight="bold">BLOCKING</text>
+      <text x="250" y="92" text-anchor="middle" fill="#fca5a5" font-size="9">阻塞</text>
+
+      <circle cx="250" cy="280" r="46" fill="#d97706" opacity="0.9"/>
+      <text x="250" y="276" text-anchor="middle" fill="white" font-size="11" font-weight="bold">LISTENING</text>
+      <text x="250" y="292" text-anchor="middle" fill="#fde68a" font-size="9">侦听</text>
+
+      <circle cx="450" cy="280" r="46" fill="#0284c7" opacity="0.9"/>
+      <text x="450" y="276" text-anchor="middle" fill="white" font-size="11" font-weight="bold">LEARNING</text>
+      <text x="450" y="292" text-anchor="middle" fill="#bae6fd" font-size="9">学习 MAC</text>
+
+      <circle cx="600" cy="180" r="46" fill="#22c55e" opacity="0.9"/>
+      <text x="600" y="176" text-anchor="middle" fill="white" font-size="11" font-weight="bold">FORWARDING</text>
+      <text x="600" y="192" text-anchor="middle" fill="#bbf7d0" font-size="9">完全转发</text>
+
+      <!-- Transitions -->
+      <path d="M 146 168 Q 200 120 204 118" stroke="#6b7280" stroke-width="1.8" fill="none" marker-end="url(#sarr)"/>
+      <text x="158" y="140" fill="#374151" font-size="9">启用端口</text>
+
+      <path d="M 250 126 Q 250 230 250 234" stroke="#6b7280" stroke-width="1.8" fill="none" marker-end="url(#sarr)"/>
+      <text x="256" y="190" fill="#374151" font-size="9">选为根端口</text>
+      <text x="256" y="202" fill="#374151" font-size="9">或指定端口</text>
+
+      <path d="M 292 273 Q 370 273 404 278" stroke="#6b7280" stroke-width="1.8" fill="none" marker-end="url(#sarr)"/>
+      <text x="338" y="263" text-anchor="middle" fill="#374151" font-size="9">Forward Delay 到期</text>
+
+      <path d="M 494 272 Q 560 240 558 226" stroke="#6b7280" stroke-width="1.8" fill="none" marker-end="url(#sarr)"/>
+      <text x="540" y="256" fill="#374151" font-size="9">Forward Delay</text>
+      <text x="540" y="268" fill="#374151" font-size="9">到期</text>
+
+      <!-- data forwarding annotation -->
+      <rect x="400" y="50" width="180" height="60" rx="6" fill="white" stroke="#22c55e" stroke-width="1.5"/>
+      <text x="490" y="73" text-anchor="middle" fill="#22c55e" font-size="11" font-weight="bold">✅ FORWARDING</text>
+      <text x="490" y="90" text-anchor="middle" fill="#374151" font-size="9">接收 BPDU + 转发数据帧</text>
+      <text x="490" y="103" text-anchor="middle" fill="#374151" font-size="9">端口完全激活</text>
+
+      <rect x="10" y="240" width="170" height="70" rx="6" fill="white" stroke="#6b7280" stroke-width="1.5"/>
+      <text x="95" y="262" text-anchor="middle" fill="#374151" font-size="10" font-weight="bold">状态说明</text>
+      <text x="95" y="278" text-anchor="middle" fill="#475569" font-size="9">BLOCKING: 只处理 BPDU</text>
+      <text x="95" y="292" text-anchor="middle" fill="#475569" font-size="9">LISTENING: 参与 STP</text>
+      <text x="95" y="306" text-anchor="middle" fill="#475569" font-size="9">LEARNING: 学不转发</text>
+    </svg>
+    <div class="svg-caption">图4-1：STP 端口状态机转换图 —— 端口从 DISABLED 逐步收敛到 FORWARDING 状态</div>
+  </div>
+
+  <h2>端口标志位（flags）</h2>
+  <table>
+    <tr><th>标志</th><th>含义</th><th>默认</th></tr>
+    <tr><td><code>BR_LEARNING</code></td><td>允许从入站流量学习源 MAC</td><td>开启</td></tr>
+    <tr><td><code>BR_FLOOD</code></td><td>允许对未知单播泛洪</td><td>开启</td></tr>
+    <tr><td><code>BR_MCAST_FLOOD</code></td><td>允许对无 MDB 条目的组播泛洪</td><td>开启</td></tr>
+    <tr><td><code>BR_BCAST_FLOOD</code></td><td>允许广播流量</td><td>开启</td></tr>
+    <tr><td><code>BR_ISOLATED</code></td><td>隔离端口，只能与非隔离端口通信</td><td>关闭</td></tr>
+    <tr><td><code>BR_LOCKED</code></td><td>锁定端口（需 802.1X 认证）</td><td>关闭</td></tr>
+  </table>
+
+  <div class="info-box principle">
+    <div class="box-title">🔬 第一性原理</div>
+    <strong>端口结构体是网桥与物理世界的接口</strong>：<code>net_bridge_port</code> 将一个真实的
+    <code>net_device</code>（网卡）"嫁接"到网桥逻辑中，同时维护 STP 状态机所需的全部信息。
+    这种分离设计（网桥逻辑 vs. 设备驱动）使得任何以太网类设备都可以加入网桥，
+    体现了内核的<strong>面向接口</strong>编程哲学。
+  </div>
+
+  <div class="chapter-nav">
+    <button class="chapter-nav-btn" onclick="goTo('s2')">
+      <div class="nav-label">← 上一章</div>
+      <div class="nav-title">net_bridge 主结构体</div>
+    </button>
+    <button class="chapter-nav-btn next" onclick="goTo('s4')">
+      <div class="nav-label">下一章 →</div>
+      <div class="nav-title">FDB 转发数据库</div>
+    </button>
+  </div>
+</section>
+
+<!-- Section 4: FDB -->
+<section class="section" id="s4">
+  <div class="section-badge">📚 核心数据结构 · 第⑤章</div>
+  <h1>FDB — 转发数据库</h1>
+  <p class="lead">
+    FDB（Forwarding DataBase）是网桥的"记忆"，记录每个 MAC 地址从哪个端口可达。
+    内核通过哈希表实现快速查找，并通过老化机制清除过期条目。
+  </p>
+
+  <a href="https://github.com/torvalds/linux/blob/master/net/bridge/br_private.h" class="source-link" target="_blank">📄 net/bridge/br_private.h</a>
+  <a href="https://github.com/torvalds/linux/blob/master/net/bridge/br_fdb.c" class="source-link" target="_blank">📄 net/bridge/br_fdb.c</a>
+
+  <h2>FDB 条目结构体</h2>
+  <pre><code><span class="cmt">/* net/bridge/br_private.h */</span>
+<span class="kw">struct</span> <span class="type">net_bridge_fdb_key</span> {
+    mac_addr    addr;       <span class="cmt">// MAC 地址（6字节）</span>
+    u16         vlan_id;    <span class="cmt">// VLAN ID（支持 VLAN 感知桥）</span>
+};
+
+<span class="kw">struct</span> <span class="type">net_bridge_fdb_entry</span> {
+    <span class="kw">struct</span> rhash_head       rhnode;  <span class="cmt">// rhashtable 成员</span>
+    <span class="kw">struct</span> net_bridge_port *dst;     <span class="cmt">// 目标端口（NULL 表示本机）</span>
+    
+    <span class="kw">struct</span> net_bridge_fdb_key key;   <span class="cmt">// MAC + VLAN 查找键</span>
+    
+    unsigned long           updated; <span class="cmt">// 最后更新时间（用于老化）</span>
+    unsigned long           used;    <span class="cmt">// 最后使用时间</span>
+    
+    <span class="cmt">/* 条目类型标志 */</span>
+    unsigned char           is_local:1;  <span class="cmt">// 本地地址（桥自身端口 MAC）</span>
+    unsigned char           is_static:1; <span class="cmt">// 静态条目（不老化）</span>
+    unsigned char           added_by_user:1;  <span class="cmt">// 用户手动添加</span>
+    unsigned char           offloaded:1;      <span class="cmt">// 已卸载到硬件</span>
+    
+    <span class="kw">struct</span> rcu_head         rcu;     <span class="cmt">// RCU 延迟释放</span>
+    <span class="kw">struct</span> list_head        list;    <span class="cmt">// 有序链表（老化遍历）</span>
+};</code></pre>
+
+  <h2>FDB 查找与学习过程</h2>
+  <div class="svg-container">
+    <svg viewBox="0 0 700 380" xmlns="http://www.w3.org/2000/svg" font-family="'PingFang SC','Microsoft YaHei',monospace">
+      <rect width="700" height="380" fill="#f8fafc" rx="10"/>
+      
+      <defs>
+        <marker id="fdbarr" markerWidth="7" markerHeight="7" refX="4" refY="4" orient="auto">
+          <path d="M0,0 L7,4 L0,7 Z" fill="#374151"/>
+        </marker>
+        <marker id="fdbarr2" markerWidth="7" markerHeight="7" refX="4" refY="4" orient="auto">
+          <path d="M0,0 L7,4 L0,7 Z" fill="#22c55e"/>
+        </marker>
+        <marker id="fdbarr3" markerWidth="7" markerHeight="7" refX="4" refY="4" orient="auto">
+          <path d="M0,0 L7,4 L0,7 Z" fill="#f59e0b"/>
+        </marker>
+      </defs>
+
+      <!-- FDB Hash Table -->
+      <text x="350" y="22" text-anchor="middle" fill="#1e40af" font-size="13" font-weight="bold">FDB 哈希表结构 (rhashtable)</text>
+      
+      <!-- Buckets -->
+      <g>
+        <rect x="40" y="40" width="80" height="30" rx="4" fill="#1e293b"/>
+        <text x="80" y="60" text-anchor="middle" fill="#94a3b8" font-size="10">bucket[0]</text>
+        <rect x="40" y="76" width="80" height="30" rx="4" fill="#1e293b"/>
+        <text x="80" y="96" text-anchor="middle" fill="#94a3b8" font-size="10">bucket[1]</text>
+        <rect x="40" y="112" width="80" height="30" rx="4" fill="#1e293b"/>
+        <text x="80" y="132" text-anchor="middle" fill="#94a3b8" font-size="10">bucket[2]</text>
+        <rect x="40" y="148" width="80" height="30" rx="4" fill="#3b82f6" opacity="0.9"/>
+        <text x="80" y="168" text-anchor="middle" fill="white" font-size="10">bucket[h]</text>
+        <rect x="40" y="184" width="80" height="30" rx="4" fill="#1e293b"/>
+        <text x="80" y="204" text-anchor="middle" fill="#94a3b8" font-size="10">...</text>
+      </g>
+      <text x="80" y="232" text-anchor="middle" fill="#64748b" font-size="9">hash(MAC,VID)</text>
+
+      <!-- FDB Entry chain -->
+      <rect x="170" y="140" width="140" height="70" rx="6" fill="#7c3aed" opacity="0.9"/>
+      <text x="240" y="162" text-anchor="middle" fill="white" font-size="10" font-weight="bold">fdb_entry #1</text>
+      <text x="240" y="177" text-anchor="middle" fill="#e9d5ff" font-size="9">MAC: AA:BB:CC:11:22:33</text>
+      <text x="240" y="192" text-anchor="middle" fill="#e9d5ff" font-size="9">dst → port1 | vlan: 1</text>
+
+      <rect x="340" y="140" width="140" height="70" rx="6" fill="#7c3aed" opacity="0.7"/>
+      <text x="410" y="162" text-anchor="middle" fill="white" font-size="10" font-weight="bold">fdb_entry #2</text>
+      <text x="410" y="177" text-anchor="middle" fill="#e9d5ff" font-size="9">MAC: AA:BB:CC:44:55:66</text>
+      <text x="410" y="192" text-anchor="middle" fill="#e9d5ff" font-size="9">dst → port2 | vlan: 1</text>
+
+      <rect x="510" y="140" width="140" height="70" rx="6" fill="#475569" opacity="0.9"/>
+      <text x="580" y="162" text-anchor="middle" fill="white" font-size="10" font-weight="bold">fdb_entry (local)</text>
+      <text x="580" y="177" text-anchor="middle" fill="#e2e8f0" font-size="9">MAC: bridge 自身</text>
+      <text x="580" y="192" text-anchor="middle" fill="#e2e8f0" font-size="9">is_local = 1</text>
+
+      <!-- Arrows from bucket -->
+      <path d="M 120 163 L 170 170" stroke="#374151" stroke-width="1.5" marker-end="url(#fdbarr)" fill="none"/>
+      <path d="M 310 175 L 340 175" stroke="#374151" stroke-width="1.5" marker-end="url(#fdbarr)" fill="none"/>
+      <path d="M 480 175 L 510 175" stroke="#374151" stroke-width="1.5" marker-end="url(#fdbarr)" fill="none"/>
+
+      <!-- Learning process -->
+      <rect x="40" y="270" width="280" height="90" rx="8" fill="white" stroke="#22c55e" stroke-width="1.5"/>
+      <text x="180" y="293" text-anchor="middle" fill="#22c55e" font-size="12" font-weight="bold">📥 MAC 学习过程</text>
+      <text x="180" y="310" text-anchor="middle" fill="#374151" font-size="10">1. 帧到达 port1，源 MAC = XX:XX:XX</text>
+      <text x="180" y="327" text-anchor="middle" fill="#374151" font-size="10">2. 调用 br_fdb_update(br, port1, src_mac)</text>
+      <text x="180" y="344" text-anchor="middle" fill="#374151" font-size="10">3. 若无条目，新建并插入哈希表</text>
+
+      <!-- Aging process -->
+      <rect x="380" y="270" width="280" height="90" rx="8" fill="white" stroke="#f59e0b" stroke-width="1.5"/>
+      <text x="520" y="293" text-anchor="middle" fill="#f59e0b" font-size="12" font-weight="bold">⏱️ 老化机制</text>
+      <text x="520" y="310" text-anchor="middle" fill="#374151" font-size="10">默认 300 秒无流量则删除</text>
+      <text x="520" y="327" text-anchor="middle" fill="#374151" font-size="10">gc_work 定期扫描 fdb_list</text>
+      <text x="520" y="344" text-anchor="middle" fill="#374151" font-size="10">静态条目(is_static=1)不老化</text>
+    </svg>
+    <div class="svg-caption">图5-1：FDB 哈希表结构、MAC 学习过程与老化机制</div>
+  </div>
+
+  <h2>关键 FDB 函数</h2>
+  <table>
+    <tr><th>函数</th><th>作用</th><th>调用时机</th></tr>
+    <tr><td><code>br_fdb_init()</code></td><td>初始化 FDB 缓存（kmem_cache）</td><td>模块初始化</td></tr>
+    <tr><td><code>br_fdb_update()</code></td><td>从收到的帧学习源 MAC</td><td>每次收帧</td></tr>
+    <tr><td><code>br_fdb_find_rcu()</code></td><td>RCU 保护的快速查找</td><td>转发决策时</td></tr>
+    <tr><td><code>br_fdb_insert()</code></td><td>插入新条目（端口添加时）</td><td>br_add_if()</td></tr>
+    <tr><td><code>fdb_delete()</code></td><td>删除条目</td><td>老化/端口删除</td></tr>
+    <tr><td><code>br_fdb_cleanup()</code></td><td>老化扫描（gc_work）</td><td>定时触发</td></tr>
+  </table>
+
+  <div class="info-box principle">
+    <div class="box-title">🔬 第一性原理</div>
+    <strong>FDB 是网桥智能的核心</strong>：没有 FDB，网桥就退化为集线器（全端口广播）。
+    FDB 的设计取舍是<strong>空间换时间</strong>：用内存存储 MAC→Port 映射，
+    换取 O(1) 的转发查找。老化机制解决了"MAC 漂移"问题（同一 MAC 出现在不同端口），
+    保证 FDB 与网络实际拓扑保持一致。
+    内核使用 <code>rhashtable</code>（可自动调整大小的并发安全哈希表）而非简单哈希链表，
+    是在规模性与性能间的精心权衡。
+  </div>
+
+  <div class="chapter-nav">
+    <button class="chapter-nav-btn" onclick="goTo('s3')">
+      <div class="nav-label">← 上一章</div>
+      <div class="nav-title">net_bridge_port 端口结构</div>
+    </button>
+    <button class="chapter-nav-btn next" onclick="goTo('s5')">
+      <div class="nav-label">下一章 →</div>
+      <div class="nav-title">VLAN 结构体</div>
+    </button>
+  </div>
+</section>
+
+<!-- Section 5: VLAN -->
+<section class="section" id="s5">
+  <div class="section-badge">🏷️ 核心数据结构 · 第⑥章</div>
+  <h1>VLAN — net_bridge_vlan 结构体</h1>
+  <p class="lead">
+    Linux Bridge 支持 IEEE 802.1Q 和 802.1AD（QinQ）VLAN 标记，
+    通过 <code>struct net_bridge_vlan</code> 实现每 VLAN 的独立状态管理。
+    该结构体在官方内核文档中有明确定义。
+  </p>
+
+  <a href="https://docs.kernel.org/networking/bridge.html" class="source-link" target="_blank">📄 官方文档 kernel.org/networking/bridge.html</a>
+
+  <pre><code><span class="cmt">/* 来自官方文档 docs.kernel.org/networking/bridge.html */</span>
+<span class="kw">struct</span> <span class="type">net_bridge_vlan</span> {
+    <span class="kw">struct</span> rhash_head   vnode;       <span class="cmt">// 全局 rhashtable 成员</span>
+    <span class="kw">struct</span> rhash_head   tnode;       <span class="cmt">// tunnel rhashtable 成员</span>
+    u16                 vid;         <span class="cmt">// VLAN ID</span>
+    u16                 flags;       <span class="cmt">// 桥 VLAN 标志</span>
+    u16                 priv_flags;  <span class="cmt">// 内核私有标志</span>
+    u8                  state;       <span class="cmt">// STP 状态</span>
+    <span class="kw">struct</span> pcpu_sw_netstats __percpu *stats; <span class="cmt">// per-CPU 统计</span>
+    
+    <span class="kw">union</span> {
+        <span class="kw">struct</span> net_bridge      *br;   <span class="cmt">// MASTER flag: 指向网桥</span>
+        <span class="kw">struct</span> net_bridge_port *port; <span class="cmt">// 否则: 指向端口</span>
+    };
+    <span class="kw">union</span> {
+        refcount_t          refcnt;   <span class="cmt">// MASTER: 引用计数</span>
+        <span class="kw">struct</span> net_bridge_vlan *brvlan; <span class="cmt">// 端口: 指向全局 VLAN</span>
+    };
+    
+    <span class="kw">struct</span> br_tunnel_info   tinfo;   <span class="cmt">// tunnel 信息</span>
+    <span class="kw">union</span> {
+        <span class="kw">struct</span> net_bridge_mcast      br_mcast_ctx;   <span class="cmt">// 桥级组播上下文</span>
+        <span class="kw">struct</span> net_bridge_mcast_port port_mcast_ctx; <span class="cmt">// 端口级组播上下文</span>
+    };
+    u16                 msti;        <span class="cmt">// MST 实例（MSTP）</span>
+    <span class="kw">struct</span> list_head    vlist;       <span class="cmt">// 有序 VLAN 链表</span>
+    <span class="kw">struct</span> rcu_head     rcu;         <span class="cmt">// RCU 延迟释放</span>
+};</code></pre>
+
+  <div class="info-box warning">
+    <div class="box-title">⚠️ 注意</div>
+    内核 kAPI 是<strong>不稳定的</strong>，可能随时更改（unstable）。此结构体定义来自官方文档，
+    实际字段可能随内核版本变化。
+  </div>
+
+  <h2>VLAN 共享结构设计</h2>
+  <div class="svg-container">
+    <svg viewBox="0 0 700 320" xmlns="http://www.w3.org/2000/svg" font-family="'PingFang SC','Microsoft YaHei',sans-serif">
+      <rect width="700" height="320" fill="#f8fafc" rx="10"/>
+
+      <!-- Global VLAN in bridge -->
+      <rect x="260" y="20" width="180" height="80" rx="8" fill="#d97706" opacity="0.9"/>
+      <text x="350" y="48" text-anchor="middle" fill="white" font-size="11" font-weight="bold">全局 VLAN 条目</text>
+      <text x="350" y="65" text-anchor="middle" fill="#fef3c7" font-size="10">MASTER flag = 1</text>
+      <text x="350" y="82" text-anchor="middle" fill="#fef3c7" font-size="10">br* 指向网桥</text>
+      <text x="350" y="97" text-anchor="middle" fill="#fde68a" font-size="9">refcnt (引用计数)</text>
+
+      <text x="350" y="120" text-anchor="middle" fill="#64748b" font-size="11">bridge rhashtable</text>
+
+      <!-- Port VLAN entries -->
+      <rect x="60" y="180" width="160" height="100" rx="8" fill="#7c3aed" opacity="0.85"/>
+      <text x="140" y="205" text-anchor="middle" fill="white" font-size="10" font-weight="bold">端口 VLAN 条目</text>
+      <text x="140" y="222" text-anchor="middle" fill="#e9d5ff" font-size="9">port1 · vid=10</text>
+      <text x="140" y="238" text-anchor="middle" fill="#e9d5ff" font-size="9">MASTER flag = 0</text>
+      <text x="140" y="254" text-anchor="middle" fill="#ddd6fe" font-size="9">port* → port1</text>
+      <text x="140" y="269" text-anchor="middle" fill="#ddd6fe" font-size="9">brvlan* → 全局条目</text>
+
+      <rect x="270" y="180" width="160" height="100" rx="8" fill="#7c3aed" opacity="0.7"/>
+      <text x="350" y="205" text-anchor="middle" fill="white" font-size="10" font-weight="bold">端口 VLAN 条目</text>
+      <text x="350" y="222" text-anchor="middle" fill="#e9d5ff" font-size="9">port2 · vid=10</text>
+      <text x="350" y="238" text-anchor="middle" fill="#e9d5ff" font-size="9">MASTER flag = 0</text>
+      <text x="350" y="254" text-anchor="middle" fill="#ddd6fe" font-size="9">port* → port2</text>
+      <text x="350" y="269" text-anchor="middle" fill="#ddd6fe" font-size="9">brvlan* → 全局条目</text>
+
+      <rect x="480" y="180" width="160" height="100" rx="8" fill="#7c3aed" opacity="0.55"/>
+      <text x="560" y="205" text-anchor="middle" fill="white" font-size="10" font-weight="bold">端口 VLAN 条目</text>
+      <text x="560" y="222" text-anchor="middle" fill="#e9d5ff" font-size="9">port3 · vid=10</text>
+      <text x="560" y="254" text-anchor="middle" fill="#ddd6fe" font-size="9">brvlan* → 全局条目</text>
+
+      <!-- Arrows -->
+      <defs>
+        <marker id="varr" markerWidth="7" markerHeight="7" refX="4" refY="4" orient="auto">
+          <path d="M0,0 L7,4 L0,7 Z" fill="#d97706"/>
+        </marker>
+      </defs>
+      <path d="M 140 180 Q 250 130 302 100" stroke="#d97706" stroke-width="1.5" fill="none" marker-end="url(#varr)" stroke-dasharray="5,3"/>
+      <path d="M 350 180 Q 350 130 350 100" stroke="#d97706" stroke-width="1.5" fill="none" marker-end="url(#varr)" stroke-dasharray="5,3"/>
+      <path d="M 560 180 Q 450 130 398 100" stroke="#d97706" stroke-width="1.5" fill="none" marker-end="url(#varr)" stroke-dasharray="5,3"/>
+
+      <text x="350" y="305" text-anchor="middle" fill="#64748b" font-size="10">
+        多个端口的同 VID 条目通过 brvlan* 共享全局 VLAN 状态
+      </text>
+    </svg>
+    <div class="svg-caption">图6-1：VLAN 结构体的全局条目与端口条目共享关系</div>
+  </div>
+
+  <h2>VLAN 过滤工作流</h2>
+  <table>
+    <tr><th>步骤</th><th>说明</th></tr>
+    <tr><td>1. 启用过滤</td><td>设置 <code>BROPT_VLAN_ENABLED</code>，默认 PVID=1</td></tr>
+    <tr><td>2. 入站帧检查</td><td>提取 VLAN tag，查找端口 VLAN 成员表</td></tr>
+    <tr><td>3. 未标记帧</td><td>打上端口默认 PVID 标签</td></tr>
+    <tr><td>4. 出站帧处理</td><td>根据端口配置剥除或保留 VLAN tag</td></tr>
+  </table>
+
+  <div class="info-box principle">
+    <div class="box-title">🔬 第一性原理</div>
+    <strong>VLAN 是广播域隔离的最小代价方案</strong>：通过在帧中插入 4 字节标签（802.1Q），
+    一个物理交换机（或 Linux Bridge）可以虚拟成多个独立交换机。
+    <code>net_bridge_vlan</code> 的 Union 设计使同一结构体能同时表示全局 VLAN
+    和端口本地 VLAN，通过 <code>MASTER</code> 标志区分，避免了代码重复。
+    这是 Linux 内核中"多态性"的经典实现模式。
+  </div>
+
+  <div class="chapter-nav">
+    <button class="chapter-nav-btn" onclick="goTo('s4')">
+      <div class="nav-label">← 上一章</div>
+      <div class="nav-title">FDB 转发数据库</div>
+    </button>
+    <button class="chapter-nav-btn next" onclick="goTo('s6')">
+      <div class="nav-label">下一章 →</div>
+      <div class="nav-title">模块初始化 br_init</div>
+    </button>
+  </div>
+</section>
+
+<!-- Section 6: br_init -->
+<section class="section" id="s6">
+  <div class="section-badge">🚀 初始化流程 · 第⑦章</div>
+  <h1>模块初始化 — br_init()</h1>
+  <p class="lead">
+    Linux Bridge 作为内核模块加载时，<code>br_init()</code> 是第一个被调用的函数，
+    它完成所有子系统的注册与初始化。
+  </p>
+
+  <a href="https://github.com/torvalds/linux/blob/master/net/bridge/br.c" class="source-link" target="_blank">📄 net/bridge/br.c</a>
+
+  <pre><code><span class="cmt">/* net/bridge/br.c */</span>
+<span class="kw">static int</span> __init <span class="fn">br_init</span>(<span class="kw">void</span>)
+{
+    <span class="kw">int</span> err;
+    
+    <span class="cmt">/* 1. 注册 STP 协议处理器，接收 BPDU 帧 */</span>
+    err = <span class="fn">stp_proto_register</span>(&amp;br_stp_proto);
+    
+    <span class="cmt">/* 2. 初始化 FDB 缓存（kmem_cache）*/</span>
+    err = <span class="fn">br_fdb_init</span>();
+    
+    <span class="cmt">/* 3. 注册网络命名空间子系统 */</span>
+    err = <span class="fn">register_pernet_subsys</span>(&amp;br_net_ops);
+    
+    <span class="cmt">/* 4. 初始化 netfilter 核心 */</span>
+    err = <span class="fn">br_nf_core_init</span>();
+    
+    <span class="cmt">/* 5. 注册网络设备通知链 */</span>
+    err = <span class="fn">register_netdevice_notifier</span>(&amp;br_device_notifier);
+    
+    <span class="cmt">/* 6. 注册 FDB 通知链 */</span>
+    err = <span class="fn">register_fib_notifier</span>(&amp;init_net, &amp;br_fib_notifier_ops, ...);
+    
+    <span class="cmt">/* 7. 初始化 Netlink 接口 */</span>
+    err = <span class="fn">br_netlink_init</span>();
+    
+    <span class="cmt">/* 8. 设置 ioctl 处理钩子 */</span>
+    <span class="fn">brioctl_set</span>(br_ioctl_deviceless_stub);
+    
+    <span class="kw">return</span> 0;
+}
+<span class="fn">module_init</span>(br_init);
+MODULE_ALIAS_RTNL_LINK(<span class="str">"bridge"</span>);</code></pre>
+
+  <div class="svg-container">
+    <svg viewBox="0 0 700 400" xmlns="http://www.w3.org/2000/svg" font-family="'PingFang SC','Microsoft YaHei',sans-serif">
+      <rect width="700" height="400" fill="#f8fafc" rx="10"/>
+      
+      <defs>
+        <marker id="iarr" markerWidth="8" markerHeight="8" refX="4" refY="4" orient="auto">
+          <path d="M0,0 L8,4 L0,8 Z" fill="#374151"/>
+        </marker>
+      </defs>
+
+      <!-- br_init box -->
+      <rect x="270" y="20" width="160" height="40" rx="8" fill="#0f172a"/>
+      <text x="350" y="45" text-anchor="middle" fill="white" font-size="13" font-weight="bold">br_init()</text>
+
+      <!-- Steps radiating out -->
+      <!-- STP -->
+      <line x1="270" y1="40" x2="130" y2="100" stroke="#374151" stroke-width="1.5" marker-end="url(#iarr)"/>
+      <rect x="20" y="90" width="150" height="50" rx="6" fill="#dc2626" opacity="0.85"/>
+      <text x="95" y="113" text-anchor="middle" fill="white" font-size="10" font-weight="bold">① stp_proto_register</text>
+      <text x="95" y="128" text-anchor="middle" fill="#fca5a5" font-size="9">注册 STP/BPDU 处理</text>
+
+      <!-- FDB -->
+      <line x1="300" y1="60" x2="200" y2="140" stroke="#374151" stroke-width="1.5" marker-end="url(#iarr)"/>
+      <rect x="120" y="140" width="150" height="50" rx="6" fill="#7c3aed" opacity="0.85"/>
+      <text x="195" y="163" text-anchor="middle" fill="white" font-size="10" font-weight="bold">② br_fdb_init</text>
+      <text x="195" y="178" text-anchor="middle" fill="#e9d5ff" font-size="9">创建 FDB 内存缓存</text>
+
+      <!-- pernet -->
+      <line x1="340" y1="60" x2="340" y2="140" stroke="#374151" stroke-width="1.5" marker-end="url(#iarr)"/>
+      <rect x="260" y="140" width="160" height="50" rx="6" fill="#0284c7" opacity="0.85"/>
+      <text x="340" y="163" text-anchor="middle" fill="white" font-size="10" font-weight="bold">③ register_pernet_subsys</text>
+      <text x="340" y="178" text-anchor="middle" fill="#bae6fd" font-size="9">网络命名空间支持</text>
+
+      <!-- netfilter -->
+      <line x1="380" y1="60" x2="490" y2="140" stroke="#374151" stroke-width="1.5" marker-end="url(#iarr)"/>
+      <rect x="430" y="140" width="150" height="50" rx="6" fill="#059669" opacity="0.85"/>
+      <text x="505" y="163" text-anchor="middle" fill="white" font-size="10" font-weight="bold">④ br_nf_core_init</text>
+      <text x="505" y="178" text-anchor="middle" fill="#d1fae5" font-size="9">Netfilter 核心初始化</text>
+
+      <!-- notifier -->
+      <line x1="430" y1="40" x2="570" y2="100" stroke="#374151" stroke-width="1.5" marker-end="url(#iarr)"/>
+      <rect x="530" y="90" width="150" height="50" rx="6" fill="#d97706" opacity="0.85"/>
+      <text x="605" y="113" text-anchor="middle" fill="white" font-size="10" font-weight="bold">⑤ register_notifier</text>
+      <text x="605" y="128" text-anchor="middle" fill="#fef3c7" font-size="9">设备通知链注册</text>
+
+      <!-- Netlink -->
+      <line x1="350" y1="60" x2="200" y2="250" stroke="#374151" stroke-width="1.5" marker-end="url(#iarr)"/>
+      <rect x="80" y="250" width="150" height="50" rx="6" fill="#0891b2" opacity="0.85"/>
+      <text x="155" y="273" text-anchor="middle" fill="white" font-size="10" font-weight="bold">⑥ br_netlink_init</text>
+      <text x="155" y="288" text-anchor="middle" fill="#cffafe" font-size="9">Netlink 接口初始化</text>
+
+      <!-- ioctl -->
+      <line x1="350" y1="60" x2="460" y2="250" stroke="#374151" stroke-width="1.5" marker-end="url(#iarr)"/>
+      <rect x="400" y="250" width="150" height="50" rx="6" fill="#1e293b" opacity="0.9"/>
+      <text x="475" y="273" text-anchor="middle" fill="white" font-size="10" font-weight="bold">⑦ brioctl_set</text>
+      <text x="475" y="288" text-anchor="middle" fill="#94a3b8" font-size="9">设置 ioctl 钩子函数</text>
+
+      <!-- Result -->
+      <rect x="150" y="340" width="400" height="44" rx="8" fill="white" stroke="#22c55e" stroke-width="2"/>
+      <text x="350" y="358" text-anchor="middle" fill="#22c55e" font-size="11" font-weight="bold">✅ 模块就绪</text>
+      <text x="350" y="376" text-anchor="middle" fill="#374151" font-size="10">用户可通过 ip/brctl/Netlink 创建网桥实例</text>
+    </svg>
+    <div class="svg-caption">图7-1：br_init() 初始化流程 —— 注册所有子系统和钩子函数</div>
+  </div>
+
+  <h2>STP 协议处理器</h2>
+  <pre><code><span class="cmt">/* br.c 中注册的 STP 协议结构 */</span>
+<span class="kw">static const struct</span> <span class="type">stp_proto</span> br_stp_proto = {
+    .rcv = <span class="fn">br_stp_rcv</span>,   <span class="cmt">// BPDU 帧接收处理函数</span>
+};</code></pre>
+
+  <div class="info-box principle">
+    <div class="box-title">🔬 第一性原理</div>
+    <strong>模块化初始化的本质是依赖注入</strong>：<code>br_init()</code> 通过向内核各子系统
+    "注册钩子"来集成 Bridge 功能，而不是修改内核核心代码。
+    这体现了 Linux 内核的<strong>微内核精神</strong>——功能通过钩子点（hook points）
+    和通知链（notifier chain）插入，内核主路径代码保持精简不变，
+    可加载模块只在必要时介入。
+  </div>
+
+  <div class="chapter-nav">
+    <button class="chapter-nav-btn" onclick="goTo('s5')">
+      <div class="nav-label">← 上一章</div>
+      <div class="nav-title">VLAN 结构体</div>
+    </button>
+    <button class="chapter-nav-btn next" onclick="goTo('s7')">
+      <div class="nav-label">下一章 →</div>
+      <div class="nav-title">创建网桥 br_add_bridge</div>
+    </button>
+  </div>
+</section>
+
+<!-- Section 7: br_add_bridge -->
+<section class="section" id="s7">
+  <div class="section-badge">🏗️ 初始化流程 · 第⑧章</div>
+  <h1>创建网桥 — br_add_bridge()</h1>
+  <p class="lead">
+    用户执行 <code>ip link add br0 type bridge</code> 或 <code>brctl addbr br0</code> 时，
+    内核通过 ioctl 调用 <code>br_add_bridge()</code>，创建虚拟网络设备和 <code>net_bridge</code> 实例。
+  </p>
+
+  <a href="https://github.com/torvalds/linux/blob/master/net/bridge/br_if.c" class="source-link" target="_blank">📄 net/bridge/br_if.c</a>
+
+  <h2>调用链</h2>
+  <pre><code><span class="cmt">/* 用户空间触发流程 */</span>
+brctl addbr br0
+  └─ ioctl(sock, SIOCBRADDBR, "br0")
+       └─ br_ioctl_deviceless_stub()   <span class="cmt">// net/bridge/br_ioctl.c</span>
+            └─ br_add_bridge(net, name)
+                 └─ alloc_netdev(sizeof(net_bridge), name, br_dev_setup)
+                      ├─ br_dev_setup()       <span class="cmt">// 初始化 net_device 操作集</span>
+                      ├─ register_netdevice() <span class="cmt">// 注册到内核设备列表</span>
+                      └─ br_stp_timer_init()  <span class="cmt">// 初始化 STP 定时器</span></code></pre>
+
+  <h2>br_dev_setup() 核心内容</h2>
+  <pre><code><span class="cmt">/* net/bridge/br_device.c */</span>
+<span class="kw">void</span> <span class="fn">br_dev_setup</span>(<span class="kw">struct</span> net_device *dev)
+{
+    <span class="kw">struct</span> net_bridge *br = netdev_priv(dev);
+    
+    <span class="cmt">/* 设置设备操作函数指针 */</span>
+    dev-&gt;netdev_ops = &amp;br_netdev_ops;  <span class="cmt">// 包含 br_dev_xmit</span>
+    dev-&gt;ethtool_ops = &amp;br_ethtool_ops;
+    
+    <span class="cmt">/* 设置以太网设备属性 */</span>
+    ether_setup(dev);
+    dev-&gt;priv_flags |= IFF_EBRIDGE;    <span class="cmt">// 标识这是网桥设备</span>
+    
+    <span class="cmt">/* 初始化 net_bridge 私有数据 */</span>
+    br-&gt;dev = dev;
+    spin_lock_init(&amp;br-&gt;lock);
+    INIT_LIST_HEAD(&amp;br-&gt;port_list);
+    INIT_HLIST_HEAD(&amp;br-&gt;fdb_list);
+    
+    br-&gt;bridge_id.prio[0] = 0x80;     <span class="cmt">// 默认优先级 32768</span>
+    br-&gt;bridge_id.prio[1] = 0x00;
+    
+    <span class="cmt">/* 初始化 FDB 老化定时器 */</span>
+    INIT_DELAYED_WORK(&amp;br-&gt;gc_work, br_fdb_cleanup);
+}</code></pre>
+
+  <div class="svg-container">
+    <svg viewBox="0 0 700 320" xmlns="http://www.w3.org/2000/svg" font-family="'PingFang SC','Microsoft YaHei',sans-serif">
+      <rect width="700" height="320" fill="#f8fafc" rx="10"/>
+      
+      <defs>
+        <marker id="carr" markerWidth="7" markerHeight="7" refX="4" refY="4" orient="auto">
+          <path d="M0,0 L7,4 L0,7 Z" fill="#374151"/>
+        </marker>
+      </defs>
+
+      <!-- User space -->
+      <rect x="20" y="30" width="130" height="50" rx="8" fill="#475569" opacity="0.9"/>
+      <text x="85" y="53" text-anchor="middle" fill="white" font-size="11" font-weight="bold">用户空间</text>
+      <text x="85" y="70" text-anchor="middle" fill="#e2e8f0" font-size="9">ip / brctl 命令</text>
+
+      <path d="M 150 55 L 200 55" stroke="#374151" stroke-width="1.8" marker-end="url(#carr)" fill="none"/>
+      <text x="175" y="48" text-anchor="middle" fill="#374151" font-size="9">ioctl</text>
+
+      <!-- ioctl stub -->
+      <rect x="200" y="30" width="155" height="50" rx="8" fill="#1e293b" opacity="0.9"/>
+      <text x="278" y="53" text-anchor="middle" fill="white" font-size="10" font-weight="bold">br_ioctl_deviceless_stub</text>
+      <text x="278" y="68" text-anchor="middle" fill="#94a3b8" font-size="9">SIOCBRADDBR 处理</text>
+
+      <path d="M 355 55 L 405 55" stroke="#374151" stroke-width="1.8" marker-end="url(#carr)" fill="none"/>
+
+      <!-- br_add_bridge -->
+      <rect x="405" y="30" width="140" height="50" rx="8" fill="#0284c7" opacity="0.9"/>
+      <text x="475" y="53" text-anchor="middle" fill="white" font-size="11" font-weight="bold">br_add_bridge()</text>
+      <text x="475" y="68" text-anchor="middle" fill="#e0f2fe" font-size="9">net/bridge/br_if.c</text>
+
+      <!-- alloc_netdev -->
+      <path d="M 475 80 L 475 120" stroke="#374151" stroke-width="1.8" marker-end="url(#carr)" fill="none"/>
+      <rect x="375" y="120" width="200" height="50" rx="8" fill="#7c3aed" opacity="0.9"/>
+      <text x="475" y="143" text-anchor="middle" fill="white" font-size="11" font-weight="bold">alloc_netdev()</text>
+      <text x="475" y="158" text-anchor="middle" fill="#e9d5ff" font-size="9">分配 net_device + net_bridge</text>
+
+      <!-- br_dev_setup -->
+      <path d="M 475 170 L 475 210" stroke="#374151" stroke-width="1.8" marker-end="url(#carr)" fill="none"/>
+      <rect x="375" y="210" width="200" height="50" rx="8" fill="#059669" opacity="0.9"/>
+      <text x="475" y="233" text-anchor="middle" fill="white" font-size="11" font-weight="bold">br_dev_setup()</text>
+      <text x="475" y="248" text-anchor="middle" fill="#d1fae5" font-size="9">设置 netdev_ops, 初始化结构</text>
+
+      <!-- register_netdevice -->
+      <path d="M 475 260 L 475 290" stroke="#374151" stroke-width="1.8" marker-end="url(#carr)" fill="none"/>
+      <rect x="375" y="290" width="200" height="24" rx="6" fill="#1e40af" opacity="0.9"/>
+      <text x="475" y="306" text-anchor="middle" fill="white" font-size="10" font-weight="bold">register_netdevice()</text>
+
+      <!-- Result: net_bridge struct shown -->
+      <rect x="20" y="130" width="300" height="150" rx="8" fill="white" stroke="#1e40af" stroke-width="1.5"/>
+      <text x="170" y="153" text-anchor="middle" fill="#1e40af" font-size="11" font-weight="bold">创建后的内存布局</text>
+      <rect x="35" y="163" width="130" height="28" rx="4" fill="#1e40af" opacity="0.8"/>
+      <text x="100" y="182" text-anchor="middle" fill="white" font-size="10">struct net_device</text>
+      <text x="100" y="196" fill="#374151" font-size="8" text-anchor="middle">priv_flags |= IFF_EBRIDGE</text>
+      <rect x="185" y="163" width="120" height="28" rx="4" fill="#7c3aed" opacity="0.8"/>
+      <text x="245" y="182" text-anchor="middle" fill="white" font-size="10">struct net_bridge</text>
+      <text x="245" y="196" fill="#374151" font-size="8" text-anchor="middle">netdev_priv(dev)</text>
+      <text x="170" y="218" text-anchor="middle" fill="#374151" font-size="9">port_list: empty | fdb: empty</text>
+      <text x="170" y="234" text-anchor="middle" fill="#374151" font-size="9">bridge_id.prio = 0x8000 (32768)</text>
+      <text x="170" y="250" text-anchor="middle" fill="#374151" font-size="9">gc_work → br_fdb_cleanup</text>
+      <text x="170" y="266" text-anchor="middle" fill="#374151" font-size="9">netdev_ops → br_netdev_ops</text>
+    </svg>
+    <div class="svg-caption">图8-1：br_add_bridge() 调用链与创建后的内存布局</div>
+  </div>
+
+  <div class="info-box success">
+    <div class="box-title">✅ IFF_EBRIDGE 标志的意义</div>
+    内核通过检查 <code>dev->priv_flags &amp; IFF_EBRIDGE</code> 来区分网桥设备与普通网卡。
+    这个标志告诉内核：该设备有自己的 L2 转发逻辑，不应该像普通设备那样处理帧。
+  </div>
+
+  <div class="info-box principle">
+    <div class="box-title">🔬 第一性原理</div>
+    <strong>一切皆 net_device</strong>：Linux 内核将网桥也实现为一个 <code>net_device</code>，
+    这意味着网桥可以有 IP 地址（作为管理接口），可以被路由器路由到，
+    可以运行 DHCP 等。这种"万物皆设备"的统一抽象大大降低了代码复杂度——
+    网桥设备无需特殊处理，就能自然融入内核的设备管理框架。
+  </div>
+
+  <div class="chapter-nav">
+    <button class="chapter-nav-btn" onclick="goTo('s6')">
+      <div class="nav-label">← 上一章</div>
+      <div class="nav-title">模块初始化 br_init</div>
+    </button>
+    <button class="chapter-nav-btn next" onclick="goTo('s8')">
+      <div class="nav-label">下一章 →</div>
+      <div class="nav-title">添加端口 br_add_if</div>
+    </button>
+  </div>
+</section>
+
+<!-- Section 8: br_add_if -->
+<section class="section" id="s8">
+  <div class="section-badge">🔌 初始化流程 · 第⑨章</div>
+  <h1>添加端口 — br_add_if()</h1>
+  <p class="lead">
+    将物理或虚拟网卡加入网桥是实现 L2 转发的关键步骤。
+    <code>br_add_if()</code> 不仅创建 <code>net_bridge_port</code>，
+    还通过注册 <code>rx_handler</code> 将网卡的收包路径"劫持"到网桥处理逻辑。
+  </p>
+
+  <a href="https://github.com/torvalds/linux/blob/master/net/bridge/br_if.c" class="source-link" target="_blank">📄 net/bridge/br_if.c · GitHub</a>
+  <a href="https://goyalankit.com/blog/linux-bridge" class="source-link" target="_blank">📄 Linux Bridge 分析 (goyalankit.com)</a>
+
+  <pre><code><span class="cmt">/* net/bridge/br_if.c (简化版) */</span>
+<span class="kw">int</span> <span class="fn">br_add_if</span>(<span class="kw">struct</span> net_bridge *br, <span class="kw">struct</span> net_device *dev)
+{
+    <span class="kw">struct</span> net_bridge_port *p;
+    <span class="kw">int</span> err;
+    
+    <span class="cmt">/* 验证：只允许以太网类设备 */</span>
+    <span class="kw">if</span> (dev-&gt;type != ARPHRD_ETHER || dev-&gt;flags &amp; IFF_LOOPBACK)
+        <span class="kw">return</span> -EINVAL;
+    <span class="cmt">/* 不能把网桥加入另一个网桥 */</span>
+    <span class="kw">if</span> (dev-&gt;priv_flags &amp; IFF_EBRIDGE)
+        <span class="kw">return</span> -ELOOP;
+
+    <span class="cmt">/* 创建 net_bridge_port 对象 */</span>
+    p = <span class="fn">new_nbp</span>(br, dev);
+    
+    <span class="cmt">/* 通知其他内核组件有设备加入 */</span>
+    <span class="fn">call_netdevice_notifiers</span>(NETDEV_JOIN, dev);
+    
+    <span class="cmt">/* 设置混杂模式：接收所有帧 */</span>
+    err = <span class="fn">dev_set_promiscuity</span>(dev, 1);
+    
+    <span class="cmt">/* 将端口加入 sysfs */</span>
+    err = <span class="fn">kobject_init_and_add</span>(&amp;p-&gt;kobj, &amp;brport_ktype,
+                               &amp;(dev-&gt;dev.kobj), <span class="str">"brport"</span>);
+    
+    <span class="cmt">/* 【关键】注册 rx_handler，截获该网卡所有入站帧！*/</span>
+    err = <span class="fn">netdev_rx_handler_register</span>(dev, br_handle_frame, p);
+    
+    <span class="cmt">/* 将端口 MAC 加入 FDB（is_local=1） */</span>
+    <span class="kw">if</span> (<span class="fn">br_fdb_insert</span>(br, p, dev-&gt;dev_addr, 0))
+        dev_err(...);
+    
+    <span class="cmt">/* 将端口添加到网桥端口链表 */</span>
+    list_add_rcu(&amp;p-&gt;list, &amp;br-&gt;port_list);
+    
+    <span class="kw">return</span> 0;
+}</code></pre>
+
+  <div class="svg-container">
+    <svg viewBox="0 0 700 340" xmlns="http://www.w3.org/2000/svg" font-family="'PingFang SC','Microsoft YaHei',sans-serif">
+      <rect width="700" height="340" fill="#f8fafc" rx="10"/>
+      
+      <!-- Before -->
+      <text x="170" y="25" text-anchor="middle" fill="#dc2626" font-size="12" font-weight="bold">加入前</text>
+      <rect x="40" y="40" width="260" height="130" rx="8" fill="white" stroke="#dc2626" stroke-width="1.5" stroke-dasharray="5,3"/>
+      <rect x="80" y="60" width="180" height="50" rx="6" fill="#0284c7" opacity="0.8"/>
+      <text x="170" y="82" text-anchor="middle" fill="white" font-size="11" font-weight="bold">eth0 (网卡)</text>
+      <text x="170" y="98" text-anchor="middle" fill="#e0f2fe" font-size="9">rx_handler = NULL</text>
+      <text x="170" y="140" text-anchor="middle" fill="#374151" font-size="9">__netif_receive_skb()</text>
+      <text x="170" y="156" text-anchor="middle" fill="#374151" font-size="9">→ 直接交给协议栈</text>
+
+      <!-- Arrow -->
+      <text x="350" y="115" text-anchor="middle" fill="#22c55e" font-size="22">→</text>
+      <text x="350" y="132" text-anchor="middle" fill="#22c55e" font-size="9">br_add_if()</text>
+
+      <!-- After -->
+      <text x="530" y="25" text-anchor="middle" fill="#22c55e" font-size="12" font-weight="bold">加入后</text>
+      <rect x="400" y="40" width="280" height="200" rx="8" fill="white" stroke="#22c55e" stroke-width="1.5"/>
+      <rect x="440" y="60" width="200" height="50" rx="6" fill="#0284c7" opacity="0.8"/>
+      <text x="540" y="82" text-anchor="middle" fill="white" font-size="11" font-weight="bold">eth0 (网卡)</text>
+      <text x="540" y="98" text-anchor="middle" fill="#e0f2fe" font-size="9">rx_handler = br_handle_frame ✅</text>
+      <line x1="540" y1="110" x2="540" y2="135" stroke="#374151" stroke-width="1.5" stroke-dasharray="4,2"/>
+      <rect x="450" y="135" width="180" height="40" rx="6" fill="#7c3aed" opacity="0.8"/>
+      <text x="540" y="152" text-anchor="middle" fill="white" font-size="10" font-weight="bold">net_bridge_port</text>
+      <text x="540" y="168" text-anchor="middle" fill="#e9d5ff" font-size="9">br* → net_bridge | dev* → eth0</text>
+      <line x1="540" y1="175" x2="540" y2="200" stroke="#374151" stroke-width="1.5" stroke-dasharray="4,2"/>
+      <rect x="450" y="200" width="180" height="30" rx="6" fill="#1e40af" opacity="0.8"/>
+      <text x="540" y="220" text-anchor="middle" fill="white" font-size="10">网桥 br0 (net_bridge)</text>
+      <text x="540" y="232" text-anchor="middle" fill="#bfdbfe" font-size="9">port_list: [eth0]</text>
+
+      <!-- FDB insert -->
+      <rect x="40" y="210" width="300" height="70" rx="8" fill="white" stroke="#d97706" stroke-width="1.5"/>
+      <text x="190" y="232" text-anchor="middle" fill="#d97706" font-size="11" font-weight="bold">FDB 初始化条目</text>
+      <text x="190" y="250" text-anchor="middle" fill="#374151" font-size="9">br_fdb_insert(br, p, dev-&gt;dev_addr, 0)</text>
+      <text x="190" y="266" text-anchor="middle" fill="#374151" font-size="9">MAC: eth0地址 | dst: NULL | is_local: 1</text>
+
+      <!-- Promiscuous note -->
+      <rect x="40" y="295" width="620" height="30" rx="6" fill="#fef3c7" stroke="#f59e0b" stroke-width="1"/>
+      <text x="350" y="314" text-anchor="middle" fill="#92400e" font-size="10">⚠️ dev_set_promiscuity(eth0, 1) — 设置混杂模式，接收所有帧（包括不属于自己 MAC 的帧）</text>
+    </svg>
+    <div class="svg-caption">图9-1：br_add_if() 前后对比 —— rx_handler 注册是截获帧的关键</div>
+  </div>
+
+  <div class="info-box">
+    <div class="box-title">💡 rx_handler 机制</div>
+    <code>netdev_rx_handler_register(dev, br_handle_frame, p)</code> 将 <code>br_handle_frame</code>
+    注册为 <code>eth0</code> 的接收处理函数。此后，每当 <code>eth0</code> 收到帧，
+    内核的 <code>__netif_receive_skb()</code> 会首先调用这个 handler，
+    将帧"拦截"进入网桥逻辑，而不是直接送往协议栈。
+  </div>
+
+  <div class="info-box principle">
+    <div class="box-title">🔬 第一性原理</div>
+    <strong>rx_handler 是"钩子模式"的典型应用</strong>：网桥不修改网卡驱动代码，
+    而是通过注册回调函数（rx_handler）"插入"收包流程。混杂模式是必要的——
+    因为网桥需要接收目标 MAC 不是自己的帧（转发给其他端口），
+    这突破了普通网卡只接收"自己的包"的限制。
+  </div>
+
+  <div class="chapter-nav">
+    <button class="chapter-nav-btn" onclick="goTo('s7')">
+      <div class="nav-label">← 上一章</div>
+      <div class="nav-title">创建网桥</div>
+    </button>
+    <button class="chapter-nav-btn next" onclick="goTo('s9')">
+      <div class="nav-label">下一章 →</div>
+      <div class="nav-title">接收流程 RX Path</div>
+    </button>
+  </div>
+</section>
+
+<!-- Section 9: RX Path -->
+<section class="section" id="s9">
+  <div class="section-badge">📥 收发流程 · 第⑩章</div>
+  <h1>接收流程 — RX Path</h1>
+  <p class="lead">
+    当网卡收到以太网帧，经过驱动层 DMA 和 NAPI 处理后，进入内核网络核心层，
+    最终被 <code>br_handle_frame()</code> 截获，开始网桥的 L2 处理流程。
+  </p>
+
+  <a href="https://github.com/torvalds/linux/blob/master/net/bridge/br_input.c" class="source-link" target="_blank">📄 net/bridge/br_input.c · GitHub</a>
+  <a href="https://kernelnewbies.org/Bridging_and_Forwarding" class="source-link" target="_blank">📄 Bridging_and_Forwarding · kernelnewbies.org</a>
+
+  <h2>完整 RX 调用链</h2>
+  <div class="svg-container">
+    <svg viewBox="0 0 700 560" xmlns="http://www.w3.org/2000/svg" font-family="'PingFang SC','Microsoft YaHei',monospace">
+      <rect width="700" height="560" fill="#f8fafc" rx="10"/>
+      
+      <defs>
+        <marker id="rxarr" markerWidth="8" markerHeight="8" refX="4" refY="4" orient="auto">
+          <path d="M0,0 L8,4 L0,8 Z" fill="#374151"/>
+        </marker>
+        <marker id="rxarr2" markerWidth="8" markerHeight="8" refX="4" refY="4" orient="auto">
+          <path d="M0,0 L8,4 L0,8 Z" fill="#22c55e"/>
+        </marker>
+        <marker id="rxarr3" markerWidth="8" markerHeight="8" refX="4" refY="4" orient="auto">
+          <path d="M0,0 L8,4 L0,8 Z" fill="#f59e0b"/>
+        </marker>
+      </defs>
+
+      <!-- Step 1: Hardware -->
+      <rect x="210" y="10" width="280" height="44" rx="8" fill="#374151"/>
+      <text x="350" y="28" text-anchor="middle" fill="white" font-size="11" font-weight="bold">① 网卡硬件</text>
+      <text x="350" y="45" text-anchor="middle" fill="#9ca3af" font-size="9">DMA 将帧写入内存 ring buffer</text>
+
+      <line x1="350" y1="54" x2="350" y2="74" stroke="#374151" stroke-width="2" marker-end="url(#rxarr)"/>
+
+      <!-- Step 2: NAPI -->
+      <rect x="210" y="74" width="280" height="44" rx="8" fill="#1e293b"/>
+      <text x="350" y="92" text-anchor="middle" fill="white" font-size="11" font-weight="bold">② NAPI poll</text>
+      <text x="350" y="109" text-anchor="middle" fill="#94a3b8" font-size="9">驱动收包，创建 sk_buff</text>
+
+      <line x1="350" y1="118" x2="350" y2="138" stroke="#374151" stroke-width="2" marker-end="url(#rxarr)"/>
+
+      <!-- Step 3: netif_receive_skb -->
+      <rect x="180" y="138" width="340" height="44" rx="8" fill="#0284c7" opacity="0.9"/>
+      <text x="350" y="156" text-anchor="middle" fill="white" font-size="11" font-weight="bold">③ netif_receive_skb()</text>
+      <text x="350" y="173" text-anchor="middle" fill="#bae6fd" font-size="9">net/core/dev.c — 网络核心层入口</text>
+
+      <line x1="350" y1="182" x2="350" y2="202" stroke="#374151" stroke-width="2" marker-end="url(#rxarr)"/>
+
+      <!-- Step 4: __netif_receive_skb -->
+      <rect x="180" y="202" width="340" height="44" rx="8" fill="#0891b2" opacity="0.9"/>
+      <text x="350" y="220" text-anchor="middle" fill="white" font-size="11" font-weight="bold">④ __netif_receive_skb()</text>
+      <text x="350" y="237" text-anchor="middle" fill="#cffafe" font-size="9">调用 rx_handler (已注册为 br_handle_frame)</text>
+
+      <line x1="350" y1="246" x2="350" y2="266" stroke="#3b82f6" stroke-width="2.5" marker-end="url(#rxarr2)"/>
+      <text x="375" y="260" fill="#3b82f6" font-size="9">rx_handler</text>
+
+      <!-- Step 5: br_handle_frame -->
+      <rect x="160" y="266" width="380" height="56" rx="8" fill="#1e40af"/>
+      <text x="350" y="286" text-anchor="middle" fill="white" font-size="12" font-weight="bold">⑤ br_handle_frame()</text>
+      <text x="350" y="303" text-anchor="middle" fill="#bfdbfe" font-size="9">net/bridge/br_input.c</text>
+      <text x="350" y="316" text-anchor="middle" fill="#93c5fd" font-size="9">STP 帧特殊处理 | 链路本地地址处理</text>
+
+      <line x1="350" y1="322" x2="350" y2="342" stroke="#374151" stroke-width="2" marker-end="url(#rxarr)"/>
+      <text x="380" y="336" fill="#374151" font-size="9">NF_HOOK(BRIDGE, PRE_ROUTING)</text>
+
+      <!-- Step 6: br_handle_frame_finish -->
+      <rect x="160" y="342" width="380" height="56" rx="8" fill="#7c3aed" opacity="0.9"/>
+      <text x="350" y="362" text-anchor="middle" fill="white" font-size="12" font-weight="bold">⑥ br_handle_frame_finish()</text>
+      <text x="350" y="379" text-anchor="middle" fill="#e9d5ff" font-size="9">MAC 学习 | FDB 查找 | 转发决策</text>
+      <text x="350" y="392" text-anchor="middle" fill="#ddd6fe" font-size="8">br_fdb_update() + 单播/组播/广播 分路</text>
+
+      <!-- Outcomes -->
+      <line x1="250" y1="398" x2="130" y2="458" stroke="#22c55e" stroke-width="1.5" marker-end="url(#rxarr2)" fill="none"/>
+      <rect x="20" y="458" width="140" height="44" rx="6" fill="#22c55e" opacity="0.85"/>
+      <text x="90" y="477" text-anchor="middle" fill="white" font-size="10" font-weight="bold">br_forward()</text>
+      <text x="90" y="493" text-anchor="middle" fill="#dcfce7" font-size="9">单播转发到端口</text>
+
+      <line x1="350" y1="398" x2="350" y2="458" stroke="#f59e0b" stroke-width="1.5" marker-end="url(#rxarr3)" fill="none"/>
+      <rect x="270" y="458" width="160" height="44" rx="6" fill="#f59e0b" opacity="0.85"/>
+      <text x="350" y="477" text-anchor="middle" fill="white" font-size="10" font-weight="bold">br_flood_forward()</text>
+      <text x="350" y="493" text-anchor="middle" fill="#fef3c7" font-size="9">泛洪所有端口</text>
+
+      <line x1="460" y1="398" x2="570" y2="458" stroke="#3b82f6" stroke-width="1.5" marker-end="url(#rxarr2)" fill="none"/>
+      <rect x="540" y="458" width="140" height="44" rx="6" fill="#1e40af" opacity="0.85"/>
+      <text x="610" y="477" text-anchor="middle" fill="white" font-size="10" font-weight="bold">br_pass_frame_up()</text>
+      <text x="610" y="493" text-anchor="middle" fill="#bfdbfe" font-size="9">交给本机协议栈</text>
+
+      <!-- Layer labels -->
+      <text x="15" y="20" fill="#374151" font-size="9" font-weight="bold">硬件层</text>
+      <text x="15" y="90" fill="#374151" font-size="9" font-weight="bold">驱动层</text>
+      <text x="15" y="156" fill="#0284c7" font-size="9" font-weight="bold">核心层</text>
+      <text x="15" y="286" fill="#1e40af" font-size="9" font-weight="bold">Bridge层</text>
+    </svg>
+    <div class="svg-caption">图10-1：完整的 RX 数据接收路径 —— 从硬件到网桥转发决策</div>
+  </div>
+
+  <h2>br_handle_frame() 核心逻辑</h2>
+  <pre><code><span class="cmt">/* net/bridge/br_input.c — 简化 */</span>
+rx_handler_result_t <span class="fn">br_handle_frame</span>(<span class="kw">struct</span> sk_buff **pskb)
+{
+    <span class="kw">struct</span> net_bridge_port *p;
+    <span class="kw">const unsigned char</span> *dest = eth_hdr(skb)-&gt;h_dest;
+
+    <span class="cmt">/* 丢弃回环包 */</span>
+    <span class="kw">if</span> (unlikely(skb-&gt;pkt_type == PACKET_LOOPBACK))
+        <span class="kw">return</span> RX_HANDLER_PASS;
+
+    <span class="cmt">/* 检查源 MAC 是否为广播（错误帧） */</span>
+    <span class="kw">if</span> (!is_valid_ether_addr(eth_hdr(skb)-&gt;h_source))
+        <span class="kw">goto</span> drop;
+
+    <span class="cmt">/* 获取端口，检查 STP 状态 */</span>
+    p = br_port_get_rcu(skb-&gt;dev);
+    <span class="kw">if</span> (!(br-&gt;dev-&gt;flags &amp; IFF_UP) || p-&gt;state == BR_STATE_DISABLED)
+        <span class="kw">goto</span> drop;
+
+    <span class="cmt">/* 处理链路本地地址 (01:80:C2:00:00:XX)
+     * 包含 STP BPDUs, 802.1X PAE, LLDP 等 */</span>
+    <span class="kw">if</span> (unlikely(is_link_local_ether_addr(dest))) {
+        <span class="cmt">// STP/控制平面处理</span>
+        <span class="kw">return</span> br_handle_local_finish(skb);
+    }
+
+    <span class="cmt">/* 处于 LEARNING 或 FORWARDING 状态时，进入 pre_routing hook */</span>
+    <span class="kw">switch</span> (p-&gt;state) {
+    <span class="kw">case</span> BR_STATE_FORWARDING:
+    <span class="kw">case</span> BR_STATE_LEARNING:
+        <span class="kw">return</span> <span class="fn">nf_hook_bridge_pre</span>(skb, pskb);
+        <span class="cmt">// 最终调用 br_handle_frame_finish()</span>
+    <span class="kw">default</span>:
+        <span class="fn">kfree_skb</span>(skb);  <span class="cmt">// BLOCKING 等状态丢弃数据帧</span>
+    }
+}</code></pre>
+
+  <div class="info-box principle">
+    <div class="box-title">🔬 第一性原理</div>
+    <strong>收包路径是"竞争性截获"</strong>：<code>__netif_receive_skb()</code> 按优先级调用
+    各注册处理器，<code>rx_handler</code> 优先级最高。一旦返回 <code>RX_HANDLER_CONSUMED</code>，
+    帧就被网桥消费，不再传递给其他处理器（如 IP 协议栈）。
+    这是 Linux 内核"快速路径"设计的体现——最先匹配的处理器赢得控制权。
+  </div>
+
+  <div class="chapter-nav">
+    <button class="chapter-nav-btn" onclick="goTo('s8')">
+      <div class="nav-label">← 上一章</div>
+      <div class="nav-title">添加端口 br_add_if</div>
+    </button>
+    <button class="chapter-nav-btn next" onclick="goTo('s10')">
+      <div class="nav-label">下一章 →</div>
+      <div class="nav-title">转发决策与 FDB 查找</div>
+    </button>
+  </div>
+</section>
+
+<!-- Section 10: Forwarding Decision -->
+<section class="section" id="s10">
+  <div class="section-badge">🗺️ 收发流程 · 第⑪章</div>
+  <h1>转发决策 — br_handle_frame_finish()</h1>
+  <p class="lead">
+    <code>br_handle_frame_finish()</code> 是网桥的"大脑"，
+    它完成 MAC 学习、FDB 查找，并根据目标 MAC 类型做出转发决策。
+  </p>
+
+  <a href="https://codebrowser.dev/linux/linux/net/bridge/br_input.c.html" class="source-link" target="_blank">📄 br_input.c · codebrowser</a>
+
+  <pre><code><span class="cmt">/* net/bridge/br_input.c — 简化展示核心逻辑 */</span>
+<span class="kw">int</span> <span class="fn">br_handle_frame_finish</span>(<span class="kw">struct</span> net *net, <span class="kw">struct</span> sock *sk,
+                             <span class="kw">struct</span> sk_buff *skb)
+{
+    <span class="kw">struct</span> net_bridge_port *p = br_port_get_rcu(skb-&gt;dev);
+    <span class="kw">const unsigned char</span> *dest = eth_hdr(skb)-&gt;h_dest;
+    <span class="kw">struct</span> net_bridge_fdb_entry *dst = NULL;
+    <span class="kw">struct</span> net_bridge *br;
+    u16 vid = 0;
+
+    <span class="cmt">/* 1. VLAN 检查 */</span>
+    <span class="kw">if</span> (!br_allowed_ingress(p-&gt;br, nbp_vlan_group_rcu(p), skb, &amp;vid, ...))
+        <span class="kw">goto</span> out;
+
+    <span class="cmt">/* 2. MAC 学习 —— 从源 MAC 学习端口映射 */</span>
+    br = p-&gt;br;
+    <span class="fn">br_fdb_update</span>(br, p, eth_hdr(skb)-&gt;h_source, vid, 0);
+
+    <span class="cmt">/* 3. LEARNING 状态：只学习，不转发 */</span>
+    <span class="kw">if</span> (p-&gt;state == BR_STATE_LEARNING)
+        <span class="kw">goto</span> drop;
+
+    <span class="cmt">/* 4. 判断目标 MAC 类型 */</span>
+    <span class="kw">if</span> (<span class="fn">is_broadcast_ether_addr</span>(dest)) {
+        <span class="cmt">/* 广播：泛洪所有端口 + 送本机 */</span>
+        skb2 = skb;
+    } <span class="kw">else if</span> (<span class="fn">is_multicast_ether_addr</span>(dest)) {
+        <span class="cmt">/* 组播：查 MDB 或泛洪 */</span>
+        mdst = br_mdb_get(brmctx, skb, vid);
+        ...
+    } <span class="kw">else</span> {
+        <span class="cmt">/* 单播：查 FDB */</span>
+        dst = <span class="fn">br_fdb_find_rcu</span>(br, dest, vid);
+        <span class="kw">if</span> (dst) {
+            <span class="kw">if</span> (dst-&gt;is_local) {
+                skb2 = skb;  <span class="cmt">// 目标是本机</span>
+                skb = NULL;
+            }
+        }
+        <span class="cmt">/* FDB 未命中：泛洪 */</span>
+    }
+
+    <span class="cmt">/* 5. 转发 */</span>
+    <span class="kw">if</span> (skb) {
+        <span class="kw">if</span> (dst)
+            <span class="fn">br_forward</span>(dst-&gt;dst, skb, skb2);     <span class="cmt">// 单播转发</span>
+        <span class="kw">else</span>
+            <span class="fn">br_flood</span>(br, skb, pkt_type, skb2);  <span class="cmt">// 泛洪</span>
+    }
+
+    <span class="cmt">/* 6. 递交给本机协议栈 */</span>
+    <span class="kw">if</span> (skb2)
+        <span class="kw">return</span> <span class="fn">br_pass_frame_up</span>(skb2);
+    <span class="kw">return</span> 0;
+}</code></pre>
+
+  <div class="svg-container">
+    <svg viewBox="0 0 700 500" xmlns="http://www.w3.org/2000/svg" font-family="'PingFang SC','Microsoft YaHei',sans-serif">
+      <rect width="700" height="500" fill="#f8fafc" rx="10"/>
+      
+      <defs>
+        <marker id="da1" markerWidth="7" markerHeight="7" refX="4" refY="4" orient="auto">
+          <path d="M0,0 L7,4 L0,7 Z" fill="#374151"/>
+        </marker>
+        <marker id="da2" markerWidth="7" markerHeight="7" refX="4" refY="4" orient="auto">
+          <path d="M0,0 L7,4 L0,7 Z" fill="#22c55e"/>
+        </marker>
+        <marker id="da3" markerWidth="7" markerHeight="7" refX="4" refY="4" orient="auto">
+          <path d="M0,0 L7,4 L0,7 Z" fill="#ef4444"/>
+        </marker>
+        <marker id="da4" markerWidth="7" markerHeight="7" refX="4" refY="4" orient="auto">
+          <path d="M0,0 L7,4 L0,7 Z" fill="#f59e0b"/>
+        </marker>
+        <marker id="da5" markerWidth="7" markerHeight="7" refX="4" refY="4" orient="auto">
+          <path d="M0,0 L7,4 L0,7 Z" fill="#8b5cf6"/>
+        </marker>
+      </defs>
+
+      <!-- Entry -->
+      <rect x="250" y="10" width="200" height="36" rx="18" fill="#1e40af"/>
+      <text x="350" y="33" text-anchor="middle" fill="white" font-size="12" font-weight="bold">帧进入 br_handle_frame_finish</text>
+
+      <!-- VLAN check -->
+      <line x1="350" y1="46" x2="350" y2="66" stroke="#374151" stroke-width="1.5" marker-end="url(#da1)"/>
+      <rect x="240" y="66" width="220" height="34" rx="6" fill="#0284c7" opacity="0.9"/>
+      <text x="350" y="88" text-anchor="middle" fill="white" font-size="10">① VLAN 入站检查 + MAC 学习</text>
+
+      <!-- State check -->
+      <line x1="350" y1="100" x2="350" y2="120" stroke="#374151" stroke-width="1.5" marker-end="url(#da1)"/>
+      <polygon points="350,120 460,148 350,176 240,148" fill="#475569" opacity="0.9"/>
+      <text x="350" y="145" text-anchor="middle" fill="white" font-size="10" font-weight="bold">STP 状态</text>
+      <text x="350" y="162" text-anchor="middle" fill="#e2e8f0" font-size="9">LEARNING?</text>
+
+      <!-- LEARNING: drop -->
+      <line x1="460" y1="148" x2="560" y2="148" stroke="#ef4444" stroke-width="1.5" marker-end="url(#da3)"/>
+      <text x="510" y="140" text-anchor="middle" fill="#ef4444" font-size="9">是</text>
+      <rect x="560" y="130" width="90" height="36" rx="6" fill="#ef4444" opacity="0.85"/>
+      <text x="605" y="153" text-anchor="middle" fill="white" font-size="10">丢弃</text>
+
+      <!-- Dest type -->
+      <line x1="350" y1="176" x2="350" y2="196" stroke="#374151" stroke-width="1.5" marker-end="url(#da1)"/>
+      <text x="370" y="192" fill="#374151" font-size="9">FORWARDING</text>
+      <polygon points="350,196 460,226 350,256 240,226" fill="#f59e0b" opacity="0.9"/>
+      <text x="350" y="223" text-anchor="middle" fill="white" font-size="10" font-weight="bold">目标 MAC 类型</text>
+
+      <!-- Broadcast -->
+      <line x1="240" y1="226" x2="80" y2="300" stroke="#ef4444" stroke-width="1.5" marker-end="url(#da3)" fill="none"/>
+      <text x="140" y="262" fill="#ef4444" font-size="9">广播(FF:FF:FF...)</text>
+      <rect x="20" y="300" width="130" height="50" rx="6" fill="#ef4444" opacity="0.85"/>
+      <text x="85" y="320" text-anchor="middle" fill="white" font-size="10" font-weight="bold">br_flood()</text>
+      <text x="85" y="338" text-anchor="middle" fill="#fecaca" font-size="9">泛洪+送本机</text>
+
+      <!-- Multicast -->
+      <line x1="350" y1="256" x2="350" y2="300" stroke="#8b5cf6" stroke-width="1.5" marker-end="url(#da5)" fill="none"/>
+      <text x="370" y="282" fill="#8b5cf6" font-size="9">组播</text>
+      <rect x="280" y="300" width="140" height="50" rx="6" fill="#7c3aed" opacity="0.85"/>
+      <text x="350" y="320" text-anchor="middle" fill="white" font-size="10" font-weight="bold">MDB 查找</text>
+      <text x="350" y="338" text-anchor="middle" fill="#e9d5ff" font-size="9">按需转发/泛洪</text>
+
+      <!-- Unicast -->
+      <line x1="460" y1="226" x2="560" y2="300" stroke="#22c55e" stroke-width="1.5" marker-end="url(#da2)" fill="none"/>
+      <text x="530" y="262" fill="#22c55e" font-size="9">单播</text>
+
+      <!-- FDB lookup -->
+      <rect x="490" y="300" width="190" height="50" rx="6" fill="#22c55e" opacity="0.85"/>
+      <text x="585" y="320" text-anchor="middle" fill="white" font-size="10" font-weight="bold">FDB 查找</text>
+      <text x="585" y="338" text-anchor="middle" fill="#dcfce7" font-size="9">br_fdb_find_rcu()</text>
+
+      <!-- Hit/Miss -->
+      <line x1="585" y1="350" x2="585" y2="390" stroke="#374151" stroke-width="1.5" marker-end="url(#da1)"/>
+      <polygon points="585,390 645,410 585,430 525,410" fill="#374151" opacity="0.85"/>
+      <text x="585" y="415" text-anchor="middle" fill="white" font-size="9">命中?</text>
+
+      <line x1="645" y1="410" x2="685" y2="450" stroke="#22c55e" stroke-width="1.5" marker-end="url(#da2)"/>
+      <text x="671" y="438" fill="#22c55e" font-size="9">是</text>
+      <rect x="640" y="453" width="50" height="28" rx="4" fill="#22c55e" opacity="0.85"/>
+      <text x="665" y="472" text-anchor="middle" fill="white" font-size="9">转发</text>
+
+      <line x1="525" y1="410" x2="480" y2="450" stroke="#f59e0b" stroke-width="1.5" marker-end="url(#da4)"/>
+      <text x="498" y="438" fill="#f59e0b" font-size="9">否</text>
+      <rect x="430" y="453" width="50" height="28" rx="4" fill="#f59e0b" opacity="0.85"/>
+      <text x="455" y="472" text-anchor="middle" fill="white" font-size="9">泛洪</text>
+    </svg>
+    <div class="svg-caption">图11-1：br_handle_frame_finish() 详细决策流程图</div>
+  </div>
+
+  <h2>三种目标 MAC 处理路径</h2>
+  <table>
+    <tr><th>目标 MAC 类型</th><th>判断条件</th><th>处理函数</th></tr>
+    <tr><td>广播帧</td><td><code>FF:FF:FF:FF:FF:FF</code></td><td><code>br_flood()</code> + <code>br_pass_frame_up()</code></td></tr>
+    <tr><td>组播帧</td><td>最高位 bit 为 1</td><td>查 MDB，命中则定向，否则泛洪</td></tr>
+    <tr><td>单播帧（已知）</td><td>FDB 命中</td><td><code>br_forward(dst->dst, skb)</code></td></tr>
+    <tr><td>单播帧（未知）</td><td>FDB 未命中</td><td><code>br_flood()</code> 除源端口外所有端口</td></tr>
+    <tr><td>本地帧</td><td><code>is_local=1</code></td><td><code>br_pass_frame_up()</code> 交给协议栈</td></tr>
+  </table>
+
+  <div class="info-box principle">
+    <div class="box-title">🔬 第一性原理</div>
+    <strong>转发决策的本质是信息不对称的处理</strong>：当网桥"知道"目标在哪里（FDB 命中），
+    就精准转发（unicast）；当它"不知道"时，只能广播（flood）让所有端口自己判断。
+    这与人类社会的信息传播规律完全一致：信息越完整，通信越精准；
+    信息缺失时，只能广播浪费带宽。FDB 的存在将帧从"广播"向"单播"演进，
+    这是网桥智能化的唯一路径。
+  </div>
+
+  <div class="chapter-nav">
+    <button class="chapter-nav-btn" onclick="goTo('s9')">
+      <div class="nav-label">← 上一章</div>
+      <div class="nav-title">接收流程 RX Path</div>
+    </button>
+    <button class="chapter-nav-btn next" onclick="goTo('s11')">
+      <div class="nav-label">下一章 →</div>
+      <div class="nav-title">发送流程 TX Path</div>
+    </button>
+  </div>
+</section>
+
+<!-- Section 11: TX Path -->
+<section class="section" id="s11">
+  <div class="section-badge">📤 收发流程 · 第⑫章</div>
+  <h1>发送流程 — TX Path</h1>
+  <p class="lead">
+    网桥的发送路径有两种触发方式：
+    本机应用程序向网桥 IP 地址发送数据（<code>br_dev_xmit</code>），
+    以及网桥转发其他端口收到的帧（<code>br_forward/__br_forward</code>）。
+  </p>
+
+  <a href="https://github.com/torvalds/linux/blob/master/net/bridge/br_device.c" class="source-link" target="_blank">📄 net/bridge/br_device.c</a>
+  <a href="https://github.com/torvalds/linux/blob/master/net/bridge/br_forward.c" class="source-link" target="_blank">📄 net/bridge/br_forward.c</a>
+
+  <h2>发送路径 1：本机发送（br_dev_xmit）</h2>
+  <pre><code><span class="cmt">/* net/bridge/br_device.c */</span>
+netdev_tx_t <span class="fn">br_dev_xmit</span>(<span class="kw">struct</span> sk_buff *skb, <span class="kw">struct</span> net_device *dev)
+{
+    <span class="kw">struct</span> net_bridge *br = netdev_priv(dev);
+    <span class="kw">const unsigned char</span> *dest = skb-&gt;data;  <span class="cmt">// 目标 MAC</span>
+    <span class="kw">struct</span> net_bridge_fdb_entry *dst;
+    u16 vid = 0;
+
+    <span class="fn">br_multicast_count</span>(br, NULL, skb, ...);
+
+    <span class="kw">if</span> (<span class="fn">is_broadcast_ether_addr</span>(dest)) {
+        <span class="fn">br_flood</span>(br, skb, BR_PKT_BROADCAST, false, true);
+    } <span class="kw">else if</span> (<span class="fn">is_multicast_ether_addr</span>(dest)) {
+        <span class="kw">if</span> (br_multicast_rcv(...))
+            <span class="kw">goto</span> out;
+        <span class="fn">br_multicast_flood</span>(mdst, skb, ...);
+    } <span class="kw">else</span> {
+        <span class="cmt">/* 单播：查 FDB */</span>
+        dst = <span class="fn">br_fdb_find_rcu</span>(br, dest, vid);
+        <span class="kw">if</span> (dst)
+            <span class="fn">br_forward</span>(dst-&gt;dst, skb, false, true);
+        <span class="kw">else</span>
+            <span class="fn">br_flood</span>(br, skb, BR_PKT_UNICAST, false, true);
+    }
+    <span class="kw">return</span> NETDEV_TX_OK;
+}</code></pre>
+
+  <h2>发送路径 2：帧转发（__br_forward）</h2>
+  <pre><code><span class="cmt">/* net/bridge/br_forward.c */</span>
+<span class="kw">static void</span> <span class="fn">__br_forward</span>(<span class="kw">const struct</span> net_bridge_port *to,
+                          <span class="kw">struct</span> sk_buff *skb, <span class="kw">bool</span> local_orig)
+{
+    <span class="kw">struct</span> net_bridge_vlan_group *vg;
+    <span class="kw">struct</span> net_device *indev;
+
+    <span class="cmt">/* VLAN 出站处理（添加/删除 tag） */</span>
+    skb = <span class="fn">br_handle_vlan</span>(to-&gt;br, to, vg, skb);
+    <span class="kw">if</span> (!skb) <span class="kw">return</span>;
+
+    indev = skb-&gt;dev;
+    skb-&gt;dev = to-&gt;dev;  <span class="cmt">// 切换出口设备</span>
+    <span class="fn">skb_forward_csum</span>(skb);
+
+    <span class="cmt">/* 通过 Netfilter POST_ROUTING 钩子发送 */</span>
+    NF_HOOK(NFPROTO_BRIDGE, NF_BR_POST_ROUTING, net, NULL,
+            skb, indev, skb-&gt;dev, <span class="fn">br_forward_finish</span>);
+}
+
+<span class="kw">static int</span> <span class="fn">br_forward_finish</span>(..., <span class="kw">struct</span> sk_buff *skb)
+{
+    <span class="kw">return</span> <span class="fn">dev_queue_xmit</span>(skb);  <span class="cmt">// 最终通过网卡发送</span>
+}</code></pre>
+
+  <div class="svg-container">
+    <svg viewBox="0 0 700 400" xmlns="http://www.w3.org/2000/svg" font-family="'PingFang SC','Microsoft YaHei',sans-serif">
+      <rect width="700" height="400" fill="#f8fafc" rx="10"/>
+      
+      <defs>
+        <marker id="ta1" markerWidth="7" markerHeight="7" refX="4" refY="4" orient="auto">
+          <path d="M0,0 L7,4 L0,7 Z" fill="#374151"/>
+        </marker>
+        <marker id="ta2" markerWidth="7" markerHeight="7" refX="4" refY="4" orient="auto">
+          <path d="M0,0 L7,4 L0,7 Z" fill="#22c55e"/>
+        </marker>
+      </defs>
+
+      <!-- Two TX sources -->
+      <rect x="30" y="20" width="190" height="50" rx="8" fill="#0284c7" opacity="0.9"/>
+      <text x="125" y="42" text-anchor="middle" fill="white" font-size="11" font-weight="bold">本机应用发送</text>
+      <text x="125" y="60" text-anchor="middle" fill="#e0f2fe" font-size="9">dev_queue_xmit() → br_dev_xmit()</text>
+
+      <rect x="480" y="20" width="190" height="50" rx="8" fill="#7c3aed" opacity="0.9"/>
+      <text x="575" y="42" text-anchor="middle" fill="white" font-size="11" font-weight="bold">转发入站帧</text>
+      <text x="575" y="60" text-anchor="middle" fill="#e9d5ff" font-size="9">br_handle_frame_finish() 决策后</text>
+
+      <line x1="125" y1="70" x2="270" y2="120" stroke="#374151" stroke-width="1.5" marker-end="url(#ta1)" fill="none"/>
+      <line x1="575" y1="70" x2="430" y2="120" stroke="#374151" stroke-width="1.5" marker-end="url(#ta1)" fill="none"/>
+
+      <!-- FDB Lookup -->
+      <rect x="240" y="120" width="220" height="44" rx="8" fill="#1e40af" opacity="0.9"/>
+      <text x="350" y="139" text-anchor="middle" fill="white" font-size="11" font-weight="bold">FDB 查找目标端口</text>
+      <text x="350" y="157" text-anchor="middle" fill="#bfdbfe" font-size="9">br_fdb_find_rcu(br, dest_mac, vid)</text>
+
+      <line x1="350" y1="164" x2="350" y2="184" stroke="#374151" stroke-width="1.5" marker-end="url(#ta1)"/>
+
+      <!-- br_forward -->
+      <rect x="230" y="184" width="240" height="44" rx="8" fill="#059669" opacity="0.9"/>
+      <text x="350" y="203" text-anchor="middle" fill="white" font-size="11" font-weight="bold">br_forward(to_port, skb)</text>
+      <text x="350" y="221" text-anchor="middle" fill="#d1fae5" font-size="9">VLAN 出站处理 + 切换设备</text>
+
+      <line x1="350" y1="228" x2="350" y2="248" stroke="#374151" stroke-width="1.5" marker-end="url(#ta1)"/>
+
+      <!-- NF_POST_ROUTING -->
+      <rect x="200" y="248" width="300" height="44" rx="8" fill="#d97706" opacity="0.9"/>
+      <text x="350" y="267" text-anchor="middle" fill="white" font-size="11" font-weight="bold">NF_BR_POST_ROUTING hook</text>
+      <text x="350" y="285" text-anchor="middle" fill="#fef3c7" font-size="9">ebtables POSTROUTING 链</text>
+
+      <line x1="350" y1="292" x2="350" y2="312" stroke="#374151" stroke-width="1.5" marker-end="url(#ta1)"/>
+
+      <!-- dev_queue_xmit -->
+      <rect x="220" y="312" width="260" height="44" rx="8" fill="#374151" opacity="0.9"/>
+      <text x="350" y="331" text-anchor="middle" fill="white" font-size="11" font-weight="bold">dev_queue_xmit(skb)</text>
+      <text x="350" y="349" text-anchor="middle" fill="#9ca3af" font-size="9">进入 qdisc 队列调度 → 网卡驱动 TX</text>
+
+      <line x1="350" y1="356" x2="350" y2="376" stroke="#22c55e" stroke-width="2" marker-end="url(#ta2)"/>
+      <rect x="280" y="376" width="140" height="18" rx="6" fill="#22c55e" opacity="0.8"/>
+      <text x="350" y="389" text-anchor="middle" fill="white" font-size="9">帧通过网卡发出</text>
+    </svg>
+    <div class="svg-caption">图12-1：TX 发送路径 —— 两种来源汇聚到 FDB 查找，经 Netfilter 钩子后发送</div>
+  </div>
+
+  <h2>br_flood() — 泛洪实现</h2>
+  <pre><code><span class="cmt">/* net/bridge/br_forward.c — 简化 */</span>
+<span class="kw">void</span> <span class="fn">br_flood</span>(<span class="kw">struct</span> net_bridge *br, <span class="kw">struct</span> sk_buff *skb, ...)
+{
+    <span class="kw">struct</span> net_bridge_port *p;
+    
+    <span class="cmt">/* 遍历所有端口 */</span>
+    list_for_each_entry_rcu(p, &amp;br-&gt;port_list, list) {
+        <span class="kw">if</span> (should_deliver(p, skb)) {  <span class="cmt">// 过滤源端口 + 状态检查</span>
+            <span class="kw">if</span> (prev) {
+                <span class="kw">struct</span> sk_buff *skb2 = skb_clone(skb, GFP_ATOMIC);
+                <span class="fn">deliver_clone</span>(prev, skb2, ...);
+            }
+            prev = p;
+        }
+    }
+    <span class="kw">if</span> (prev)
+        <span class="fn">__br_forward</span>(prev, skb, ...);  <span class="cmt">// 最后一个端口直接发送</span>
+}</code></pre>
+
+  <div class="info-box principle">
+    <div class="box-title">🔬 第一性原理</div>
+    <strong>发送路径体现了"最小代价克隆"原则</strong>：泛洪时，内核只在需要时才 <code>skb_clone()</code>。
+    对于 n 个端口，只需要 n-1 次克隆（最后一个端口直接使用原始 skb），
+    节省了一次内存分配。这种优化看似微小，但在高流量场景（广播风暴时每秒数十万帧）
+    下能显著减少内存压力。Linux 内核中类似的"延迟做"（lazy）优化随处可见。
+  </div>
+
+  <div class="chapter-nav">
+    <button class="chapter-nav-btn" onclick="goTo('s10')">
+      <div class="nav-label">← 上一章</div>
+      <div class="nav-title">转发决策与 FDB 查找</div>
+    </button>
+    <button class="chapter-nav-btn next" onclick="goTo('s12')">
+      <div class="nav-label">下一章 →</div>
+      <div class="nav-title">Netfilter Bridge Hooks</div>
+    </button>
+  </div>
+</section>
+
+<!-- Section 12: Netfilter -->
+<section class="section" id="s12">
+  <div class="section-badge">🔥 高级特性 · 第⑬章</div>
+  <h1>Netfilter Bridge Hooks</h1>
+  <p class="lead">
+    Linux Bridge 有自己的 Netfilter hook 点，允许用 ebtables/nftables 对 L2 帧过滤。
+    此外，<code>br_netfilter</code> 模块可让 iptables 也看到桥接的帧（已不推荐）。
+  </p>
+
+  <a href="https://docs.kernel.org/networking/bridge.html#netfilter" class="source-link" target="_blank">📄 官方文档 bridge.html#netfilter</a>
+  <a href="https://github.com/torvalds/linux/blob/master/net/bridge/br_netfilter_hooks.c" class="source-link" target="_blank">📄 br_netfilter_hooks.c</a>
+
+  <h2>Bridge 专属 Netfilter Hook 点</h2>
+  <div class="svg-container">
+    <svg viewBox="0 0 700 380" xmlns="http://www.w3.org/2000/svg" font-family="'PingFang SC','Microsoft YaHei',sans-serif">
+      <rect width="700" height="380" fill="#f8fafc" rx="10"/>
+      
+      <defs>
+        <marker id="na1" markerWidth="7" markerHeight="7" refX="4" refY="4" orient="auto">
+          <path d="M0,0 L7,4 L0,7 Z" fill="#374151"/>
+        </marker>
+      </defs>
+
+      <!-- Entry ports -->
+      <rect x="20" y="150" width="80" height="40" rx="6" fill="#374151" opacity="0.9"/>
+      <text x="60" y="174" text-anchor="middle" fill="white" font-size="10">port1 RX</text>
+
+      <line x1="100" y1="170" x2="145" y2="170" stroke="#374151" stroke-width="1.5" marker-end="url(#na1)"/>
+
+      <!-- PRE_ROUTING -->
+      <rect x="145" y="145" width="100" height="50" rx="6" fill="#dc2626" opacity="0.9"/>
+      <text x="195" y="165" text-anchor="middle" fill="white" font-size="10" font-weight="bold">NF_BR_</text>
+      <text x="195" y="180" text-anchor="middle" fill="white" font-size="10" font-weight="bold">PRE_ROUTING</text>
+      <text x="195" y="196" text-anchor="middle" fill="#fca5a5" font-size="8">ebtables PREROUTING</text>
+
+      <line x1="245" y1="170" x2="285" y2="170" stroke="#374151" stroke-width="1.5" marker-end="url(#na1)"/>
+
+      <!-- Forwarding decision -->
+      <rect x="285" y="145" width="130" height="50" rx="6" fill="#1e40af" opacity="0.9"/>
+      <text x="350" y="165" text-anchor="middle" fill="white" font-size="10" font-weight="bold">转发决策</text>
+      <text x="350" y="182" text-anchor="middle" fill="#bfdbfe" font-size="9">br_handle_frame_finish</text>
+
+      <!-- LOCAL_IN (up to stack) -->
+      <line x1="350" y1="145" x2="350" y2="90" stroke="#374151" stroke-width="1.5" marker-end="url(#na1)"/>
+      <rect x="290" y="50" width="120" height="40" rx="6" fill="#0284c7" opacity="0.9"/>
+      <text x="350" y="68" text-anchor="middle" fill="white" font-size="10" font-weight="bold">NF_BR_LOCAL_IN</text>
+      <text x="350" y="83" text-anchor="middle" fill="#bae6fd" font-size="8">送本机协议栈前</text>
+      <line x1="350" y1="50" x2="350" y2="20" stroke="#374151" stroke-width="1.5" marker-end="url(#na1)"/>
+      <rect x="295" y="5" width="110" height="18" rx="4" fill="#0891b2" opacity="0.8"/>
+      <text x="350" y="18" text-anchor="middle" fill="white" font-size="9">本机协议栈</text>
+
+      <!-- FORWARD hook -->
+      <line x1="415" y1="170" x2="455" y2="170" stroke="#374151" stroke-width="1.5" marker-end="url(#na1)"/>
+      <rect x="455" y="145" width="100" height="50" rx="6" fill="#7c3aed" opacity="0.9"/>
+      <text x="505" y="165" text-anchor="middle" fill="white" font-size="10" font-weight="bold">NF_BR_</text>
+      <text x="505" y="180" text-anchor="middle" fill="white" font-size="10" font-weight="bold">FORWARD</text>
+      <text x="505" y="196" text-anchor="middle" fill="#ddd6fe" font-size="8">ebtables FORWARD</text>
+
+      <!-- POST_ROUTING -->
+      <line x1="555" y1="170" x2="595" y2="170" stroke="#374151" stroke-width="1.5" marker-end="url(#na1)"/>
+      <rect x="595" y="145" width="90" height="50" rx="6" fill="#059669" opacity="0.9"/>
+      <text x="640" y="165" text-anchor="middle" fill="white" font-size="10" font-weight="bold">NF_BR_</text>
+      <text x="640" y="180" text-anchor="middle" fill="white" font-size="10" font-weight="bold">POST_ROUTING</text>
+      <text x="640" y="196" text-anchor="middle" fill="#d1fae5" font-size="8">ebtables POSTROUTING</text>
+
+      <!-- LOCAL_OUT path -->
+      <rect x="595" y="50" width="90" height="40" rx="6" fill="#d97706" opacity="0.9"/>
+      <text x="640" y="68" text-anchor="middle" fill="white" font-size="10" font-weight="bold">NF_BR_</text>
+      <text x="640" y="83" text-anchor="middle" fill="white" font-size="10" font-weight="bold">LOCAL_OUT</text>
+      <text x="640" y="99" text-anchor="middle" fill="#fef3c7" font-size="8">本机发送时</text>
+      <line x1="640" y1="90" x2="640" y2="145" stroke="#374151" stroke-width="1.5" marker-end="url(#na1)"/>
+
+      <!-- Port TX -->
+      <line x1="685" y1="170" x2="695" y2="170" stroke="#374151" stroke-width="1" fill="none"/>
+      <text x="700" y="174" fill="#374151" font-size="10">→</text>
+
+      <!-- br_netfilter note -->
+      <rect x="20" y="250" width="660" height="110" rx="8" fill="white" stroke="#f59e0b" stroke-width="1.5"/>
+      <text x="350" y="273" text-anchor="middle" fill="#d97706" font-size="12" font-weight="bold">⚠️ br_netfilter 模块（已不推荐使用）</text>
+      <text x="350" y="294" text-anchor="middle" fill="#374151" font-size="10">br_netfilter 模块拦截桥接的帧，伪装成路由帧，使 iptables/ip6tables 规则也能处理桥接流量</text>
+      <text x="350" y="312" text-anchor="middle" fill="#374151" font-size="10">这使 physdev 匹配成为在 iptables 中区分路由帧和桥接帧的唯一可靠方法</text>
+      <text x="350" y="330" text-anchor="middle" fill="#374151" font-size="10">官方建议：使用 nftables 替代，它无需 br_netfilter 即可完整支持桥接过滤</text>
+      <text x="350" y="350" text-anchor="middle" fill="#dc2626" font-size="9" font-style="italic">来源: docs.kernel.org/networking/bridge.html#netfilter</text>
+    </svg>
+    <div class="svg-caption">图13-1：Bridge Netfilter Hook 点分布图 —— 共 5 个 hook 点覆盖完整 L2 处理流程</div>
+  </div>
+
+  <h2>5个 Bridge Netfilter Hook 点</h2>
+  <table>
+    <tr><th>Hook 点</th><th>位置</th><th>典型用途</th></tr>
+    <tr><td><code>NF_BR_PRE_ROUTING</code></td><td>帧进入网桥，转发决策前</td><td>ebtables PREROUTING</td></tr>
+    <tr><td><code>NF_BR_LOCAL_IN</code></td><td>帧交给本机协议栈前</td><td>过滤到本机的 L2 帧</td></tr>
+    <tr><td><code>NF_BR_FORWARD</code></td><td>帧在端口间转发时</td><td>ebtables FORWARD 过滤</td></tr>
+    <tr><td><code>NF_BR_LOCAL_OUT</code></td><td>本机发出的帧</td><td>ebtables OUTPUT</td></tr>
+    <tr><td><code>NF_BR_POST_ROUTING</code></td><td>帧即将从端口发出前</td><td>ebtables POSTROUTING</td></tr>
+  </table>
+
+  <h2>br_netfilter 的工作原理</h2>
+  <pre><code><span class="cmt">/* net/bridge/br_netfilter_hooks.c — 简化 */</span>
+<span class="cmt">/* PRE_ROUTING hook: 拦截桥接的 IP 包 */</span>
+<span class="kw">static unsigned int</span> <span class="fn">br_nf_pre_routing</span>(<span class="kw">void</span> *priv,
+    <span class="kw">struct</span> sk_buff *skb, <span class="kw">const struct</span> nf_hook_state *state)
+{
+    <span class="kw">if</span> (!IS_IP(skb) &amp;&amp; !is_vlan_ip(skb, state-&gt;net))
+        <span class="kw">return</span> NF_ACCEPT;
+
+    <span class="fn">nf_bridge_pull_encap_header_rcsum</span>(skb);
+    
+    <span class="cmt">/* 模拟路由设备，调用 IPv4 Netfilter 的 PRE_ROUTING */</span>
+    NF_HOOK(NFPROTO_IPV4, NF_INET_PRE_ROUTING, state-&gt;net,
+            state-&gt;sk, skb, skb-&gt;dev, NULL,
+            br_nf_pre_routing_finish);
+            
+    <span class="kw">return</span> NF_STOLEN;  <span class="cmt">// 帧被"借走"，不继续桥接处理</span>
+}</code></pre>
+
+  <div class="info-box principle">
+    <div class="box-title">🔬 第一性原理</div>
+    <strong>Netfilter 是"截面式"安全机制</strong>：通过在数据流的固定截面点插入钩子，
+    而不是在每个函数中嵌入安全逻辑，实现了安全策略与转发逻辑的解耦。
+    Bridge 拥有独立的 hook 体系（<code>NFPROTO_BRIDGE</code>）是因为 L2 帧和 L3 包
+    在生命周期中的关键决策点不同。<code>br_netfilter</code> 通过"伪装路由"打通两套 hook 体系，
+    是一种"胶水层"设计，但代价是复杂性增加，这也是官方不推荐的原因。
+  </div>
+
+  <div class="chapter-nav">
+    <button class="chapter-nav-btn" onclick="goTo('s11')">
+      <div class="nav-label">← 上一章</div>
+      <div class="nav-title">发送流程 TX Path</div>
+    </button>
+    <button class="chapter-nav-btn next" onclick="goTo('s13')">
+      <div class="nav-label">下一章 →</div>
+      <div class="nav-title">STP 生成树协议</div>
+    </button>
+  </div>
+</section>
+
+<!-- Section 13: STP -->
+<section class="section" id="s13">
+  <div class="section-badge">🌳 高级特性 · 第⑭章</div>
+  <h1>STP — 生成树协议</h1>
+  <p class="lead">
+    STP（Spanning Tree Protocol）防止网桥形成环路，通过选举根桥和阻塞冗余链路，
+    构建无环的树形拓扑。Linux Bridge 内置了 STP 实现，也支持用户态 STP 守护进程。
+  </p>
+
+  <a href="https://docs.kernel.org/networking/bridge.html#stp" class="source-link" target="_blank">📄 官方文档 bridge.html#stp</a>
+
+  <h2>STP 工作流程</h2>
+  <div class="svg-container">
+    <svg viewBox="0 0 700 380" xmlns="http://www.w3.org/2000/svg" font-family="'PingFang SC','Microsoft YaHei',sans-serif">
+      <rect width="700" height="380" fill="#f8fafc" rx="10"/>
+
+      <defs>
+        <marker id="sa1" markerWidth="7" markerHeight="7" refX="4" refY="4" orient="auto">
+          <path d="M0,0 L7,4 L0,7 Z" fill="#374151"/>
+        </marker>
+      </defs>
+
+      <!-- Step circles -->
+      <circle cx="80" cy="80" r="34" fill="#dc2626" opacity="0.9"/>
+      <text x="80" y="76" text-anchor="middle" fill="white" font-size="11" font-weight="bold">1</text>
+      <text x="80" y="91" text-anchor="middle" fill="#fca5a5" font-size="9">启动</text>
+
+      <circle cx="220" cy="80" r="34" fill="#d97706" opacity="0.9"/>
+      <text x="220" y="76" text-anchor="middle" fill="white" font-size="11" font-weight="bold">2</text>
+      <text x="220" y="91" text-anchor="middle" fill="#fef3c7" font-size="9">BPDU</text>
+
+      <circle cx="360" cy="80" r="34" fill="#7c3aed" opacity="0.9"/>
+      <text x="360" y="76" text-anchor="middle" fill="white" font-size="11" font-weight="bold">3</text>
+      <text x="360" y="91" text-anchor="middle" fill="#e9d5ff" font-size="9">选举</text>
+
+      <circle cx="500" cy="80" r="34" fill="#0284c7" opacity="0.9"/>
+      <text x="500" y="76" text-anchor="middle" fill="white" font-size="11" font-weight="bold">4</text>
+      <text x="500" y="91" text-anchor="middle" fill="#bae6fd" font-size="9">收敛</text>
+
+      <circle cx="640" cy="80" r="34" fill="#22c55e" opacity="0.9"/>
+      <text x="640" y="76" text-anchor="middle" fill="white" font-size="11" font-weight="bold">5</text>
+      <text x="640" y="91" text-anchor="middle" fill="#bbf7d0" font-size="9">转发</text>
+
+      <!-- Arrows -->
+      <line x1="114" y1="80" x2="186" y2="80" stroke="#374151" stroke-width="1.5" marker-end="url(#sa1)"/>
+      <line x1="254" y1="80" x2="326" y2="80" stroke="#374151" stroke-width="1.5" marker-end="url(#sa1)"/>
+      <line x1="394" y1="80" x2="466" y2="80" stroke="#374151" stroke-width="1.5" marker-end="url(#sa1)"/>
+      <line x1="534" y1="80" x2="606" y2="80" stroke="#374151" stroke-width="1.5" marker-end="url(#sa1)"/>
+
+      <!-- Descriptions -->
+      <rect x="20" y="140" width="130" height="80" rx="6" fill="white" stroke="#dc2626" stroke-width="1.5"/>
+      <text x="85" y="162" text-anchor="middle" fill="#dc2626" font-size="10" font-weight="bold">所有桥认为</text>
+      <text x="85" y="178" text-anchor="middle" fill="#374151" font-size="9">自己是根桥</text>
+      <text x="85" y="194" text-anchor="middle" fill="#374151" font-size="9">所有端口 BLOCKING</text>
+      <text x="85" y="210" text-anchor="middle" fill="#374151" font-size="9">→ LISTENING</text>
+
+      <rect x="155" y="140" width="130" height="80" rx="6" fill="white" stroke="#d97706" stroke-width="1.5"/>
+      <text x="220" y="162" text-anchor="middle" fill="#d97706" font-size="10" font-weight="bold">发送/接收 BPDU</text>
+      <text x="220" y="178" text-anchor="middle" fill="#374151" font-size="9">Hello 时间间隔</text>
+      <text x="220" y="194" text-anchor="middle" fill="#374151" font-size="9">包含 Bridge ID</text>
+      <text x="220" y="210" text-anchor="middle" fill="#374151" font-size="9">优先级+MAC</text>
+
+      <rect x="290" y="140" width="140" height="80" rx="6" fill="white" stroke="#7c3aed" stroke-width="1.5"/>
+      <text x="360" y="162" text-anchor="middle" fill="#7c3aed" font-size="10" font-weight="bold">根桥选举</text>
+      <text x="360" y="178" text-anchor="middle" fill="#374151" font-size="9">最小 Bridge ID 获胜</text>
+      <text x="360" y="194" text-anchor="middle" fill="#374151" font-size="9">选出根端口</text>
+      <text x="360" y="210" text-anchor="middle" fill="#374151" font-size="9">阻塞冗余端口</text>
+
+      <rect x="435" y="140" width="130" height="80" rx="6" fill="white" stroke="#0284c7" stroke-width="1.5"/>
+      <text x="500" y="162" text-anchor="middle" fill="#0284c7" font-size="10" font-weight="bold">拓扑收敛</text>
+      <text x="500" y="178" text-anchor="middle" fill="#374151" font-size="9">端口进入</text>
+      <text x="500" y="194" text-anchor="middle" fill="#374151" font-size="9">LEARNING 状态</text>
+      <text x="500" y="210" text-anchor="middle" fill="#374151" font-size="9">学习 MAC 地址</text>
+
+      <rect x="575" y="140" width="110" height="80" rx="6" fill="white" stroke="#22c55e" stroke-width="1.5"/>
+      <text x="630" y="162" text-anchor="middle" fill="#22c55e" font-size="10" font-weight="bold">正常转发</text>
+      <text x="630" y="178" text-anchor="middle" fill="#374151" font-size="9">端口进入</text>
+      <text x="630" y="194" text-anchor="middle" fill="#374151" font-size="9">FORWARDING</text>
+      <text x="630" y="210" text-anchor="middle" fill="#374151" font-size="9">开始转发数据</text>
+
+      <!-- Bridge ID structure -->
+      <rect x="40" y="260" width="620" height="100" rx="8" fill="white" stroke="#1e40af" stroke-width="1.5"/>
+      <text x="350" y="280" text-anchor="middle" fill="#1e40af" font-size="12" font-weight="bold">Bridge ID 结构（8 字节）</text>
+      
+      <rect x="60" y="292" width="120" height="40" rx="4" fill="#1e40af" opacity="0.85"/>
+      <text x="120" y="309" text-anchor="middle" fill="white" font-size="10" font-weight="bold">优先级</text>
+      <text x="120" y="325" text-anchor="middle" fill="#bfdbfe" font-size="9">2字节 (默认32768)</text>
+
+      <rect x="195" y="292" width="440" height="40" rx="4" fill="#0284c7" opacity="0.85"/>
+      <text x="415" y="309" text-anchor="middle" fill="white" font-size="10" font-weight="bold">MAC 地址</text>
+      <text x="415" y="325" text-anchor="middle" fill="#bae6fd" font-size="9">6字节（网桥 MAC 地址，保证全网唯一性）</text>
+
+      <text x="350" y="355" text-anchor="middle" fill="#64748b" font-size="10">最小 Bridge ID = 最高优先级的桥（优先级相同时，MAC 地址较小的获胜）</text>
+    </svg>
+    <div class="svg-caption">图14-1：STP 工作流程与 Bridge ID 结构</div>
+  </div>
+
+  <h2>用户态 STP 守护进程</h2>
+  <p>Linux Bridge 支持两种 STP 模式：</p>
+  <table>
+    <tr><th>模式</th><th>说明</th><th>触发方式</th></tr>
+    <tr><td><code>BR_KERNEL_STP</code></td><td>内核内置 STP 实现</td><td><code>IFLA_BR_STP_MODE=kernel</code></td></tr>
+    <tr><td><code>BR_USER_STP</code></td><td>调用 <code>/sbin/bridge-stp</code> 启动用户态守护进程（如 mstpd）</td><td><code>IFLA_BR_STP_MODE=user</code></td></tr>
+    <tr><td><code>BR_STP_MODE_AUTO</code></td><td>默认：先尝试用户态，失败则回退内核态</td><td>默认行为</td></tr>
+  </table>
+
+  <pre><code><span class="cmt">/* STP 开启示例 */</span>
+ip link set br0 type bridge stp_state 1            <span class="cmt"># 启用 STP</span>
+ip link set br0 type bridge stp_mode kernel        <span class="cmt"># 使用内核 STP</span>
+ip link set br0 type bridge priority 4096          <span class="cmt"># 设置优先级（成为根桥）</span>
+ip link set eth0 master br0 type bridge_slave cost 10  <span class="cmt"># 设置端口代价</span></code></pre>
+
+  <div class="info-box principle">
+    <div class="box-title">🔬 第一性原理</div>
+    <strong>STP 的本质是分布式最小生成树算法</strong>：在没有中央控制器的情况下，
+    多个网桥通过交换 BPDU 消息，协商出一棵无环的生成树。
+    这是网络中"去中心化共识"的经典实现。Bridge ID 中嵌入 MAC 地址确保了全局唯一性，
+    优先级字段给管理员提供了人为干预的手段（降低优先级值 = 提高成为根桥的可能性）。
+    这种"软配置"优先于"硬件地址"的设计，是网络工程中"可管理性"原则的体现。
+  </div>
+
+  <div class="chapter-nav">
+    <button class="chapter-nav-btn" onclick="goTo('s12')">
+      <div class="nav-label">← 上一章</div>
+      <div class="nav-title">Netfilter Bridge Hooks</div>
+    </button>
+    <button class="chapter-nav-btn next" onclick="goTo('s14')">
+      <div class="nav-label">下一章 →</div>
+      <div class="nav-title">完整数据流全景图</div>
+    </button>
+  </div>
+</section>
+
+<!-- Section 14: Full Overview -->
+<section class="section" id="s14">
+  <div class="section-badge">🗺️ 高级特性 · 第⑮章</div>
+  <h1>完整数据流全景图</h1>
+  <p class="lead">
+    综合前面所有章节，本章以全景视角呈现 Linux Bridge 从帧接收到发送的完整流程，
+    包括与协议栈、Netfilter、STP 的衔接关系。
+  </p>
+
+  <h2>Linux Bridge 数据流全景</h2>
+  <div class="svg-container">
+    <svg viewBox="0 0 720 620" xmlns="http://www.w3.org/2000/svg" font-family="'PingFang SC','Microsoft YaHei',sans-serif">
+      <rect width="720" height="620" fill="#0f172a" rx="12"/>
+      
+      <defs>
+        <marker id="oa1" markerWidth="8" markerHeight="8" refX="4" refY="4" orient="auto">
+          <path d="M0,0 L8,4 L0,8 Z" fill="#60a5fa"/>
+        </marker>
+        <marker id="oa2" markerWidth="8" markerHeight="8" refX="4" refY="4" orient="auto">
+          <path d="M0,0 L8,4 L0,8 Z" fill="#34d399"/>
+        </marker>
+        <marker id="oa3" markerWidth="8" markerHeight="8" refX="4" refY="4" orient="auto">
+          <path d="M0,0 L8,4 L0,8 Z" fill="#f87171"/>
+        </marker>
+        <marker id="oa4" markerWidth="8" markerHeight="8" refX="4" refY="4" orient="auto">
+          <path d="M0,0 L8,4 L0,8 Z" fill="#fbbf24"/>
+        </marker>
+      </defs>
+
+      <!-- Layer labels -->
+      <text x="10" y="32" fill="#475569" font-size="10" font-weight="bold">硬件层</text>
+      <text x="10" y="115" fill="#475569" font-size="10" font-weight="bold">驱动层</text>
+      <text x="10" y="185" fill="#475569" font-size="10" font-weight="bold">网络核心</text>
+      <text x="10" y="280" fill="#60a5fa" font-size="10" font-weight="bold">Bridge层</text>
+      <text x="10" y="450" fill="#34d399" font-size="10" font-weight="bold">协议栈</text>
+
+      <!-- ============ RX SIDE ============ -->
+      <!-- NIC Hardware -->
+      <rect x="60" y="15" width="200" height="35" rx="6" fill="#1e293b" stroke="#334155" stroke-width="1"/>
+      <text x="160" y="37" text-anchor="middle" fill="#94a3b8" font-size="10">网卡硬件 / DMA → ring buffer</text>
+
+      <line x1="160" y1="50" x2="160" y2="72" stroke="#60a5fa" stroke-width="1.5" marker-end="url(#oa1)"/>
+
+      <!-- NAPI -->
+      <rect x="80" y="72" width="160" height="32" rx="6" fill="#1e293b" stroke="#3b82f6" stroke-width="1"/>
+      <text x="160" y="93" text-anchor="middle" fill="#93c5fd" font-size="10">NAPI poll → sk_buff</text>
+
+      <line x1="160" y1="104" x2="160" y2="126" stroke="#60a5fa" stroke-width="1.5" marker-end="url(#oa1)"/>
+
+      <!-- netif_receive_skb -->
+      <rect x="60" y="126" width="200" height="32" rx="6" fill="#1e293b" stroke="#3b82f6" stroke-width="1"/>
+      <text x="160" y="147" text-anchor="middle" fill="#93c5fd" font-size="10">netif_receive_skb()</text>
+
+      <line x1="160" y1="158" x2="160" y2="180" stroke="#60a5fa" stroke-width="1.5" marker-end="url(#oa1)"/>
+
+      <!-- rx_handler -->
+      <rect x="60" y="180" width="200" height="32" rx="6" fill="#1e293b" stroke="#3b82f6" stroke-width="1"/>
+      <text x="160" y="201" text-anchor="middle" fill="#93c5fd" font-size="10">rx_handler = br_handle_frame</text>
+
+      <line x1="160" y1="212" x2="160" y2="234" stroke="#60a5fa" stroke-width="1.5" marker-end="url(#oa1)"/>
+
+      <!-- NF_BR_PRE_ROUTING -->
+      <rect x="50" y="234" width="220" height="30" rx="6" fill="#7c2d12" stroke="#f97316" stroke-width="1"/>
+      <text x="160" y="254" text-anchor="middle" fill="#fed7aa" font-size="9">🔥 NF_BR_PRE_ROUTING</text>
+
+      <line x1="160" y1="264" x2="160" y2="284" stroke="#60a5fa" stroke-width="1.5" marker-end="url(#oa1)"/>
+
+      <!-- br_handle_frame_finish -->
+      <rect x="40" y="284" width="240" height="50" rx="8" fill="#1e3a8a" stroke="#3b82f6" stroke-width="1.5"/>
+      <text x="160" y="304" text-anchor="middle" fill="#bfdbfe" font-size="10" font-weight="bold">br_handle_frame_finish()</text>
+      <text x="160" y="323" text-anchor="middle" fill="#93c5fd" font-size="9">MAC学习 | FDB查找 | 转发决策</text>
+
+      <!-- Decision lines -->
+      <!-- To stack -->
+      <line x1="160" y1="334" x2="160" y2="374" stroke="#34d399" stroke-width="1.5" marker-end="url(#oa2)"/>
+      <text x="175" y="360" fill="#34d399" font-size="9">本机帧</text>
+
+      <!-- NF_BR_LOCAL_IN -->
+      <rect x="50" y="374" width="220" height="30" rx="6" fill="#14532d" stroke="#4ade80" stroke-width="1"/>
+      <text x="160" y="394" text-anchor="middle" fill="#bbf7d0" font-size="9">🔥 NF_BR_LOCAL_IN</text>
+
+      <line x1="160" y1="404" x2="160" y2="430" stroke="#34d399" stroke-width="1.5" marker-end="url(#oa2)"/>
+
+      <!-- IP/IPv6 stack -->
+      <rect x="60" y="430" width="200" height="50" rx="8" fill="#0c4a6e" stroke="#0ea5e9" stroke-width="1.5"/>
+      <text x="160" y="453" text-anchor="middle" fill="#bae6fd" font-size="10" font-weight="bold">本机协议栈</text>
+      <text x="160" y="470" text-anchor="middle" fill="#7dd3fc" font-size="9">IP/IPv6/ARP → 套接字</text>
+
+      <!-- ============ BRIDGE CENTER ============ -->
+      <!-- Forward via FORWARD hook -->
+      <line x1="280" y1="309" x2="355" y2="309" stroke="#fbbf24" stroke-width="1.5" marker-end="url(#oa4)"/>
+      <text x="318" y="302" text-anchor="middle" fill="#fbbf24" font-size="9">转发帧</text>
+
+      <!-- NF_BR_FORWARD -->
+      <rect x="355" y="284" width="140" height="50" rx="8" fill="#78350f" stroke="#f59e0b" stroke-width="1.5"/>
+      <text x="425" y="304" text-anchor="middle" fill="#fde68a" font-size="10" font-weight="bold">🔥 NF_BR_FORWARD</text>
+      <text x="425" y="323" text-anchor="middle" fill="#fcd34d" font-size="9">ebtables FORWARD</text>
+
+      <line x1="425" y1="334" x2="425" y2="374" stroke="#fbbf24" stroke-width="1.5" marker-end="url(#oa4)"/>
+
+      <!-- br_forward -->
+      <rect x="350" y="374" width="150" height="32" rx="6" fill="#1e293b" stroke="#f59e0b" stroke-width="1"/>
+      <text x="425" y="395" text-anchor="middle" fill="#fcd34d" font-size="10">br_forward()</text>
+
+      <line x1="425" y1="406" x2="425" y2="430" stroke="#fbbf24" stroke-width="1.5" marker-end="url(#oa4)"/>
+
+      <!-- NF_BR_POST_ROUTING -->
+      <rect x="340" y="430" width="170" height="30" rx="6" fill="#7c2d12" stroke="#f97316" stroke-width="1"/>
+      <text x="425" y="450" text-anchor="middle" fill="#fed7aa" font-size="9">🔥 NF_BR_POST_ROUTING</text>
+
+      <line x1="425" y1="460" x2="425" y2="484" stroke="#fbbf24" stroke-width="1.5" marker-end="url(#oa4)"/>
+
+      <!-- dev_queue_xmit -->
+      <rect x="340" y="484" width="170" height="32" rx="6" fill="#1e293b" stroke="#f59e0b" stroke-width="1"/>
+      <text x="425" y="505" text-anchor="middle" fill="#fcd34d" font-size="10">dev_queue_xmit()</text>
+
+      <line x1="425" y1="516" x2="425" y2="540" stroke="#fbbf24" stroke-width="1.5" marker-end="url(#oa4)"/>
+
+      <!-- Port TX -->
+      <rect x="340" y="540" width="170" height="32" rx="6" fill="#374151" stroke="#6b7280" stroke-width="1"/>
+      <text x="425" y="561" text-anchor="middle" fill="#e5e7eb" font-size="10">port TX → 网卡发出</text>
+
+      <!-- ============ TX FROM STACK ============ -->
+      <!-- App sends -->
+      <rect x="560" y="430" width="145" height="50" rx="8" fill="#0c4a6e" stroke="#0ea5e9" stroke-width="1.5"/>
+      <text x="633" y="453" text-anchor="middle" fill="#bae6fd" font-size="10" font-weight="bold">本机应用发送</text>
+      <text x="633" y="470" text-anchor="middle" fill="#7dd3fc" font-size="9">socket write</text>
+
+      <line x1="633" y1="430" x2="540" y2="374" stroke="#a855f7" stroke-width="1.5" marker-end="url(#oa1)" fill="none"/>
+      <text x="600" y="400" fill="#a855f7" font-size="9">br_dev_xmit</text>
+
+      <!-- NF_BR_LOCAL_OUT -->
+      <rect x="530" y="330" width="155" height="32" rx="6" fill="#581c87" stroke="#a855f7" stroke-width="1"/>
+      <text x="608" y="351" text-anchor="middle" fill="#e9d5ff" font-size="9">🔥 NF_BR_LOCAL_OUT</text>
+      <line x1="608" y1="362" x2="520" y2="390" stroke="#a855f7" stroke-width="1.5" marker-end="url(#oa1)" fill="none"/>
+
+      <!-- FDB -->
+      <rect x="540" y="234" width="165" height="44" rx="8" fill="#1e3a8a" stroke="#3b82f6" stroke-width="1.5"/>
+      <text x="623" y="253" text-anchor="middle" fill="#bfdbfe" font-size="10" font-weight="bold">FDB 哈希表</text>
+      <text x="623" y="270" text-anchor="middle" fill="#93c5fd" font-size="9">MAC → Port 映射</text>
+      <line x1="560" y1="256" x2="496" y2="300" stroke="#60a5fa" stroke-width="1" stroke-dasharray="4,3" marker-end="url(#oa1)" fill="none"/>
+      <text x="525" y="278" fill="#60a5fa" font-size="8">查找</text>
+
+      <!-- STP -->
+      <rect x="540" y="126" width="165" height="70" rx="8" fill="#1a1a1a" stroke="#ef4444" stroke-width="1.5"/>
+      <text x="623" y="148" text-anchor="middle" fill="#fca5a5" font-size="10" font-weight="bold">STP 控制平面</text>
+      <text x="623" y="165" text-anchor="middle" fill="#ef4444" font-size="9">BPDU: 01:80:C2:00:00:00</text>
+      <text x="623" y="181" text-anchor="middle" fill="#ef4444" font-size="9">端口状态: BLOCKING/FORWARDING</text>
+
+      <!-- Legend -->
+      <rect x="40" y="580" width="640" height="30" rx="6" fill="#1e293b"/>
+      <circle cx="65" cy="595" r="5" fill="#60a5fa"/>
+      <text x="75" y="599" fill="#93c5fd" font-size="9">接收 RX</text>
+      <circle cx="155" cy="595" r="5" fill="#34d399"/>
+      <text x="165" y="599" fill="#6ee7b7" font-size="9">送协议栈</text>
+      <circle cx="250" cy="595" r="5" fill="#fbbf24"/>
+      <text x="260" y="599" fill="#fcd34d" font-size="9">转发 Forward</text>
+      <circle cx="370" cy="595" r="5" fill="#a855f7"/>
+      <text x="380" y="599" fill="#d8b4fe" font-size="9">本机发送 TX</text>
+      <circle cx="470" cy="595" r="5" fill="#f97316"/>
+      <text x="480" y="599" fill="#fed7aa" font-size="9">🔥 Netfilter Hook</text>
+      <circle cx="590" cy="595" r="5" fill="#ef4444"/>
+      <text x="600" y="599" fill="#fca5a5" font-size="9">STP 控制</text>
+    </svg>
+    <div class="svg-caption">图15-1：Linux Bridge 完整数据流全景图 —— 涵盖 RX/TX/转发/Netfilter/STP 全路径</div>
+  </div>
+
+  <h2>数据结构关系总结</h2>
+  <div class="svg-container">
+    <svg viewBox="0 0 700 300" xmlns="http://www.w3.org/2000/svg" font-family="'PingFang SC','Microsoft YaHei',monospace">
+      <rect width="700" height="300" fill="#f8fafc" rx="10"/>
+      
+      <defs>
+        <marker id="ra1" markerWidth="7" markerHeight="7" refX="4" refY="4" orient="auto">
+          <path d="M0,0 L7,4 L0,7 Z" fill="#374151"/>
+        </marker>
+      </defs>
+
+      <!-- net_device -->
+      <rect x="10" y="80" width="130" height="60" rx="8" fill="#0284c7" opacity="0.9"/>
+      <text x="75" y="105" text-anchor="middle" fill="white" font-size="10" font-weight="bold">net_device</text>
+      <text x="75" y="121" text-anchor="middle" fill="#e0f2fe" font-size="8">(br0 虚拟设备)</text>
+      <text x="75" y="134" text-anchor="middle" fill="#bae6fd" font-size="8">IFF_EBRIDGE</text>
+
+      <line x1="140" y1="110" x2="175" y2="110" stroke="#374151" stroke-width="1.5" marker-end="url(#ra1)"/>
+      <text x="157" y="103" fill="#374151" font-size="8">priv</text>
+
+      <!-- net_bridge -->
+      <rect x="175" y="60" width="160" height="100" rx="8" fill="#1e40af" opacity="0.9"/>
+      <text x="255" y="85" text-anchor="middle" fill="white" font-size="11" font-weight="bold">net_bridge</text>
+      <text x="255" y="103" text-anchor="middle" fill="#bfdbfe" font-size="8">port_list →</text>
+      <text x="255" y="117" text-anchor="middle" fill="#bfdbfe" font-size="8">fdb_hash_tbl →</text>
+      <text x="255" y="131" text-anchor="middle" fill="#bfdbfe" font-size="8">vlgrp →</text>
+      <text x="255" y="145" text-anchor="middle" fill="#bfdbfe" font-size="8">bridge_id</text>
+
+      <!-- port_list -->
+      <line x1="335" y1="103" x2="380" y2="80" stroke="#374151" stroke-width="1.5" marker-end="url(#ra1)"/>
+      <rect x="380" y="30" width="150" height="70" rx="8" fill="#059669" opacity="0.9"/>
+      <text x="455" y="55" text-anchor="middle" fill="white" font-size="10" font-weight="bold">net_bridge_port</text>
+      <text x="455" y="71" text-anchor="middle" fill="#d1fae5" font-size="8">br* → net_bridge</text>
+      <text x="455" y="84" text-anchor="middle" fill="#d1fae5" font-size="8">dev* → net_device</text>
+      <text x="455" y="97" text-anchor="middle" fill="#d1fae5" font-size="8">state, priority...</text>
+
+      <!-- fdb -->
+      <line x1="335" y1="117" x2="380" y2="135" stroke="#374151" stroke-width="1.5" marker-end="url(#ra1)"/>
+      <rect x="380" y="120" width="150" height="70" rx="8" fill="#7c3aed" opacity="0.9"/>
+      <text x="455" y="145" text-anchor="middle" fill="white" font-size="10" font-weight="bold">net_bridge_fdb_entry</text>
+      <text x="455" y="161" text-anchor="middle" fill="#e9d5ff" font-size="8">key: MAC + VLAN</text>
+      <text x="455" y="175" text-anchor="middle" fill="#e9d5ff" font-size="8">dst → port</text>
+      <text x="455" y="188" text-anchor="middle" fill="#e9d5ff" font-size="8">is_local, is_static</text>
+
+      <!-- vlan -->
+      <line x1="335" y1="131" x2="380" y2="210" stroke="#374151" stroke-width="1.5" marker-end="url(#ra1)"/>
+      <rect x="380" y="210" width="150" height="70" rx="8" fill="#d97706" opacity="0.9"/>
+      <text x="455" y="235" text-anchor="middle" fill="white" font-size="10" font-weight="bold">net_bridge_vlan</text>
+      <text x="455" y="251" text-anchor="middle" fill="#fef3c7" font-size="8">vid, flags, state</text>
+      <text x="455" y="265" text-anchor="middle" fill="#fef3c7" font-size="8">br* or port*</text>
+      <text x="455" y="279" text-anchor="middle" fill="#fef3c7" font-size="8">mcast_ctx</text>
+
+      <!-- net_device for port -->
+      <line x1="530" y1="65" x2="570" y2="65" stroke="#374151" stroke-width="1.5" marker-end="url(#ra1)"/>
+      <rect x="570" y="40" width="120" height="50" rx="6" fill="#0891b2" opacity="0.9"/>
+      <text x="630" y="62" text-anchor="middle" fill="white" font-size="10" font-weight="bold">net_device</text>
+      <text x="630" y="78" text-anchor="middle" fill="#cffafe" font-size="8">(eth0 物理网卡)</text>
+    </svg>
+    <div class="svg-caption">图15-2：Linux Bridge 核心数据结构关系图</div>
+  </div>
+
+  <h2>关键文件速查表</h2>
+  <table>
+    <tr><th>源文件</th><th>功能</th></tr>
+    <tr><td><code>net/bridge/br.c</code></td><td>模块入口 br_init()</td></tr>
+    <tr><td><code>net/bridge/br_private.h</code></td><td>核心数据结构定义</td></tr>
+    <tr><td><code>net/bridge/br_if.c</code></td><td>网桥/端口创建删除</td></tr>
+    <tr><td><code>net/bridge/br_input.c</code></td><td>接收路径 br_handle_frame</td></tr>
+    <tr><td><code>net/bridge/br_forward.c</code></td><td>转发/泛洪 br_forward/br_flood</td></tr>
+    <tr><td><code>net/bridge/br_device.c</code></td><td>发送路径 br_dev_xmit</td></tr>
+    <tr><td><code>net/bridge/br_fdb.c</code></td><td>FDB 操作</td></tr>
+    <tr><td><code>net/bridge/br_stp.c</code></td><td>STP 状态机</td></tr>
+    <tr><td><code>net/bridge/br_vlan.c</code></td><td>VLAN 过滤</td></tr>
+    <tr><td><code>net/bridge/br_netfilter_hooks.c</code></td><td>br_netfilter 模块</td></tr>
+    <tr><td><code>net/bridge/br_mdb.c</code></td><td>组播数据库</td></tr>
+    <tr><td><code>net/bridge/br_netlink.c</code></td><td>Netlink 接口</td></tr>
+  </table>
+
+  <h2>原文参考链接</h2>
+  <div style="display:flex; flex-wrap:wrap; gap:8px; margin:16px 0;">
+    <a href="https://docs.kernel.org/networking/bridge.html" class="source-link" target="_blank">📄 Linux Kernel Bridge 官方文档</a>
+    <a href="https://kernelnewbies.org/Bridging_and_Forwarding" class="source-link" target="_blank">📄 Bridging and Forwarding · kernelnewbies</a>
+    <a href="https://goyalankit.com/blog/linux-bridge" class="source-link" target="_blank">📄 Linux Bridge How It Works · goyalankit</a>
+    <a href="https://github.com/torvalds/linux/tree/master/net/bridge" class="source-link" target="_blank">📄 内核源码 net/bridge/ · GitHub</a>
+    <a href="https://codebrowser.dev/linux/linux/net/bridge/br_input.c.html" class="source-link" target="_blank">📄 br_input.c · codebrowser</a>
+    <a href="https://thermalcircle.de/doku.php?id=blog:linux:nftables_packet_flow_netfilter_hooks_detail" class="source-link" target="_blank">📄 Netfilter Hooks Detail · thermalcircle</a>
+  </div>
+
+  <div class="info-box principle">
+    <div class="box-title">🔬 终极第一性原理</div>
+    <strong>Linux Bridge 的设计哲学</strong>：整个网桥子系统建立在三个核心原则之上：
+    <ol style="margin-top:10px; line-height:2;">
+      <li><strong>一切皆 net_device</strong>：网桥是设备，端口是设备，让所有功能自然复用内核基础设施。</li>
+      <li><strong>钩子（Hook）而非修改</strong>：通过 rx_handler、Netfilter hook、通知链插入逻辑，主路径代码保持纯净。</li>
+      <li><strong>RCU 保护高并发</strong>：FDB 查找（读）是热路径，RCU 使其无锁；写操作（学习/老化）可以慢一些。</li>
+    </ol>
+    这三条原则使 Linux Bridge 在不修改任何现有网卡驱动的情况下，
+    将任意以太网设备组合成功能完整的软件交换机，并与 iptables/nftables 无缝集成。
+  </div>
+
+  <div class="chapter-nav">
+    <button class="chapter-nav-btn" onclick="goTo('s13')">
+      <div class="nav-label">← 上一章</div>
+      <div class="nav-title">STP 生成树协议</div>
+    </button>
+    <button class="chapter-nav-btn next" onclick="goTo('s0')">
+      <div class="nav-label">↑ 回到顶部</div>
+      <div class="nav-title">什么是网桥</div>
+    </button>
+  </div>
+</section>
+
+</main>
+
+<!-- Keyboard hint -->
+<div id="kbd-hint">
+  <kbd>←</kbd> <kbd>→</kbd> 翻章
+</div>
+
+<script>
+  const sections = ['s0','s1','s2','s3','s4','s5','s6','s7','s8','s9','s10','s11','s12','s13','s14'];
+  let current = 0;
+
+  function goTo(id) {
+    const idx = sections.indexOf(id);
+    if (idx < 0) return;
+    
+    // Hide all
+    document.querySelectorAll('.section').forEach(s => s.classList.remove('active'));
+    document.querySelectorAll('.nav-item').forEach(n => n.classList.remove('active'));
+    
+    // Show target
+    document.getElementById(id).classList.add('active');
+    document.querySelector(`[data-section="${id}"]`).classList.add('active');
+    
+    current = idx;
+    
+    // Scroll to top of main content
+    window.scrollTo(0, 0);
+    
+    // Update progress
+    updateProgress();
+    
+    // Close mobile menu
+    closeMobile();
+  }
+
+  function updateProgress() {
+    const pct = sections.length > 1 ? (current / (sections.length - 1)) * 100 : 0;
+    document.getElementById('progress-bar').style.width = pct + '%';
+  }
+
+  // Nav click
+  document.querySelectorAll('.nav-item').forEach(item => {
+    item.addEventListener('click', () => {
+      goTo(item.dataset.section);
+    });
+  });
+
+  // Keyboard navigation
+  document.addEventListener('keydown', e => {
+    if (e.key === 'ArrowRight' || e.key === 'ArrowDown') {
+      if (current < sections.length - 1) goTo(sections[current + 1]);
+    } else if (e.key === 'ArrowLeft' || e.key === 'ArrowUp') {
+      if (current > 0) goTo(sections[current - 1]);
+    }
+  });
+
+  // Mobile burger
+  const burger = document.getElementById('burger');
+  const sidebar = document.getElementById('sidebar');
+  const overlay = document.getElementById('overlay');
+
+  burger.addEventListener('click', () => {
+    sidebar.classList.toggle('open');
+    overlay.classList.toggle('open');
+  });
+
+  function closeMobile() {
+    sidebar.classList.remove('open');
+    overlay.classList.remove('open');
+  }
+
+  overlay.addEventListener('click', closeMobile);
+
+  // Scroll progress (within active section)
+  window.addEventListener('scroll', () => {
+    const scrolled = window.scrollY;
+    const total = document.body.scrollHeight - window.innerHeight;
+    if (total > 0) {
+      const sectionProgress = (current / (sections.length - 1)) * 100;
+      const scrollContrib = total > 0 ? (scrolled / total) * (100 / sections.length) : 0;
+      const pct = Math.min(sectionProgress + scrollContrib, 100);
+      document.getElementById('progress-bar').style.width = pct + '%';
+    }
+  });
+
+  // Init
+  updateProgress();
+</script>
+</body>
+</html>

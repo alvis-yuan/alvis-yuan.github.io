@@ -1,0 +1,625 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>打印机指令解析设计分析：ESC/POS 状态机与表驱动演进</title>
+  <style>
+    :root {
+      --bg:#0f1117;
+      --bg2:#161b22;
+      --bg3:#1e2530;
+      --border:#30363d;
+      --accent:#0a84ff;
+      --green:#30d158;
+      --red:#ff453a;
+      --violet:#bf5af2;
+      --warn:#ffa657;
+      --text:#e6edf3;
+      --muted:#8b949e;
+      --cyan:#64d2ff;
+      --code:#d2a8ff;
+    }
+    * { box-sizing:border-box; }
+    html { scroll-behavior:smooth; }
+    body {
+      margin:0;
+      background:var(--bg);
+      color:var(--text);
+      font-family:"Segoe UI", "Noto Sans SC", sans-serif;
+      line-height:1.72;
+    }
+    a { color:var(--cyan); text-decoration:none; }
+    a:hover { text-decoration:underline; }
+    code {
+      padding:1px 5px;
+      border:1px solid var(--border);
+      border-radius:4px;
+      background:rgba(110,118,129,.16);
+      color:var(--code);
+      font-family:"SFMono-Regular", Consolas, monospace;
+      font-size:.92em;
+    }
+    pre {
+      max-width:100%;
+      overflow:auto;
+      margin:14px 0;
+      padding:14px 16px;
+      border:1px solid var(--border);
+      border-radius:8px;
+      background:#0b0f14;
+      color:#c9d1d9;
+      font-family:"SFMono-Regular", Consolas, monospace;
+      font-size:12px;
+      line-height:1.55;
+    }
+    .topbar {
+      position:fixed;
+      top:0;
+      left:0;
+      right:0;
+      z-index:20;
+      display:flex;
+      align-items:center;
+      gap:14px;
+      min-height:54px;
+      padding:0 22px;
+      background:rgba(15,17,23,.94);
+      border-bottom:1px solid var(--border);
+      backdrop-filter:blur(10px);
+    }
+    .brand { font-weight:800; letter-spacing:.2px; }
+    .toplinks { margin-left:auto; display:flex; gap:12px; font-size:13px; }
+    #menuButton {
+      display:none;
+      border:1px solid var(--border);
+      border-radius:6px;
+      background:var(--bg2);
+      color:var(--text);
+      padding:6px 9px;
+      cursor:pointer;
+    }
+    #progressBar {
+      position:fixed;
+      top:54px;
+      left:0;
+      z-index:30;
+      height:3px;
+      width:0;
+      background:linear-gradient(90deg,var(--accent),var(--green));
+    }
+    .layout { display:flex; padding-top:57px; }
+    nav {
+      position:fixed;
+      top:57px;
+      bottom:0;
+      width:286px;
+      overflow:auto;
+      padding:18px 16px 28px;
+      background:var(--bg2);
+      border-right:1px solid var(--border);
+    }
+    nav details { margin-bottom:10px; }
+    nav summary { cursor:pointer; color:var(--text); font-weight:700; margin-bottom:8px; }
+    nav a {
+      display:block;
+      padding:7px 10px;
+      margin:2px 0;
+      border-radius:6px;
+      color:var(--muted);
+      font-size:13px;
+    }
+    nav a.active, nav a:hover { background:var(--bg3); color:var(--text); text-decoration:none; }
+    main { width:100%; max-width:1180px; margin-left:286px; padding:34px 42px 72px; }
+    section { margin:0 0 46px; scroll-margin-top:76px; }
+    h1 { margin:0 0 12px; font-size:32px; line-height:1.25; }
+    h2 { margin:0 0 14px; font-size:24px; border-bottom:1px solid var(--border); padding-bottom:8px; }
+    h3 { margin:24px 0 10px; font-size:18px; }
+    .lead { color:var(--muted); font-size:16px; max-width:940px; }
+    .grid { display:grid; grid-template-columns:repeat(2,minmax(0,1fr)); gap:16px; }
+    .card { border:1px solid var(--border); border-radius:8px; background:var(--bg2); padding:16px; }
+    .card h3 { margin-top:0; }
+    .tag {
+      display:inline-block;
+      margin:2px 4px 2px 0;
+      padding:2px 8px;
+      border:1px solid var(--border);
+      border-radius:999px;
+      color:var(--muted);
+      background:rgba(110,118,129,.12);
+      font-size:12px;
+    }
+    table { width:100%; border-collapse:collapse; margin:14px 0; overflow:hidden; border-radius:8px; }
+    th, td { border:1px solid var(--border); padding:10px 12px; vertical-align:top; }
+    th { background:var(--bg3); text-align:left; }
+    td { background:rgba(22,27,34,.72); }
+    .note { border-left:4px solid var(--accent); background:rgba(10,132,255,.09); padding:12px 14px; border-radius:6px; }
+    .warn { border-left:4px solid var(--warn); background:rgba(255,166,87,.1); padding:12px 14px; border-radius:6px; }
+    .principle { border-left:4px solid var(--green); background:rgba(48,209,88,.09); padding:12px 14px; border-radius:6px; margin-top:18px; }
+    .svg-wrap { margin:18px 0; overflow:auto; border:1px solid var(--border); border-radius:8px; background:#0b0f14; }
+    svg { display:block; max-width:100%; min-width:760px; height:auto; }
+    .box { fill:#161b22; stroke:#30363d; stroke-width:1.5; rx:8; }
+    .box2 { fill:#1e2530; stroke:#30363d; stroke-width:1.5; rx:8; }
+    .api { fill:rgba(10,132,255,.18); stroke:var(--accent); stroke-width:1.5; rx:8; }
+    .server { fill:rgba(48,209,88,.15); stroke:var(--green); stroke-width:1.5; rx:8; }
+    .hot { fill:rgba(255,166,87,.16); stroke:var(--warn); stroke-width:1.5; rx:8; }
+    .bad { fill:rgba(255,69,58,.16); stroke:var(--red); stroke-width:1.5; rx:8; }
+    .violet { fill:rgba(191,90,242,.16); stroke:var(--violet); stroke-width:1.5; rx:8; }
+    .wire { stroke:var(--muted); stroke-width:2; fill:none; marker-end:url(#arrow); }
+    .wire-blue { stroke:var(--accent); stroke-width:2; fill:none; marker-end:url(#arrowBlue); }
+    .wire-green { stroke:var(--green); stroke-width:2; fill:none; marker-end:url(#arrowGreen); }
+    .wire-warn { stroke:var(--warn); stroke-width:2; fill:none; marker-end:url(#arrowWarn); }
+    .wire-red { stroke:var(--red); stroke-width:2; fill:none; marker-end:url(#arrowRed); }
+    .svg-title { fill:var(--text); font-size:16px; font-weight:800; }
+    .svg-text { fill:var(--text); font-size:13px; }
+    .svg-small { fill:var(--muted); font-size:11px; }
+    .chapter-nav { display:flex; justify-content:space-between; gap:12px; margin-top:36px; }
+    .chapter-nav a { border:1px solid var(--border); border-radius:6px; padding:10px 14px; background:var(--bg2); }
+    @media (max-width:900px) {
+      #menuButton { display:block; }
+      .toplinks { display:none; }
+      nav { transform:translateX(-100%); transition:transform .18s ease; z-index:18; }
+      body.nav-open nav { transform:translateX(0); }
+      main { margin-left:0; padding:26px 18px 58px; }
+      .grid { grid-template-columns:1fr; }
+      h1 { font-size:26px; }
+      svg { min-width:720px; }
+    }
+  </style>
+</head>
+<body>
+  <header class="topbar">
+    <button id="menuButton" aria-label="打开目录">目录</button>
+    <div class="brand">ESC/POS parser design</div>
+    <div class="toplinks">
+      <a href="https://download4.epson.biz/sec_pubs/pos/reference_en/escpos/index.html">ESC/POS 总览</a>
+      <a href="https://download4.epson.biz/sec_pubs/pos/reference_en/escpos/commands.html">命令表</a>
+      <a href="https://download4.epson.biz/sec_pubs/pos/reference_en/escpos/data_processing.html">数据处理</a>
+      <a href="https://download4.epson.biz/sec_pubs/pos/reference_en/escpos/realtime_commands.html">实时命令</a>
+    </div>
+  </header>
+  <div id="progressBar"></div>
+  <div class="layout">
+    <nav id="sidebar">
+      <details open>
+        <summary>问题与依据</summary>
+        <a href="#intro">分析范围</a>
+        <a href="#official">官方事实</a>
+        <a href="#irregular">不规则性</a>
+      </details>
+      <details open>
+        <summary>当前设计</summary>
+        <a href="#current">状态机结构</a>
+        <a href="#realtime">实时解析器</a>
+        <a href="#benefits">当前好处</a>
+        <a href="#risks">改进空间</a>
+      </details>
+      <details open>
+        <summary>演进方案</summary>
+        <a href="#patterns">设计模式选择</a>
+        <a href="#table-driven">表驱动方案</a>
+        <a href="#hybrid">混合状态机</a>
+        <a href="#migration">迁移路径</a>
+      </details>
+      <details open>
+        <summary>结论</summary>
+        <a href="#testing">测试策略</a>
+        <a href="#summary">整体建议</a>
+      </details>
+    </nav>
+
+    <main>
+      <section id="intro">
+        <h1>打印机指令解析设计：ESC/POS 状态机与表驱动演进</h1>
+        <p class="lead">本文分析 <code>server/print/src/Instruct_Proc.c</code>、<code>ESC_Instruct.c</code>、<code>FS_Instruct.c</code>、<code>GS_Instruct.c</code>、<code>DLE_Instruct.c</code>、<code>Realtime.c</code> 以及客户端实时命令预识别逻辑。目标不是逐条解释 ESC/POS，而是解释当前解析方式为什么能工作、它适合什么场景、风险在哪里，以及如何用更可读、更稳定、更易扩展的表驱动/状态机混合设计演进。</p>
+        <div class="note">一句话概括：当前实现本质是“函数指针驱动的流式状态机”。它非常适合字节流协议和跨 buffer 解析，但命令规格隐含在函数名、switch 和全局寄存器里，后续扩展会越来越依赖人的记忆。更好的方向不是完全重写成大表，而是把“命令识别和参数收集”表驱动化，把“复杂语义执行”继续交给小状态机或处理函数。</div>
+
+        <div class="svg-wrap">
+          <svg viewBox="0 0 1080 420" role="img" aria-label="指令解析全貌">
+            <defs>
+              <marker id="arrow" markerWidth="10" markerHeight="10" refX="8" refY="3" orient="auto"><path d="M0,0 L0,6 L9,3 z" fill="#8b949e"/></marker>
+              <marker id="arrowBlue" markerWidth="10" markerHeight="10" refX="8" refY="3" orient="auto"><path d="M0,0 L0,6 L9,3 z" fill="#0a84ff"/></marker>
+              <marker id="arrowGreen" markerWidth="10" markerHeight="10" refX="8" refY="3" orient="auto"><path d="M0,0 L0,6 L9,3 z" fill="#30d158"/></marker>
+              <marker id="arrowWarn" markerWidth="10" markerHeight="10" refX="8" refY="3" orient="auto"><path d="M0,0 L0,6 L9,3 z" fill="#ffa657"/></marker>
+              <marker id="arrowRed" markerWidth="10" markerHeight="10" refX="8" refY="3" orient="auto"><path d="M0,0 L0,6 L9,3 z" fill="#ff453a"/></marker>
+            </defs>
+            <text x="28" y="34" class="svg-title">从共享内存 buffer 到指令处理器</text>
+            <rect x="58" y="92" width="190" height="82" class="hot"/><text x="98" y="126" class="svg-text">print buffer</text><text x="92" y="150" class="svg-small">250 字节块链表</text>
+            <rect x="324" y="92" width="210" height="82" class="api"/><text x="366" y="126" class="svg-text">printer_send_data</text><text x="364" y="150" class="svg-small">逐字节喂给解析器</text>
+            <rect x="610" y="70" width="210" height="102" class="server"/><text x="654" y="110" class="svg-text">Cmd_Proc</text><text x="646" y="136" class="svg-small">pNextFun 当前状态</text>
+            <rect x="610" y="230" width="210" height="82" class="violet"/><text x="650" y="264" class="svg-text">Realtime_Proc</text><text x="642" y="288" class="svg-small">小型实时状态机</text>
+            <rect x="884" y="120" width="160" height="114" class="hot"/><text x="928" y="162" class="svg-text">语义执行</text><text x="914" y="188" class="svg-small">LineBuffer</text><text x="914" y="212" class="svg-small">PageBuffer / ioctl</text>
+            <path d="M248 133 H324" class="wire-blue"/>
+            <path d="M534 133 H610" class="wire-blue"/>
+            <path d="M820 122 H884" class="wire-green"/>
+            <path d="M820 270 C874 252 900 232 916 214" class="wire-warn"/>
+            <path d="M429 174 C470 250 538 270 610 270" class="wire-warn"/><text x="454" y="244" class="svg-small">客户端预识别实时命令</text>
+          </svg>
+        </div>
+        <div class="principle"><strong>第一性原理：</strong>打印指令解析的核心不是“识别某个命令字”，而是在一个连续字节流中维持上下文：当前是在文本、参数、图片数据、条码数据、页模式，还是实时命令。设计必须首先服务于“状态连续”。</div>
+      </section>
+
+      <section id="official">
+        <h2>官方事实</h2>
+        <p>本文先获取 Epson 官方 ESC/POS 参考资料，再回到本仓库代码分析。官方资料说明 ESC/POS 是面向 POS 打印机的命令体系，命令表按代码顺序列出大量 <code>HT</code>、<code>LF</code>、<code>DLE EOT</code>、<code>ESC *</code>、<code>ESC p</code>、<code>FS (...)</code>、<code>GS (...)</code>、<code>GS v 0</code> 等命令；官方数据处理说明还明确区分预处理、主处理和实时命令处理。</p>
+        <table>
+          <tr><th>官方来源</th><th>对解析器设计的约束</th><th>链接</th></tr>
+          <tr><td>ESC/POS Command Reference Introduction</td><td>ESC/POS 是一组用于控制 POS 打印机的命令，包含标准语法、协议和型号差异。解析器不能假设命令集合小而固定。</td><td><a href="https://download4.epson.biz/sec_pubs/pos/reference_en/escpos/index.html">ESC/POS 总览</a></td></tr>
+          <tr><td>Commands in Code Order</td><td>命令以单字节控制码、<code>ESC</code> 前缀、<code>FS</code> 前缀、<code>GS</code> 前缀、多功能子命令等形式混合存在。</td><td><a href="https://download4.epson.biz/sec_pubs/pos/reference_en/escpos/commands.html">命令表</a></td></tr>
+          <tr><td>Command Notation</td><td><code>n</code> 表示 1 字节参数；<code>nL/nH</code> 表示 2 字节数值；<code>pL/pH</code> 表示 <code>pH</code> 之后的参数个数。这直接对应当前代码中的长度状态与多字节参数收集。</td><td><a href="https://download4.epson.biz/sec_pubs/pos/reference_en/escpos/notation.html">命令表示法</a></td></tr>
+          <tr><td>Overview of Data Processing</td><td>官方流程把接收数据先分类为实时命令或其他数据；实时命令在预处理中处理，其他数据进入接收缓冲并由主处理顺序解释。</td><td><a href="https://download4.epson.biz/sec_pubs/pos/reference_en/escpos/data_processing.html">数据处理概览</a></td></tr>
+          <tr><td>Command Classification</td><td>命令既按功能分类，也按基础/扩展、单页/多页等矩阵分类；私有扩展和型号差异是解析器必须面对的常态。</td><td><a href="https://download4.epson.biz/sec_pubs/pos/reference_en/escpos/command_classification.html">命令分类</a></td></tr>
+          <tr><td>Notes of Real-time Commands</td><td>实时命令可能在普通命令参数数据中被识别；但实时命令不应打断另一个命令的代码串，否则会造成非预期打印结果。</td><td><a href="https://download4.epson.biz/sec_pubs/pos/reference_en/escpos/realtime_commands.html">实时命令说明</a></td></tr>
+        </table>
+        <div class="note">官方数据处理模型和本仓库设计方向基本一致：先在 API 层预识别部分实时/管理命令，再由 PrintServer 主流程顺序解释普通打印数据。差异在于本仓库为了共享内存任务队列和多通道回复，实时路径通过消息队列进入 <code>Realtime_Proc()</code>。</div>
+        <div class="principle"><strong>第一性原理：</strong>外部协议越不规则，解析器越不能只靠“一个大 switch + 固定长度”。必须把“前缀树、长度计算、参数接收、payload 透传、上下文限制”都作为一等设计对象。</div>
+      </section>
+
+      <section id="irregular">
+        <h2>ESC/POS 的不规则性</h2>
+        <p>ESC/POS 难解析，不是因为单条命令复杂，而是因为命令集合没有统一封包格式。它既有单字节命令，也有前缀命令；既有固定参数，也有由 <code>pL/pH</code> 或 <code>nL/nH</code> 决定的数据段；同一个前缀下还会继续分组到 <code>fn</code> 子功能。</p>
+        <table>
+          <tr><th>不规则点</th><th>例子</th><th>解析含义</th></tr>
+          <tr><td>单字节控制命令</td><td><code>LF</code>、<code>CR</code>、<code>FF</code>、<code>CAN</code></td><td>读到当前字节即可执行或改变打印状态。</td></tr>
+          <tr><td>一层前缀</td><td><code>ESC p m t1 t2</code>、<code>GS V m</code></td><td>读到前缀后下一字节决定命令，再继续收参数。</td></tr>
+          <tr><td>多层前缀</td><td><code>GS ( E pL pH fn</code>、<code>GS ( T pL pH fn</code></td><td><code>GS</code> 后还要识别 <code>(</code>、组号、长度、功能号。</td></tr>
+          <tr><td>可变长度数据</td><td>位图、二维码、NV 图像、用户字库</td><td>解析器要进入“收数据”状态，期间不能把 payload 里的控制字节误当命令。</td></tr>
+          <tr><td>模式相关语义</td><td>标准模式、页模式、标签模式、TSPL 兼容入口</td><td>同样字节在不同设置下可能走不同分支。</td></tr>
+          <tr><td>实时命令</td><td><code>DLE EOT n</code>、任务管理类私有命令</td><td>需要及时回复，但又不能破坏普通流解析状态。</td></tr>
+        </table>
+        <div class="svg-wrap">
+          <svg viewBox="0 0 1080 500" role="img" aria-label="ESC/POS 命令形态">
+            <text x="28" y="34" class="svg-title">ESC/POS 不是统一包格式，而是一棵前缀和长度规则混合的树</text>
+            <rect x="70" y="84" width="150" height="68" class="api"/><text x="108" y="124" class="svg-text">字节流</text>
+            <rect x="330" y="54" width="170" height="68" class="server"/><text x="374" y="94" class="svg-text">普通字符</text>
+            <rect x="330" y="154" width="170" height="68" class="hot"/><text x="378" y="194" class="svg-text">DLE</text>
+            <rect x="330" y="254" width="170" height="68" class="hot"/><text x="378" y="294" class="svg-text">ESC</text>
+            <rect x="330" y="354" width="170" height="68" class="hot"/><text x="382" y="394" class="svg-text">GS</text>
+            <path d="M220 118 C270 88 294 88 330 88" class="wire-blue"/>
+            <path d="M220 118 C270 166 294 188 330 188" class="wire-blue"/>
+            <path d="M220 118 C270 240 294 288 330 288" class="wire-blue"/>
+            <path d="M220 118 C270 314 294 388 330 388" class="wire-blue"/>
+
+            <rect x="612" y="154" width="180" height="68" class="violet"/><text x="650" y="194" class="svg-text">EOT -> n</text>
+            <rect x="612" y="254" width="180" height="68" class="violet"/><text x="650" y="294" class="svg-text">p -> m,t1,t2</text>
+            <rect x="612" y="354" width="180" height="68" class="violet"/><text x="642" y="394" class="svg-text">( -> group</text>
+            <path d="M500 188 H612" class="wire-warn"/>
+            <path d="M500 288 H612" class="wire-warn"/>
+            <path d="M500 388 H612" class="wire-warn"/>
+
+            <rect x="880" y="254" width="150" height="168" class="box2"/>
+            <text x="914" y="292" class="svg-text">长度规则</text>
+            <text x="908" y="322" class="svg-small">固定参数</text>
+            <text x="908" y="350" class="svg-small">pL/pH</text>
+            <text x="908" y="378" class="svg-small">fn 子功能</text>
+            <path d="M792 388 H880" class="wire-green"/>
+          </svg>
+        </div>
+        <div class="principle"><strong>第一性原理：</strong>没有统一帧头的协议，本质上只能逐字节解释。解析器的正确性来自“每个状态知道下一字节的角色”，而不是来自一次性读取完整命令。</div>
+      </section>
+
+      <section id="current">
+        <h2>当前状态机结构</h2>
+        <p>普通打印流的入口是 <code>Cmd_Proc()</code>。全局函数指针 <code>pNextFun</code> 表示“下一字节应该交给哪个状态函数”。根状态 <code>Cmd_Start()</code> 识别控制字节、前缀和普通字符；前缀模块再继续把 <code>pNextFun</code> 改成下一阶段处理函数。</p>
+        <pre><code>void Cmd_Start(void)
+{
+    switch (Cmd_Data) {
+    case 0x10: pNextFun = DLE_Proc; break;
+    case 0x1B: pNextFun = ESC_Proc; break;
+    case 0x1C: pNextFun = FS_Proc;  break;
+    case 0x1D: pNextFun = GS_Proc;  break;
+    default:   Char_Proc();         break;
+    }
+}
+
+void Cmd_Proc(uint32_t data)
+{
+    Cmd_Data = data;
+    (*pNextFun)();
+}</code></pre>
+        <p>这个设计对应设计模式中的 <strong>State</strong>：每个函数就是一个状态；函数处理当前字节后，要么执行语义并 <code>ResetNextFun()</code>，要么把 <code>pNextFun</code> 指向下一状态。它也带一点 <strong>Chain of Responsibility</strong> 的味道：根状态根据前缀把处理权交给 DLE/ESC/FS/GS 子模块。</p>
+        <div class="svg-wrap">
+          <svg viewBox="0 0 1120 520" role="img" aria-label="当前函数指针状态机">
+            <text x="28" y="34" class="svg-title">当前实现：函数指针就是状态寄存器</text>
+            <rect x="80" y="96" width="170" height="68" class="api"/><text x="122" y="136" class="svg-text">Cmd_Proc</text>
+            <rect x="344" y="96" width="180" height="68" class="server"/><text x="386" y="136" class="svg-text">pNextFun()</text>
+            <rect x="626" y="66" width="170" height="68" class="hot"/><text x="670" y="106" class="svg-text">ESC_Proc</text>
+            <rect x="626" y="166" width="170" height="68" class="hot"/><text x="674" y="206" class="svg-text">GS_Proc</text>
+            <rect x="626" y="266" width="170" height="68" class="hot"/><text x="674" y="306" class="svg-text">FS_Proc</text>
+            <rect x="626" y="366" width="170" height="68" class="hot"/><text x="672" y="406" class="svg-text">Char_Proc</text>
+            <rect x="904" y="166" width="160" height="88" class="violet"/><text x="944" y="202" class="svg-text">下一状态</text><text x="928" y="228" class="svg-small">收参数 / 收数据</text>
+            <path d="M250 130 H344" class="wire-blue"/>
+            <path d="M524 130 C570 92 590 100 626 100" class="wire-green"/>
+            <path d="M524 130 C570 168 590 200 626 200" class="wire-green"/>
+            <path d="M524 130 C570 244 590 300 626 300" class="wire-green"/>
+            <path d="M524 130 C570 324 590 400 626 400" class="wire-green"/>
+            <path d="M796 200 H904" class="wire-warn"/>
+            <path d="M984 254 C946 330 420 330 434 164" class="wire"/><text x="574" y="360" class="svg-small">ResetNextFun() 回到 Cmd_Start</text>
+          </svg>
+        </div>
+        <div class="principle"><strong>第一性原理：</strong>流式解析器最重要的状态只有一个：下一字节应如何解释。用函数指针保存这个状态，是 C 语言里非常直接的 State 模式实现。</div>
+      </section>
+
+      <section id="realtime">
+        <h2>实时解析器</h2>
+        <p>实时命令没有完全走普通打印流。客户端库的 <code>handle_realtime_command()</code> 会在任务写入前识别部分实时/管理命令，把命令包装成 <code>PRINT_CMD_HANDLE_REALTIME_COMMAND</code> 发到 PrintServer。服务端 <code>Realtime_Proc()</code> 再用一个更小的状态机处理 <code>DLE</code>、<code>ESC</code>、<code>GS</code> 相关命令并通过 <code>ReplyToHost()</code> 回应。</p>
+        <pre><code>void Realtime_Proc(int chn_id, const uint8_t *data, uint32_t len)
+{
+    pNextFun = Cmd_Start;
+    Cmd_ChnId = chn_id;
+    for (i = 0; i < len; i++) {
+        Cmd_Data = data[i];
+        (*pNextFun)();
+    }
+}</code></pre>
+        <div class="svg-wrap">
+          <svg viewBox="0 0 1080 470" role="img" aria-label="实时命令处理链路">
+            <text x="28" y="34" class="svg-title">实时命令：客户端预识别，服务端小状态机执行</text>
+            <rect x="66" y="92" width="220" height="80" class="api"/><text x="106" y="126" class="svg-text">handle_realtime_command</text><text x="112" y="150" class="svg-small">识别 DLE/ESC/GS 子集</text>
+            <rect x="382" y="92" width="190" height="80" class="hot"/><text x="422" y="126" class="svg-text">print_msg_t</text><text x="412" y="150" class="svg-small">消息队列传递</text>
+            <rect x="668" y="92" width="190" height="80" class="server"/><text x="710" y="126" class="svg-text">Realtime_Proc</text><text x="704" y="150" class="svg-small">小状态机解析</text>
+            <rect x="430" y="286" width="210" height="80" class="violet"/><text x="474" y="320" class="svg-text">ReplyToHost</text><text x="466" y="344" class="svg-small">USB/BLE/SPP/TCP 回复</text>
+            <path d="M286 132 H382" class="wire-blue"/>
+            <path d="M572 132 H668" class="wire-blue"/>
+            <path d="M763 172 C740 250 642 292 640 326" class="wire-green"/>
+            <path d="M430 326 C306 310 230 236 176 172" class="wire-warn"/>
+          </svg>
+        </div>
+        <p>这个拆分的动机可以理解：实时命令需要尽快回包或执行控制，不应该被普通任务队列、渲染和缺纸重打逻辑拖住。但它也造成两套解析状态、两套前缀 switch、两套 <code>Cmd_Data/Cmd_List</code> 变量体系。</p>
+        <div class="principle"><strong>第一性原理：</strong>实时命令的本质是控制面事件，普通 ESC/POS 字节流是数据面状态。分离控制面和数据面是合理的；但分离不等于复制协议定义，最好共享同一份命令规格。</div>
+      </section>
+
+      <section id="benefits">
+        <h2>当前好处</h2>
+        <div class="grid">
+          <div class="card"><h3>适合跨 buffer 流式解析</h3><p><code>pNextFun</code> 和 <code>Cmd_List*</code> 保存在全局解析状态中，一个命令的参数可以跨越多个共享内存 buffer 继续接收。</p></div>
+          <div class="card"><h3>变量长度命令实现自然</h3><p>位图、二维码、用户字库这类命令可以把下一状态设置为“收数据”，每来一个字节推进计数，直到长度满足。</p></div>
+          <div class="card"><h3>运行时成本低</h3><p>逐字节 switch 和函数指针调用，没有动态分配，没有复杂语法树，适合嵌入式打印服务。</p></div>
+          <div class="card"><h3>局部修改容易</h3><p>新增某个 <code>ESC</code> 或 <code>GS</code> 命令时，只要在对应模块加入状态函数和分派分支，不需要理解所有命令。</p></div>
+        </div>
+        <div class="principle"><strong>第一性原理：</strong>好设计不一定是最抽象的设计，而是在当前约束下让关键路径最短。这里的关键路径是“每个打印字节都要过解析器”，所以低开销和可跨块保存状态非常重要。</div>
+      </section>
+
+      <section id="risks">
+        <h2>改进空间</h2>
+        <table>
+          <tr><th>问题</th><th>现象</th><th>风险</th></tr>
+          <tr><td>解析状态是全局变量</td><td><code>Cmd_Data</code>、<code>Cmd_Len</code>、<code>Cmd_List0..5</code>、<code>pNextFun</code> 全局共享。</td><td>不易测试，不可重入；如果未来多解析上下文并行，必须大改。</td></tr>
+          <tr><td>命令规格隐含在代码</td><td>命令码、参数长度、模式限制、回复格式散落在 switch 和处理函数中。</td><td>新增命令时容易遗漏长度检查、skip 行为或文档同步。</td></tr>
+          <tr><td>普通解析器与实时解析器重复</td><td><code>DLE EOT</code>、<code>ESC p</code>、<code>GS I</code>、<code>GS ( T/E</code> 在两个体系中各有分派。</td><td>行为可能漂移，bug 修一边漏一边。</td></tr>
+          <tr><td>参数寄存器语义不强</td><td><code>Cmd_List0</code> 在不同命令中分别表示长度、索引、坐标、计数、任务 id。</td><td>可读性下降，review 很难快速判断边界是否正确。</td></tr>
+          <tr><td>未知命令恢复能力有限</td><td>不知道未知命令参数长度时只能 reset 或按本地猜测 skip。</td><td>遇到型号差异或扩展命令时可能把后续字节误解释。</td></tr>
+          <tr><td>测试入口不够显式</td><td>解析与渲染、设备 ioctl、全局设置混在一起。</td><td>很难构造纯解析单元测试和覆盖率统计。</td></tr>
+        </table>
+        <div class="warn">最值得谨慎的是实时命令：Epson 官方说明实时命令可能在普通命令参数数据中被处理，但也提示它不应打断另一个命令代码串。当前客户端只在数据头部预识别一批实时命令，这个策略简单，但它把“实时命令识别”放在 API 写入边界，而不是完整解析上下文里，后续扩展要非常克制。</div>
+        <div class="principle"><strong>第一性原理：</strong>解析器的长期风险通常不在“今天能不能解析”，而在“命令规格有没有唯一来源”。规格散落越多，行为一致性越依赖经验。</div>
+      </section>
+
+      <section id="patterns">
+        <h2>设计模式选择</h2>
+        <p>结合 C 语言架构原则，这里不建议为了“模式”引入复杂 OO 框架。更合理的是保留当前 State 模式的流式优势，并在分派层引入数据驱动。可以把模式对应到 C 的轻量实现：</p>
+        <table>
+          <tr><th>模式</th><th>在本模块中的含义</th><th>建议</th></tr>
+          <tr><td>State</td><td>当前 <code>pNextFun</code> 就是状态，下一字节由当前状态解释。</td><td>保留。它是处理不规则字节流的核心。</td></tr>
+          <tr><td>Table Driven</td><td>用表描述命令码、参数长度、处理函数、适用模式、是否可实时。</td><td>优先引入在前缀分派层和固定长度命令上。</td></tr>
+          <tr><td>Command</td><td>把“解析完成后执行的动作”封装成 handler。</td><td>适合状态查询、设置参数、简单控制命令。</td></tr>
+          <tr><td>Strategy</td><td>按普通 ESC/POS、实时命令、TSPL 兼容子集选择不同解析策略。</td><td>适合统一入口后按上下文切换解析策略。</td></tr>
+          <tr><td>Facade</td><td>给外部提供 <code>parser_feed()</code>、<code>parser_reset()</code>、<code>parser_set_channel()</code>，隐藏内部状态。</td><td>适合把全局变量收进 <code>parser_ctx</code> 后做测试。</td></tr>
+        </table>
+        <div class="principle"><strong>第一性原理：</strong>模式是为了降低变化成本。这里最常见的变化是“加命令、改长度、改适用模式、改回复格式”，所以最该抽象的是命令规格和解析上下文，而不是每条命令都对象化。</div>
+      </section>
+
+      <section id="table-driven">
+        <h2>表驱动方案</h2>
+        <p>表驱动不是把所有命令都塞进一个巨表。更稳妥的做法是把“可声明的部分”放进表：命令码、名称、固定参数数、长度字段位置、handler、适用模式、实时标志。复杂 payload 的命令仍然可以指定一个状态函数接管。</p>
+        <pre><code>typedef enum {
+    ARG_NONE,
+    ARG_FIXED,
+    ARG_PL_PH,
+    ARG_NL_NH,
+    ARG_CUSTOM_STATE
+} arg_kind_t;
+
+typedef int (*cmd_handler_t)(parser_ctx_t *ctx, const uint8_t *arg, uint32_t len);
+
+typedef struct {
+    uint8_t prefix;
+    uint8_t opcode;
+    const char *name;
+    arg_kind_t arg_kind;
+    uint16_t fixed_len;
+    uint32_t flags;
+    cmd_handler_t handler;
+    parser_state_fn custom_state;
+} escpos_cmd_desc_t;</code></pre>
+        <div class="svg-wrap">
+          <svg viewBox="0 0 1120 540" role="img" aria-label="表驱动解析流程">
+            <text x="28" y="34" class="svg-title">表驱动适合做“规格识别”，不必吞掉所有语义</text>
+            <rect x="72" y="96" width="170" height="72" class="api"/><text x="112" y="138" class="svg-text">读 opcode</text>
+            <rect x="320" y="96" width="210" height="72" class="hot"/><text x="362" y="138" class="svg-text">查命令描述表</text>
+            <rect x="608" y="66" width="190" height="72" class="server"/><text x="654" y="108" class="svg-text">固定参数</text>
+            <rect x="608" y="178" width="190" height="72" class="server"/><text x="650" y="220" class="svg-text">pL/pH 长度</text>
+            <rect x="608" y="290" width="190" height="72" class="violet"/><text x="646" y="332" class="svg-text">复杂状态函数</text>
+            <rect x="896" y="178" width="160" height="72" class="hot"/><text x="936" y="220" class="svg-text">handler</text>
+            <path d="M242 132 H320" class="wire-blue"/>
+            <path d="M530 132 C570 96 586 102 608 102" class="wire-green"/>
+            <path d="M530 132 C570 178 586 214 608 214" class="wire-green"/>
+            <path d="M530 132 C570 258 586 326 608 326" class="wire-green"/>
+            <path d="M798 102 C850 126 880 160 896 190" class="wire-warn"/>
+            <path d="M798 214 H896" class="wire-warn"/>
+            <path d="M798 326 C850 300 880 250 896 226" class="wire-warn"/>
+          </svg>
+        </div>
+        <p>表驱动最适合先覆盖这些命令：</p>
+        <ul>
+          <li>固定 0 或 1 个参数的设置命令，例如选择字体、设置强调、设置下划线、设置条码宽高。</li>
+          <li>固定 2 个参数的定位命令，例如 <code>ESC $ nL nH</code>、<code>GS L nL nH</code>。</li>
+          <li><code>GS ( T</code>、<code>GS ( E</code> 这类 <code>pL/pH/fn</code> 结构清晰的管理命令。</li>
+        </ul>
+        <p>表驱动不适合一次性接管这些命令：</p>
+        <ul>
+          <li>用户字库、位图、二维码、NV 图像等 payload 大且语义复杂的命令。</li>
+          <li>会在参数过程中根据前几个字节动态改变长度或目标缓冲的命令。</li>
+          <li>强依赖当前打印模式、缓冲区状态、设备状态的命令。</li>
+        </ul>
+        <div class="principle"><strong>第一性原理：</strong>表驱动的价值是把重复的“识别和收参”从业务代码里拿出来。不要强迫表描述不可声明的语义，否则表会变成另一种难读的程序。</div>
+      </section>
+
+      <section id="hybrid">
+        <h2>混合状态机</h2>
+        <p>推荐的目标形态是“表驱动前缀分派 + parser_ctx 上下文 + 小状态机处理复杂命令”。这样既保留当前实现的稳定流式能力，又让命令规格有唯一来源。</p>
+        <pre><code>struct parser_ctx {
+    parser_state_fn state;
+    uint32_t data;
+    uint32_t len;
+    uint32_t index;
+    uint8_t arg[16];
+    int chn_id;
+    uint32_t mode_flags;
+};
+
+int parser_feed(parser_ctx_t *ctx, const uint8_t *data, uint32_t len)
+{
+    for (uint32_t i = 0; i < len; i++) {
+        ctx->data = data[i];
+        ctx->state(ctx);
+    }
+    return 0;
+}</code></pre>
+        <div class="svg-wrap">
+          <svg viewBox="0 0 1120 560" role="img" aria-label="混合状态机目标设计">
+            <text x="28" y="34" class="svg-title">目标形态：上下文隔离 + 规格表 + 状态函数</text>
+            <rect x="70" y="86" width="210" height="100" class="api"/><text x="116" y="124" class="svg-text">parser_ctx</text><text x="104" y="150" class="svg-small">state / len / index</text><text x="104" y="174" class="svg-small">channel / mode</text>
+            <rect x="398" y="86" width="210" height="100" class="hot"/><text x="442" y="124" class="svg-text">command table</text><text x="430" y="150" class="svg-small">opcode / length / flags</text><text x="430" y="174" class="svg-small">handler / custom state</text>
+            <rect x="726" y="64" width="210" height="80" class="server"/><text x="768" y="110" class="svg-text">simple handler</text>
+            <rect x="726" y="204" width="210" height="80" class="violet"/><text x="768" y="250" class="svg-text">custom state</text>
+            <rect x="398" y="346" width="210" height="80" class="bad"/><text x="442" y="392" class="svg-text">parse error</text>
+            <path d="M280 136 H398" class="wire-blue"/>
+            <path d="M608 136 C660 104 690 104 726 104" class="wire-green"/>
+            <path d="M608 136 C660 204 690 244 726 244" class="wire-green"/>
+            <path d="M503 186 V346" class="wire-red"/>
+            <path d="M831 284 C786 374 234 354 176 186" class="wire"/><text x="388" y="458" class="svg-small">复杂命令结束后回到 root state；错误路径统一 reset 或 skip</text>
+          </svg>
+        </div>
+        <table>
+          <tr><th>维度</th><th>当前实现</th><th>混合方案</th></tr>
+          <tr><td>状态保存</td><td>全局变量</td><td><code>parser_ctx_t</code>，可多实例、可测试。</td></tr>
+          <tr><td>命令规格</td><td>分散在 switch 与函数名</td><td>命令表集中描述可声明部分。</td></tr>
+          <tr><td>复杂命令</td><td>手写状态函数</td><td>继续手写状态函数，但由表声明入口和长度规则。</td></tr>
+          <tr><td>实时命令</td><td>独立小状态机</td><td>可共享部分表项，只用不同 flags/handler 区分实时和普通上下文。</td></tr>
+          <tr><td>错误恢复</td><td>各函数自行 reset/skip</td><td>统一错误码、统一 reset/skip 策略。</td></tr>
+        </table>
+        <div class="principle"><strong>第一性原理：</strong>上下文隔离解决“谁在解析”，规格表解决“解析什么”，状态函数解决“复杂语义怎么执行”。三者分开，系统才既可读又不失灵活性。</div>
+      </section>
+
+      <section id="migration">
+        <h2>迁移路径</h2>
+        <p>不建议一次性重写解析器。当前实现已经承载了大量硬件和业务细节，直接替换风险很高。更稳的路径是渐进式收敛：</p>
+        <ol>
+          <li>先建立 <code>parser_ctx_t</code>，把 <code>Cmd_Data/Cmd_Len/Cmd_List*</code> 从全局变量迁入上下文，但保留旧函数名和行为。</li>
+          <li>新增一层 Facade：<code>parser_init()</code>、<code>parser_feed()</code>、<code>parser_reset()</code>、<code>parser_set_channel()</code>，普通解析和实时解析都通过它进入。</li>
+          <li>抽取命令规格表，先覆盖 0/1/2 参数的简单命令，不碰位图、二维码、NV 图像。</li>
+          <li>把 <code>GS ( T</code> 和 <code>GS ( E</code> 这类管理命令表驱动化，因为它们已经有清晰 <code>pL/pH/fn</code> 结构，而且在普通/实时路径中重复最多。</li>
+          <li>为表项增加 flags：适用模式、是否实时、是否允许在 payload 中识别、未知长度处理策略。</li>
+          <li>最后再考虑复杂 payload 命令是否值得迁移；如果迁移不能减少复杂度，就保留专用状态函数。</li>
+        </ol>
+        <div class="svg-wrap">
+          <svg viewBox="0 0 1080 430" role="img" aria-label="渐进迁移路径">
+            <text x="28" y="34" class="svg-title">从当前状态机到混合解析器的低风险路径</text>
+            <rect x="64" y="112" width="168" height="76" class="server"/><text x="100" y="146" class="svg-text">当前状态机</text><text x="94" y="170" class="svg-small">行为冻结</text>
+            <rect x="298" y="112" width="168" height="76" class="hot"/><text x="338" y="146" class="svg-text">ctx 化</text><text x="324" y="170" class="svg-small">消除全局状态</text>
+            <rect x="532" y="112" width="168" height="76" class="hot"/><text x="570" y="146" class="svg-text">Facade</text><text x="552" y="170" class="svg-small">统一 feed/reset</text>
+            <rect x="766" y="112" width="168" height="76" class="violet"/><text x="804" y="146" class="svg-text">表驱动</text><text x="790" y="170" class="svg-small">简单命令先迁</text>
+            <path d="M232 150 H298" class="wire-blue"/>
+            <path d="M466 150 H532" class="wire-blue"/>
+            <path d="M700 150 H766" class="wire-blue"/>
+            <rect x="312" y="282" width="470" height="70" class="box2"/><text x="350" y="314" class="svg-text">每一步都要用旧解析器回归样例对照，禁止“顺手重构语义”。</text>
+          </svg>
+        </div>
+        <div class="principle"><strong>第一性原理：</strong>解析器重构最怕同时改变结构和行为。迁移应该先把行为包起来，再移动状态，再抽规格，最后才替换分派。</div>
+      </section>
+
+      <section id="testing">
+        <h2>测试策略</h2>
+        <p>如果要让解析器更稳定，测试要从“打印结果肉眼看”前移到“解析行为可观测”。建议为解析器建立离线测试 harness，把设备写入、主机回复、LineBuffer 操作替换成 mock。</p>
+        <table>
+          <tr><th>测试层</th><th>目标</th><th>样例</th></tr>
+          <tr><td>字节级状态机测试</td><td>验证跨 buffer、参数不足、未知命令、reset/skip。</td><td><code>ESC $</code> 分两次 feed；<code>GS ( T</code> 长度不足；payload 中出现 <code>0x1B</code>。</td></tr>
+          <tr><td>命令规格表测试</td><td>验证表项长度、模式 flags、handler 映射。</td><td>遍历表项检查 handler 非空、长度规则合法、重复 opcode 冲突。</td></tr>
+          <tr><td>实时命令测试</td><td>验证 <code>DLE EOT</code>、<code>GS I</code>、任务管理命令的回复格式。</td><td>构造 <code>print_status_t</code>，检查回包字节。</td></tr>
+          <tr><td>回归语料测试</td><td>保证重构后常见小票、二维码、位图、标签模式行为不变。</td><td>保存真实订单字节流，比较 mock 输出事件序列。</td></tr>
+        </table>
+        <div class="principle"><strong>第一性原理：</strong>解析器正确性不是只看最终纸面，而是看每个输入字节是否把状态推进到预期位置。让状态转移可测，才能支撑扩展。</div>
+      </section>
+
+      <section id="summary">
+        <h2>整体建议</h2>
+        <div class="grid">
+          <div class="card"><h3>保留当前核心</h3><p>函数指针状态机是适合 ESC/POS 的，不建议推倒重来。它对跨 buffer、变量长度和 payload 收集都很自然。</p></div>
+          <div class="card"><h3>先解决全局状态</h3><p>把解析状态收进 <code>parser_ctx_t</code>，这是可测试、可复用、可支持多解析策略的基础。</p></div>
+          <div class="card"><h3>表驱动只做规格层</h3><p>用表统一命令码、长度、模式、实时属性和 handler。复杂语义继续留给状态函数。</p></div>
+          <div class="card"><h3>优先收敛重复路径</h3><p>先处理普通解析器和 <code>Realtime.c</code> 中重复的 <code>DLE/ESC/GS</code> 管理命令，收益最大，风险可控。</p></div>
+        </div>
+        <p>
+          <span class="tag">State</span>
+          <span class="tag">Table Driven</span>
+          <span class="tag">Command</span>
+          <span class="tag">Strategy</span>
+          <span class="tag">parser_ctx</span>
+          <span class="tag">pNextFun</span>
+          <span class="tag">Realtime_Proc</span>
+          <span class="tag">GS ( T</span>
+          <span class="tag">GS ( E</span>
+        </p>
+        <div class="principle"><strong>第一性原理：</strong>最稳的解析器不是最短的代码，也不是最抽象的框架，而是让协议事实、解析状态和业务副作用各在其位。ESC/POS 的不规则性决定了状态机不可少；工程可维护性决定了规格表也不可少。</div>
+      </section>
+
+      <div class="chapter-nav">
+        <a id="prevChapter" href="#intro">上一节</a>
+        <a id="nextChapter" href="#official">下一节</a>
+      </div>
+    </main>
+  </div>
+
+  <script>
+    const sections = Array.from(document.querySelectorAll('main section'));
+    const links = Array.from(document.querySelectorAll('nav a'));
+    const progressBar = document.getElementById('progressBar');
+    const menuButton = document.getElementById('menuButton');
+    const prevChapter = document.getElementById('prevChapter');
+    const nextChapter = document.getElementById('nextChapter');
+
+    function currentIndex() {
+      let index = 0;
+      for (let i = 0; i < sections.length; i++) {
+        if (sections[i].getBoundingClientRect().top <= 92) index = i;
+      }
+      return index;
+    }
+
+    function updateNav() {
+      const index = currentIndex();
+      const id = sections[index].id;
+      links.forEach(link => link.classList.toggle('active', link.getAttribute('href') === '#' + id));
+      const scrollable = document.documentElement.scrollHeight - window.innerHeight;
+      progressBar.style.width = scrollable > 0 ? (window.scrollY / scrollable * 100) + '%' : '0%';
+      prevChapter.href = '#' + sections[Math.max(0, index - 1)].id;
+      nextChapter.href = '#' + sections[Math.min(sections.length - 1, index + 1)].id;
+    }
+
+    menuButton.addEventListener('click', () => document.body.classList.toggle('nav-open'));
+    links.forEach(link => link.addEventListener('click', () => document.body.classList.remove('nav-open')));
+    window.addEventListener('scroll', updateNav, { passive:true });
+    window.addEventListener('resize', updateNav);
+    window.addEventListener('keydown', event => {
+      const index = currentIndex();
+      if (event.key === 'ArrowLeft') {
+        location.hash = '#' + sections[Math.max(0, index - 1)].id;
+      } else if (event.key === 'ArrowRight') {
+        location.hash = '#' + sections[Math.min(sections.length - 1, index + 1)].id;
+      }
+    });
+    updateNav();
+  </script>
+</body>
+</html>
